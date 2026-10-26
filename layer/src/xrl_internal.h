@@ -282,6 +282,10 @@ typedef struct xfile_ops {
     u32  (*poll)(xfile *f, u32 events);                      /* ready mask */
     void (*close)(xfile *f);
     slong (*mmap_read)(xfile *f, void *dst, u64 n, s64 off);  /* for file mmap */
+    /* A MAP_SHARED, PROT_WRITE mapping of the file now lives at [addr, addr+len) / is about to go (g_lock
+     * held: must not call back into the memory manager). For devices whose mapping is live memory (fbdev.c). */
+    void (*mapped)(xfile *f, u64 addr, u64 len, s64 off);
+    void (*unmapped)(xfile *f, u64 addr, u64 len);
 } xfile_ops;
 
 struct xfile {
@@ -308,6 +312,10 @@ int    xrl_fd_getfd(int fd);                                /* cloexec flag or -
 slong   xrl_fd_setfd(int fd, int cloexec);
 void   xrl_fd_init(void);
 xfile *xrl_dev_ntsync(int flags);                           /* ntsync.c: /dev/ntsync */
+xfile *xrl_dev_evdev_open(const char *gabs, int flags, int *err);   /* evdev.c: /dev/input/eventN, NULL if not one */
+int    xrl_dev_evdev_stat(const char *gabs, lx_stat *st);           /* 1 if handled */
+xfile *xrl_dev_fb_open(const char *gabs, int flags, int *err);      /* fbdev.c: /dev/fb0, NULL if not it */
+int    xrl_dev_fb_stat(const char *gabs, lx_stat *st);              /* 1 if handled */
 
 slong xrl_vfs_init(const char *root);
 slong xrl_vfs_resolve(int dirfd, const char *path, int follow, char *out_guest, size_t cap);

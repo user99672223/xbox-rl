@@ -6,10 +6,11 @@
 // free one) - the XInput behaviour the Wine xinput side expects.
 // get_pad_state() returns the XINPUT-compatible mask documented in xrl_abi.h.
 //
-// Keyboard/mouse: ABI v1 has no op for them (see ABI-CHANGE-REQUESTS.md #3). In
-// the full (SDL) build the host tracks key state in sdl_main.cpp already.
+// Keyboard/mouse (ABI v3): the event queue in input_queue.cpp; the front-end that owns the window
+// (sdl_main.cpp, or the test host's Win32 window) pushes into it, the slots below hand it to the guest.
 #include "pch.h"
 #include "xrl_host.h"
+#include "input_queue.h"
 
 #include <winrt/Windows.Gaming.Input.h>
 #include <mutex>
@@ -130,7 +131,8 @@ xrl_status op_set_vibration(uint32_t slot, uint16_t left, uint16_t right) {
     return XRL_OK;
 }
 
-xrl_input_ops g_ops = { sizeof(xrl_input_ops), op_get_pad_state, op_set_vibration };
+xrl_input_ops g_ops = { sizeof(xrl_input_ops), op_get_pad_state, op_set_vibration,
+                        xrl_inq_read_events, xrl_inq_wait_events, xrl_inq_set_mouse_mode, xrl_inq_set_content_size };
 
 }  // namespace
 

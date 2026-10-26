@@ -53,7 +53,8 @@
 extern "C" {
 #endif
 
-#define XRL_ABI_VERSION 2u
+/* v3 (2026-10-27): keyboard/mouse event queue in xrl_input_ops, present_framebuffer in xrl_gfx_ops. */
+#define XRL_ABI_VERSION 3u
 
 /* ------------------------------------------------------------------ *
  * Seam 1: the syscall gateway  (wine/ -> layer/)
@@ -251,7 +252,18 @@ typedef struct xrl_gfx_ops {
                                          xrl_handle d3d12_queue,
                                          const struct xrl_swapchain_desc *desc,
                                          xrl_handle *out_swapchain);
+
+    /* ---- v3 ---- */
+    /* Show a framebuffer in the window: `pixels` is guest memory, 32 bits per pixel in B,G,R,X byte
+     * order (DXGI B8G8R8X8; the X byte is ignored), `stride` in bytes (>= width * 4). The image is scaled
+     * to fit the window with its aspect ratio kept (black bars). The host owns the window's swapchain for
+     * this (do not mix with the guest's own swapchain), keeps its own copy of the pixels before returning,
+     * and paces to the display: flags 0 waits for vblank (one frame per refresh at most),
+     * XRL_PRESENT_NOWAIT does not. Any thread; calls are serialized. */
+    xrl_status (*present_framebuffer)(const void *pixels, uint32_t width, uint32_t height,
+                                      uint32_t stride, uint32_t flags);
 } xrl_gfx_ops;
+#define XRL_PRESENT_NOWAIT 1u
 
 /* Audio forwarding -> native XAudio2 (xaudio2_9.dll on the console). */
 typedef struct xrl_audio_ops {
@@ -279,7 +291,8 @@ typedef struct xrl_audio_ops {
 } xrl_audio_ops;
 #define XRL_AUDIO_END_OF_STREAM 0x40u   /* == XAUDIO2_END_OF_STREAM */
 
-/* Input forwarding -> native Windows.Gaming.Input. Keyboard/mouse: not yet. */
+/* Input forwarding: gamepads -> native Windows.Gaming.Input; keyboard and mouse -> an event queue the
+ * host fills from the window system (SDL/CoreWindow on the console, a Win32 window on the test host). */
 typedef struct xrl_pad_state {
     uint32_t buttons;        /* XINPUT-compatible button bitmask              */
     uint8_t  left_trigger;
@@ -289,12 +302,57 @@ typedef struct xrl_pad_state {
     uint8_t  _pad[3];
 } xrl_pad_state;
 
+/* v3: one keyboard/mouse event. The vocabulary is Linux evdev's on purpose (linux/input-event-codes.h
+ * numbers): the layer's /dev/input/eventN passes events through nearly verbatim, and Wine maps the
+ * same codes to PS/2 scancodes for SendInput. */
+typedef struct xrl_input_event {
+    uint16_t type;           /* XRL_IEV_*                                     */
+    uint16_t code;           /* key/button code, or axis                      */
+    int32_t  value;
+    uint64_t time_ns;        /* host monotonic clock                          */
+} xrl_input_event;
+enum {
+    /* code = KEY_* (0..255) or BTN_* (BTN_LEFT 0x110, BTN_RIGHT 0x111, BTN_MIDDLE 0x112, BTN_SIDE 0x113,
+     * BTN_EXTRA 0x114); value 0 = release, 1 = press, 2 = autorepeat. The host drops a press of a key it
+     * already holds (the queue turns it into 2) and releases every held key when the window loses focus. */
+    XRL_IEV_KEY   = 1,
+    /* Relative motion, only while the mouse mode is XRL_MOUSE_RELATIVE: code = REL_X 0, REL_Y 1,
+     * REL_HWHEEL 6, REL_WHEEL 8; value = counts (device pixels), or notches for the wheels (+up/+right).
+     * In XRL_MOUSE_ABSOLUTE the wheels are still sent as REL events; X/Y are not. */
+    XRL_IEV_REL   = 2,
+    /* Absolute pointer position while the mouse mode is XRL_MOUSE_ABSOLUTE: code = ABS_X 0, ABS_Y 1;
+     * value 0..XRL_ABS_MAX over the content area (the whole window, or the aspect-fitted picture once
+     * the guest called set_content_size). The pointer is outside the content area in the bars: clamped. */
+    XRL_IEV_ABS   = 3,
+    /* Text input: value = a Unicode code point (the OS keyboard layout's translation of the key presses). */
+    XRL_IEV_TEXT  = 4,
+    /* Window focus: value 1 gained, 0 lost (held keys were released just before). */
+    XRL_IEV_FOCUS = 5,
+};
+#define XRL_ABS_MAX 32767
+#define XRL_MOUSE_ABSOLUTE 0u    /* cursor visible, ABS events (default)                       */
+#define XRL_MOUSE_RELATIVE 1u    /* cursor hidden and captured by the window, REL events        */
+
 typedef struct xrl_input_ops {
     uint32_t struct_size;
     /* Poll gamepad `slot` (0..3): XRL_OK + state, or XRL_ERR_NOTAVAIL if empty. */
     xrl_status (*get_pad_state)(uint32_t slot, xrl_pad_state *out);
     xrl_status (*set_pad_vibration)(uint32_t slot, uint16_t left_motor,
                                     uint16_t right_motor);
+
+    /* ---- v3 (append-only; check struct_size before use) ---- */
+    /* The event queue has ONE consumer (the layer's evdev devices, or Wine's xrlhost; not both at
+     * once): events are removed as they are read. */
+    /* Non-blocking: copy up to `max` queued events to `buf`, oldest first; returns how many. */
+    uint32_t   (*read_events)(xrl_input_event *buf, uint32_t max);
+    /* Block until at least one event is queued: XRL_OK, or XRL_ERR_NOTAVAIL after `timeout_ms`
+     * (0xFFFFFFFF = no timeout). Any thread; several waiters are all released. */
+    xrl_status (*wait_events)(uint32_t timeout_ms);
+    /* XRL_MOUSE_ABSOLUTE / XRL_MOUSE_RELATIVE (the host shows/hides and captures the cursor). */
+    xrl_status (*set_mouse_mode)(uint32_t mode);
+    /* The picture the guest shows (present_framebuffer's size), so ABS events can be mapped onto the
+     * aspect-fitted image rather than the whole window. 0,0 = the whole window. */
+    xrl_status (*set_content_size)(uint32_t width, uint32_t height);
 } xrl_input_ops;
 
 /* ------------------------------------------------------------------ *
@@ -344,7 +402,7 @@ typedef struct xrl_boot_context {
  * The layer's single entry point. Maps the ELF, wires xrl_syscall, starts the
  * guest. Returns the guest's exit code, or a negative xrl_status if the image
  * could not be brought up. Blocks until the guest exits. Single-shot: call at
- * most once per process. Accepts abi_version 1 or 2 (reads v2 fields only when
+ * most once per process. Accepts abi_version 1, 2 or 3 (reads v2 fields only when
  * struct_size covers them).
  */
 int xrl_layer_boot(const xrl_boot_context *ctx);

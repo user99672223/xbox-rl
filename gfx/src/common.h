@@ -41,8 +41,8 @@
 // Layout guards for the seams we mirror/consume (x64).
 static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_host_services) == 48,
               "xrl_gfx_host_services layout drifted from host/src/gfx_seam.h");
-// v2 appended four slots after release (56 -> 88), then d3d11_create_swapchain (96); v1 members keep their offsets.
-static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_ops) == 96, "xrl_gfx_ops (ABI v2) layout changed");
+// v2 appended four slots after release (56 -> 88), then d3d11_create_swapchain (96), v3 present_framebuffer (104); v1 members keep their offsets.
+static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_ops) == 104, "xrl_gfx_ops (ABI v3) layout changed");
 static_assert(sizeof(void*) != 8 || offsetof(xrl_gfx_ops, release) == 48, "xrl_gfx_ops v1 prefix moved");
 
 namespace xrl {

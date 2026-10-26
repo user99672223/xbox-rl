@@ -334,6 +334,7 @@ static slong vma_unmap_range(u64 s, u64 e, int release_granules)
         vma *v = &g_v[j];
         if (v->committed) {
             vma_flush_shared(v, v->start, v->end);
+            if (v->file && v->file->ops->unmapped) v->file->ops->unmapped(v->file, v->start, v->end - v->start);
             win_decommit(v->start, v->end);
             InterlockedAdd64(&g_committed, -(LONG64)(v->end - v->start));
         } else if (v->lazy) {
@@ -1395,7 +1396,8 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
         }
         if (file && shared && (prot & LX_PROT_WRITE)) { v.file = file; xfile_ref(file); v.foff = off; }
         size_t i = vma_lower(addr);
-        if (vma_insert_at(i, &v)) { r = -LX_ENOMEM; goto fail_commit; }
+        if (vma_insert_at(i, &v)) { if (v.file) xfile_unref(v.file); r = -LX_ENOMEM; goto fail_commit; }
+        if (v.file && file->ops->mapped) file->ops->mapped(file, addr, len, off);
         vma_try_merge(i);
     }
     return (slong)addr;
