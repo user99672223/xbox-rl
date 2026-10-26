@@ -156,6 +156,47 @@ static int comp_from_host(const wchar_t *w, int wlen, char *out, size_t cap)
     return n;
 }
 
+/* ============================================================== mounts
+ * XRL_MOUNTS="/game=S:\path\to\dir;/other=..." (host environment): a guest
+ * directory served from a host directory outside vfs_root. The console's
+ * LocalState is a small data area, so a big read-only tree (the game) stays in
+ * the package's install folder and is mounted at /game. The mount point also
+ * exists as an empty directory under vfs_root, so "/" lists it. */
+typedef struct vmount { char *guest; size_t glen; wchar_t *host; } vmount;
+static vmount g_mnt[8];
+static size_t g_nmnt;
+
+static void mounts_load(void)
+{
+    char env[4096];
+    DWORD n = GetEnvironmentVariableA("XRL_MOUNTS", env, sizeof env);
+    if (!n || n >= sizeof env) return;
+    for (char *tok = strtok(env, ";"); tok && g_nmnt < ARRAY_LEN(g_mnt); tok = strtok(NULL, ";")) {
+        char *eq = strchr(tok, '=');
+        if (!eq || tok[0] != '/' || eq == tok + 1) { LOGW("vfs: XRL_MOUNTS: ignoring '%s'", tok); continue; }
+        *eq = 0;
+        size_t gl = strlen(tok);
+        while (gl > 1 && tok[gl - 1] == '/') tok[--gl] = 0;
+        wchar_t h[1024];
+        int hn = MultiByteToWideChar(CP_UTF8, 0, eq + 1, -1, h, 1000);
+        if (hn <= 1) continue;
+        for (int i = 0; i < hn; i++) if (h[i] == L'/') h[i] = L'\\';
+        while (hn > 2 && h[hn - 2] == L'\\') h[--hn - 1] = 0;
+        size_t wl = (size_t)hn + 8;
+        wchar_t *w = (wchar_t *)calloc(wl, sizeof(wchar_t));
+        if (wcsncmp(h, L"\\\\?\\", 4) == 0) wcscpy_s(w, wl, h); else { wcscpy_s(w, wl, L"\\\\?\\"); wcscat_s(w, wl, h); }
+        DWORD a = GetFileAttributesW(w);
+        g_mnt[g_nmnt].guest = _strdup(tok); g_mnt[g_nmnt].glen = gl; g_mnt[g_nmnt].host = w;
+        g_nmnt++;
+        wchar_t mp[1100]; int mn;   /* the mount point under vfs_root (parents first) */
+        wcscpy_s(mp, 1100, G.vfs_root_w); mn = (int)wcslen(mp);
+        MultiByteToWideChar(CP_UTF8, 0, tok, -1, mp + mn, 1100 - mn);
+        for (wchar_t *c = mp + mn; *c; c++) if (*c == L'/') { *c = 0; CreateDirectoryW(mp, NULL); *c = L'\\'; }
+        CreateDirectoryW(mp, NULL);
+        LOGI("vfs: mount %s -> %s%s", tok, eq + 1, a != INVALID_FILE_ATTRIBUTES && (a & FILE_ATTRIBUTE_DIRECTORY) ? "" : " (not a directory yet)");
+    }
+}
+
 /* ============================================================== init */
 slong xrl_vfs_init(const char *root)
 {
@@ -191,6 +232,7 @@ slong xrl_vfs_init(const char *root)
     sym_add("/dev/stdout", "/proc/self/fd/1", 0);
     sym_add("/dev/stderr", "/proc/self/fd/2", 0);
     sym_add("/dev/fd", "/proc/self/fd", 0);
+    mounts_load();
     strcpy_s(G.cwd, sizeof G.cwd, "/");
     LOGI("vfs: root=%s (%zu symlinks)", G.vfs_root, g_nsym);
     return 0;
@@ -198,11 +240,19 @@ slong xrl_vfs_init(const char *root)
 
 int xrl_vfs_host_path(const char *gabs, wchar_t *out, size_t cap)
 {
-    size_t rl = wcslen(G.vfs_root_w);
-    if (rl + 2 >= cap) return -LX_ENAMETOOLONG;
-    wmemcpy(out, G.vfs_root_w, rl);
-    size_t o = rl;
+    const wchar_t *base = G.vfs_root_w;
     const char *p = gabs;
+    for (size_t i = 0; i < g_nmnt; i++) {   /* a mount: its host directory, then the rest of the path */
+        const vmount *m = &g_mnt[i];
+        if (!strncmp(gabs, m->guest, m->glen) && (gabs[m->glen] == 0 || gabs[m->glen] == '/')) {
+            base = m->host; p = gabs + m->glen;
+            break;
+        }
+    }
+    size_t rl = wcslen(base);
+    if (rl + 2 >= cap) return -LX_ENAMETOOLONG;
+    wmemcpy(out, base, rl);
+    size_t o = rl;
     while (*p) {
         while (*p == '/') p++;
         if (!*p) break;

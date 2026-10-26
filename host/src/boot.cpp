@@ -52,6 +52,22 @@ int boot_layer() {
             "WINEDEBUG=err+all",
         };
     }
+    // mounts -> XRL_MOUNTS for the layer's VFS (layer/src/vfs.c). "pkg:" is the install folder:
+    // a big read-only tree (the game) ships in the package, not in LocalState's small data area.
+    if (!cfg.mounts.empty()) {
+        std::string pkg = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
+        std::string all;
+        for (const auto& m : cfg.mounts) {
+            size_t eq = m.find('=');
+            if (eq == std::string::npos) { XLOGW("boot", "ignoring mount '%s' (want guest=host)", m.c_str()); continue; }
+            std::string host = m.substr(eq + 1);
+            if (host.rfind("pkg:", 0) == 0) host = pkg + "\\" + host.substr(4);
+            if (!all.empty()) all += ';';
+            all += m.substr(0, eq) + "=" + host;
+            XLOGI("boot", "mount %s -> %s", m.substr(0, eq).c_str(), host.c_str());
+        }
+        SetEnvironmentVariableA("XRL_MOUNTS", all.c_str());
+    }
     g_argv_p.clear(); g_envp_p.clear();
     for (auto& s : g_argv_s) g_argv_p.push_back(s.c_str());
     for (auto& s : g_envp_s) g_envp_p.push_back(s.c_str());

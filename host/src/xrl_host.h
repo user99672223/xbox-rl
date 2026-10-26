@@ -67,6 +67,9 @@ struct HostConfig {
     std::string game_path;      // default /game
     std::vector<std::string> argv;  // empty => default (see boot.cpp)
     std::vector<std::string> envp;  // empty => default (see boot.cpp)
+    // mount=<guest dir>=<host dir> (repeatable): a guest directory served from outside
+    // vfs_root; "pkg:" at the start of <host dir> = the package's install folder
+    std::vector<std::string> mounts;
     uint64_t guest_mem_budget = 4096ull << 20;   // bytes; see notes-A.md
 
     // Probe selection: "all" | "quick" | "none"

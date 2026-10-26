@@ -79,6 +79,7 @@ const HostConfig& load_config() {
         else if (k == "game_path")       g_cfg.game_path = v;
         else if (k == "argv")            g_cfg.argv.push_back(v);
         else if (k == "env")             g_cfg.envp.push_back(v);
+        else if (k == "mount")           g_cfg.mounts.push_back(v);
         else if (k == "mem_budget_mb")   g_cfg.guest_mem_budget = (uint64_t)strtoull(v.c_str(), nullptr, 10) << 20;
         else if (k == "probe")           g_cfg.probe_mode = v;
         else if (k == "probe_swapchain") g_cfg.probe_swapchain = as_bool(v);
