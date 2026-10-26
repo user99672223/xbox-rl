@@ -18,16 +18,20 @@ static const struct { u16 off, n; } k_swap[] = { XRL_TEB_SWAP_RANGES(XRL__TEB_RO
 
 static int g_swap = 1;
 
+/* Through the TEB's own linear address (NtTib.Self, never swapped) one memcpy per range: a
+ * gs-prefixed move per qword cost ~0.17 us per swap pair, paid on every syscall and host COM call. */
 static void copy_out(u64 *dst)      /* live TEB -> dst */
 {
-    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); i++)
-        for (u16 j = 0; j < k_swap[i].n; j++) dst[k++] = __readgsqword(k_swap[i].off + 8u * j);
+    const u8 *teb = (const u8 *)__readgsqword(0x30);
+    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); k += k_swap[i].n, i++)
+        memcpy(dst + k, teb + k_swap[i].off, 8u * k_swap[i].n);
 }
 
 static void copy_in(const u64 *src) /* src -> live TEB */
 {
-    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); i++)
-        for (u16 j = 0; j < k_swap[i].n; j++) __writegsqword(k_swap[i].off + 8u * j, src[k++]);
+    u8 *teb = (u8 *)__readgsqword(0x30);
+    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); k += k_swap[i].n, i++)
+        memcpy(teb + k_swap[i].off, src + k, 8u * k_swap[i].n);
 }
 
 void xrl_teb_init(void)
@@ -52,11 +56,33 @@ void xrl_teb_init(void)
 
 /* Called on the OS thread itself before any guest code runs on it: the TEB is
  * pristine, so both views start as the host's values. */
+/* XRL_PROFILE: what a host<->guest view swap pair costs on this machine (logged once) */
+static void swap_bench(xrl_thread *t)
+{
+    LARGE_INTEGER f, q0, q1;
+    QueryPerformanceFrequency(&f);
+    t->teb_guest_live = 1;
+    memcpy(t->teb_guest, t->teb_host, sizeof t->teb_guest);
+    QueryPerformanceCounter(&q0);
+    for (int i = 0; i < 10000; i++) { xrl_teb_enter_host(t); xrl_teb_enter_guest(t); }
+    QueryPerformanceCounter(&q1);
+    xrl_teb_enter_host(t);
+    LOGI("teb: a view swap pair (guest->host->guest, %d qwords each way) takes %.3f us", XRL_TEB_SWAP_QWORDS,
+         (double)(q1.QuadPart - q0.QuadPart) * 1e6 / (double)f.QuadPart / 10000.0);
+}
+
 void xrl_teb_thread_init(xrl_thread *t)
 {
     copy_out(t->teb_host);
     memcpy(t->teb_guest, t->teb_host, sizeof t->teb_guest);
     t->teb_guest_live = 0;
+    static volatile LONG once;
+    char v[4];
+    if (g_swap && GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1' && !InterlockedExchange(&once, 1)) {
+        swap_bench(t);
+        memcpy(t->teb_guest, t->teb_host, sizeof t->teb_guest);
+        t->teb_guest_live = 0;
+    }
 }
 
 int xrl_teb_enter_host(xrl_thread *t)

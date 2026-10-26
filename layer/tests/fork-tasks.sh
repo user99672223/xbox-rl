@@ -10,8 +10,7 @@ free=$(powershell -NoProfile -Command "[int]((Get-PSDrive C).Free/1GB)")
 export XRL_FORK_TASKS=1 XRL_MAX_CHILDREN=2 XRL_SPAWN_KILL_ON_EXIT=1 XRL_NO_FSGSBASE=1 XRL_TEST_BUDGET_MB="${XRL_TEST_BUDGET_MB:-1024}"
 out=$(timeout 300 sh tests/run.sh --no-swap 2>&1); rc=$?
 echo "$out" | grep -E "FAIL|TOTAL|skip"
-left=$(powershell -NoProfile -File "$(cygpath -w tests/kill-mine.ps1)" | tr -s '
-' '  ')
+left=$(powershell -NoProfile -File "$(cygpath -w tests/kill-mine.ps1)" | tr -d '\r' | tr '\n' ' ')
 if [ -n "$left" ]; then echo "fork-tasks: FAIL: leftover xrl_test_host.exe processes killed: $left"; rc=1; fi
 echo "$out" | grep -q "TOTAL FAILS=0" || rc=1
 echo "fork-tasks: rc=$rc"

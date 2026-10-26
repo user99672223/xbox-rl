@@ -15,6 +15,7 @@
 
 /* from misc.c */
 slong xrl_sys_clock_gettime(int clk, u64 uts);
+extern void xrl_vclock(void);
 slong xrl_sys_clock_getres(int clk, u64 uts);
 slong xrl_sys_gettimeofday(u64 utv, u64 utz);
 slong xrl_sys_time(u64 ut);
@@ -871,7 +872,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     xrl_thread *t = xrl_cur();
     slong r;
     int was_guest = xrl_teb_enter_host(t);
-    if (t) t->in_sys++;
+    if (t) { t->in_sys++; t->nsys++; }
     if (g_prof < 0) { char v[4]; g_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
     LARGE_INTEGER t0 = {0}, t1;
     if (g_prof) QueryPerformanceCounter(&t0);
@@ -879,11 +880,16 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     if (nr == 15 && t) r = xrl_sig_return(t, (u64)a1);   /* rt_sigreturn: never a plain return */
     else if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
+    else if (nr == XRL_SYS_GET_VCLOCK) r = (slong)(uintptr_t)xrl_vclock;   /* thunks.asm -> misc.c */
     else if (nr == XRL_SYS_DBT_ENTER) r = xrl_dbt_enter_sys((u64)a1);   /* dbt.asm */
     else r = enosys(nr, a1, a2, a3);
     if (g_prof && (u64)nr < XRL_NR_MAX) {
         QueryPerformanceCounter(&t1);
         InterlockedIncrement64(&g_prof_n[nr]);
+        if (t) {   /* per thread, for perf.c's breakdown of the busiest threads */
+            if (!t->sysn) t->sysn = (u32 *)calloc(XRL_NR_MAX, sizeof(u32));
+            if (t->sysn) t->sysn[nr]++;
+        }
         InterlockedAdd64(&g_prof_t[nr], t1.QuadPart - t0.QuadPart);
         LONG64 now = (LONG64)GetTickCount64(), next = g_prof_next;
         if (now >= next && InterlockedCompareExchange64(&g_prof_next, now + 30000, next) == next && next) prof_dump();

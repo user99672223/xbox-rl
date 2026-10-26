@@ -52,6 +52,32 @@ int boot_layer() {
             "WINEDEBUG=err+all",
         };
     }
+    // mounts -> XRL_MOUNTS for the layer's VFS (layer/src/vfs.c). "pkg:" is the install folder:
+    // a big read-only tree (the game) ships in the package, not in LocalState's small data area.
+    if (!cfg.mounts.empty()) {
+        std::string pkg = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
+        std::string all;
+        for (const auto& m : cfg.mounts) {
+            size_t eq = m.find('=');
+            if (eq == std::string::npos) { XLOGW("boot", "ignoring mount '%s' (want guest=host)", m.c_str()); continue; }
+            std::string host = m.substr(eq + 1);
+            if (host.rfind("pkg:", 0) == 0) host = pkg + "\\" + host.substr(4);
+            if (!all.empty()) all += ';';
+            all += m.substr(0, eq) + "=" + host;
+            XLOGI("boot", "mount %s -> %s", m.substr(0, eq).c_str(), host.c_str());
+        }
+        SetEnvironmentVariableA("XRL_MOUNTS", all.c_str());
+    }
+    // the output mode for Wine's display list (win32u, patches/wine/0025), unless env= set one
+    {
+        DisplayMode dm = display_mode();
+        bool given = false;
+        for (const auto& e : g_envp_s) given |= e.rfind("XRL_DISPLAY=", 0) == 0;
+        if (!given && dm.width) {
+            char b[64]; snprintf(b, sizeof b, "XRL_DISPLAY=%ux%u@%u", dm.width, dm.height, dm.refresh_hz ? dm.refresh_hz : 60);
+            g_envp_s.push_back(b);
+        }
+    }
     g_argv_p.clear(); g_envp_p.clear();
     for (auto& s : g_argv_s) g_argv_p.push_back(s.c_str());
     for (auto& s : g_envp_s) g_envp_p.push_back(s.c_str());

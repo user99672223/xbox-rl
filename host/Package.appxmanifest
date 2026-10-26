@@ -8,11 +8,13 @@
      Xbox launcher refuses the package before any process exists.
    * TargetDeviceFamily: Windows.Universal (App-bucket install) + Windows.Xbox (Game
      bucket). Same recipe as the earlier probe, which installed and ran on the console.
-   * Capabilities are exactly what the brief mandates: codeGeneration (RWX VirtualAlloc
-     for the Blink JIT / ELF loader) and expandedResources (Xbox: more memory/CPU for
-     the title). No network/library capabilities: the game runs offline. Extra DEVICE
-     capabilities make the Xbox shell reject the manifest at launch - do not add them
-     speculatively.
+   * Capabilities: codeGeneration (RWX VirtualAlloc for the Blink JIT / ELF loader),
+     expandedResources (Xbox: more memory/CPU for the title), and the general network
+     capabilities: Rocket League logs in to Epic and PsyNet at start-up (the layer's
+     sockets, layer/src/net.c). internetClient = outbound, internetClientServer and
+     privateNetworkClientServer = inbound/LAN (Wine's in-process services listen on
+     loopback). Extra DEVICE capabilities make the Xbox shell reject the manifest at
+     launch - do not add them speculatively.
 -->
 <Package
   xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
@@ -58,6 +60,9 @@
   </Applications>
 
   <Capabilities>
+    <Capability Name="internetClient" />
+    <Capability Name="internetClientServer" />
+    <Capability Name="privateNetworkClientServer" />
     <rescap:Capability Name="codeGeneration" />
     <rescap:Capability Name="expandedResources" />
   </Capabilities>

@@ -157,12 +157,35 @@ static u64 make_stub(u64 target)   /* hook lock held */
     return (u64)s;
 }
 
-static void hook_vtable(u64 vt)
+/* QueryInterface of every hooked vtable (slot 0): it may return an interface of a type not seen
+ * yet on any call, so its results are always scanned (xrl_com_after) */
+#define QI_SET 1024
+static volatile u64 g_qi[QI_SET];
+
+static void qi_add(u64 fn)   /* hook lock held */
+{
+    for (u32 i = (u32)(fn >> 4) & (QI_SET - 1), n = 0; n < QI_SET; n++, i = (i + 1) & (QI_SET - 1)) {
+        if (g_qi[i] == fn) return;
+        if (!g_qi[i]) { g_qi[i] = fn; return; }
+    }
+}
+
+static int is_qi(u64 fn)
+{
+    for (u32 i = (u32)(fn >> 4) & (QI_SET - 1), n = 0; n < QI_SET; n++, i = (i + 1) & (QI_SET - 1)) {
+        u64 k = g_qi[i];
+        if (k == fn) return 1;
+        if (!k) return 0;
+    }
+    return 0;
+}
+
+static int hook_vtable(u64 vt)
 {
     AcquireSRWLockExclusive(&g_hook_lock);
     u64 *e = (u64 *)vt;
     /* a known address whose first entry is no stub: a heap vtable freed and reallocated */
-    if (vt_known(vt) && is_stub(e[0])) { ReleaseSRWLockExclusive(&g_hook_lock); return; }
+    if (vt_known(vt) && is_stub(e[0])) { ReleaseSRWLockExclusive(&g_hook_lock); return 0; }
     if (!vt_known(vt)) vt_insert(vt);
     int n = 0;
     while (n < 1024 && (is_stub(e[n]) || addr_kind(e[n], NULL) == K_CODE)) n++;
@@ -171,6 +194,7 @@ static void hook_vtable(u64 vt)
     DWORD old;
     int err = n ? xrl_host_protect(e, (size_t)n * 8, PAGE_READWRITE, &old) : 0;
     int hooked = 0;
+    if (n) qi_add(is_stub(e[0]) ? *(const u64 *)(e[0] + 2) : e[0]);
     if (!err) {
         for (int i = 0; i < n; i++) {
             if (is_stub(e[i])) continue;
@@ -187,23 +211,24 @@ static void hook_vtable(u64 vt)
     if (err) LOGW("com: cannot unprotect vtable %llx (%s+%llx): win err %d", vt, m ? m->name : "?", m ? vt - m->base : 0ull, err);
     else LOGI("com: vtable %llx (%s+%llx): %d of %d entries routed through the host-view thunk",
               vt, m ? m->name : "?", m ? vt - m->base : 0ull, hooked, n);
+    return hooked > 0;
 }
 
 static int g_trace = -1;   /* XRL_COM_TRACE=1: log every candidate object */
 
-/* Is `obj` a host COM object? Hook its vtable if so. */
-static void consider_object(u64 obj)
+/* Is `obj` a host COM object? Hook its vtable if so (1: this call hooked a new one). */
+static int consider_object(u64 obj)
 {
-    if (!plausible(obj)) return;
+    if (!plausible(obj)) return 0;
     u64 vt = *(volatile u64 *)obj;
     if (g_trace < 0) { char v[4]; g_trace = GetEnvironmentVariableA("XRL_COM_TRACE", v, sizeof v) && v[0] == '1'; }
-    if (!plausible(vt)) return;
-    if (vt_known(vt) && is_stub(*(volatile u64 *)vt)) return;
+    if (!plausible(vt)) return 0;
+    if (vt_known(vt) && is_stub(*(volatile u64 *)vt)) return 0;
     /* Where the vtable lives: an image's .rdata (or .text, some images merge them), or
      * host heap (D3D11 builds per-device dispatch tables for its context objects).
      * Never guest memory. */
     int k = addr_kind(vt, NULL);
-    if (k == K_NONE && xrl_mem_is_mapped(vt)) return;
+    if (k == K_NONE && xrl_mem_is_mapped(vt)) return 0;
     if (g_trace) {
         const img *m = NULL;
         addr_kind(vt, &m);
@@ -212,23 +237,28 @@ static void consider_object(u64 obj)
     }
     /* QueryInterface, AddRef, Release: three code pointers (never true of instruction bytes) */
     for (int i = 0; i < 3; i++)
-        if (addr_kind(((volatile u64 *)vt)[i], NULL) != K_CODE) return;
-    hook_vtable(vt);
+        if (addr_kind(((volatile u64 *)vt)[i], NULL) != K_CODE) return 0;
+    return hook_vtable(vt);
 }
 
-static void consider(u64 v)
+static int consider(u64 v)
 {
-    if (!plausible(v)) return;
+    int r = 0;
+    if (!plausible(v)) return 0;
     __try {
-        consider_object(*(volatile u64 *)v);   /* v = &out_interface_pointer */
-        consider_object(v);                    /* v = an interface pointer itself */
+        r |= consider_object(*(volatile u64 *)v);   /* v = &out_interface_pointer */
+        r |= consider_object(v);                    /* v = an interface pointer itself */
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    return r;
 }
 
-void xrl_com_scan(const u64 *v, int n)
+/* 1 if any value led to a newly hooked vtable */
+int xrl_com_scan(const u64 *v, int n)
 {
-    for (int i = 0; i < n; i++) consider(v[i]);
+    int r = 0;
+    for (int i = 0; i < n; i++) r |= consider(v[i]);
+    return r;
 }
 
 /* Calls per method (the hang dump names the busiest): open addressing on the
@@ -237,8 +267,11 @@ void xrl_com_scan(const u64 *v, int n)
 static volatile u64 g_hot_fn[HOT_SET];
 static volatile LONG64 g_hot_n[HOT_SET];
 static volatile u64 g_hot_ret[HOT_SET];   /* the last return value */
+static volatile u8 g_hot_scan[HOT_SET];   /* 1: always scan this method's arguments (it hooked something,
+                                            * or is a QueryInterface); 2: decided, skip mostly */
 
-static void hot_count(u64 fn, u64 ret)
+/* the method's slot (-1: table full), with its call count after this call in *n_out */
+static int hot_count(u64 fn, u64 ret, LONG64 *n_out)
 {
     for (u32 i = (u32)(fn >> 4) & (HOT_SET - 1), n = 0; n < 32; n++, i = (i + 1) & (HOT_SET - 1)) {
         u64 k = g_hot_fn[i];
@@ -246,8 +279,9 @@ static void hot_count(u64 fn, u64 ret)
             u64 prev = (u64)InterlockedCompareExchange64((volatile LONG64 *)&g_hot_fn[i], (LONG64)fn, 0);
             k = prev ? prev : fn;
         }
-        if (k == fn) { InterlockedIncrement64(&g_hot_n[i]); g_hot_ret[i] = ret; return; }
+        if (k == fn) { *n_out = InterlockedIncrement64(&g_hot_n[i]); g_hot_ret[i] = ret; return (int)i; }
     }
+    return -1;
 }
 
 /* The hooked vtable slot that calls `fn` (a stub holds its target at +2). */
@@ -296,11 +330,41 @@ void xrl_com_hot(void (*emit)(const char *line), int max)
  * stack (the callee may have reused its own copy), the return value and the method. */
 volatile LONG64 xrl_com_calls;   /* guest -> host COM calls (XRL_PROFILE output) */
 
+volatile LONG64 xrl_com_after_ticks;   /* XRL_PROFILE: QPC ticks spent in here (perf.c) */
+static int g_com_prof = -1;
+
+/* The argument scan is what finds new host objects (an out-parameter or return value of a type
+ * not hooked yet), and it is most of the cost of a call (1-2 us, mostly on the game's render
+ * thread). A method that has run SCAN_LEARN times without its scan ever hooking anything only
+ * hands out known types or none (Draw*, *Set*, Map...): it is scanned once in SCAN_RECHECK calls
+ * after that. QueryInterface and any method whose scan once hooked a vtable are always scanned.
+ * XRL_COM_SCAN_ALL=1 scans every call (as before). */
+#define SCAN_LEARN 512
+#define SCAN_RECHECK 4096
+static int g_scan_all = -1;
+
 void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
 {
+    LARGE_INTEGER q0 = {0}, q1;
+    if (g_com_prof < 0) { char v[4]; g_com_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
+    if (g_scan_all < 0) { char v[4]; g_scan_all = GetEnvironmentVariableA("XRL_COM_SCAN_ALL", v, sizeof v) && v[0] == '1'; }
+    if (g_com_prof) QueryPerformanceCounter(&q0);
     InterlockedIncrement64(&xrl_com_calls);
-    hot_count(fn, ret);
-    xrl_com_scan(regs, 4);
-    xrl_com_scan(stack_args, 12);
-    consider(ret);
+    LONG64 n = 0;
+    int i = hot_count(fn, ret, &n);
+    if (i >= 0 && !g_scan_all) {
+        u8 m = g_hot_scan[i];
+        if (!m && is_qi(fn)) g_hot_scan[i] = m = 1;
+        if (!m && n > SCAN_LEARN) g_hot_scan[i] = m = 2;
+        if (m == 2 && (n % SCAN_RECHECK)) goto done;
+    }
+    int found = xrl_com_scan(regs, 4);
+    found |= xrl_com_scan(stack_args, 12);
+    found |= consider(ret);
+    if (i >= 0 && found && g_hot_scan[i] != 1) {
+        if (g_hot_scan[i] == 2) LOGW("com: method %llx handed out a new object type after %lld calls: scanning it always again", fn, (long long)n);
+        g_hot_scan[i] = 1;
+    }
+done:
+    if (g_com_prof) { QueryPerformanceCounter(&q1); InterlockedAdd64(&xrl_com_after_ticks, q1.QuadPart - q0.QuadPart); }
 }

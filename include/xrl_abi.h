@@ -88,6 +88,11 @@ int64_t xrl_syscall(int64_t nr, int64_t a1, int64_t a2, int64_t a3,
 #define XRL_SYS_GET_AUDIO_OPS  0x10002
 #define XRL_SYS_GET_INPUT_OPS  0x10003
 #define XRL_SYS_GET_LOG_FN     0x10004
+/* Added later in v2 (additive: an older layer answers -ENOSYS and libc keeps the syscall):
+ * a SysV-callable int (*)(clockid_t, struct timespec *) with the kernel vDSO's contract (0, or
+ * -errno; -ENOSYS for a clock it does not serve). musl's clock_gettime calls it directly instead of
+ * entering the layer: no host stack, no TEB view swap (patches/musl/0004). */
+#define XRL_SYS_GET_VCLOCK     0x10005
 
 /*
  * Guest thread pointer slot (v2, added after the first console run).

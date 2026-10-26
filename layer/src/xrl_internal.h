@@ -91,6 +91,8 @@ struct xrl_thread {
     /* --- C-only --- */
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
+    u64  nsys;             /* syscalls made (perf.c); written by this thread only */
+    u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;
     DWORD  win_tid;
     u64  guest_gs;
@@ -136,9 +138,10 @@ void xrl_teb_stack_here(u64 saved[2]);        /* host code on a guest stack: lim
 void xrl_teb_stack_back(const u64 saved[2]);
 
 /* com.c: host COM objects called directly by the guest (docs/gs-teb.md Stage 2) */
-void xrl_com_scan(const u64 *v, int n);
+int  xrl_com_scan(const u64 *v, int n);   /* 1: hooked a new vtable */
 void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn);   /* from xrl_com_tramp */
 void xrl_com_hot(void (*emit)(const char *line), int max);   /* busiest methods (hang dump) */
+void xrl_perf_start(void);   /* perf.c: XRL_PERF=N numbers every N s (default 10) */
 extern void xrl_com_tramp(void);                                        /* Win64, r11 = target */
 
 /* Thread lookup: hash of the host TEB Self pointer (gs:[30h]) -> xrl_thread*.

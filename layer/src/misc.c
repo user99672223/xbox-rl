@@ -183,6 +183,26 @@ slong xrl_sys_clock_gettime(int clk, u64 uts)
     return xrl_ctu(uts, &ts, sizeof ts);
 }
 
+/* The guest's vDSO-style clock (XRL_SYS_GET_VCLOCK), reached through xrl_vclock (thunks.asm) on
+ * the guest's own stack with the guest TEB view live: only QueryPerformanceCounter and
+ * GetSystemTimePreciseAsFileTime, which read the shared user data page and nothing per-thread.
+ * The game's render thread reads the clock thousands of times a frame. */
+slong xrl_vclock_c(int clk, lx_timespec *ts)
+{
+    u64 ns;
+    switch (clk) {
+    case LX_CLOCK_REALTIME:
+    case LX_CLOCK_REALTIME_COARSE: ns = xrl_real_ns(); break;
+    case LX_CLOCK_MONOTONIC:
+    case LX_CLOCK_MONOTONIC_RAW:
+    case LX_CLOCK_MONOTONIC_COARSE:
+    case LX_CLOCK_BOOTTIME: ns = xrl_mono_ns(); break;
+    default: return -LX_ENOSYS;   /* CPU-time clocks: the syscall */
+    }
+    ns_to_ts(ns, ts);
+    return 0;
+}
+
 slong xrl_sys_clock_getres(int clk, u64 uts)
 {
     if (clk < 0 || clk > LX_CLOCK_BOOTTIME || clk == 8 || clk == 9 || clk == 10) {}

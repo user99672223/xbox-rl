@@ -1,0 +1,48 @@
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 6b945bd..3d6b763 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -25,6 +25,8 @@
+ #endif
+ 
+ #include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
+ #include <assert.h>
+ 
+ #include "ntstatus.h"
+@@ -2822,6 +2824,20 @@ static BOOL update_display_cache_from_registry( UINT64 serial )
+     return ret;
+ }
+ 
++static BOOL xrl_host_display( DEVMODEW *mode, const DEVMODEW *template )
++{
++    const char *env = getenv( "XRL_DISPLAY" );
++    unsigned int width = 0, height = 0, hz = 60;
++
++    if (!env || sscanf( env, "%ux%u@%u", &width, &height, &hz ) < 2 || !width || !height) return FALSE;
++    *mode = *template;
++    mode->dmFields |= DM_POSITION;
++    mode->dmPelsWidth = width;
++    mode->dmPelsHeight = height;
++    mode->dmDisplayFrequency = hz ? hz : 60;
++    return TRUE;
++}
++
+ static NTSTATUS default_update_display_devices( struct device_manager_ctx *ctx )
+ {
+     /* default implementation: expose an adapter and a monitor with a few standard modes,
+@@ -2860,7 +2876,12 @@ static NTSTATUS default_update_display_devices( struct device_manager_ctx *ctx )
+     assert( !list_empty( &sources ) );
+     source = LIST_ENTRY( list_tail( &sources ), struct source, entry );
+ 
+-    if (!read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &mode ))
++    /* xbox-rl: the host's real display, XRL_DISPLAY=<width>x<height>[@<hz>] (the host sets it from
++     * the console's HDMI mode or the laptop's desktop).  It is the physical mode and never changes:
++     * Wine emulates the game's mode sets on top of it (emulate_modeset), and the standard sizes up
++     * to it become the mode list.  Without it, the saved mode (or 1024x768) as before. */
++    if (xrl_host_display( &mode, &modes[2] )) TRACE( "host display %s\n", debugstr_devmodew( &mode ) );
++    else if (!read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &mode ))
+     {
+         mode = modes[2];
+         mode.dmFields |= DM_POSITION;

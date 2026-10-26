@@ -94,6 +94,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     xrl_sig_init();
     xrl_sig_install_veh();
     xrl_hang_watch_start();
+    xrl_perf_start();
     xrl_fd_init();
     if (xrl_vfs_init(ctx->vfs_root)) return XRL_ERR_GENERIC;
     xrl_fd_inherit_boot();   /* memfds a parent passed on through exec (task.c) */

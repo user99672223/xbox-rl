@@ -79,6 +79,7 @@ const HostConfig& load_config() {
         else if (k == "game_path")       g_cfg.game_path = v;
         else if (k == "argv")            g_cfg.argv.push_back(v);
         else if (k == "env")             g_cfg.envp.push_back(v);
+        else if (k == "mount")           g_cfg.mounts.push_back(v);
         else if (k == "mem_budget_mb")   g_cfg.guest_mem_budget = (uint64_t)strtoull(v.c_str(), nullptr, 10) << 20;
         else if (k == "probe")           g_cfg.probe_mode = v;
         else if (k == "probe_swapchain") g_cfg.probe_swapchain = as_bool(v);
@@ -86,6 +87,12 @@ const HostConfig& load_config() {
         else if (k == "linger_s")        g_cfg.linger_seconds = atoi(v.c_str());
         else if (k == "log_level")       g_cfg.log_level = atoi(v.c_str());
         else if (k == "skip_layer")      g_cfg.skip_layer = as_bool(v);
+        else if (k == "display")         g_cfg.display = v;
+        else if (k == "host_env") {       // NAME=value in the host process (the layer's own switches: XRL_PERF, XRL_PROFILE...)
+            size_t e2 = v.find('=');
+            if (e2 == std::string::npos) XLOGW("config", "ignoring host_env '%s' (want NAME=value)", v.c_str());
+            else SetEnvironmentVariableA(v.substr(0, e2).c_str(), v.substr(e2 + 1).c_str());
+        }
         else XLOGW("config", "unknown key '%s' (ignored)", k.c_str());
         XLOGI("config", "  %s=%s", k.c_str(), v.c_str());
     }
