@@ -868,7 +868,10 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     if (nr == 15 && t) r = xrl_sig_return(t, (u64)a1);   /* rt_sigreturn: never a plain return */
     else if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
-    else if (nr == XRL_SYS_GET_VCLOCK) r = (slong)(uintptr_t)xrl_vclock;   /* thunks.asm -> misc.c */
+    else if (nr == XRL_SYS_GET_VCLOCK) {   /* thunks.asm -> misc.c; XRL_NO_VCLOCK=1: libc keeps the syscall */
+        char v[4];
+        r = GetEnvironmentVariableA("XRL_NO_VCLOCK", v, sizeof v) && v[0] == '1' ? -LX_ENOSYS : (slong)(uintptr_t)xrl_vclock;
+    }
     else if (nr == XRL_SYS_DBT_ENTER) r = xrl_dbt_enter_sys((u64)a1);   /* dbt.asm */
     else r = enosys(nr, a1, a2, a3);
     if (g_prof && (u64)nr < XRL_NR_MAX) {

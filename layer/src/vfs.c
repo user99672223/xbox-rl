@@ -550,7 +550,11 @@ static slong dir_getflags(xfile *f, u64 arg)
 static slong dfile_ioctl(xfile *f, u64 req, u64 arg)
 {
     if (req == LX_FIOCLEX || req == LX_FIONCLEX || req == LX_FIONBIO) return 0;
-    if (req == LX_FS_IOC_GETFLAGS && f->ops == &g_dir_ops) return dir_getflags(f, arg);
+    if (req == LX_FS_IOC_GETFLAGS && f->ops == &g_dir_ops) {   /* XRL_NO_CASEFOLD=1: ENOTTY as before */
+        static int off = -1;
+        if (off < 0) { char v[4]; off = GetEnvironmentVariableA("XRL_NO_CASEFOLD", v, sizeof v) && v[0] == '1'; }
+        if (!off) return dir_getflags(f, arg);
+    }
     if (req == LX_FIONREAD) {
         LARGE_INTEGER sz;
         s64 avail = 0;
