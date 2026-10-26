@@ -432,6 +432,7 @@ slong xrl_shmdt(u64 addr);
 slong xrl_shmctl(int id, int cmd, u64 buf);
 slong xrl_memfd_seals(xfile *f, int op, u32 seals);       /* fcntl F_ADD_SEALS (op 1) / F_GET_SEALS (op 0) on a memfd; -EINVAL if f is not one */
 int   xrl_memfd_sealed(const xfile *f, u32 seal);         /* a write/truncate must be refused: the seal is set on this memfd */
+void  xrl_shm_proc_gone(int pid);                       /* proc.c: process pid ended or exec'd (its attaches and mappings go) */
 void  xrl_shm_memfd_gone(u32 n);                      /* vfs.c: the last description of memfd n was closed */
 u64   xrl_mem_shared_alloc(u64 len, const char *name);   /* mem.c: backing pages for shm.c */
 void  xrl_mem_shared_free(u64 addr, u64 len);

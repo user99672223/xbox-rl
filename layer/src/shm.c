@@ -14,7 +14,9 @@
  *
  * An object lives while something maps it:
  *   - a SysV segment: until shmctl(IPC_RMID) and the last shmdt (nattch), as on Linux; the pages are allocated at
- *     the first shmat. munmap() of the attach counts as shmdt.
+ *     the first shmat. munmap() of the attach counts as shmdt. Attaches are counted per process; those a child inherits
+ *     through fork are not (its shmdt/exit changes nothing), and xrl_shm_proc_gone(pid), which proc.c calls when a process
+ *     ends or execs, drops a process's own.
  *   - a file object (memfd, /dev/shm/...): until every mapping of it is unmapped. The pages are read from the file
  *     when the first mapping is made and written back when the last one goes, so contents survive "map, unmap, map
  *     again". read()/write() on the file while it is mapped do not see the mapping's writes (mmap is the interface
@@ -44,7 +46,7 @@
 #define SHM_MAX_BYTES (1ull << 40)
 #define SHM_WRITEBACK_MAX (64ull << 20)   /* a /dev/shm file bigger than this is not written back when its last mapping goes */
 
-typedef struct att { u64 s, e; } att;
+typedef struct att { u64 s, e; int pid; } att;   /* a mapped range and the process that mapped it */
 
 typedef struct shmseg {
     struct shmseg *next;
@@ -53,7 +55,8 @@ typedef struct shmseg {
     u32 mode, uid, gid, cuid, cgid;
     int cpid, lpid;
     s64 atime, dtime, ctime;
-    int nattch, removed;
+    int nattch, removed;               /* SysV: attaches (== npids) and IPC_RMID'ed */
+    int *pids; int npids, cappids;     /* SysV: the process of each attach */
     char *fkey;                        /* file object: identity (memfd number or /dev/shm path) */
     int memfd, orphan;                 /* a memfd; every description of it is closed (vfs.c) */
     xfile *file;                       /* a /dev/shm file: referenced while mapped, for the write-back */
@@ -90,7 +93,7 @@ static void seg_destroy(shmseg *g)   /* lock held, already unlinked */
         xrl_mem_shared_free(g->addr, g->size);
     }
     if (g->file) xfile_unref(g->file);
-    free(g->fkey); free(g->maps); free(g);
+    free(g->fkey); free(g->maps); free(g->pids); free(g);
 }
 
 /* ================================================================ SysV */
@@ -150,16 +153,22 @@ slong xrl_shmat(int id, u64 addr, int flags)
         }
         if (!g->addr) r = -LX_ENOMEM;
         else if (addr && addr != g->addr) r = -LX_EINVAL;   /* one address per segment: see the header comment */
-        else { g->nattch++; g->lpid = xrl_cur_pid(); g->atime = now_s(); r = (slong)g->addr; }
+        else {
+            if (g->npids == g->cappids) { g->cappids = g->cappids ? g->cappids * 2 : 8; g->pids = (int *)realloc(g->pids, (size_t)g->cappids * sizeof(int)); }
+            g->pids[g->npids++] = xrl_cur_pid(); g->nattch = g->npids;
+            g->lpid = xrl_cur_pid(); g->atime = now_s(); r = (slong)g->addr;
+        }
     }
     ReleaseSRWLockExclusive(&g_shm_lock);
     return r;
 }
 
-static void sysv_detach(shmseg *g)   /* lock held */
+/* One attach of `pid` goes (or, for an attach `pid` inherited through fork and which is not tracked, nothing changes). */
+static void sysv_detach(shmseg *g, int pid)   /* lock held */
 {
-    if (g->nattch > 0) g->nattch--;
-    g->dtime = now_s(); g->lpid = xrl_cur_pid();
+    for (int i = 0; i < g->npids; i++) if (g->pids[i] == pid) { g->pids[i] = g->pids[--g->npids]; break; }
+    g->nattch = g->npids;
+    g->dtime = now_s(); g->lpid = pid;
     if (g->removed && g->nattch == 0) { seg_unlink(g); seg_destroy(g); }
 }
 
@@ -168,7 +177,7 @@ slong xrl_shmdt(u64 addr)
     slong r = -LX_EINVAL;
     AcquireSRWLockExclusive(&g_shm_lock);
     for (shmseg *g = g_segs; g; g = g->next)
-        if (g->sysv && g->addr && g->addr == addr) { if (g->nattch > 0) { sysv_detach(g); r = 0; } break; }
+        if (g->sysv && g->addr && g->addr == addr) { if (g->npids > 0) { sysv_detach(g, xrl_cur_pid()); r = 0; } break; }
     ReleaseSRWLockExclusive(&g_shm_lock);
     return r;
 }
@@ -246,19 +255,19 @@ static const char *file_key(xfile *f, char *buf, size_t cap)
     return NULL;
 }
 
-static void maps_add(shmseg *g, u64 s, u64 e)
+static void maps_add(shmseg *g, int pid, u64 s, u64 e)
 {
     if (g->nmaps == g->capmaps) { g->capmaps = g->capmaps ? g->capmaps * 2 : 8; g->maps = (att *)realloc(g->maps, (size_t)g->capmaps * sizeof(att)); }
-    g->maps[g->nmaps++] = (att){ s, e };
+    g->maps[g->nmaps++] = (att){ s, e, pid };
 }
 
-/* take [s,e) out of the mapped ranges */
-static void maps_sub(shmseg *g, u64 s, u64 e)
+/* take [s,e) out of the ranges `pid` mapped (a mapping it only inherited through fork is not tracked: nothing changes) */
+static void maps_sub(shmseg *g, int pid, u64 s, u64 e)
 {
     for (int i = 0; i < g->nmaps;) {
         att a = g->maps[i];
-        if (a.e <= s || a.s >= e) { i++; continue; }
-        if (a.s < s && a.e > e) { g->maps[i].e = s; maps_add(g, e, a.e); return; }   /* a hole in the middle */
+        if (a.pid != pid || a.e <= s || a.s >= e) { i++; continue; }
+        if (a.s < s && a.e > e) { g->maps[i].e = s; maps_add(g, pid, e, a.e); return; }   /* a hole in the middle */
         if (a.s < s) { g->maps[i].e = s; i++; }
         else if (a.e > e) { g->maps[i].s = e; i++; }
         else g->maps[i] = g->maps[--g->nmaps];
@@ -307,7 +316,7 @@ slong xrl_shm_map_file(xfile *f, u64 len, s64 off)
         ReleaseSRWLockExclusive(&g_shm_lock);
         return -LX_ENOMEM;
     }
-    maps_add(g, g->addr + (u64)off, g->addr + (u64)off + ALIGN_UP(len, LX_PAGE));
+    maps_add(g, xrl_cur_pid(), g->addr + (u64)off, g->addr + (u64)off + ALIGN_UP(len, LX_PAGE));
     r = (slong)(g->addr + (u64)off);
     ReleaseSRWLockExclusive(&g_shm_lock);
     return r;
@@ -322,9 +331,9 @@ slong xrl_shm_munmap(u64 addr, u64 len)
     for (shmseg *g = g_segs; g; g = g->next) {
         if (!g->addr || addr + len <= g->addr || addr >= g->addr + g->size) continue;
         if (addr < g->addr || addr + len > g->addr + g->size) { r = -LX_EINVAL; break; }   /* straddles the region's edge */
-        if (g->sysv) { if (addr == g->addr && g->nattch > 0) sysv_detach(g); }
+        if (g->sysv) { if (addr == g->addr && g->npids > 0) sysv_detach(g, xrl_cur_pid()); }
         else {
-            maps_sub(g, addr, addr + len);
+            maps_sub(g, xrl_cur_pid(), addr, addr + len);
             if (g->nmaps == 0 && (!g->memfd || g->orphan)) { seg_unlink(g); seg_destroy(g); }
         }
         r = 0;
@@ -346,5 +355,25 @@ void xrl_shm_memfd_gone(u32 n)
             if (g->nmaps == 0) { seg_unlink(g); seg_destroy(g); }
             break;
         }
+    ReleaseSRWLockExclusive(&g_shm_lock);
+}
+
+/* proc.c: process `pid` ended or exec'd: its attaches and mappings go (the pages stay while another process has them). The guest's
+ * own munmap calls cannot do this: a region belongs to the mm of whoever mapped it first, so another process's exit never unmaps it. */
+void xrl_shm_proc_gone(int pid)
+{
+    AcquireSRWLockExclusive(&g_shm_lock);
+    for (shmseg *g = g_segs, *nx; g; g = nx) {
+        nx = g->next;
+        if (g->sysv) {
+            int had = 0;
+            for (int i = 0; i < g->npids;) if (g->pids[i] == pid) { g->pids[i] = g->pids[--g->npids]; had = 1; } else i++;
+            if (had) { g->nattch = g->npids; g->dtime = now_s(); if (g->removed && g->nattch == 0) { seg_unlink(g); seg_destroy(g); } }
+        } else {
+            int had = 0;
+            for (int i = 0; i < g->nmaps;) if (g->maps[i].pid == pid) { g->maps[i] = g->maps[--g->nmaps]; had = 1; } else i++;
+            if (had && g->nmaps == 0 && (!g->memfd || g->orphan)) { seg_unlink(g); seg_destroy(g); }
+        }
+    }
     ReleaseSRWLockExclusive(&g_shm_lock);
 }
