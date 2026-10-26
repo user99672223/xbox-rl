@@ -24,6 +24,10 @@ rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclud
 log "stage: prefix -> $dest/prefix"
 rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
 
+# glibc-ABI shim for native modules built against glibc (the EAC runtime); see docs/decisions.md.
+# musl is already in $dest/lib/ld-musl-x86_64.so.1, so this only adds libgcompat.so.0 and two stubs.
+"$WINE_DIR/scripts/build-glibc-compat.sh" "$dest/lib"
+
 # Wine's unix side reads a stable machine identity; keep one per staged tree.
 mkdir -p "$dest/etc"
 [ -s "$dest/etc/machine-id" ] || { tr -dc 'a-f0-9' < /dev/urandom | head -c 32; echo; } > "$dest/etc/machine-id"

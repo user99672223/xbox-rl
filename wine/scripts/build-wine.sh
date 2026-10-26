@@ -137,10 +137,11 @@ if want check; then
   if [ $variant = hosttest ]; then warn "hosttest rootfs contains the pass-through shim; skipping no-syscall check"
   else
     "$WINE_DIR/scripts/check-no-syscall.sh" "$OUT"
-    # and no %fs use left anywhere (the console cannot set an FS base)
+    # and no %fs use left anywhere (the console cannot set an FS base); files that pass are stamped
+    # (e_flags) so the layer's load-time rewriter, which exists for foreign binaries, skips them
     find "$OUT" -type f -print0 | while IFS= read -r -d '' f; do
       case "$(file -b "$f")" in ELF*x86-64*) echo "$f" ;; esac
-    done | xargs -r python3 "$ROOT/tools/xrl-tpfix.py" --check >"$BLD/tpcheck.log" 2>&1 \
+    done | xargs -r python3 "$ROOT/tools/xrl-tpfix.py" --check --stamp >"$BLD/tpcheck.log" 2>&1 \
       || { grep -v 'OK, no' "$BLD/tpcheck.log" | head -20; die "check: %fs use remains"; }
     log "check: no %fs use in $(wc -l <"$BLD/tpcheck.log") ELF files"
   fi
