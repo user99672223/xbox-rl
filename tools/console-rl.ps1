@@ -38,8 +38,19 @@ else {
     if ($LASTEXITCODE) { throw "deploy failed ($LASTEXITCODE)" }
 }
 
+# The laptop's Rocket League runs (tools/run-rl.sh, agents too) share the guest tree and capture
+# logins through the launcher: hold their lock from the guest-tree upload to the login capture, so
+# no run writes the prefix mid-upload or competes for the launcher.
+$lock = Join-Path $HOME 'xrl-work\rl-run.lock'
+while ((Test-Path $lock) -and ((Get-Date) - (Get-Item $lock).LastWriteTime).TotalMinutes -lt 20) {
+    Write-Host '[console-rl] a laptop Rocket League run holds the lock; waiting...'; Start-Sleep 15
+}
+"console-rl.ps1 $(Get-Date -Format s)" | Set-Content $lock
+try {
+
 Step 2 "upload the guest tree $Rootfs"
-& "$PSScriptRoot\push-game.ps1" -Source $Rootfs -Dest 'rootfs' -Exclude 'game', 'game\*', 'tmp\*' -Yes
+# Rocket League's own logs stay where they are written (the console writes its own)
+& "$PSScriptRoot\push-game.ps1" -Source $Rootfs -Dest 'rootfs' -Exclude 'game', 'game\*', 'tmp\*', '*\TAGame\Logs\*' -Yes
 if ($LASTEXITCODE) { throw "guest tree upload failed ($LASTEXITCODE)" }
 # console-only files over the laptop's (e.g. Rocket League's TASystemSettings.ini at the console's
 # resolution): ~\xrl-work\console\rootfs-overrides\<path in the guest tree>, uploaded every run
@@ -66,19 +77,14 @@ $cfg = Join-Path $dir 'launch.cfg'
 $lines = [Collections.Generic.List[string]]::new()
 $lines.AddRange([string[]](Get-Content (Join-Path $PSScriptRoot 'configs\rl.cfg')))
 if (-not $NoLogin) {
-    # the laptop's Rocket League runs (tools/run-rl.sh) capture through the launcher too: share their lock
-    $lock = Join-Path $HOME 'xrl-work\rl-run.lock'
-    while ((Test-Path $lock) -and ((Get-Date) - (Get-Item $lock).LastWriteTime).TotalMinutes -lt 20) {
-        Write-Host '[console-rl] a laptop Rocket League run holds the lock; waiting...'; Start-Sleep 15
-    }
-    "console-rl.ps1 $(Get-Date -Format s)" | Set-Content $lock
     $argsFile = Join-Path $HOME 'xrl-work\console\launch-args.json'
     $global:LASTEXITCODE = 0
-    try { & "$PSScriptRoot\epic-capture.ps1" -Out $argsFile } finally { Remove-Item $lock -ErrorAction SilentlyContinue }
+    & "$PSScriptRoot\epic-capture.ps1" -Out $argsFile
     if ($LASTEXITCODE) { throw "Epic capture failed ($LASTEXITCODE)" }
     foreach ($a in (Get-Content -Raw $argsFile | ConvertFrom-Json).args) { $lines.Add("argv=$a") }
     Write-Host "[console-rl] $(@((Get-Content -Raw $argsFile | ConvertFrom-Json).args).Count) Epic arguments added (not shown)"
 }
+} finally { Remove-Item $lock -ErrorAction SilentlyContinue }
 Set-Content -Path $cfg -Value $lines -Encoding utf8NoBOM
 $global:LASTEXITCODE = 0
 & "$PSScriptRoot\push-file.ps1" -Local $cfg
