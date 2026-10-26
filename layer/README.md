@@ -7,6 +7,10 @@ a System V assembly thunk) implemented as a static library for Win32/UWP.
 * Linux x86-64 syscall backend on Win32 (futex, clone/threads, mmap family, VFS over
   LocalState, pipes/eventfd/epoll/socketpair, AF_INET/AF_INET6 TCP+UDP over Winsock, clocks,
   /proc + /dev). Every unimplemented number logs `ENOSYS <nr> <name>`.
+* Linux desktop devices: `/dev/input/event0` (keyboard), `event1` (mouse), `event2` (absolute pointer) in
+  `src/evdev.c`, `/dev/fb0` in `src/fbdev.c`, fed by / shown through the host's ABI v3 input queue and
+  `present_framebuffer` (docs/syscall-abi.md "ABI v3"). Tests: `tests/fbdemo-test.sh` (devices, end to end in the
+  test host's window), `xrl_inq_test.exe` (the host queue), `tests/xbridge-test.sh` (an X server on /dev/fb0).
 * Load-time rewriting of foreign ELF images (`syscall`, `%fs`) so unmodified glibc/Alpine/closed
   binaries run: `src/rewrite*.c`, `src/x86dec.c`, `asm/rawsys.asm` (docs/decisions.md, "Easy Anti-Cheat").
 * FS base via `wrfsbase` + fault re-arm (Windows drops it on context switches).
