@@ -42,12 +42,15 @@ int main(int argc, char **argv)
 
     const char *gargv[32]; int n = 0;
     gargv[n++] = argv[2];
-    gargv[n++] = "--fake-host";   /* guest: our op tables are fakes, test them as such */
     for (int i = 3; i < argc && n < 30; i++) gargv[n++] = argv[i];
     gargv[n] = NULL;
-    const char *envp[8]; int e = 0;
+    /* Guest environment: defaults, plus every host variable XRL_ENV_<NAME>=v as
+     * <NAME>=v (e.g. XRL_ENV_WINEPREFIX=/prefix), so any guest can be run. */
+    static const char *envp[64]; int e = 0;
     envp[e++] = "HOME=/home/xbox"; envp[e++] = "PATH=/usr/bin:/bin";
     static char trace[16]; if (GetEnvironmentVariableA("XRL_TRACE", trace + 0, 15)) { static char t2[24]; sprintf(t2, "XRL_TRACE=%s", trace); envp[e++] = t2; }
+    for (char *s = GetEnvironmentStringsA(); s && *s && e < 63; s += strlen(s) + 1)
+        if (!strncmp(s, "XRL_ENV_", 8)) envp[e++] = s + 8;
     envp[e] = NULL;
 
     xrl_boot_context ctx; memset(&ctx, 0, sizeof ctx);
@@ -55,7 +58,8 @@ int main(int argc, char **argv)
     ctx.vfs_root = argv[1]; ctx.prefix_path = "/prefix"; ctx.game_path = "/game";
     ctx.argv = gargv; ctx.envp = envp; ctx.log = log_cb;
     ctx.gfx = &gfx; ctx.audio = &audio; ctx.input = &input;
-    ctx.guest_mem_budget = 1ull << 30;
+    char mb[16];
+    ctx.guest_mem_budget = (GetEnvironmentVariableA("XRL_TEST_BUDGET_MB", mb, sizeof mb) ? strtoull(mb, NULL, 10) : 1024ull) << 20;
     int rc = xrl_layer_boot(&ctx);
     printf("xrl_layer_boot returned %d\n", rc);
     return rc;

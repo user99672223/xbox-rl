@@ -96,6 +96,9 @@ if want configure; then
 fi
 
 if want build; then
+  # Refresh the ABI header copy here too (not only at `patch`), so an incremental build
+  # never compiles against a stale contract; copy only on change to keep make's timestamps.
+  cmp -s "$ROOT/include/xrl_abi.h" "$SRC/include/xrl_abi.h" || cp "$ROOT/include/xrl_abi.h" "$SRC/include/xrl_abi.h"
   cd "$BLD"
   [ "$(free_gb)" -ge "${XRL_MIN_FREE_GB:-4}" ] || die "only $(free_gb) GB free; refusing to build (XRL_MIN_FREE_GB)"
   log "wine: free before build: $(free_gb) GB"

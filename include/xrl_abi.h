@@ -106,6 +106,35 @@ int64_t xrl_syscall(int64_t nr, int64_t a1, int64_t a2, int64_t a3,
 #define XRL_TP_GS_OFFSET  0x1678   /* TEB.TlsSlots (0x1480) + 63 * 8 */
 
 /*
+ * Shared-TEB swap set (docs/gs-teb.md). Guest code (Wine's PE side, the game) and
+ * host code (Windows ntdll, the CRT, D3D, WinRT, the layer) share one TEB per OS
+ * thread because GS cannot be rebased. These fields both sides use with
+ * different meanings: the layer keeps a guest and a host copy and swaps them on
+ * every guest<->host transition, and Wine, when it adopts the host TEB, moves
+ * its freshly initialised values for exactly these fields into the live TEB.
+ * X(offset, qwords), x86-64 TEB offsets. TlsSlots[XRL_TP_TLS_INDEX] is excluded
+ * on purpose: the guest thread pointer must stay live in both views.
+ */
+#define XRL_TEB_SWAP_RANGES(X) \
+    X(0x008, 2)   /* NtTib.StackBase, StackLimit                          */ \
+    X(0x038, 1)   /* EnvironmentPointer                                   */ \
+    X(0x040, 2)   /* ClientId                                             */ \
+    X(0x058, 2)   /* ThreadLocalStoragePointer, ProcessEnvironmentBlock   */ \
+    X(0x068, 1)   /* LastErrorValue, CountOfOwnedCriticalSections         */ \
+    X(0x108, 1)   /* CurrentLocale, FpSoftwareStatusRegister              */ \
+    X(0x290, 5)   /* ActivationContextStack (embedded; 0x2c8 points here) */ \
+    X(0x2c8, 1)   /* ActivationContextStackPointer                        */ \
+    X(0x7d8, 2)   /* RealClientId                                         */ \
+    X(0x1250, 1)  /* LastStatusValue                                      */ \
+    X(0x1478, 64) /* DeallocationStack, TlsSlots[0..62]                   */ \
+    X(0x1758, 1)  /* ReservedForOle (COM / WinRT apartment state)         */ \
+    X(0x1778, 2)  /* ThreadPoolData, TlsExpansionSlots                    */ \
+    X(0x17a0, 1)  /* NlsCache                                             */ \
+    X(0x17c8, 5)  /* FlsData, Preferred/User/MergedPrefLanguages, flags   */
+#define XRL__TEB_SUM(off, n) + (n)
+#define XRL_TEB_SWAP_QWORDS (0 XRL_TEB_SWAP_RANGES(XRL__TEB_SUM))   /* 91 */
+
+/*
  * Linux errno values the layer returns (negated) across xrl_syscall.
  */
 enum {

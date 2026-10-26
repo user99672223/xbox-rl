@@ -1,0 +1,31 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 8f9f8ab..1f45865 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4289,12 +4289,21 @@ TEB *virtual_alloc_first_teb(void)
+     SIZE_T total = 32 * block_size;
+ 
+     /* reserve space for shared user data */
+-    status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&user_shared_data, 0, &data_size,
+-                                      MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
+-    if (status)
++    if (xrl_host_usd)
+     {
+-        ERR( "wine: failed to map the shared user data: %08x\n", status );
+-        exit(1);
++        /* xbox-rl: the host OS already maps the real KUSER_SHARED_DATA at
++         * 0x7ffe0000 (read-only, live), so it cannot be reserved again;
++         * virtual_map_user_shared_data() validates it instead. */
++    }
++    else
++    {
++        status = NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&user_shared_data, 0, &data_size,
++                                          MEM_RESERVE | MEM_COMMIT, PAGE_READONLY );
++        if (status)
++        {
++            ERR( "wine: failed to map the shared user data: %08x\n", status );
++            exit(1);
++        }
+     }
+ 
+     NtAllocateVirtualMemory( NtCurrentProcess(), &teb_block, is_win64 ? limit_2g - 1 : 0, &total,

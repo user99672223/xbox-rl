@@ -61,7 +61,6 @@ void xrl_logf(int level, const char *tag, const char *fmt, ...);
  * xrl_cur() (hash of the host TEB Self pointer) and from the asm thunks.
  */
 typedef struct xrl_thread xrl_thread;
-#define XRL_TEB_SWAP_QWORDS 84   /* teb.c k_swap total (docs/gs-teb.md) */
 struct xrl_thread {
     /* --- asm-visible block (offsets frozen, see thread.c static asserts) --- */
     u64 host_rsp;          /* 0x00 16-aligned top of host stack used by thunks   */

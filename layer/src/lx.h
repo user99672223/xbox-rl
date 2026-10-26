@@ -198,6 +198,8 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_pipe2 293
 #define NR_preadv 295
 #define NR_pwritev 296
+#define NR_preadv2 327
+#define NR_pwritev2 328
 #define NR_prlimit64 302
 #define NR_getcpu 309
 #define NR_renameat2 316

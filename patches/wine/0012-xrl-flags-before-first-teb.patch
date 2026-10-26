@@ -1,0 +1,50 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 9ee2a72..3e05d4d 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2455,11 +2455,14 @@ static void hacks_init(void)
+  */
+ static void start_main_thread(void)
+ {
+-    TEB *teb = virtual_alloc_first_teb();
++    TEB *teb;
++
++    xrl_init_flags();   /* xbox-rl: before the first TEB, whose setup depends on them */
++    teb = virtual_alloc_first_teb();
+ 
+     signal_init_threading();
+     dbg_init();
+-    xrl_init_flags();
++    xrl_trace_flags();
+     startup_info_size = server_init_process();
+     hacks_init();
+     virtual_map_user_shared_data();
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 6bada23..d1f076a 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -359,6 +359,7 @@ extern void **xrl_ntdll_dispatcher_slot;  /* xbox-rl: &ntdll.dll's __wine_syscal
+ /* xbox-rl runtime mode flags (xrl.c) */
+ extern BOOL xrl_inproc_server, xrl_host_usd, xrl_no_spawn, xrl_skip_wineboot;
+ extern void xrl_init_flags(void);
++extern void xrl_trace_flags(void);
+ extern int xrl_start_wineserver(void);
+ extern void __wine_syscall_dispatcher_return(void);
+ extern void __wine_unix_call_dispatcher(void);
+diff --git a/dlls/ntdll/unix/xrl.c b/dlls/ntdll/unix/xrl.c
+index 11bb89a..23ec09f 100644
+--- a/dlls/ntdll/unix/xrl.c
++++ b/dlls/ntdll/unix/xrl.c
+@@ -57,7 +57,12 @@ void xrl_init_flags(void)
+     setenv( "WINEFSYNC", "0", 1 );
+     setenv( "WINEESYNC", "0", 1 );
+     setenv( "PROTON_NO_NTSYNC", "1", 1 );
++}
+ 
++/* Separate from xrl_init_flags(): that runs before the first TEB exists (the
++ * flags decide how it is set up), and debug output needs the TEB. */
++void xrl_trace_flags(void)
++{
+     TRACE( "inproc_server=%d host_usd=%d no_spawn=%d skip_wineboot=%d\n",
+            xrl_inproc_server, xrl_host_usd, xrl_no_spawn, xrl_skip_wineboot );
+ }

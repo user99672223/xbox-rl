@@ -1,0 +1,206 @@
+diff --git a/dlls/ntdll/loader.c b/dlls/ntdll/loader.c
+index 52b6e70..aaa835d 100644
+--- a/dlls/ntdll/loader.c
++++ b/dlls/ntdll/loader.c
+@@ -4684,6 +4684,9 @@ void loader_init( CONTEXT *context, void **entry )
+         /* TLS index 0 is always reserved, and wow64 reserves extra TLS entries */
+         RtlSetBits( peb->TlsBitmap, 0, NtCurrentTeb()->WowTebOffset ? WOW64_TLS_MAX_NUMBER : 1 );
+         RtlSetBits( peb->TlsBitmap, NTDLL_TLS_ERRNO, 1 );
++        /* xbox-rl: TlsSlots[63] holds the unix-side thread pointer (XRL_TP_TLS_INDEX in
++         * xrl_abi.h; the console has no FSGSBASE). Never hand it out. */
++        RtlSetBits( peb->TlsBitmap, 63, 1 );
+ 
+         if (!(tls_dirs = RtlAllocateHeap( GetProcessHeap(), HEAP_ZERO_MEMORY, tls_module_count * sizeof(*tls_dirs) )))
+             NtTerminateProcess( GetCurrentProcess(), STATUS_NO_MEMORY );
+diff --git a/dlls/ntdll/unix/debug.c b/dlls/ntdll/unix/debug.c
+index 992e7c4..8d40a11 100644
+--- a/dlls/ntdll/unix/debug.c
++++ b/dlls/ntdll/unix/debug.c
+@@ -73,7 +73,8 @@ static inline struct debug_info *get_info(void)
+ {
+     if (!init_done) return &initial_info;
+ #ifdef _WIN64
+-    return (struct debug_info *)((TEB32 *)((char *)NtCurrentTeb() + teb_offset) + 1);
++    /* xbox-rl: in Wine's block; the TEB may be the host's, with foreign memory after it */
++    return (struct debug_info *)((TEB32 *)((char *)ntdll_get_thread_data()->xrl_block + teb_offset) + 1);
+ #else
+     return (struct debug_info *)(NtCurrentTeb() + 1);
+ #endif
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 5c34158..e6b918b 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -508,7 +508,9 @@ static inline TEB *get_current_teb(void)
+ {
+     unsigned long rsp;
+     __asm__( "movq %%rsp,%0" : "=r" (rsp) );
+-    return (TEB *)(rsp & ~signal_stack_mask);
++    /* xbox-rl: the signal stack lives in Wine's block, whose TEB Self points to the
++     * live TEB (the block itself unless xrl_adopt_teb() moved it to the host's). */
++    return (TEB *)((TEB *)(rsp & ~signal_stack_mask))->Tib.Self;
+ }
+ #endif
+ 
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 764d444..5452a67 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1134,9 +1134,12 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+  */
+ static void start_thread( TEB *teb )
+ {
+-    struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
++    struct ntdll_thread_data *thread_data;
+     BOOL suspend;
+ 
++    teb = xrl_adopt_teb( teb );   /* xbox-rl: before anything uses the TEB */
++    thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
++
+     thread_data->syscall_table = KeServiceDescriptorTable;
+     thread_data->syscall_trace = TRACE_ON(syscall);
+     thread_data->pthread_id = pthread_self();
+@@ -1514,7 +1517,8 @@ static DECLSPEC_NORETURN void exit_thread( int status )
+ 
+     if (InterlockedDecrement( &nb_threads ) <= 0) exit_process( status );
+ 
+-    if ((teb = InterlockedExchangePointer( &prev_teb, NtCurrentTeb() )))
++    /* xbox-rl: an adopted TEB dies with its OS thread; pass on Wine's block instead */
++    if ((teb = InterlockedExchangePointer( &prev_teb, xrl_retire_teb( NtCurrentTeb() ))))
+     {
+         struct ntdll_thread_data *thread_data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
+ 
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index d1f076a..9f56e25 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -117,6 +117,8 @@ struct ntdll_thread_data
+     void                     *param;         /* thread entry point parameter */
+     void                     *jmp_buf;       /* setjmp buffer for exception handling */
+     int                      *fsync_apc_futex;
++    void                     *xrl_block;     /* xbox-rl: Wine's per-thread block (TEB32, debug info,
++                                                signal stack); == the TEB unless it was adopted */
+ };
+ 
+ C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
+@@ -463,9 +465,14 @@ static inline void ascii_to_unicode( WCHAR *dst, const char *src, size_t len )
+ 
+ static inline void *get_signal_stack(void)
+ {
+-    return (void *)(((ULONG_PTR)NtCurrentTeb() & ~signal_stack_mask) + teb_size);
++    /* xbox-rl: relative to Wine's block, not the TEB, which may be the host's */
++    return (char *)ntdll_get_thread_data()->xrl_block + teb_size;
+ }
+ 
++/* xbox-rl: GS is the host TEB on the console (docs/gs-teb.md) */
++extern TEB *xrl_adopt_teb( TEB *teb );
++extern TEB *xrl_retire_teb( TEB *teb );
++
+ static inline BOOL is_inside_signal_stack( void *ptr )
+ {
+     return ((char *)ptr >= (char *)get_signal_stack() &&
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 1f45865..1a4aede 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -98,6 +98,8 @@
+ #include "wine/list.h"
+ #include "wine/rbtree.h"
+ #include "unix_private.h"
++#include <sys/syscall.h>
++#include "xrl_abi.h"   /* xbox-rl: XRL_TEB_SWAP_RANGES (include/ of the xbox-rl tree) */
+ #include "wine/debug.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(virtual);
+@@ -4272,10 +4274,83 @@ static TEB *init_teb( void *ptr, BOOL is_wow )
+     thread_data->alert_fd   = -1;
+     list_add_head( &teb_list, &thread_data->entry );
+     thread_data->fsync_apc_futex = NULL;
++    thread_data->xrl_block = ptr;
+     return teb;
+ }
+ 
+ 
++/***********************************************************************
++ *           xrl_adopt_teb
++ *
++ * xbox-rl (docs/gs-teb.md): on the console GS is the host OS's TEB and cannot be
++ * rebased, so a thread's TEB is the host TEB of its own OS thread. Wine prepares
++ * a TEB in its block as usual (here or in the parent thread); the thread itself
++ * then moves the fields Wine owns into the host TEB: the shared swap set from
++ * xrl_abi.h (the layer keeps the host's values of those) and Wine's private
++ * areas. The block keeps everything Wine places next to a TEB (TEB32, debug info,
++ * signal stack); its Self pointer is redirected to the live TEB for code that
++ * finds the TEB from the signal stack. Without the layer (Linux) arch_prctl
++ * 0x5801 fails and nothing changes.
++ */
++#define XRL_TEB_ROW(off, n) { off, n },
++TEB *xrl_adopt_teb( TEB *teb )
++{
++    static const struct { USHORT off, n; } ranges[] = { XRL_TEB_SWAP_RANGES(XRL_TEB_ROW) };
++    struct ntdll_thread_data *td = (struct ntdll_thread_data *)&teb->GdiTebBatch, *htd;
++    sigset_t sigset;
++    TEB *host = NULL;
++    unsigned int i, j;
++
++    if (syscall( SYS_arch_prctl, 0x5801 /* XRL_GET_HOST_TEB */, &host ) || !host || host == teb) return teb;
++
++    for (i = 0; i < ARRAY_SIZE(ranges); i++)
++        for (j = 0; j < ranges[i].n; j++)
++            ((ULONG64 *)((char *)host + ranges[i].off))[j] = ((ULONG64 *)((char *)teb + ranges[i].off))[j];
++    memcpy( &host->GdiTebBatch, &teb->GdiTebBatch, sizeof(host->GdiTebBatch) );
++    memcpy( host->Win32ClientInfo, teb->Win32ClientInfo, sizeof(host->Win32ClientInfo) );
++
++    /* pointers that pointed into the block's TEB */
++    if (teb->ActivationContextStackPointer == &teb->ActivationContextStack)
++        host->ActivationContextStackPointer = &host->ActivationContextStack;
++    InitializeListHead( &host->ActivationContextStack.FrameListCache );
++    htd = (struct ntdll_thread_data *)&host->GdiTebBatch;
++    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++    list_remove( &td->entry );
++    list_add_head( &teb_list, &htd->entry );
++    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++
++    teb->Tib.Self = &host->Tib;
++    return host;
++}
++
++
++/***********************************************************************
++ *           xrl_retire_teb
++ *
++ * xbox-rl: called by an exiting thread on its own TEB. The host frees an adopted
++ * TEB together with its OS thread, but Wine frees a dead thread's stacks later,
++ * from another thread (exit_thread). Move what virtual_free_teb() needs into the
++ * thread's block, which outlives it, and return the block to be freed.
++ */
++TEB *xrl_retire_teb( TEB *teb )
++{
++    struct ntdll_thread_data *td = (struct ntdll_thread_data *)&teb->GdiTebBatch;
++    TEB *block = td->xrl_block;
++    sigset_t sigset;
++
++    if (!block || block == teb) return teb;
++    server_enter_uninterrupted_section( &virtual_mutex, &sigset );
++    list_remove( &td->entry );
++    server_leave_uninterrupted_section( &virtual_mutex, &sigset );
++    memcpy( &block->GdiTebBatch, &teb->GdiTebBatch, sizeof(block->GdiTebBatch) );
++    list_init( &((struct ntdll_thread_data *)&block->GdiTebBatch)->entry );
++    block->DeallocationStack = teb->DeallocationStack;
++    block->WowTebOffset = 0;
++    block->Tib.Self = &block->Tib;
++    return block;
++}
++
++
+ /***********************************************************************
+  *           virtual_alloc_first_teb
+  */
+@@ -4313,7 +4388,7 @@ TEB *virtual_alloc_first_teb(void)
+     data_size = 2 * block_size;
+     NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &data_size, MEM_COMMIT, PAGE_READWRITE );
+     peb = (PEB *)((char *)teb_block + 31 * block_size + (is_win64 ? 0 : page_size));
+-    teb = init_teb( ptr, FALSE );
++    teb = xrl_adopt_teb( init_teb( ptr, FALSE ));
+     pthread_key_create( &teb_key, NULL );
+     pthread_setspecific( teb_key, teb );
+     return teb;

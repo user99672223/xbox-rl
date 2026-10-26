@@ -144,6 +144,36 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — First Windows program runs: `cmd /c ver` -> "Microsoft
+  Windows 10.0.19045"** (laptop, console conditions emulated: no FSGSBASE,
+  3.5 GiB budget; results/desktop-wine-cmd-ver-1.txt). Took, in order:
+  `wine64 --version` (ld-musl + gateway + TP slot work), then three Wine fixes:
+  - 0011/0012: `virtual_alloc_first_teb` also reserved KUSER_SHARED_DATA, and
+    read `XRL_HOST_USD` four lines too late (`xrl_init_flags()` ran after it).
+    Flags now read first; their TRACE moved after `dbg_init` (it needs a TEB).
+  - 0013 TEB adoption (docs/gs-teb.md): Wine prepares a TEB in its 64 KiB
+    block as usual, then the thread moves the swap-set fields
+    (XRL_TEB_SWAP_RANGES, now shared in xrl_abi.h) and Wine's private areas
+    (GdiTebBatch, Win32ClientInfo) into its host TEB and fixes the
+    self-pointers. Signal stack, TEB32 and debug info are located from a new
+    `ntdll_thread_data.xrl_block` instead of from the TEB address; the
+    block's Self points at the live TEB for signal-stack lookups. Exiting
+    threads hand Wine their block, not the host TEB (Windows frees that with
+    the OS thread; the old deferred free would have read freed memory).
+    Wine's PE TlsAlloc reserves index 63.
+  - Seam bug found on the way: Wine's per-thread debug buffer was at
+    `NtCurrentTeb()+0x2000+sizeof(TEB32)`, i.e. past the end of the *host*
+    TEB: every `err:` line Wine printed before 0013 wrote into foreign memory.
+  - Seam bug: build-wine.sh copied include/xrl_abi.h into Wine's tree only at
+    the `patch` stage, so incremental builds compiled against ABI v1. Now
+    refreshed (on change only) before every `build`.
+  - Layer: swap set gained the embedded ActivationContextStack (0x290) and
+    RealClientId (0x7d8) -> 91 qwords; preadv2/pwritev2 implemented.
+  - Seam gap bridged: the prefix baker lists links as `L path -> target`, the
+    VFS reads `.xrl-symlinks`; wine/scripts/stage-rootfs.sh assembles the
+    guest tree (Wine + /prefix + link table + /etc/machine-id).
+  - Laptop loop: tools/run-desktop-wine.sh (seconds per try).
+
 - **2026-10-26 — Console has NO FSGSBASE → guest thread pointer moves to a TEB
   slot.** First layer run on the Series S (results/console-layer-test-1.txt):
   68 checks passed (ELF load, mmap/budget, VFS under LocalState, /proc, /dev,

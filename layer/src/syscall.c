@@ -84,6 +84,12 @@ SYS(readv) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, -1, 0); }
 SYS(writev) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, -1, 1); }
 SYS(preadv) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 0); }
 SYS(pwritev) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
+/* preadv2/pwritev2(fd, iov, cnt, pos_l, pos_h, flags): on x86-64 pos_l is the whole
+ * offset and -1 means "current position". The sync/priority flags need nothing
+ * extra here; RWF_NOWAIT (8) and RWF_APPEND (0x10) are not supported. */
+#define LX_RWF_SUPPORTED (0x1 /*HIPRI*/ | 0x2 /*DSYNC*/ | 0x4 /*SYNC*/)
+SYS(preadv2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 0); }
+SYS(pwritev2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
 
 SYS(lseek)
 {
@@ -594,7 +600,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_mlock, zero_ok), T(NR_munlock, zero_ok), T(NR_mlockall, zero_ok), T(NR_munlockall, zero_ok),
     /* files */
     T(NR_read, read), T(NR_write, write), T(NR_pread64, pread64), T(NR_pwrite64, pwrite64),
-    T(NR_readv, readv), T(NR_writev, writev), T(NR_preadv, preadv), T(NR_pwritev, pwritev),
+    T(NR_readv, readv), T(NR_writev, writev), T(NR_preadv, preadv), T(NR_pwritev, pwritev), T(NR_preadv2, preadv2), T(NR_pwritev2, pwritev2),
     T(NR_open, open), T(NR_openat, openat), T(NR_creat, creat), T(NR_close, close), T(NR_close_range, close_range),
     T(NR_lseek, lseek), T(NR_stat, stat), T(NR_fstat, fstat), T(NR_lstat, lstat), T(NR_newfstatat, newfstatat),
     T(NR_statx, statx), T(NR_access, access), T(NR_faccessat, faccessat), T(NR_faccessat2, faccessat),

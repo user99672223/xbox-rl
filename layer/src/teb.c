@@ -11,23 +11,10 @@
  */
 #include "xrl_internal.h"
 
-/* {offset, qword count}. TlsSlots[63] (0x1678) is the guest thread pointer slot
- * (XRL_TP_GS_OFFSET) and is deliberately not swapped: it must stay live. */
-static const struct { u16 off, n; } k_swap[] = {
-    {0x008, 2},   /* NtTib.StackBase, StackLimit                               */
-    {0x038, 1},   /* EnvironmentPointer                                        */
-    {0x040, 2},   /* ClientId.UniqueProcess, UniqueThread                      */
-    {0x058, 2},   /* ThreadLocalStoragePointer, ProcessEnvironmentBlock        */
-    {0x068, 1},   /* LastErrorValue, CountOfOwnedCriticalSections              */
-    {0x108, 1},   /* CurrentLocale, FpSoftwareStatusRegister                   */
-    {0x2c8, 1},   /* ActivationContextStackPointer                             */
-    {0x1250, 1},  /* LastStatusValue                                           */
-    {0x1478, 64}, /* DeallocationStack, TlsSlots[0..62]                        */
-    {0x1758, 1},  /* ReservedForOle (COM/WinRT apartment)                      */
-    {0x1778, 2},  /* ThreadPoolData, TlsExpansionSlots                         */
-    {0x17a0, 1},  /* NlsCache                                                  */
-    {0x17c8, 5},  /* FlsData, Preferred/User/MergedPrefLanguages, SameTebFlags */
-};
+/* {offset, qword count}: the shared table in xrl_abi.h (Wine adopts the same set).
+ * TlsSlots[63] (XRL_TP_GS_OFFSET) is not in it: the guest thread pointer stays live. */
+#define XRL__TEB_ROW(off, n) { off, n },
+static const struct { u16 off, n; } k_swap[] = { XRL_TEB_SWAP_RANGES(XRL__TEB_ROW) };
 
 static int g_swap = 1;
 
