@@ -506,6 +506,7 @@ static u32 g_nblocks;                          /* the file's length in blocks */
 static u64 g_freeblk;
 static int g_swap = 1;
 static int g_swap_nobatch, g_swap_nora;   /* XRL_SWAP_NOBATCH / XRL_SWAP_NORA: debugging */
+static int g_clk_clean_only;   /* swap_room: the file is full, the clock evicts only clean spans */
 static u64 g_swap_excl_s, g_swap_excl_e;     /* never probe/evict here (mremap's source while copying) */
 static volatile LONG64 g_swap_out, g_swap_in, g_swap_now;   /* bytes written, read back, in the file now */
 static volatile LONG64 g_swap_clean;                         /* evicted again without a write (clean) */
@@ -1143,6 +1144,7 @@ static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
             if (f) g_clk_evicts++; else g_clk_empty++;
             continue;
         }
+        if (g_clk_clean_only) continue;   /* the file is full: dirty spans stay (probed) */
         if (g_swap_nobatch) {
             span_parts(p->base, part_probe, NULL);   /* may still be pending in pv */
             u64 f = evict(idx);
@@ -1193,16 +1195,25 @@ static void swap_room(u64 len, u64 xs, u64 xe)
     u64 high = b > (64ull << 20) ? b - (16ull << 20) : b;
     if (now + len <= b / 10 * 8) return;
     if (now + len <= high) { clock_run(0, 2, 0, xs, xe); return; }
+    u64 want = now + len - high + (8ull << 20);   /* a little extra: fewer, larger passes */
     if (g_swap_full && !g_freeblk) {   /* full: look at the disk again at most once a second */
         static u64 last;
         u64 t = GetTickCount64();
-        if (t - last < 1000) return;
-        last = t;
-        ULARGE_INTEGER avail;
-        g_swap_full = !GetDiskFreeSpaceExW(g_swap_dir, &avail, NULL, NULL) || avail.QuadPart < g_swap_reserve;
-        if (g_swap_full) return;
+        if (t - last >= 1000) {
+            last = t;
+            ULARGE_INTEGER avail;
+            g_swap_full = !GetDiskFreeSpaceExW(g_swap_dir, &avail, NULL, NULL) || avail.QuadPart < g_swap_reserve;
+        }
+        if (g_swap_full) {
+            /* no room for new records, but spans read back and not written since still
+             * have theirs: those go without a write (and a read-back frees blocks for the rest) */
+            g_clk_runs++;
+            g_clk_clean_only = 1;
+            clock_run(want, (u64)g_nsp * 3 + 16, 1, xs, xe);
+            g_clk_clean_only = 0;
+            return;
+        }
     }
-    u64 want = now + len - high + (8ull << 20);   /* a little extra: fewer, larger passes */
     g_clk_runs++;
     clock_run(want, (u64)g_nsp * 3 + 16, 1, xs, xe);
 }

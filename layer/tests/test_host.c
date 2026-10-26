@@ -13,11 +13,14 @@
 #include <string.h>
 #include "xrl_abi.h"
 
+static void pad_script_event(const char *msg);
+
 static void log_cb(int level, const char *tag, const char *msg)
 {
     static const char *lv[] = { "T", "I", "W", "E" };
     printf("[%s %-9s] %s\n", lv[level & 3], tag, msg);
     fflush(stdout);
+    pad_script_event(msg);
 }
 
 /* Win64 host functions the guest reaches through generated SysV stubs. */
@@ -37,7 +40,24 @@ static xrl_status host_swapchain(xrl_handle d, xrl_handle q, uint32_t w, uint32_
 #define PAD_RT 0x20000000u
 static struct { double at, len; uint32_t mask; } g_pad_steps[64];
 static int g_pad_nsteps;
-static ULONGLONG g_pad_t0;
+static volatile ULONGLONG g_pad_t0;
+/* XRL_PAD_AFTER="<text>": the script's clock starts at the first log line containing
+ * <text> (a game event, e.g. "LoadMap: MENU_Main_p") instead of at start */
+static char g_pad_after[128];
+static volatile LONG g_pad_armed;
+static void pad_script_event(const char *msg)
+{
+    if (g_pad_after[0] && !g_pad_armed && strstr(msg, g_pad_after) && !InterlockedExchange(&g_pad_armed, 1)) {
+        g_pad_t0 = GetTickCount64();
+        printf("[host] pad script: clock starts now (\"%s\")\n", g_pad_after);
+        fflush(stdout);
+        char mark[MAX_PATH];   /* XRL_PAD_MARK=<file>: created now, for tools that time screenshots */
+        if (GetEnvironmentVariableA("XRL_PAD_MARK", mark, sizeof mark)) {
+            HANDLE h = CreateFileA(mark, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, 0, NULL);
+            if (h != INVALID_HANDLE_VALUE) CloseHandle(h);
+        }
+    }
+}
 static void pad_script_init(void)
 {
     static const struct { const char *n; uint32_t m; } names[] = {
@@ -46,6 +66,7 @@ static void pad_script_init(void)
         { "LT", PAD_LT }, { "RT", PAD_RT } };
     char s[1024];
     g_pad_t0 = GetTickCount64();
+    if (GetEnvironmentVariableA("XRL_PAD_AFTER", g_pad_after, sizeof g_pad_after)) g_pad_t0 = ~0ull >> 1;   /* not yet */
     if (!GetEnvironmentVariableA("XRL_PAD_SCRIPT", s, sizeof s)) return;
     for (char *tok = strtok(s, ","); tok && g_pad_nsteps < 64; tok = strtok(NULL, ",")) {
         char *c = strchr(tok, ':');
@@ -66,6 +87,7 @@ static xrl_status host_pad(uint32_t slot, xrl_pad_state *o)
     memset(o, 0, sizeof *o);
     if (slot) return XRL_ERR_NOTAVAIL;
     o->connected = 1;
+    if (g_pad_after[0] && !g_pad_armed) return XRL_OK;   /* waiting for XRL_PAD_AFTER's event */
     double t = (double)(GetTickCount64() - g_pad_t0) / 1000.0;
     uint32_t m = 0;
     for (int i = 0; i < g_pad_nsteps; i++)
