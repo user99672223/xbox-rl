@@ -40,7 +40,7 @@ BOOL WINAPI TerminateThread(HANDLE hThread, DWORD dwExitCode);
 #include "lx.h"
 
 #define XRL_LAYER_VERSION "0.1.0"
-#define XRL_UTS_VERSION "#1 SMP xbox-rl layer " XRL_LAYER_VERSION   /* uname -v and /proc/version */
+#define XRL_UTS_VERSION "#1 SMP PREEMPT_DYNAMIC Debian " XRL_LAYER_VERSION   /* uname -v and /proc/version */
 
 /* ------------------------------------------------------------------ log */
 void xrl_logf(int level, const char *tag, const char *fmt, ...);
@@ -442,6 +442,7 @@ void  xrl_mem_clock_stats(char *b, size_t n);
 void  xrl_sig_stats(char *b, size_t n);
 void  xrl_hang_watch_start(void);   /* hangdump.c, XRL_HANG_DUMP */   /* bytes in the swap file, written, read */
 /* cpuinfo.c: the real CPU (CPUID) and topology */
+extern int xrl_cpuid_brand[12];    /* sanitized brand string for CPUID leaves 0x80000002-4 (dbt.asm) */
 char *xrl_cpuinfo_text(size_t *len);
 int  xrl_cpu_core_id(int cpu);
 int  xrl_cpu_ncores(void);

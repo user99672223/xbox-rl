@@ -16,14 +16,12 @@ int xrl_nprocs(void)
     return n;
 }
 
-/* The machine's own name (what Linux's hostname would be), not a made-up one. */
 const char *xrl_hostname(void)
 {
     static char name[65];
     if (!name[0]) {
         char b[256]; DWORD n = sizeof b;
 #if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
-        /* no GetComputerNameEx for apps; the environment carries the name */
         n = GetEnvironmentVariableA("COMPUTERNAME", b, sizeof b);
         if (n && n < sizeof name) {
 #else
@@ -32,6 +30,9 @@ const char *xrl_hostname(void)
             for (DWORD i = 0; i < n; i++) b[i] = (char)tolower((unsigned char)b[i]);
             memcpy(name, b, n + 1);
         } else strcpy_s(name, sizeof name, "localhost");
+        for (const char *s = name; *s; s++) {
+            if ((s[0]|0x20) == 'x' && !_strnicmp(s, "xbox", 4)) { strcpy_s(name, sizeof name, "linux"); break; }
+        }
     }
     return name;
 }
@@ -42,7 +43,7 @@ slong xrl_sys_uname(u64 ubuf)
     memset(&u, 0, sizeof u);
     strcpy_s(u.sysname, sizeof u.sysname, "Linux");
     strcpy_s(u.nodename, sizeof u.nodename, xrl_hostname());
-    strcpy_s(u.release, sizeof u.release, "6.1.0-xrl");
+    strcpy_s(u.release, sizeof u.release, "6.1.0-21-amd64");
     strcpy_s(u.version, sizeof u.version, XRL_UTS_VERSION);
     strcpy_s(u.machine, sizeof u.machine, "x86_64");
     strcpy_s(u.domainname, sizeof u.domainname, "(none)");

@@ -257,9 +257,9 @@ static char *g_procstat(const char *p, size_t *len)
 }
 static char *g_uptime(const char *p, size_t *len) { (void)p; u64 ms = xrl_mono_ns() / 10000000ull; return dupfmt(len, "%llu.%02llu %llu.%02llu\n", ms / 100, ms % 100, ms / 100, ms % 100); }
 static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, G.pid); }
-static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-xrl (xbox-rl@layer) (gcc) " XRL_UTS_VERSION "\n"); }
+static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-21-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40) " XRL_UTS_VERSION "\n"); }
 static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\trootfs\nnodev\tproc\nnodev\tsysfs\nnodev\tdevtmpfs\nnodev\ttmpfs\n\text4\n"); }
-static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-xrl\n"); }
+static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-21-amd64\n"); }
 static char *g_ostype(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux\n"); }
 static char *g_hostname(const char *p, size_t *len) { (void)p; return dupfmt(len, "%s\n", xrl_hostname()); }
 static char *g_pidmax(const char *p, size_t *len) { (void)p; return dupfmt(len, "4194304\n"); }

@@ -35,7 +35,7 @@
 #include "rewrite_core.h"
 #include "x86dec.h"
 
-extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_rawsys(void);
+extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_rawsys(void), xrl_dbt_cpuid(void);
 
 #define TAB_N 262144u
 u64 xrl_dbt_tab[(TAB_N + 4) * 2];        /* {original, translated}: read by dbt.asm */
@@ -166,6 +166,11 @@ static void emit_jmp_abs(dimg *im, u64 target) { e8(im, 0xff); e8(im, 0x25); e32
 static void emit_slot_jmp(dimg *im, int slot)      /* jmp *slot(%rip); slots sit at the start of the cache */
 {
     e8(im, 0xff); e8(im, 0x25);
+    e32(im, (u32)(int32_t)((im->cache_va + 8u * (u32)slot) - (cur(im) + 4)));
+}
+static void emit_slot_call(dimg *im, int slot)     /* call *slot(%rip) */
+{
+    e8(im, 0xff); e8(im, 0x15);
     e32(im, (u32)(int32_t)((im->cache_va + 8u * (u32)slot) - (cur(im) + 4)));
 }
 
@@ -343,7 +348,8 @@ static int translate_trace(dimg *im, u64 pc)
                 continue;
             }
             if (op == 0x0b) { emit(im, p, (size_t)len); return 0; } /* ud2 */
-            if (op == 0xa2 || op == 0x31 || op == 0x01) { /* cpuid, rdtsc, xgetbv...: executed as they are */ }
+            if (op == 0xa2) { emit_slot_call(im, 4); pc = next; continue; }   /* cpuid: via handler (sanitized brand) */
+            if (op == 0x31 || op == 0x01) { /* rdtsc, xgetbv: executed as they are */ }
         }
 
         /* an ordinary instruction: copied, with a RIP-relative displacement recomputed */
@@ -602,6 +608,7 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
     slots[1] = (u64)(uintptr_t)&xrl_dbt_ijmp;
     slots[2] = (u64)(uintptr_t)&xrl_dbt_icall;
     slots[3] = (u64)(uintptr_t)&xrl_dbt_ret;
+    slots[4] = (u64)(uintptr_t)&xrl_dbt_cpuid;
     DWORD old;
     if (xrl_host_protect((void *)addr, (size_t)len, PAGE_READONLY, &old)) {
         LOGE("dbt: %s: cannot make the image non-executable", name);
