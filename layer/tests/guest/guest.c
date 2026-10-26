@@ -1587,6 +1587,133 @@ static void test_shm(void)
     sc2(11, p1, 4096); sc2(11, p2, 4096); sc1(3, of); sc1(87, "/tmp/xrl_plain_map");
 }
 
+/* ---- pseudo-terminals (layer/src/pty.c) ---------------------------------------- */
+struct ktio { u32 iflag, oflag, cflag, lflag; u8 line; u8 cc[19]; };
+struct wsz_ { u16 row, col, xp, yp; };
+
+static long rd_all(long fd, char *b, long cap)   /* what is readable now (non-blocking read loop) */
+{
+    long n = 0, r;
+    while (n < cap && (r = sc3(0, fd, b + n, cap - n)) > 0) n += r;
+    return n;
+}
+
+static void test_pty(void)
+{
+    out("pseudo-terminals:\n");
+    char buf[256], path[32] = "/dev/pts/";
+    long m = sc3(2, "/dev/ptmx", 02 | 04000 /* O_RDWR|O_NONBLOCK */, 0);
+    CHECK(m >= 3, "open /dev/ptmx");
+    u32 n = 99;
+    CHECK(sc3(16, m, 0x80045430 /*TIOCGPTN*/, &n) == 0 && n < 4096, "TIOCGPTN");
+    { char d[12]; int k = 0, t = (int)n; do d[k++] = (char)('0' + t % 10); while ((t /= 10)); int o = 9; while (k) path[o++] = d[--k]; path[o] = 0; }
+    CHECK(sc3(2, path, 02, 0) == -5, "opening a locked slave -> -EIO");
+    int zero = 0;
+    CHECK(sc3(16, m, 0x40045431 /*TIOCSPTLCK*/, &zero) == 0, "TIOCSPTLCK(0): unlockpt");
+    u64 st[18]; memset(st, 0, sizeof st);
+    CHECK(sc2(4, path, st) == 0 && (st[3] & 0170000) == 0020000 && (u32)(st[5] >> 8) == 136, "stat /dev/pts/N: a character device, major 136");
+    long s = sc3(2, path, 02 | 04000, 0);
+    CHECK(s >= 3, "open the slave");
+    CHECK(sc3(16, s, 0x5413 /*TIOCGWINSZ*/, buf) == 0, "TIOCGWINSZ on the slave (isatty)");
+    struct wsz_ w = { 40, 132, 0, 0 };
+    CHECK(sc3(16, m, 0x5414 /*TIOCSWINSZ*/, &w) == 0, "TIOCSWINSZ on the master");
+    struct wsz_ g; memset(&g, 0, sizeof g);
+    CHECK(sc3(16, s, 0x5413, &g) == 0 && g.row == 40 && g.col == 132, "the slave sees the size");
+    struct ktio t;
+    CHECK(sc3(16, s, 0x5401 /*TCGETS*/, &t) == 0 && (t.lflag & 2 /*ICANON*/) && (t.lflag & 8 /*ECHO*/) && (t.oflag & 4 /*ONLCR*/) && t.cc[0] == 3 && t.cc[4] == 4, "default termios: ICANON|ECHO, ONLCR, ^C ^D");
+
+    /* canonical mode: a line becomes readable at the newline, and is echoed */
+    CHECK(sc3(1, m, "hel", 3) == 3, "the master types 'hel'");
+    CHECK(sc3(0, s, buf, 100) == -11, "the slave sees nothing yet (no newline): -EAGAIN");
+    memset(buf, 0, sizeof buf);
+    long e = rd_all(m, buf, 100);
+    CHECK(e == 3 && !memcmp(buf, "hel", 3), "echo of the typed characters");
+    sc3(1, m, "lo\r", 3);
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, s, buf, 100) == 6 && !memcmp(buf, "hello\n", 6), "'\\r' became '\\n' (ICRNL); the whole line is readable now");
+    memset(buf, 0, sizeof buf);
+    e = rd_all(m, buf, 100);
+    CHECK(e == 4 && !memcmp(buf, "lo\r\n", 4), "echo of 'lo' and the newline as CR LF");
+    sc3(1, m, "abc\x7f" "d\n", 6);   /* backspace erases 'c' */
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, s, buf, 100) == 4 && !memcmp(buf, "abd\n", 4), "VERASE edits the line");
+    rd_all(m, buf, 100);
+    sc3(1, m, "x\ny\n", 4);
+    CHECK(sc3(0, s, buf, 100) == 2 && sc3(0, s, buf, 100) == 2, "two lines are two reads");
+    rd_all(m, buf, 100);
+    sc3(1, m, "\x04", 1);   /* ^D on an empty line */
+    CHECK(sc3(0, s, buf, 100) == 0, "^D on an empty line: the slave reads 0 (EOF)");
+    CHECK(sc3(0, s, buf, 100) == -11, "...once");
+    sc3(1, m, "par", 3); sc3(1, m, "\x04", 1);
+    CHECK(sc3(0, s, buf, 100) == 3, "^D after text delivers the text without a newline");
+    rd_all(m, buf, 100);
+
+    /* output side */
+    CHECK(sc3(1, s, "out\n", 4) == 4, "the slave writes");
+    memset(buf, 0, sizeof buf);
+    CHECK(rd_all(m, buf, 100) == 5 && !memcmp(buf, "out\r\n", 5), "the master reads it with ONLCR (CR LF)");
+
+    /* raw mode */
+    struct ktio r = t;
+    r.lflag &= ~(2u | 8u | 1u);   /* ~ICANON & ~ECHO & ~ISIG */
+    r.iflag &= ~0400u;            /* ~ICRNL */
+    r.oflag &= ~1u;               /* ~OPOST */
+    r.cc[6] = 1; r.cc[5] = 0;
+    CHECK(sc3(16, s, 0x5402 /*TCSETS*/, &r) == 0, "TCSETS: raw");
+    sc3(1, m, "q\r\x03", 3);
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, s, buf, 100) == 3 && buf[0] == 'q' && buf[1] == '\r' && buf[2] == 3, "raw: bytes arrive at once, untranslated, ^C is a byte");
+    CHECK(rd_all(m, buf, 100) == 0, "raw without ECHO: no echo");
+    sc3(1, s, "a\n", 2);
+    memset(buf, 0, sizeof buf);
+    CHECK(rd_all(m, buf, 100) == 2 && buf[1] == '\n', "raw without OPOST: no CR added");
+    struct pfd pp = { (int)s, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 0, "poll: slave has nothing to read");
+    sc3(1, m, "z", 1);
+    pp.rev = 0;
+    CHECK(sc3(7, &pp, 1, 0) == 1 && (pp.rev & 1), "poll: POLLIN once a byte arrives");
+    int nb = 0;
+    CHECK(sc3(16, s, 0x541B /*FIONREAD*/, &nb) == 0 && nb == 1, "FIONREAD on the slave");
+    sc3(0, s, buf, 10);
+    r.cc[6] = 4;   /* VMIN = 4 */
+    sc3(16, s, 0x5402, &r);
+    sc3(1, m, "12", 2);
+    CHECK(sc3(0, s, buf, 100) == -11, "VMIN=4 with 2 bytes queued: a non-blocking read -> -EAGAIN");
+    sc3(1, m, "34", 2);
+    CHECK(sc3(0, s, buf, 100) == 4, "...and 4 bytes are delivered together");
+
+    /* signals: ISIG on, ^C flushes and signals the foreground group (no process model here: logged, dropped) */
+    r.lflag |= 1u | 2u | 8u; r.cc[6] = 1;
+    sc3(16, s, 0x5402, &r);
+    sc3(1, m, "abc", 3);
+    sc3(1, m, "\x03", 1);
+    memset(buf, 0, sizeof buf);
+    e = rd_all(m, buf, 100);
+    CHECK(e == 5 && !memcmp(buf, "abc^C", 5), "^C is echoed as ^C and the typed-ahead line is discarded");
+    sc3(1, m, "\n", 1);
+    CHECK(sc3(0, s, buf, 100) == 1, "(the line discipline is clean after it)");
+
+    /* peer going away */
+    sc1(3, s);
+    CHECK(sc3(0, m, buf, 100) >= 0, "(echo of the last newline is still readable)");
+    rd_all(m, buf, 100);
+    CHECK(sc3(0, m, buf, 100) == -5, "master read after the last slave closed -> -EIO");
+    pp = (struct pfd){ (int)m, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 1 && (pp.rev & 0x10), "poll(master): POLLHUP");
+    long m2 = sc3(2, "/dev/ptmx", 02, 0);
+    u32 n2 = 99; sc3(16, m2, 0x80045430, &n2);
+    CHECK(n2 != n, "a second pty gets another number");
+    sc3(16, m2, 0x40045431, &zero);
+    { char p2[32] = "/dev/pts/"; char d[12]; int k = 0, tt = (int)n2; do d[k++] = (char)('0' + tt % 10); while ((tt /= 10)); int o = 9; while (k) p2[o++] = d[--k]; p2[o] = 0;
+      long s2 = sc3(2, p2, 02, 0);
+      sc1(3, m2);
+      CHECK(sc3(0, s2, buf, 10) == 0, "slave read after the master closed: EOF");
+      CHECK(sc3(1, s2, "x", 1) == -5, "slave write after the master closed: -EIO");
+      sc1(3, s2); }
+    sc1(3, m);
+    CHECK(sc3(2, path, 02, 0) == -2, "after both closed the pty is gone: open -> -ENOENT");
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -1619,6 +1746,7 @@ void cstart(u64 *sp)
     test_net();
     test_unix();
     test_shm();
+    test_pty();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

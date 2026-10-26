@@ -222,7 +222,7 @@ slong xrl_vfs_init(const char *root)
             return -LX_ENOENT;
         }
     }
-    static const wchar_t *dirs[] = { L"\\tmp", L"\\dev", L"\\dev\\shm", L"\\var", L"\\var\\tmp", L"\\run", L"\\home", L"\\etc" };
+    static const wchar_t *dirs[] = { L"\\tmp", L"\\dev", L"\\dev\\shm", L"\\dev\\pts", L"\\var", L"\\var\\tmp", L"\\run", L"\\home", L"\\etc" };
     for (size_t i = 0; i < ARRAY_LEN(dirs); i++) {
         wchar_t p[1100]; wcscpy_s(p, 1100, G.vfs_root_w); wcscat_s(p, 1100, dirs[i]);
         CreateDirectoryW(p, NULL);
@@ -1103,7 +1103,9 @@ static slong open_special(const char *gabs, int flags, int *handled)
     if (!strcmp(gabs, "/dev/null")) f = xrl_dev_null(flags);
     else if (!strcmp(gabs, "/dev/zero")) f = xrl_dev_zero(flags);
     else if (!strcmp(gabs, "/dev/urandom") || !strcmp(gabs, "/dev/random")) f = xrl_dev_urandom(flags);
-    else if (!strcmp(gabs, "/dev/tty") || !strcmp(gabs, "/dev/console") || !strcmp(gabs, "/dev/ptmx")) f = xrl_dev_tty(flags);
+    else if (!strcmp(gabs, "/dev/tty") || !strcmp(gabs, "/dev/console")) f = xrl_dev_tty(flags);
+    else if (!strcmp(gabs, "/dev/ptmx")) { int err = 0; f = xrl_pty_open_master(flags, &err); if (!f) return -err; }
+    else if (!strncmp(gabs, "/dev/pts/", 9)) { int err = 0; char *e; long n = strtol(gabs + 9, &e, 10); if (e == gabs + 9 || *e) { *handled = 0; return 0; } f = xrl_pty_open_slave((int)n, flags, &err); if (!f) return -err; }
     else if (!strcmp(gabs, "/dev/full")) f = xrl_dev_null(flags);
     else if (!strcmp(gabs, "/dev/ntsync")) f = xrl_dev_ntsync(flags);
     if (f) {
@@ -1360,6 +1362,8 @@ slong xrl_vfs_stat(int dirfd, const char *path, int atflags, lx_stat *st)
     }
     if (vn_stat(gabs, st)) return 0;
     if (xrl_proc_stat(gabs, st)) return st->st_nlink ? 0 : -LX_ENOENT;
+    if (xrl_pty_stat(gabs, st)) return st->st_nlink ? 0 : -LX_ENOENT;
+    if (!strcmp(gabs, "/dev/ptmx")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 13, 0); st->st_rdev = (5u << 8) | 2; return 0; }
     if (!strcmp(gabs, "/dev/null")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 3, 0); st->st_rdev = (1u << 8) | 3; return 0; }
     if (!strcmp(gabs, "/dev/zero")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 5, 0); st->st_rdev = (1u << 8) | 5; return 0; }
     if (!strcmp(gabs, "/dev/urandom") || !strcmp(gabs, "/dev/random")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 9, 0); st->st_rdev = (1u << 8) | 9; return 0; }

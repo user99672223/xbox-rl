@@ -401,6 +401,12 @@ slong xrl_unix_iov(int fd, u64 iov, u64 cnt, int is_write);   /* readv/writev: o
 slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *));
 slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj);   /* ENOENT, or 0 with type 0 for an ordinary file */
 
+/* pty.c: /dev/ptmx and /dev/pts/N. xrl_tty_signal is proc.c's (signal a process group); pty.c links a logging default. */
+xfile *xrl_pty_open_master(int flags, int *err);              /* NULL + positive errno */
+xfile *xrl_pty_open_slave(int index, int flags, int *err);
+int    xrl_pty_stat(const char *guest_abs, lx_stat *st);      /* 1 if handled; st_nlink 0 = no such pty */
+int    xrl_tty_signal(int pgrp, int sig);
+
 /* shm.c: SysV shared memory, and one set of pages behind every shared mapping of a memfd or /dev/shm file.
  * The mem.c hooks answer XRL_NOT_NET when the file / range is not shm.c's. */
 slong xrl_shm_map_file(xfile *f, u64 len, s64 off);       /* the address to return for mmap(MAP_SHARED, f, off), or -errno */
