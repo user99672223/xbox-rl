@@ -180,12 +180,12 @@ static int is_qi(u64 fn)
     return 0;
 }
 
-static void hook_vtable(u64 vt)
+static int hook_vtable(u64 vt)
 {
     AcquireSRWLockExclusive(&g_hook_lock);
     u64 *e = (u64 *)vt;
     /* a known address whose first entry is no stub: a heap vtable freed and reallocated */
-    if (vt_known(vt) && is_stub(e[0])) { ReleaseSRWLockExclusive(&g_hook_lock); return; }
+    if (vt_known(vt) && is_stub(e[0])) { ReleaseSRWLockExclusive(&g_hook_lock); return 0; }
     if (!vt_known(vt)) vt_insert(vt);
     int n = 0;
     while (n < 1024 && (is_stub(e[n]) || addr_kind(e[n], NULL) == K_CODE)) n++;
@@ -211,23 +211,24 @@ static void hook_vtable(u64 vt)
     if (err) LOGW("com: cannot unprotect vtable %llx (%s+%llx): win err %d", vt, m ? m->name : "?", m ? vt - m->base : 0ull, err);
     else LOGI("com: vtable %llx (%s+%llx): %d of %d entries routed through the host-view thunk",
               vt, m ? m->name : "?", m ? vt - m->base : 0ull, hooked, n);
+    return hooked > 0;
 }
 
 static int g_trace = -1;   /* XRL_COM_TRACE=1: log every candidate object */
 
-/* Is `obj` a host COM object? Hook its vtable if so. */
-static void consider_object(u64 obj)
+/* Is `obj` a host COM object? Hook its vtable if so (1: this call hooked a new one). */
+static int consider_object(u64 obj)
 {
-    if (!plausible(obj)) return;
+    if (!plausible(obj)) return 0;
     u64 vt = *(volatile u64 *)obj;
     if (g_trace < 0) { char v[4]; g_trace = GetEnvironmentVariableA("XRL_COM_TRACE", v, sizeof v) && v[0] == '1'; }
-    if (!plausible(vt)) return;
-    if (vt_known(vt) && is_stub(*(volatile u64 *)vt)) return;
+    if (!plausible(vt)) return 0;
+    if (vt_known(vt) && is_stub(*(volatile u64 *)vt)) return 0;
     /* Where the vtable lives: an image's .rdata (or .text, some images merge them), or
      * host heap (D3D11 builds per-device dispatch tables for its context objects).
      * Never guest memory. */
     int k = addr_kind(vt, NULL);
-    if (k == K_NONE && xrl_mem_is_mapped(vt)) return;
+    if (k == K_NONE && xrl_mem_is_mapped(vt)) return 0;
     if (g_trace) {
         const img *m = NULL;
         addr_kind(vt, &m);
@@ -236,23 +237,28 @@ static void consider_object(u64 obj)
     }
     /* QueryInterface, AddRef, Release: three code pointers (never true of instruction bytes) */
     for (int i = 0; i < 3; i++)
-        if (addr_kind(((volatile u64 *)vt)[i], NULL) != K_CODE) return;
-    hook_vtable(vt);
+        if (addr_kind(((volatile u64 *)vt)[i], NULL) != K_CODE) return 0;
+    return hook_vtable(vt);
 }
 
-static void consider(u64 v)
+static int consider(u64 v)
 {
-    if (!plausible(v)) return;
+    int r = 0;
+    if (!plausible(v)) return 0;
     __try {
-        consider_object(*(volatile u64 *)v);   /* v = &out_interface_pointer */
-        consider_object(v);                    /* v = an interface pointer itself */
+        r |= consider_object(*(volatile u64 *)v);   /* v = &out_interface_pointer */
+        r |= consider_object(v);                    /* v = an interface pointer itself */
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
+    return r;
 }
 
-void xrl_com_scan(const u64 *v, int n)
+/* 1 if any value led to a newly hooked vtable */
+int xrl_com_scan(const u64 *v, int n)
 {
-    for (int i = 0; i < n; i++) consider(v[i]);
+    int r = 0;
+    for (int i = 0; i < n; i++) r |= consider(v[i]);
+    return r;
 }
 
 /* Calls per method (the hang dump names the busiest): open addressing on the
@@ -352,11 +358,10 @@ void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
         if (!m && n > SCAN_LEARN) g_hot_scan[i] = m = 2;
         if (m == 2 && (n % SCAN_RECHECK)) goto done;
     }
-    LONG hooked0 = g_nhooked;
-    xrl_com_scan(regs, 4);
-    xrl_com_scan(stack_args, 12);
-    consider(ret);
-    if (i >= 0 && g_nhooked != hooked0 && g_hot_scan[i] != 1) {
+    int found = xrl_com_scan(regs, 4);
+    found |= xrl_com_scan(stack_args, 12);
+    found |= consider(ret);
+    if (i >= 0 && found && g_hot_scan[i] != 1) {
         if (g_hot_scan[i] == 2) LOGW("com: method %llx handed out a new object type after %lld calls: scanning it always again", fn, (long long)n);
         g_hot_scan[i] = 1;
     }
