@@ -144,6 +144,90 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
+  backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
+  `claude/eac-module-map`. Findings, then what was built, then where it stops.
+  - **What sets the global at 0x14038b340 (the earlier note said nothing did: wrong).** The launcher's start-up
+    code (0x14004a7a0), only if `wine_get_version` exists in ntdll (0x14001c1b0), does
+    `VirtualAlloc(0x7001_0000_0000 + n * 4 GiB, 0x1000, MEM_COMMIT|MEM_RESERVE, PAGE_EXECUTE_READWRITE)` for
+    n < 10, keeps the first result that is >= 0x7000_0000_0000 and `memcpy`s the 21-byte `syscall3` stub
+    (0x14004b9f0: `mov rax,rcx; mov rdi,rdx; push rdx; mov rsi,r8; mov rdx,r9; syscall; ...; ret`) into it; the
+    global is that page (failure: "Failed to initialize Wine helper buffer"). The stub is therefore never run from
+    the image: it runs from that RWX page. **Why that address: Proton-GE's Wine has the same convention.** Its
+    SIGSYS handler (`dlls/ntdll/unix/signal_x86_64.c`, `hack_native_syscalls`, enabled by
+    `WINE_HACK_NATIVE_SYSCALLS=1`) re-arms Linux syscall user dispatch for the range
+    [0x7001_0000_0000, 0x7fff_ffff_0000) so that a `syscall` issued from there reaches the Linux kernel instead of
+    being a Windows system call. Our layer's equivalent has to be "a `syscall` in Windows code is a Linux system
+    call", wherever the code is. What the bootstrapper checks of Wine: `wine_get_version` (also logged:
+    "Wine version: 11.0"), `wine_get_unix_file_name` (its callback for the module), nothing else found.
+    The mapping routine (0x14001cc10): `memfd_create(name = a GUID, MFD_ALLOW_SEALING)`, `write` of the whole
+    module, `getpid`, `/proc/<pid>/maps` (parsed: lines with six fields; the first whose path contains `/libc-` or
+    `libc.so`, case-insensitively, is libc, its start address the ELF header), then its **own symbol walk** of that
+    image (0x14001c470: PT_DYNAMIC, DT_HASH/DT_GNU_HASH + DT_SYMTAB + DT_STRTAB taken as absolute pointers, djb2
+    hash for both tables) for `dlopen` (else `__libc_dlopen_mode`) and `dlsym` (else `__libc_dlsym`), then
+    `dlopen("/proc/self/fd/N", RTLD_LAZY)` through a Windows-ABI -> SysV-ABI trampoline (0x14004ba06: `call rax`
+    with rdi/rsi/rdx from rcx/r8/r9 shifted), and `dlsym` of `a`..`d` (the module also exports `e`).
+  - **Raw syscalls from Windows code (`layer/src/dbt.c`, `syscall.c`).** The first version only translated PE
+    pages that hold a `syscall`; the real one never executes that page. Now, while the program is one the
+    `XRL_DBT` policy selects (default: `_eac` / `easyanticheat` in the program path), an anonymous mapping that
+    is writable and executable (mmap or mprotect) is *watched*: made non-executable for the host (guest still sees
+    `rwx`), its first instruction fetch faults, the page is scanned; with a `syscall` it is translated like an
+    image, without it simply becomes executable again. A later write to a translated page drops the
+    translation (slots are reusable, 16 instead of 4; `dbt.asm` scans 16 ranges) and the page is watched again.
+    Limits: at most 16 watched ranges of at most 256 KiB; code written after the first fetch into a page that had
+    no `syscall` is not looked at; a thread running a translation while another rewrites it is not stopped.
+    Test `layer/tests/rawsys-win.sh` (PE program issuing the bootstrapper's stub from its image and from a
+    VirtualAlloc page at 0x7001_0000_0000: `uname` says Linux/x86_64, `memfd_create`/`write`/`lseek`/`read`,
+    `/proc/self/fd/N`, a second thread's `gettid`, `-ENOSYS`, a page rewritten 8 times; with `XRL_DBT=0` it fails
+    because the Windows kernel answers).
+  - **libc discovery: decision.** Two things are needed, and neither is a disguise. (1) *The name.* musl installed
+    the way a musl system does: the library is `/usr/lib/libc.so`, `/lib/ld-musl-x86_64.so.1` a symlink to it
+    (musl's own `make install` layout; Void Linux's musl too). `/proc/self/maps` then shows `/usr/lib/libc.so`
+    because it names the resolved file, as Linux does; `build-wine.sh` installs it so, `stage-rootfs.sh` stages the
+    symlink. No glibc names are invented. (2) *The dynamic section.* glibc's ld.so adds the load address to
+    DT_HASH/DT_GNU_HASH/DT_SYMTAB/DT_STRTAB/DT_VERSYM in memory; musl leaves link-time offsets and the bootstrapper
+    dereferences them (on a stock musl system it would fault). The glibc-ABI shim (`libgcompat.so.0`) now does what
+    glibc does to those five entries of libc's own `.dynamic`, once, in a constructor (musl reads them only while
+    loading, checked in dynlink.c v1.2.6; the page is made writable and put back). Wine patch 0024 loads the shim at
+    start-up (it used to load only before a native Wine library) because the module `dlopen`ed by Windows code needs
+    it resolved globally. The loader's *identity* is unchanged: it is musl, `gnu_get_libc_version` was already the
+    shim's.
+  - **What the module itself needed from the guest**, found by running it: `libgcc_s.so.1` (a musl-linked build:
+    `wine/scripts/build-libgcc-s.sh` links the toolchain's static libgcc_eh.a + libgcc.a, hidden symbols made
+    visible by `tools/xrl-elf-unhide.py`; the build machine's glibc libgcc_s cannot be used, musl never matches its
+    own `@GCC_4.8.0`-versioned symbols; `libgcc_s_extra.c` supplies `_dl_find_object`, because our musl's stub
+    returns "not found" and GCC 15's unwinder then aborts in `uw_init_context_1`), the `getcontext` family
+    (musl has none: written in the shim on glibc's algorithm, layout asserted), `__wmemmove_chk`, and
+    `ld-linux-x86-64.so.2` (empty stub, already there). `/etc/os-release` (the module reads it) is staged:
+    `NAME="xbox-rl"`, what this system is.
+  - **memfd.** Named as Linux shows them (`/memfd:NAME (deleted)`), reopenable through `/proc/self/fd/N`. Code
+    mapped from a memfd in a program the policy selects is translated, not rewritten: the module is the
+    vendor's own code and stays byte-identical (the stand-in module test, extended: a glibc-built `.so` loaded
+    from a memfd through the bootstrapper's own algorithm; its code in memory equals the file, its constructor,
+    raw `syscall`, a shim symbol, `swapcontext` coroutines and `_Unwind_Backtrace` work).
+  - **Run (`tools/run-rl.sh` with `XRL_RL_EXE=RocketLeague_EAC.exe`, laptop).** Download OK; "Starting Wine module
+    mapping" is no longer followed by "Failed to map": the 12 MB module (ELF shared object: PT_TLS, needs
+    libgcc_s, libc.so.6, ld-linux; exports a..e) is `dlopen`ed (two executable mappings, 2.0 and 2.2 MB, translated
+    without a single unsupported instruction or fault), the bootstrapper calls its `a` with a settings structure
+    and a callback, and the module, in about 0.3 s: calls back for the Unix path of `RocketLeague.exe`, reads
+    `/proc/<pid>/status`, probes `/proc/1/comm`, `/tmp/eac.flag`, os-release files and a few container marker
+    files (all absent), reads `/etc/hosts` and `/etc/resolv.conf`, resolves a name over UDP, connects by TCP,
+    does a TLS 1.2 handshake with its own TLS code, sends one 882-byte request, reads a 673-byte reply, closes,
+    and returns. The bootstrapper logs `Launcher finished with: 208, 'Launch Error: 256'` and shows its error box
+    (the headless run waits on it until the timeout). So **EAC initialises and reaches its service, and then
+    reports error 256 (a code from the module, not one of the bootstrapper's own messages).** What it means is
+    not known and was not pursued by reverse-engineering the module: it is the module's answer after the
+    server's reply, from inside Epic's opaque code. Psyonix say (2026) that Proton/Linux keeps working with EAC
+    on, so the server does accept genuine Linux clients; whether it refuses this one because of something the
+    layer gets wrong (a `/proc` or `uname` value, a missing file) or because it recognises the environment, this
+    run cannot say. Changing `/etc/os-release` did not change the code. Nothing was added to hide the layer, Wine or
+    the Xbox, and nothing will be: if the refusal is EAC's own, it stays.
+  - **Open, whatever 256 turns out to be.** The module lives in the *bootstrapper's* process and the game is meant
+    to be a child that talks to it (the bootstrapper imports pipe/handle-duplication calls); the exec handover
+    (previous entries) replaces the bootstrapper, module included, by the game. Even with a successful `a`, the
+    game would then run without the module in its process. Needs a decision (a second layer process? keeping the
+    old image alive next to the new one, as the server thread's does?) before RL can run with EAC enabled.
+
 - **2026-10-26 — Rocket League reaches its online code on the laptop**
   (1.75 GiB budget, swap, Epic launch arguments from `tools/run-rl.sh`):
   PreInit, global shaders, script packages (the 6.4 GiB shader-cache peak, 224 s

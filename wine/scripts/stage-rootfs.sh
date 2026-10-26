@@ -2,7 +2,7 @@
 # stage-rootfs.sh DEST
 #
 # Assemble the guest filesystem the layer serves from DEST (its vfs_root):
-#   DEST/            <- out/rootfs  (Wine install + /lib/ld-musl-x86_64.so.1)
+#   DEST/            <- out/rootfs  (Wine install + musl as /usr/lib/libc.so, /lib/ld-musl-x86_64.so.1 -> it)
 #   DEST/prefix/     <- out/prefix  (the baked Wine prefix; bake-prefix.sh)
 #   DEST/.xrl-symlinks   every symlink of both trees, as the layer's VFS expects:
 #                        "GUEST_ABS_PATH<TAB>TARGET" lines (layer/notes-C.md "VFS")
@@ -19,14 +19,28 @@ rootfs="$WORK/out/rootfs"; prefix="$WORK/out/prefix"
 [ -d "$prefix" ] || die "no $prefix -- run bake-prefix.sh"
 
 mkdir -p "$dest"
+# XRL_STAGE_KEEP="a b": extra top-level entries of DEST that --delete must leave alone (test programs,
+# the EAC runtime...); XRL_STAGE_PREFIX=0: do not touch DEST/prefix (a prefix that holds state worth keeping).
+keep=(); for k in ${XRL_STAGE_KEEP:-}; do keep+=("--exclude=/$k"); done
 log "stage: Wine rootfs -> $dest"
-rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclude=/game --exclude=/etc/resolv.conf --exclude=/etc/hosts "$rootfs"/ "$dest"/
-log "stage: prefix -> $dest/prefix"
-rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
+rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclude=/game --exclude=/etc/resolv.conf --exclude=/etc/hosts "${keep[@]}" "$rootfs"/ "$dest"/
+# the interpreter is a symlink now (musl's layout); a copy staged earlier as a regular file must not shadow it
+[ -L "$rootfs/lib/ld-musl-x86_64.so.1" ] && rm -f "$dest/lib/ld-musl-x86_64.so.1"
+if [ "${XRL_STAGE_PREFIX:-1}" != 0 ]; then
+  log "stage: prefix -> $dest/prefix"
+  rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
+else
+  log "stage: prefix left as it is (XRL_STAGE_PREFIX=0)"
+fi
 
 # glibc-ABI shim for native modules built against glibc (the EAC runtime); see docs/decisions.md.
-# musl is already in $dest/lib/ld-musl-x86_64.so.1, so this only adds libgcompat.so.0 and two stubs.
+# musl is already in $dest/usr/lib/libc.so (+ the /lib/ld-musl-x86_64.so.1 symlink), so this only adds libgcompat.so.0 and two stubs.
 "$WINE_DIR/scripts/build-glibc-compat.sh" "$dest/lib"
+
+# The GCC runtime library (unwinder, 128-bit division): the anti-cheat module the EAC bootstrapper loads lists
+# libgcc_s.so.1 as a dependency, and a musl system has one too. Linked from the toolchain's static runtime
+# (build-libgcc-s.sh says why the build machine's own libgcc_s.so.1 cannot be used on musl).
+"$WINE_DIR/scripts/build-libgcc-s.sh" "$dest/usr/lib"
 
 # Wine's unix side reads a stable machine identity; keep one per staged tree.
 mkdir -p "$dest/etc"
@@ -40,6 +54,9 @@ nameserver 8.8.8.8
 ::1 localhost ip6-localhost
 ' > "$dest/etc/hosts"
 # (not `tr < /dev/urandom | head`: under pipefail the SIGPIPE to tr aborted a first-time stage)
+# Every Linux system describes itself in /etc/os-release (programs read it, the EAC module among them). This one is
+# what it is: the xbox-rl layer with a musl userland; staged once, then yours to edit.
+[ -s "$dest/etc/os-release" ] || printf 'NAME="xbox-rl"\nID=xbox-rl\nPRETTY_NAME="xbox-rl Linux compatibility layer (musl userland)"\n' > "$dest/etc/os-release"
 [ -s "$dest/etc/machine-id" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$dest/etc/machine-id"
 # Root CAs: Wine's crypt32 fills the Windows root store from the Linux bundle (dlls/crypt32/unixlib.c), and
 # TLS clients verify servers against it (Rocket League's Epic SDK). The build machine's public Mozilla bundle.

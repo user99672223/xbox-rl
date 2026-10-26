@@ -193,6 +193,141 @@ EXPORT struct dirent *readdir64(DIR *d) { return readdir(d); }
 EXPORT int getrlimit64(int r, struct rlimit *l) { return getrlimit(r, l); }
 EXPORT int setrlimit64(int r, const struct rlimit *l) { return setrlimit(r, l); }
 
+EXPORT wchar_t *__wmemmove_chk(wchar_t *d, const wchar_t *s, size_t n, size_t dl) { CHK("wmemmove", n > dl); return wmemmove(d, s, n); }
+
+/* ------------------------------------------------------ ucontext family
+ * musl has no getcontext/setcontext/makecontext/swapcontext; glibc-built code (the EAC module switches stacks
+ * with them) calls them. ucontext_t has the kernel/glibc x86-64 layout in musl too (checked below), so these
+ * are glibc's algorithms on it: the callee-saved registers, the argument registers (so that makecontext
+ * can start a function), rsp, the return address, the x87/SSE control state and the signal mask. */
+#include <stddef.h>
+#include <ucontext.h>
+_Static_assert(offsetof(ucontext_t, uc_mcontext) == 40, "ucontext layout");
+_Static_assert(offsetof(ucontext_t, uc_sigmask) == 296, "ucontext layout");
+_Static_assert(offsetof(ucontext_t, __fpregs_mem) == 424, "ucontext layout");
+_Static_assert(offsetof(ucontext_t, uc_mcontext.fpregs) == 224, "ucontext layout");
+
+#define SAVE_REGS_ASM(U) \
+    "movq %rbx, 128(" U ")\n\t" "movq %rbp, 120(" U ")\n\t" "movq %r12, 72(" U ")\n\t" "movq %r13, 80(" U ")\n\t" \
+    "movq %r14, 88(" U ")\n\t" "movq %r15, 96(" U ")\n\t" "movq %rdi, 104(" U ")\n\t" "movq %rsi, 112(" U ")\n\t" \
+    "movq %rdx, 136(" U ")\n\t" "movq %rcx, 152(" U ")\n\t" "movq %r8, 40(" U ")\n\t" "movq %r9, 48(" U ")\n\t" \
+    "movq (%rsp), %rcx\n\t" "movq %rcx, 168(" U ")\n\t" "leaq 8(%rsp), %rcx\n\t" "movq %rcx, 160(" U ")\n\t" \
+    "leaq 424(" U "), %rcx\n\t" "movq %rcx, 224(" U ")\n\t" "fnstenv (%rcx)\n\t" "stmxcsr 24(%rcx)\n\t"
+
+__asm__(
+    ".text\n"
+    ".globl getcontext\n.type getcontext,@function\ngetcontext:\n\t"
+    SAVE_REGS_ASM("%rdi")
+    "pushq %rdi\n\t"                                  /* aligns the stack for the call */
+    "leaq 296(%rdi), %rdx\n\t" "xorl %edi, %edi\n\t" "xorl %esi, %esi\n\t"    /* pthread_sigmask(SIG_BLOCK, NULL, &uc_sigmask) */
+    "call pthread_sigmask@PLT\n\t"
+    "popq %rdi\n\t" "xorl %eax, %eax\n\t" "ret\n"
+    ".size getcontext, .-getcontext\n"
+
+    ".globl setcontext\n.type setcontext,@function\nsetcontext:\n\t"
+    "pushq %rdi\n\t"
+    "leaq 296(%rdi), %rsi\n\t" "movl $2, %edi\n\t" "xorl %edx, %edx\n\t"       /* pthread_sigmask(SIG_SETMASK, &uc_sigmask, NULL) */
+    "call pthread_sigmask@PLT\n\t"
+    "popq %rdi\n"
+    "xrl_restore_context:\n\t"
+    "movq 224(%rdi), %rcx\n\t" "fldenv (%rcx)\n\t" "ldmxcsr 24(%rcx)\n\t"
+    "movq 160(%rdi), %rsp\n\t"
+    "movq 128(%rdi), %rbx\n\t" "movq 120(%rdi), %rbp\n\t" "movq 72(%rdi), %r12\n\t" "movq 80(%rdi), %r13\n\t"
+    "movq 88(%rdi), %r14\n\t" "movq 96(%rdi), %r15\n\t"
+    "movq 168(%rdi), %rcx\n\t" "pushq %rcx\n\t"                              /* the return address goes on the new stack */
+    "movq 112(%rdi), %rsi\n\t" "movq 136(%rdi), %rdx\n\t" "movq 152(%rdi), %rcx\n\t" "movq 40(%rdi), %r8\n\t"
+    "movq 48(%rdi), %r9\n\t" "movq 104(%rdi), %rdi\n\t"
+    "xorl %eax, %eax\n\t" "ret\n"
+    ".size setcontext, .-setcontext\n"
+
+    ".globl swapcontext\n.type swapcontext,@function\nswapcontext:\n\t"
+    SAVE_REGS_ASM("%rdi")
+    "pushq %rsi\n\t"                                  /* the new context; one push keeps the stack aligned for the call */
+    "leaq 296(%rsi), %rsi\n\t" "leaq 296(%rdi), %rdx\n\t" "movl $2, %edi\n\t"      /* pthread_sigmask(SIG_SETMASK, &new->mask, &old->mask) */
+    "call pthread_sigmask@PLT\n\t"
+    "popq %rdi\n\t"                                   /* rdi = the new context */
+    "jmp xrl_restore_context\n"
+    ".size swapcontext, .-swapcontext\n"
+
+    ".globl xrl_start_context\n.type xrl_start_context,@function\nxrl_start_context:\n\t"   /* a makecontext function returned */
+    "movq %rbx, %rsp\n\t" "movq (%rsp), %rdi\n\t" "andq $-16, %rsp\n\t" "testq %rdi, %rdi\n\t" "je 1f\n\t"   /* uc_link, kept on the stack by makecontext */
+    "call setcontext@PLT\n"
+    "1:\n\t" "xorl %edi, %edi\n\t" "call exit@PLT\n\t" "hlt\n"
+    ".size xrl_start_context, .-xrl_start_context\n");
+
+extern void xrl_start_context(void);
+
+EXPORT void makecontext(ucontext_t *ucp, void (*func)(void), int argc, ...)
+{
+    greg_t *sp = (greg_t *)((uintptr_t)ucp->uc_stack.ss_sp + ucp->uc_stack.ss_size);
+    int extra = argc > 6 ? argc - 6 : 0;
+    sp -= extra + 1;
+    sp = (greg_t *)((((uintptr_t)sp) & ~(uintptr_t)15) - 8);
+    ucp->uc_mcontext.gregs[REG_RIP] = (greg_t)(uintptr_t)func;
+    ucp->uc_mcontext.gregs[REG_RBX] = (greg_t)(uintptr_t)&sp[extra + 1];
+    ucp->uc_mcontext.gregs[REG_RSP] = (greg_t)(uintptr_t)sp;
+    sp[0] = (greg_t)(uintptr_t)&xrl_start_context;
+    va_list ap;
+    va_start(ap, argc);
+    for (int i = 0; i < argc; i++) {
+        greg_t v = va_arg(ap, greg_t);
+        switch (i) {
+        case 0: ucp->uc_mcontext.gregs[REG_RDI] = v; break;
+        case 1: ucp->uc_mcontext.gregs[REG_RSI] = v; break;
+        case 2: ucp->uc_mcontext.gregs[REG_RDX] = v; break;
+        case 3: ucp->uc_mcontext.gregs[REG_RCX] = v; break;
+        case 4: ucp->uc_mcontext.gregs[REG_R8] = v; break;
+        case 5: ucp->uc_mcontext.gregs[REG_R9] = v; break;
+        default: sp[i - 5] = v;
+        }
+    }
+    va_end(ap);
+    sp[extra + 1] = (greg_t)(uintptr_t)ucp->uc_link;
+}
+
+/* ------------------------------------------------ libc's dynamic section
+ * glibc's ld.so adds the load address to the address-valued entries of every object's .dynamic in memory
+ * (DT_HASH, DT_GNU_HASH, DT_SYMTAB, DT_STRTAB, DT_VERSYM, ...). Software that finds libc through
+ * /proc/self/maps and walks its symbol table itself (Epic's EAC bootstrapper does, to get dlopen) takes those
+ * entries as absolute pointers. musl leaves them as link-time offsets (its own loader adds the base each time
+ * it needs one, and never reads these five again once an object is loaded: checked against dynlink.c v1.2.6,
+ * where only decode_dyn at load time reads them), so a symbol walk of musl's libc faults on a small number.
+ * This shim does what glibc's ld.so does, to libc only (the object that holds dlopen), once: the entries
+ * become absolute, as a glibc-built program expects. It changes no musl behaviour and no identity. */
+#include <link.h>
+
+static int libc_dyn_cb(struct dl_phdr_info *info, size_t sz, void *data)
+{
+    uintptr_t target = (uintptr_t)data, base = info->dlpi_addr;
+    const ElfW(Phdr) *dynp = NULL, *relro = NULL;
+    int inside = 0;
+    (void)sz;
+    for (int i = 0; i < info->dlpi_phnum; i++) {
+        const ElfW(Phdr) *p = &info->dlpi_phdr[i];
+        if (p->p_type == PT_LOAD && target >= base + p->p_vaddr && target < base + p->p_vaddr + p->p_memsz) inside = 1;
+        if (p->p_type == PT_DYNAMIC) dynp = p;
+        if (p->p_type == PT_GNU_RELRO) relro = p;
+    }
+    if (!inside || !dynp) return 0;
+    ElfW(Dyn) *dyn = (ElfW(Dyn) *)(base + dynp->p_vaddr);
+    uintptr_t lo = (uintptr_t)dyn & ~(uintptr_t)4095, hi = ((uintptr_t)dyn + dynp->p_memsz + 4095) & ~(uintptr_t)4095;
+    int ro = relro && (uintptr_t)dyn >= base + relro->p_vaddr && (uintptr_t)dyn < base + relro->p_vaddr + relro->p_memsz;
+    if (ro && mprotect((void *)lo, hi - lo, PROT_READ | PROT_WRITE)) return 1;
+    for (; dyn->d_tag != DT_NULL; dyn++) {
+        switch (dyn->d_tag) {
+        case DT_HASH: case DT_GNU_HASH: case DT_SYMTAB: case DT_STRTAB: case DT_VERSYM:
+            if (dyn->d_un.d_ptr < base) dyn->d_un.d_ptr += base;      /* a link-time offset: not adjusted yet */
+        }
+    }
+    if (ro) mprotect((void *)lo, hi - lo, PROT_READ);
+    return 1;
+}
+
+__attribute__((constructor)) static void libc_dynamic_init(void)
+{
+    dl_iterate_phdr(libc_dyn_cb, (void *)(uintptr_t)&dlopen);
+}
+
 /* --------------------------------------------------------- ctype tables */
 /* glibc's ctype macros index a 384-entry table through __ctype_b_loc() etc. (C locale). */
 static unsigned short g_ctype_b[384];

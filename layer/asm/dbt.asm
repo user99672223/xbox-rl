@@ -25,6 +25,7 @@ OPTION CASEMAP:NONE
 
 EXTERN xrl_dbt_tab:BYTE
 EXTERN xrl_dbt_rng:QWORD
+DBT_NRNG EQU 16                    ; translated images the layer can have (dbt.c MAX_IMG): {lo, size} pairs in xrl_dbt_rng
 EXTERN xrl_rawsys:PROC
 
 .code
@@ -79,22 +80,14 @@ ij_miss:
     ; red zone, which a leaf function jumping through a switch table may still be using).
     mov     r10, [rsp+16]
     lea     rax, xrl_dbt_rng
+RNG_i = 0
+    REPT DBT_NRNG
     mov     r10, [rsp+16]
-    sub     r10, [rax]
-    cmp     r10, [rax+8]
+    sub     r10, [rax+RNG_i*16]
+    cmp     r10, [rax+RNG_i*16+8]
     jb      ij_enter
-    mov     r10, [rsp+16]
-    sub     r10, [rax+16]
-    cmp     r10, [rax+24]
-    jb      ij_enter
-    mov     r10, [rsp+16]
-    sub     r10, [rax+32]
-    cmp     r10, [rax+40]
-    jb      ij_enter
-    mov     r10, [rsp+16]
-    sub     r10, [rax+48]
-    cmp     r10, [rax+56]
-    jb      ij_enter
+RNG_i = RNG_i + 1
+    ENDM
     pop     r10
     pop     rax
     ret     80h
@@ -157,22 +150,14 @@ xrl_dbt_icall PROC
 ic_miss:
     ; no translation yet: is the target inside a translated image?
     lea     rax, xrl_dbt_rng
+RNG_i = 0
+    REPT DBT_NRNG
     mov     r10, r11
-    sub     r10, [rax]
-    cmp     r10, [rax+8]
+    sub     r10, [rax+RNG_i*16]
+    cmp     r10, [rax+RNG_i*16+8]
     jb      ic_orig
-    mov     r10, r11
-    sub     r10, [rax+16]
-    cmp     r10, [rax+24]
-    jb      ic_orig
-    mov     r10, r11
-    sub     r10, [rax+32]
-    cmp     r10, [rax+40]
-    jb      ic_orig
-    mov     r10, r11
-    sub     r10, [rax+48]
-    cmp     r10, [rax+56]
-    jb      ic_orig
+RNG_i = RNG_i + 1
+    ENDM
     ; native target: the return address is the continuation in the cache
     mov     rax, [rsp]
     xchg    rax, [rsp+8]

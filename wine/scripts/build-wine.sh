@@ -12,7 +12,7 @@
 #              the gateway, so it cannot.
 #   configure  cross-configure: unix side = xrl-musl-gcc, PE side = mingw-w64
 #   build      make
-#   install    make install-lib into $WORK/out/rootfs  (+ musl libc.so as /lib/ld-musl-x86_64.so.1)
+#   install    make install-lib into $WORK/out/rootfs  (+ musl as /usr/lib/libc.so, /lib/ld-musl-x86_64.so.1 -> it)
 #   check      assert no `syscall` instruction in anything under out/rootfs
 #
 # Environment:
@@ -126,8 +126,13 @@ if want install; then
     cp -a "$DEPS"/lib/libgnutls.so* "$DEPS"/lib/libnettle.so* "$DEPS"/lib/libhogweed.so* "$OUT/usr/lib/"
     log "wine: gnutls installed into the rootfs"
   fi
-  # the interpreter the layer's VFS serves at /lib/ld-musl-x86_64.so.1
-  mkdir -p "$OUT/lib"; cp "$SYS/usr/lib/libc.so" "$OUT/lib/ld-musl-x86_64.so.1"
+  # musl as a musl system lays it out: the library is /usr/lib/libc.so, and the interpreter path the
+  # loader asks for, /lib/ld-musl-x86_64.so.1, is a symlink to it (musl's own `make install`; relative
+  # here so that it resolves inside the rootfs). So
+  # /proc/self/maps names the real file, libc.so (docs/decisions.md, "Wine module mapping").
+  mkdir -p "$OUT/lib" "$OUT/usr/lib"
+  cp "$SYS/usr/lib/libc.so" "$OUT/usr/lib/libc.so"
+  rm -f "$OUT/lib/ld-musl-x86_64.so.1"; ln -s ../usr/lib/libc.so "$OUT/lib/ld-musl-x86_64.so.1"
   # Thread pointer: the console has no FSGSBASE, so every `mov %fs:0,%reg` becomes a load from
   # the host TEB slot (XRL_TP_GS_OFFSET in include/xrl_abi.h). Console variant only: the hosttest
   # rootfs runs on real Linux, where FS works and the TEB slot does not exist.

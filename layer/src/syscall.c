@@ -555,7 +555,9 @@ SYS(mmap)
 {
     UNUSED6;
     slong r = xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6);
+    if (r > 0 && (a4 & LX_MAP_FIXED)) xrl_dbt_unmapped((u64)r, (u64)a2);   /* dbt.c: generated code replaced */
     if (r > 0 && (a3 & LX_PROT_EXEC) && !(a4 & LX_MAP_ANONYMOUS)) xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
+    if (r > 0 && (a3 & LX_PROT_EXEC) && (a3 & LX_PROT_WRITE) && (a4 & LX_MAP_ANONYMOUS)) xrl_dbt_generated((u64)r, (u64)a2);   /* dbt.c */
     return r;
 }
 SYS(munmap)
@@ -570,13 +572,16 @@ SYS(munmap)
         u64 end = addr + ((len + 4095) & ~4095ull);
         if (sp >= addr && sp < end) { t->defer_unmap_addr = addr; t->defer_unmap_len = len; return 0; }
     }
-    return xrl_mem_munmap(addr, len);
+    slong r = xrl_mem_munmap(addr, len);
+    if (!r) xrl_dbt_unmapped(addr, len);       /* dbt.c: generated code */
+    return r;
 }
 SYS(mprotect)
 {
     UNUSED6;
     slong r = xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3);
-    if (!r && (a3 & LX_PROT_EXEC)) xrl_dbt_exec_hint((u64)a1, (u64)a2);   /* dbt.c: Windows images loaded by Wine */
+    if (!r && (a3 & LX_PROT_EXEC) && !xrl_dbt_exec_hint((u64)a1, (u64)a2) && (a3 & LX_PROT_WRITE))   /* dbt.c: Windows images loaded by Wine */
+        xrl_dbt_generated((u64)a1, (u64)a2);                                                          /* ... else generated code (rwx) */
     return r;
 }
 SYS(mremap) { UNUSED6; return xrl_mem_mremap((u64)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5); }
