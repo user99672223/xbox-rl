@@ -144,6 +144,24 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Rocket League reaches its online code on the laptop**
+  (1.75 GiB budget, swap, Epic launch arguments from `tools/run-rl.sh`):
+  PreInit, global shaders, script packages (the 6.4 GiB shader-cache peak, 224 s
+  under swap against 24 s native), GUID cache, client init (hardware survey:
+  "Wine Adapter", "Wine Audio Device"), **viewport created**, PsyNet starts and
+  sends its first HTTPS request (config.psynet.gg). What it took, beyond swap:
+  - **Fault ownership** (`signal.c`): the VEH called a fault "host" when rsp was
+    inside the TEB stack range; in Wine's view that range is Wine's stack, so every
+    CPU fault in Wine code went to Windows SEH, unhandled, and hung in the host's
+    unhandled-exception path (RL's main thread; a worker spun in NtYieldExecution,
+    308 M getrusage calls). This was the long-noted "fault on a Wine thread never
+    reaches the VEH". Now: guest view live + rip/rsp in executable/writable guest
+    memory = guest fault, delivered to Wine's handler.
+  - Guest tree: CA bundle, resolv.conf, hosts (DNS resolves Epic's servers).
+  - Open: TLS (Wine has no GnuTLS: bcrypt asymmetric keys and schannel fail; the
+    EAC branch adds GnuTLS), the laptop's own limits (page file growth ate the disk
+    while agents ran: 11.5 GB system-managed page file), no first frame yet.
+
 - **2026-10-26 — Swap for lazy memory (`layer/src/mem.c`).** Rocket League
   writes 6.4 GiB while loading (natively too); the console's commit wall is
   ~4.5 GiB, the laptop's free commit ~2 GB. Cold 64 KiB spans of lazy
