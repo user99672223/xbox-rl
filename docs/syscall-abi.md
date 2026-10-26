@@ -49,10 +49,17 @@ Grouped by the subsystem in the layer that owns them. Numbers are x86-64.
   `getppid`(110), `getuid`/`geteuid`/`getgid`/`getegid`, `prctl`(157),
   `arch_prctl`(158) [FSBASE/GSBASE — real, needed for TLS],
   `uname`(63), `sysinfo`(99), `getrandom`(318).
-- **Sockets:** only the Unix-domain pair Wine uses to talk to wineserver — and
-  since wineserver is an in-process thread with an in-memory channel, this may
-  reduce to `socketpair`(53) emulation or be bypassed entirely by the B patch.
-  Decide at integration; log what Wine actually opens.
+- **Sockets:** `socketpair`(53) AF_UNIX (in-memory, SCM_RIGHTS; ipc.c) and real
+  **AF_INET / AF_INET6 TCP and UDP over Winsock** (net.c, added for Easy
+  Anti-Cheat's module and any Linux program): `socket`(41), `connect`(42),
+  `accept`(43)/`accept4`(288), `sendto`(44), `recvfrom`(45), `sendmsg`(46),
+  `recvmsg`(47), `sendmmsg`(307), `recvmmsg`(299), `shutdown`(48), `bind`(49),
+  `listen`(50), `getsockname`(51), `getpeername`(52), `setsockopt`(54),
+  `getsockopt`(55); sockets are fds, so `read`/`write`/`readv`/`writev`/`poll`/
+  `epoll`/`fcntl`/`ioctl(FIONBIO,FIONREAD)`/`dup`/`close` work on them. Linux
+  constants and errnos are translated; blocking is done in the layer (interruptible,
+  `SO_RCVTIMEO`/`SO_SNDTIMEO`), never inside Winsock. Not provided: AF_UNIX by
+  path, raw/packet/netlink sockets (`-EAFNOSUPPORT`/`-EPERM`), ancillary data.
 
 ## wineserver channel
 

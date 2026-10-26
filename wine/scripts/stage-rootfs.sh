@@ -20,7 +20,7 @@ rootfs="$WORK/out/rootfs"; prefix="$WORK/out/prefix"
 
 mkdir -p "$dest"
 log "stage: Wine rootfs -> $dest"
-rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclude=/game "$rootfs"/ "$dest"/
+rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclude=/game --exclude=/etc/resolv.conf --exclude=/etc/hosts "$rootfs"/ "$dest"/
 log "stage: prefix -> $dest/prefix"
 rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
 
@@ -30,6 +30,15 @@ rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
 
 # Wine's unix side reads a stable machine identity; keep one per staged tree.
 mkdir -p "$dest/etc"
+# Name resolution: musl's resolver reads /etc/resolv.conf and /etc/hosts and talks plain UDP/TCP, which the
+# layer's sockets carry. The files are staged once and then yours to edit (never overwritten).
+[ -s "$dest/etc/resolv.conf" ] || printf '# staged by wine/scripts/stage-rootfs.sh; edit for your network
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+' > "$dest/etc/resolv.conf"
+[ -s "$dest/etc/hosts" ] || printf '127.0.0.1 localhost
+::1 localhost ip6-localhost
+' > "$dest/etc/hosts"
 [ -s "$dest/etc/machine-id" ] || { tr -dc 'a-f0-9' < /dev/urandom | head -c 32; echo; } > "$dest/etc/machine-id"
 
 bad=$(find "$rootfs" "$prefix" -type f -name '*[:*?"<>|\\]*' | head -5)

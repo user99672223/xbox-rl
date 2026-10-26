@@ -395,28 +395,62 @@ SYS(socketpair)
     if (xrl_ctu((u64)a4, fds, 8)) { xrl_fd_close(fds[0]); xrl_fd_close(fds[1]); return -LX_EFAULT; }
     return 0;
 }
-SYS(sendmsg) { UNUSED6; return xrl_sendmsg((int)a1, (u64)a2, (int)a3); }
-SYS(recvmsg) { UNUSED6; return xrl_recvmsg((int)a1, (u64)a2, (int)a3); }
-SYS(shutdown) { UNUSED6; return xrl_shutdown((int)a1, (int)a2); }
-SYS(sendto) { UNUSED6; return do_write((int)a1, (u64)a2, (u64)a3, -1); }
+/* AF_INET/AF_INET6 sockets are net.c's (Winsock); every other fd falls through to ipc.c's socketpair code. */
+#define NET_OR(r, other) do { slong r_ = (r); if (r_ != XRL_NOT_NET) return r_; return (other); } while (0)
+SYS(sendmsg) { UNUSED6; NET_OR(xrl_net_sendmsg((int)a1, (u64)a2, (int)a3), xrl_sendmsg((int)a1, (u64)a2, (int)a3)); }
+SYS(recvmsg) { UNUSED6; NET_OR(xrl_net_recvmsg((int)a1, (u64)a2, (int)a3), xrl_recvmsg((int)a1, (u64)a2, (int)a3)); }
+SYS(sendmmsg) { UNUSED6; NET_OR(xrl_net_sendmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), -LX_ENOTSOCK); }
+SYS(recvmmsg) { UNUSED6; NET_OR(xrl_net_recvmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), -LX_ENOTSOCK); }
+SYS(shutdown) { UNUSED6; NET_OR(xrl_net_shutdown((int)a1, (int)a2), xrl_shutdown((int)a1, (int)a2)); }
+SYS(sendto) { UNUSED6; NET_OR(xrl_net_sendto((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6), do_write((int)a1, (u64)a2, (u64)a3, -1)); }
 SYS(recvfrom)
 {
     UNUSED6;
-    slong r = do_read((int)a1, (u64)a2, (u64)a3, -1);
+    slong r = xrl_net_recvfrom((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6);
+    if (r != XRL_NOT_NET) return r;
+    r = do_read((int)a1, (u64)a2, (u64)a3, -1);
     if (r >= 0 && a6) { u32 z = 0; xrl_ctu((u64)a6, &z, 4); }
     return r;
 }
 SYS(socket)
 {
     UNUSED6;
+    slong r = xrl_net_socket((int)a1, (int)a2, (int)a3);
+    if (r != XRL_NOT_NET) return r;
     static volatile LONG once;
-    if (!InterlockedExchange(&once, 1)) LOGW("socket(domain=%lld type=%lld): real sockets not implemented (-EAFNOSUPPORT)", a1, a2);
+    if (!InterlockedExchange(&once, 1)) LOGW("socket(domain=%lld type=%lld): only AF_INET/AF_INET6 TCP/UDP and socketpair exist (-EAFNOSUPPORT)", a1, a2);
     return -LX_EAFNOSUPPORT;
 }
-SYS(setsockopt) { UNUSED6; xfile *f = xrl_fd_get((int)a1); if (!f) return -LX_EBADF; xfile_unref(f); return 0; }
+SYS(bind) { UNUSED6; NET_OR(xrl_net_bind((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
+SYS(listen) { UNUSED6; NET_OR(xrl_net_listen((int)a1, (int)a2), -LX_ENOTSOCK); }
+SYS(accept) { UNUSED6; NET_OR(xrl_net_accept((int)a1, (u64)a2, (u64)a3, 0), -LX_ENOTSOCK); }
+SYS(accept4) { UNUSED6; NET_OR(xrl_net_accept((int)a1, (u64)a2, (u64)a3, (int)a4), -LX_ENOTSOCK); }
+SYS(connect) { UNUSED6; NET_OR(xrl_net_connect((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
+SYS(getpeername) { UNUSED6; NET_OR(xrl_net_getpeername((int)a1, (u64)a2, (u64)a3), -LX_ENOTCONN); }
+SYS(getsockname)
+{
+    UNUSED6;
+    slong r = xrl_net_getsockname((int)a1, (u64)a2, (u64)a3);
+    if (r != XRL_NOT_NET) return r;
+    if (a3) { u32 z = 2; xrl_ctu((u64)a3, &z, 4); }
+    if (a2) { u16 fam = LX_AF_UNIX; xrl_ctu((u64)a2, &fam, 2); }
+    return 0;
+}
+SYS(setsockopt)
+{
+    UNUSED6;
+    slong r = xrl_net_setsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5);
+    if (r != XRL_NOT_NET) return r;
+    xfile *f = xrl_fd_get((int)a1);
+    if (!f) return -LX_EBADF;
+    xfile_unref(f);
+    return 0;
+}
 SYS(getsockopt)
 {
     UNUSED6;
+    slong r = xrl_net_getsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5);
+    if (r != XRL_NOT_NET) return r;
     xfile *f = xrl_fd_get((int)a1);
     if (!f) return -LX_EBADF;
     xfile_unref(f);
@@ -428,7 +462,6 @@ SYS(getsockopt)
     }
     return 0;
 }
-SYS(getsockname) { UNUSED6; if (a3) { u32 z = 2; xrl_ctu((u64)a3, &z, 4); } if (a2) { u16 fam = LX_AF_UNIX; xrl_ctu((u64)a2, &fam, 2); } return 0; }
 
 /* ---- polling ---------------------------------------------------------- */
 SYS(poll) { UNUSED6; return xrl_poll((u64)a1, (u64)a2, (int)a3 < 0 ? -1 : (s64)(int)a3 * 1000000ll, 0); }
@@ -700,6 +733,8 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_socketpair, socketpair), T(NR_sendmsg, sendmsg), T(NR_recvmsg, recvmsg), T(NR_shutdown, shutdown),
     T(NR_sendto, sendto), T(NR_recvfrom, recvfrom), T(NR_socket, socket),
     T(NR_setsockopt, setsockopt), T(NR_getsockopt, getsockopt), T(NR_getsockname, getsockname),
+    T(NR_bind, bind), T(NR_listen, listen), T(NR_accept, accept), T(NR_accept4, accept4), T(NR_connect, connect),
+    T(NR_getpeername, getpeername), T(NR_sendmmsg, sendmmsg), T(NR_recvmmsg, recvmmsg),
     /* time */
     T(NR_clock_gettime, clock_gettime), T(NR_clock_getres, clock_getres), T(NR_clock_settime, clock_settime),
     T(NR_clock_nanosleep, clock_nanosleep), T(NR_nanosleep, nanosleep), T(NR_gettimeofday, gettimeofday),

@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")   # /MD (UWP requires the dyn
 
 set(XRL_SRC
     src/boot.c src/com.c src/elf.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c
-    src/procfs.c src/rewrite.c src/rewrite_core.c src/signal.c src/syscall.c src/sysnames.c src/teb.c src/thread.c
+    src/net.c src/procfs.c src/rewrite.c src/rewrite_core.c src/signal.c src/syscall.c src/sysnames.c src/teb.c src/thread.c
     src/util.c src/vfs.c src/x86dec.c
     )
 
@@ -35,10 +35,10 @@ target_compile_definitions(xrl_layer PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_
 target_compile_options(xrl_layer PRIVATE /W3 /utf-8 /Zi /Gy $<$<COMPILE_LANGUAGE:C>:/std:c11>)
 if(XRL_UWP)
     target_compile_definitions(xrl_layer PRIVATE WINAPI_FAMILY=WINAPI_FAMILY_APP _WIN32_WINNT=0x0A00 XRL_UWP=1)
-    target_link_libraries(xrl_layer PUBLIC WindowsApp bcrypt synchronization)
+    target_link_libraries(xrl_layer PUBLIC WindowsApp bcrypt synchronization)   # WindowsApp.lib exports Winsock too
 else()
     target_compile_definitions(xrl_layer PRIVATE _WIN32_WINNT=0x0A00)
-    target_link_libraries(xrl_layer PUBLIC bcrypt synchronization)
+    target_link_libraries(xrl_layer PUBLIC bcrypt synchronization ws2_32)
 endif()
 
 if(XRL_BUILD_TESTS AND NOT XRL_UWP)
