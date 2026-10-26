@@ -190,6 +190,41 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     device is created without the game's own creation flags (as in the D3D11On12 path). Default stays
     D3D11On12 until the console run says otherwise.
 
+- **2026-10-26 — An in-process desktop thread stands in for explorer.exe's (`patches/wine/0026-desktop-thread.patch`).**
+  Every thread's first user32/win32u display call loads the user driver (`load_desktop_driver()`), which first
+  does `send_message( desktop, WM_NULL )` and waits for the desktop window's owner to answer; a mode change sends
+  it `WM_DISPLAYCHANGE`. In Wine that owner is explorer's desktop thread. We have no explorer (one process,
+  `XRL_NO_SPAWN`): the server created the desktop window with `force`, but its handle entry kept the id of
+  whichever program thread asked first, so later senders waited on a game thread. Rocket League froze on the
+  Xbox on a fullscreen switch to 2560x1440 and on a windowed 2560x1440 start (render thread waits on WM_NULL,
+  game thread waits for the render thread). Laptop repro: a second thread enumerating modes while the main
+  thread calls `ChangeDisplaySettingsEx` never finished its first loop.
+  - **What it does.** win32u's `get_desktop_window()`, when the desktop has no windows yet and `XRL_NO_SPAWN` is
+    set, calls a new user32 callback (`NtUserStartDesktop`) instead of spawning explorer. It starts one thread
+    (`wine_xrl_desktop`) that does what `manage_desktop()` does for the null driver: zero display GUID,
+    `Video\{0000...}\0000\GraphicsDriver=null` (left alone when the pre-baked prefix has it), creates the desktop
+    window with that GUID (so `__wine_display_device_guid` is set as explorer sets it) and the `Message` window,
+    sizes the desktop to the virtual screen, then pumps messages for the life of the process. Callers wait for it
+    (up to 10 s, like explorer's `WaitForInputIdle`) and cache the windows only once both exist. Callers that
+    must not wait (the desktop thread itself before its window exists, a holder of the loader lock, a holder of
+    win32u's user lock, anyone after a 10 s timeout) get the current state without caching and ask again later;
+    `load_display_driver()` then skips the WM_NULL to a desktop that is not pumping yet (the zero GUID's key
+    names the driver anyway). `WM_DISPLAYCHANGE` is handled on that thread by win32u's desktop proc (resizes
+    the desktop). If the thread cannot start, the server's desktop window is the fallback as before.
+  - **Not done:** wallpaper, shell window, systray, explorer's display-settings restorer (one process: nothing
+    to restore for another). **Cost:** one more thread blocked in `GetMessage`; it dies with `ExitProcess` like
+    any thread, but a program that ends by `ExitThread` on its last own thread would now be kept alive by it
+    (Rocket League exits through `ExitProcess`). Global hooks set by the program run on that thread.
+  - **Tested on the laptop** (desktop host, guest `rootfs-console`, `XRL_DISPLAY=2560x1440@120`): the modeset
+    repro without arguments completes 80 mode changes with the enum thread running (6610 enum loops) and exits 0;
+    with `trace+win` each change shows `desktop_window_proc ... change from ... to ...` on the desktop thread.
+    Rocket League windowed 2560x1440: swapchain created, `perf: frames` 11-15 fps. Fullscreen 1920x1080:
+    swapchain created, `perf: frames` 29-44 fps for 3 minutes (240 s run); no `handle_syscall_fault`, no musl
+    crash. One of three fullscreen runs stalled before its swapchain (main thread ~2M syscalls/s, one unnamed
+    thread at 100% user CPU without syscalls, no `desktop thread not ready` error); not
+    reproduced in the next run with `XRL_PROFILE=1 XRL_HANG_DUMP=170`, cause unknown. If it recurs, rerun with
+    those two variables to see where the threads are.
+
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
   `claude/eac-module-map`. Findings, then what was built, then where it stops.

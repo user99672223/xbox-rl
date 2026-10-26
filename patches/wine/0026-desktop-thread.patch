@@ -1,0 +1,314 @@
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index c7e4ddf..ffd8749 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -190,6 +190,133 @@ static NTSTATUS WINAPI User32DragDropPost( void *args, ULONG size )
+     return STATUS_SUCCESS;
+ }
+ 
++/* xbox-rl: the in-process desktop thread (single-process Wine, XRL_NO_SPAWN; see docs/decisions.md).
++ *
++ * In Wine the desktop window and the HWND_MESSAGE parent belong to explorer.exe's desktop thread,
++ * which pumps messages for them.  Other threads send to the desktop window and wait for the answer:
++ * the first user call of every thread does send_message( desktop, WM_NULL ) ("wait for the graphics
++ * driver", load_desktop_driver), a mode change sends WM_DISPLAYCHANGE, ...  Without explorer the
++ * server created the desktop window itself (get_desktop_window with force), detached from any thread,
++ * but its user handle entry kept the creating thread's id, so those messages went to whichever
++ * program thread asked first, and waited until it pumped: a deadlock as soon as that thread waits for
++ * the sender (Rocket League: game thread waits for the render thread, render thread waits on WM_NULL).
++ *
++ * This thread is manage_desktop() without the shell, for the null graphics driver: the display GUID
++ * is all zero (explorer's "null" driver), the video key says GraphicsDriver=null, the desktop window
++ * is created with that GUID (WM_NCCREATE sets __wine_display_device_guid), then the message window,
++ * the desktop is sized to the virtual screen, and the thread runs the message loop for the life of
++ * the process (ExitProcess terminates it like any other thread).  WM_DISPLAYCHANGE is handled by
++ * win32u's desktop window proc (resize to the new virtual screen) on this thread.  Not done: wallpaper,
++ * launchers, systray, shell window, explorer's display-settings restorer (one process: nothing to
++ * restore for another). */
++#define DESKTOP_CLASS_ATOM ((LPCWSTR)MAKEINTATOM(32769))
++
++static LONG desktop_state;  /* 0: not started, 1: starting, 2: running, 3: failed */
++static DWORD desktop_tid;
++static BOOL desktop_wait_timed_out;
++
++static void set_null_graphics_driver( const GUID *guid )
++{
++    WCHAR key[128], value[16];
++    DWORD size = sizeof(value);
++    HKEY hkey;
++
++    swprintf( key, ARRAY_SIZE(key), L"System\\CurrentControlSet\\Control\\Video\\"
++              L"{%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}\\0000",
++              guid->Data1, guid->Data2, guid->Data3, guid->Data4[0], guid->Data4[1], guid->Data4[2],
++              guid->Data4[3], guid->Data4[4], guid->Data4[5], guid->Data4[6], guid->Data4[7] );
++    /* a pre-baked prefix has it already: leave it (and the registry) untouched */
++    if (!RegGetValueW( HKEY_LOCAL_MACHINE, key, L"GraphicsDriver", RRF_RT_REG_SZ, NULL, value, &size ) &&
++        !wcscmp( value, L"null" )) return;
++    if (!RegCreateKeyExW( HKEY_LOCAL_MACHINE, key, 0, NULL, REG_OPTION_VOLATILE, KEY_SET_VALUE, NULL,
++                          &hkey, NULL ))
++    {
++        RegSetValueExW( hkey, L"GraphicsDriver", 0, REG_SZ, (const BYTE *)L"null", sizeof(L"null") );
++        RegCloseKey( hkey );
++    }
++}
++
++static DWORD WINAPI desktop_thread( void *arg )
++{
++    GUID guid = {0};  /* the null driver's display GUID, as explorer sets it */
++    MSG msg;
++    HWND hwnd;
++
++    SetThreadDescription( GetCurrentThread(), L"wine_xrl_desktop" );
++    set_null_graphics_driver( &guid );
++
++    hwnd = CreateWindowExW( 0, DESKTOP_CLASS_ATOM, NULL, WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
++                            0, 0, 0, 0, 0, 0, 0, &guid );
++    if (!hwnd || NtUserGetAncestor( hwnd, GA_PARENT ))
++    {
++        ERR( "failed to create the desktop window %p, error %lu\n", hwnd, GetLastError() );
++        InterlockedExchange( &desktop_state, 3 );
++        return 1;
++    }
++    if (!CreateWindowExW( 0, L"Message", NULL, WS_POPUP | WS_CLIPSIBLINGS | WS_CLIPCHILDREN,
++                          0, 0, 100, 100, 0, 0, 0, NULL ))
++        ERR( "failed to create the message window, error %lu\n", GetLastError() );
++    NtUserSetWindowPos( hwnd, 0, GetSystemMetrics( SM_XVIRTUALSCREEN ), GetSystemMetrics( SM_YVIRTUALSCREEN ),
++                        GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ),
++                        SWP_SHOWWINDOW );
++    TRACE( "desktop window %p, message loop starting\n", hwnd );
++    InterlockedExchange( &desktop_state, 2 );
++
++    while (GetMessageW( &msg, 0, 0, 0 )) DispatchMessageW( &msg );
++    TRACE( "desktop message loop exiting\n" );
++    return 0;
++}
++
++/* Called by win32u's get_desktop_window() when the desktop has no window yet.  Starts the desktop
++ * thread once and waits until its windows exist.  STATUS_SUCCESS: they do; STATUS_PENDING: not yet
++ * and the caller must not wait (the desktop thread itself, before its window exists, e.g. a DLL's
++ * thread attach; a caller holding the loader lock, which the new thread needs to start; a caller
++ * holding win32u's user lock, which it needs to create windows); STATUS_UNSUCCESSFUL: the thread
++ * could not start or create the window (win32u falls back to the server-created desktop). */
++static NTSTATUS WINAPI User32StartDesktop( void *args, ULONG size )
++{
++    const ULONG *may_wait = args;
++    HANDLE thread;
++    DWORD tid, start;
++
++    if (GetCurrentThreadId() == desktop_tid) return STATUS_PENDING;
++    if (!InterlockedCompareExchange( &desktop_state, 1, 0 ))
++    {
++        /* suspended until desktop_tid is set: its own early user calls must see it */
++        if ((thread = CreateThread( NULL, 0, desktop_thread, NULL, CREATE_SUSPENDED, &tid )))
++        {
++            desktop_tid = tid;
++            ResumeThread( thread );
++            CloseHandle( thread );
++        }
++        else
++        {
++            ERR( "failed to start the desktop thread, error %lu\n", GetLastError() );
++            InterlockedExchange( &desktop_state, 3 );
++        }
++    }
++
++    if (desktop_state == 1)
++    {
++        if ((size >= sizeof(*may_wait) && !*may_wait) || desktop_wait_timed_out ||
++            RtlIsCriticalSectionLockedByThread( NtCurrentTeb()->Peb->LoaderLock ))
++        {
++            TRACE( "desktop thread starting, not waiting for it\n" );
++            return STATUS_PENDING;
++        }
++        /* explorer gets as long (WaitForInputIdle in get_desktop_window) */
++        start = GetTickCount();
++        while (desktop_state == 1 && GetTickCount() - start < 10000) Sleep( 1 );
++        if (desktop_state == 1)
++        {
++            ERR( "desktop thread not ready after 10 s, going on without it\n" );
++            desktop_wait_timed_out = TRUE;
++            return STATUS_PENDING;
++        }
++    }
++    return desktop_state == 2 ? STATUS_SUCCESS : STATUS_UNSUCCESSFUL;
++}
++
+ C_ASSERT( NtUserCallCount <= 256 );
+ 
+ static KERNEL_CALLBACK_PROC kernel_callback_table[256] =
+diff --git a/dlls/win32u/driver.c b/dlls/win32u/driver.c
+index 3c1286b..0e89891 100644
+--- a/dlls/win32u/driver.c
++++ b/dlls/win32u/driver.c
+@@ -1012,8 +1012,21 @@ static void load_display_driver(void)
+ {
+     USEROBJECTFLAGS flags;
+     HWINSTA winstation;
++    HWND desktop = NULL;
+ 
+-    if (is_service_process() || !load_desktop_driver( get_desktop_window() ) || user_driver == &lazy_load_driver)
++    if (!is_service_process())
++    {
++        desktop = get_desktop_window();
++        /* xbox-rl: get_desktop_window() may have waited for the desktop thread, which loads the
++         * driver while it creates the desktop window: nothing left to do then */
++        if (user_driver != &lazy_load_driver) return;
++        /* not ready and this thread may not wait for it (loader lock, timeout): get_desktop_window()
++         * cached nothing.  Don't send WM_NULL to a desktop thread that is not pumping yet (it may need
++         * the loader lock this thread holds); the zero GUID's video key names the driver all the same. */
++        if (!NtUserGetThreadInfo()->top_window) desktop = 0;
++    }
++
++    if (is_service_process() || !load_desktop_driver( desktop ) || user_driver == &lazy_load_driver)
+     {
+         winstation = NtUserGetProcessWindowStation();
+         if (!NtUserGetObjectInformation( winstation, UOI_FLAGS, &flags, sizeof(flags), NULL )
+diff --git a/dlls/win32u/sysparams.c b/dlls/win32u/sysparams.c
+index 3d6b763..282fe77 100644
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -381,6 +381,12 @@ void user_unlock(void)
+     pthread_mutex_unlock( &user_mutex );
+ }
+ 
++/* xbox-rl: get_desktop_window() must not wait for the desktop thread while holding the lock */
++BOOL user_lock_held(void)
++{
++    return user_lock_thread == GetCurrentThreadId();
++}
++
+ void user_check_not_lock(void)
+ {
+     if (user_lock_thread == GetCurrentThreadId())
+diff --git a/dlls/win32u/win32u_private.h b/dlls/win32u/win32u_private.h
+index 324cdbb..5dca023 100644
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -198,6 +198,7 @@ extern void reset_monitor_update_serial(void);
+ extern void user_lock(void);
+ extern void user_unlock(void);
+ extern void user_check_not_lock(void);
++extern BOOL user_lock_held(void);
+ extern BOOL get_gpu_uuid_from_luid( const LUID *luid, GUID *uuid );
+ extern BOOL get_gpu_info_from_uuid( const GUID *uuid, LUID *luid, UINT32 *node_mask, char *name );
+ extern BOOL get_float_gamma_ramp( float *ramp, LONG *serial );
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 66acb1c..206c402 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -25,6 +25,8 @@
+ #include <assert.h>
+ #include <stdarg.h>
+ #include <stddef.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ #include <pthread.h>
+ 
+@@ -825,6 +827,19 @@ static inline TEB64 *NtCurrentTeb64(void) { return NULL; }
+ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiBatchCount; }
+ #endif
+ 
++/* xbox-rl: no explorer.exe can run (single process): the desktop is user32's desktop thread */
++static BOOL use_desktop_thread(void)
++{
++    static int no_spawn = -1;
++
++    if (no_spawn == -1)
++    {
++        const char *env = getenv( "XRL_NO_SPAWN" );
++        no_spawn = env && env[0] && strcmp( env, "0" );
++    }
++    return no_spawn && NtCurrentTeb()->Peb->KernelCallbackTable;
++}
++
+ HWND get_desktop_window(void)
+ {
+     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
+@@ -846,7 +861,55 @@ HWND get_desktop_window(void)
+     }
+     SERVER_END_REQ;
+ 
+-    if (!thread_info->top_window)
++    /* xbox-rl: the single-process Wine (XRL_NO_SPAWN) has no explorer.exe; user32's desktop thread
++     * creates and owns the desktop and message windows (User32StartDesktop, docs/decisions.md). */
++    if (!is_service && use_desktop_thread() && (!thread_info->top_window || !thread_info->msg_window))
++    {
++        ULONG may_wait = !user_lock_held(), ret_len;
++        NTSTATUS status;
++        void *ret_ptr;
++
++        status = KeUserModeCallback( NtUserStartDesktop, &may_wait, sizeof(may_wait), &ret_ptr, &ret_len );
++
++        SERVER_START_REQ( get_desktop_window )
++        {
++            req->force = 0;
++            if (!wine_server_call( req ))
++            {
++                thread_info->top_window = reply->top_window;
++                thread_info->msg_window = reply->msg_window;
++            }
++        }
++        SERVER_END_REQ;
++
++        if (status == STATUS_PENDING && (!thread_info->top_window || !thread_info->msg_window))
++        {
++            /* not created yet and this thread may not wait for it: cache nothing, ask again next time.
++             * No register_builtin_classes() either: it runs user32 code that asks for the desktop again
++             * (recursion into its pthread_once); the desktop thread registers them with its window. */
++            HWND ret = UlongToHandle( thread_info->top_window );
++
++            TRACE_(win)( "desktop not ready yet, returning %p\n", ret );
++            thread_info->top_window = thread_info->msg_window = 0;
++            return ret;
++        }
++
++        if (!thread_info->top_window)  /* the desktop thread failed: the server's desktop window */
++        {
++            ERR_(win)( "no desktop thread, status %#x\n", (int)status );
++            SERVER_START_REQ( get_desktop_window )
++            {
++                req->force = 1;
++                if (!wine_server_call( req ))
++                {
++                    thread_info->top_window = reply->top_window;
++                    thread_info->msg_window = reply->msg_window;
++                }
++            }
++            SERVER_END_REQ;
++        }
++    }
++    else if (!thread_info->top_window)
+     {
+         static const WCHAR appnameW[] = {'\\','?','?','\\','C',':','\\','w','i','n','d','o','w','s',
+             '\\','s','y','s','t','e','m','3','2','\\','e','x','p','l','o','r','e','r','.','e','x','e',0};
+diff --git a/dlls/wow64win/user.c b/dlls/wow64win/user.c
+index 5888dc2..d4e29c5 100644
+--- a/dlls/wow64win/user.c
++++ b/dlls/wow64win/user.c
+@@ -1505,6 +1505,11 @@ static NTSTATUS WINAPI wow64_NtUserDragDropPost( void *arg, ULONG size )
+     return dispatch_callback( NtUserDragDropPost, params32, size );
+ }
+ 
++static NTSTATUS WINAPI wow64_NtUserStartDesktop( void *arg, ULONG size )
++{
++    return dispatch_callback( NtUserStartDesktop, arg, size );
++}
++
+ ntuser_callback user_callbacks[NtUserCallCount] =
+ {
+ #define USER32_CALLBACK_ENTRY(name) wow64_NtUser##name,
+diff --git a/include/ntuser.h b/include/ntuser.h
+index 0011fa0..7b4f98d 100644
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -96,7 +96,8 @@ struct user_entry
+     USER32_CALLBACK_ENTRY(DragDropLeave) \
+     USER32_CALLBACK_ENTRY(DragDropDrag) \
+     USER32_CALLBACK_ENTRY(DragDropDrop) \
+-    USER32_CALLBACK_ENTRY(DragDropPost)
++    USER32_CALLBACK_ENTRY(DragDropPost) \
++    USER32_CALLBACK_ENTRY(StartDesktop)
+ 
+ enum
+ {
