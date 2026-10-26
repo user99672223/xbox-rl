@@ -702,7 +702,7 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
 slong xrl_vfs_open(int dirfd, const char *path, int flags, int mode)
 {
     slong r = vfs_open_impl(dirfd, path, flags, mode);
-    if (G.trace_syscalls) LOGT("vfs: open(%s, 0x%x) = %lld", path, flags, r);
+    if (G.trace_syscalls == 1) LOGT("vfs: open(%s, 0x%x) = %lld", path, flags, r);
     return r;
 }
 

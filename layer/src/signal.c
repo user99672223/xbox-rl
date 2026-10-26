@@ -46,6 +46,18 @@ void xrl_sig_init(void) { memset(g_act, 0, sizeof g_act); sig_cpu_init(); }
 
 #define SIGBIT(s) (1ull << ((s) - 1))
 
+/* signals ignored / caught by a handler, as bitmasks (bit sig-1), for /proc/self/status */
+void xrl_sig_proc_masks(u64 *ign, u64 *cgt)
+{
+    *ign = *cgt = 0;
+    AcquireSRWLockShared(&g_sig_lock);
+    for (int i = 1; i <= LX_NSIG; i++) {
+        if (g_act[i].handler == 1) *ign |= SIGBIT(i);
+        else if (g_act[i].handler > 1) *cgt |= SIGBIT(i);
+    }
+    ReleaseSRWLockShared(&g_sig_lock);
+}
+
 slong xrl_sys_rt_sigaction(int sig, u64 uact, u64 uoact, u64 size)
 {
     if (size != 8) return -LX_EINVAL;

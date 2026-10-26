@@ -79,7 +79,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     G.umask = 022;
 
     const char *tr = env_get("XRL_TRACE");
-    G.trace_syscalls = tr && tr[0] && tr[0] != '0';
+    G.trace_syscalls = tr && tr[0] ? atoi(tr) : 0;   /* 1 raw numbers, 2 decoded (systrace.c) */
 
     LOGI("layer %s booting (ABI v%u), argv[0]=%s, %d args, %d env, budget=%llu MiB", XRL_LAYER_VERSION, XRL_ABI_VERSION,
          G.exec_path, G.argc, G.envc, G.mem_budget >> 20);

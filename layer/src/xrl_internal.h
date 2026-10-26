@@ -40,6 +40,7 @@ BOOL WINAPI TerminateThread(HANDLE hThread, DWORD dwExitCode);
 #include "lx.h"
 
 #define XRL_LAYER_VERSION "0.1.0"
+#define XRL_UTS_VERSION "#1 SMP xbox-rl layer " XRL_LAYER_VERSION   /* uname -v and /proc/version */
 
 /* ------------------------------------------------------------------ log */
 void xrl_logf(int level, const char *tag, const char *fmt, ...);
@@ -478,7 +479,10 @@ slong xrl_dbt_enter_sys(u64 pc);
 void  xrl_dbt_stats(u64 *faults, u64 *translated);
 
 /* -------------------------------------------------------------- syscall */
+int  xrl_rlimit_get(int res, lx_rlimit *out);          /* misc.c: the current limit, for /proc/self/limits */
+void xrl_sig_proc_masks(u64 *ign, u64 *cgt);          /* signal.c: SigIgn / SigCgt of /proc/self/status */
 const char *xrl_sysname(slong nr);
+void xrl_systrace(slong nr, const slong *a, slong r, int tid);   /* XRL_TRACE=2 (systrace.c) */
 void xrl_syscall_table_init(void);
 
 #endif /* XRL_INTERNAL_H */

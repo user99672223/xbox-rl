@@ -521,6 +521,101 @@ static void cpuid(u32 leaf, u32 sub, u32 r[4])
 {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
 }
+/* what every Linux has under /proc, and resource limits that stick (found by recording what the EAC module
+ * asks of the system: /proc/1/comm, a full /proc/<pid>/status; docs/decisions.md) */
+static long slurp(const char *path, char *buf, long cap)
+{
+    long fd = sc3(2, path, 0, 0), n = 0, r;
+    if (fd < 0) return fd;
+    while (n < cap - 1 && (r = sc3(0, fd, buf + n, cap - 1 - n)) > 0) n += r;
+    sc1(3, fd);
+    buf[n] = 0;
+    return n;
+}
+static void sigh_dummy(int s) { (void)s; }
+static u64 hex16(const char *p) { u64 v = 0; for (int i = 0; i < 16; i++) { char c = p[i]; v = v * 16 + (u64)(c <= '9' ? c - '0' : c - 'a' + 10); } return v; }
+static void test_procfs_rlimits(void)
+{
+    static char b[8192];
+    char t[64];
+    long n = slurp("/proc/self/status", b, sizeof b);
+    CHECK(n > 600, "/proc/self/status is the full kernel layout");
+    const char *must[] = { "Name:\t", "Umask:\t", "State:\t", "Tgid:\t", "Pid:\t", "PPid:\t1\n", "TracerPid:\t0\n", "Uid:\t", "Gid:\t", "Groups:",
+        "NStgid:\t", "NSpid:\t", "VmSize:", "VmRSS:", "VmSwap:", "Threads:\t", "SigQ:\t", "SigBlk:\t", "SigIgn:\t", "SigCgt:\t",
+        "CapInh:\t", "CapPrm:\t", "CapEff:\t", "CapBnd:\t", "CapAmb:\t", "NoNewPrivs:\t0\n", "Seccomp:\t0\n", "Cpus_allowed:\t",
+        "Cpus_allowed_list:\t", "Mems_allowed_list:\t", "voluntary_ctxt_switches:\t" };
+    int miss = 0;
+    for (unsigned i = 0; i < sizeof must / sizeof *must; i++) if (!find(b, must[i])) { out("    missing "); out(must[i]); out("\n"); miss++; }
+    CHECK(!miss, "status has every field a 6.x kernel prints, in order");
+    {   /* Pid/Tgid agree with getpid; the fields come in the kernel's order */
+        long pid = sc1(39, 0);
+        char key[24] = "Tgid:\t"; int k = 6; long v = pid; char d[12]; int nd = 0;
+        do d[nd++] = (char)('0' + v % 10); while ((v /= 10));
+        while (nd) key[k++] = d[--nd];
+        key[k++] = '\n'; key[k] = 0;
+        CHECK(find(b, key) != 0, "status Tgid is getpid()");
+        const char *a1 = find(b, "Name:"), *a2 = find(b, "Groups:"), *a3 = find(b, "VmPeak:"), *a4 = find(b, "Threads:"), *a5 = find(b, "Cpus_allowed:");
+        CHECK(a1 && a2 && a3 && a4 && a5 && a1 < a2 && a2 < a3 && a3 < a4 && a4 < a5, "status fields in kernel order");
+    }
+    /* signal dispositions show up in SigCgt / SigIgn */
+    struct { u64 h, f, r, m; } act = { (u64)(long)sigh_dummy, 0, 0, 0 };
+    sc4(13, 12 /* SIGUSR2 */, &act, 0, 8);
+    act.h = 1;
+    sc4(13, 10 /* SIGUSR1 */, &act, 0, 8);
+    slurp("/proc/self/status", b, sizeof b);
+    const char *cg = find(b, "SigCgt:\t"), *ig = find(b, "SigIgn:\t");
+    CHECK(cg && !memcmp(cg + 8, "0000000000000800", 16), "SigCgt has the caught signal (SIGUSR2)");
+    CHECK(ig && !memcmp(ig + 8, "0000000000000200", 16), "SigIgn has the ignored signal (SIGUSR1)");
+    act.h = 0; sc4(13, 12, &act, 0, 8); sc4(13, 10, &act, 0, 8);
+    /* a thread's own status */
+    {
+        long tid = sc3(186, 0, 0, 0), q = tid, k = 16; char p2[64] = "/proc/self/task/", d[12]; int nd = 0;
+        do d[nd++] = (char)('0' + q % 10); while ((q /= 10));
+        while (nd) p2[k++] = d[--nd];
+        memcpy(p2 + k, "/status", 8);
+        long m = slurp(p2, b, sizeof b);
+        CHECK(m > 600 && find(b, "Name:\t") && find(b, "Seccomp:\t"), "/proc/self/task/<tid>/status is a status file");
+        key_t_dummy:;
+    }
+    /* process 1: PPid points at it, so it must exist; root's private files are EACCES, as for any user */
+    n = slurp("/proc/1/comm", t, sizeof t);
+    CHECK(n > 1 && t[n - 1] == '\n', "/proc/1/comm readable");
+    n = slurp("/proc/1/status", b, sizeof b);
+    CHECK(n > 600 && find(b, "Name:\tinit\n") && find(b, "Pid:\t1\n") && find(b, "PPid:\t0\n"), "/proc/1/status describes an init");
+    n = slurp("/proc/1/cmdline", t, sizeof t);
+    CHECK(n > 0, "/proc/1/cmdline readable");
+    n = slurp("/proc/1/stat", b, sizeof b);
+    CHECK(n > 20 && !memcmp(b, "1 (init) S 0 ", 13), "/proc/1/stat");
+    CHECK(sc3(2, "/proc/1/environ", 0, 0) == -13, "/proc/1/environ: EACCES");
+    CHECK(sc3(2, "/proc/1/maps", 0, 0) == -13, "/proc/1/maps: EACCES");
+    CHECK(sc3(89, "/proc/1/exe", t, sizeof t) == -13, "readlink /proc/1/exe: EACCES");
+    CHECK(sc3(2, "/proc/2/comm", 0, 0) == -2, "a process that does not exist: ENOENT");
+    n = slurp("/proc/self/cgroup", t, sizeof t);
+    CHECK(n > 0 && !memcmp(t, "0::/", 4), "/proc/self/cgroup");
+    n = slurp("/proc/version", b, sizeof b);
+    char un[390]; sc1(63, un);
+    CHECK(n > 0 && find(b, un + 195), "/proc/version carries uname's version string");
+    /* limits that stick */
+    u64 rl[2];
+    CHECK(sc4(302, 0, 7 /* NOFILE */, 0, rl) == 0 && rl[0] > 0 && rl[0] <= rl[1], "prlimit64 NOFILE read");
+    u64 hard = rl[1];
+    u64 nw[2] = { 4096, hard };
+    CHECK(sc4(302, 0, 7, nw, 0) == 0, "prlimit64 lowers the soft NOFILE limit");
+    CHECK(sc4(302, 0, 7, 0, rl) == 0 && rl[0] == 4096 && rl[1] == hard, "... and it reads back");
+    CHECK(sc2(97, 7, rl) == 0 && rl[0] == 4096, "getrlimit sees it too");
+    nw[0] = 100; nw[1] = 50;
+    CHECK(sc4(302, 0, 7, nw, 0) == -22, "soft above hard: EINVAL");
+    nw[0] = 100; nw[1] = hard + 1;
+    CHECK(sc4(302, 0, 7, nw, 0) == -1, "raising the hard limit: EPERM");
+    nw[0] = 2048; nw[1] = hard;
+    CHECK(sc2(160, 7, nw) == 0 && sc2(97, 7, rl) == 0 && rl[0] == 2048, "setrlimit lowers the soft limit");
+    n = slurp("/proc/self/limits", b, sizeof b);
+    CHECK(n > 0 && find(b, "Max open files            2048 ") && find(b, "Max cpu time") && find(b, "Max realtime timeout"), "/proc/self/limits follows the limit table");
+    nw[0] = 8u << 20; nw[1] = ~0ull;
+    sc4(302, 0, 3, nw, 0);
+    CHECK(sc4(302, 0, 7, 0, rl) == 0 && sc4(302, 0, 9999, 0, rl) == -22, "bad resource: EINVAL");
+}
+
 static char cpubuf[1 << 16];
 static void test_cpuinfo(void)
 {
@@ -1173,6 +1268,7 @@ void cstart(u64 *sp)
     test_mem();
     test_fs();
     test_cpuinfo();
+    test_procfs_rlimits();
     test_threads();
     test_net();
     test_ntsync();

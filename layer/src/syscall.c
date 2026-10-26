@@ -699,7 +699,13 @@ SYS(sysinfo) { UNUSED6; return xrl_sys_sysinfo((u64)a1); }
 SYS(getrandom) { UNUSED6; return xrl_sys_getrandom((u64)a1, (u64)a2, (u32)a3); }
 SYS(prlimit64) { UNUSED6; return xrl_sys_prlimit((int)a1, (int)a2, (u64)a3, (u64)a4); }
 SYS(getrlimit) { UNUSED6; return xrl_sys_prlimit(0, (int)a1, 0, (u64)a2); }
-SYS(setrlimit) { UNUSED6; return 0; }
+SYS(setrlimit)
+{
+    UNUSED6;
+    lx_rlimit r;
+    if (xrl_cfu(&r, (u64)a2, sizeof r)) return -LX_EFAULT;
+    return xrl_sys_prlimit(0, (int)a1, (u64)a2, 0);
+}
 SYS(clock_gettime) { UNUSED6; return xrl_sys_clock_gettime((int)a1, (u64)a2); }
 SYS(clock_getres) { UNUSED6; return xrl_sys_clock_getres((int)a1, (u64)a2); }
 SYS(clock_settime) { UNUSED6; return -LX_EPERM; }
@@ -877,7 +883,8 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         if (now >= next && InterlockedCompareExchange64(&g_prof_next, now + 30000, next) == next && next) prof_dump();
         else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
     }
-    if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
+    if (G.trace_syscalls >= 2) { const slong ta[6] = { a1, a2, a3, a4, a5, a6 }; xrl_systrace(nr, ta, r, t ? t->tid : -1); }
+    else if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
     if (t && t->exec_kill) xrl_thread_die(t);   /* execve is replacing the image (exec.c) */
     if (t && !t->sig_jump && (t->sigpending & ~t->sigmask)) {
         const slong args[6] = { a1, a2, a3, a4, a5, a6 };
