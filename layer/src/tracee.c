@@ -95,8 +95,9 @@ static slong set_regs(u64 regs[27], const u64 *n)
  * otherwise the 512 bytes are taken as they are. */
 static u32 g_mxcsr_mask = 0xffbf;   /* the FXSAVE default when the CPU reports 0; set from the first stop's state */
 
-/* answer requests until the tracer continues (or detaches/kills) the tracee. regs: user_regs_struct */
-static void serve(u64 regs[27], u8 fp[512])
+/* answer requests until the tracer continues (or detaches/kills) the tracee. regs: user_regs_struct
+ * returns: the signal the tracer asked to deliver (PTRACE_CONT's data), or 0 for resume-without-signal */
+static int serve(u64 regs[27], u8 fp[512])
 {
     for (;;) {
         u32 op, len; u64 a, b; void *p;
@@ -126,7 +127,7 @@ static void serve(u64 regs[27], u8 fp[512])
             break; }
         case TR_KILL: ExitProcess(137);
         case TR_DETACH: InterlockedExchange(&g_tr_on, 0); /* fall through */
-        case TR_CONT: xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); free(p); return;
+        case TR_CONT: xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); { int s = (int)a; free(p); return s; }
         default: xrl_tr_send(g_tr, TR_RESP, (u64)(s64)-LX_EIO, 0, NULL, 0); break;
         }
         free(p);
@@ -150,7 +151,7 @@ void xrl_tracee_boot(u64 *entry, u64 *sp)
     u8 fp[512] = { 0 };
     *(u16 *)fp = 0x37f; *(u32 *)(fp + 24) = 0x1f80; *(u32 *)(fp + 28) = 0xffff;   /* the state a new process starts with */
     xrl_tr_send(g_tr, TR_HELLO, *entry, *sp, NULL, 0);
-    serve(regs, fp);
+    (void)serve(regs, fp);
     *entry = regs[16]; *sp = regs[19];
     LOGW("tracee: continues at %llx, stack %llx", *entry, *sp);
 }
@@ -170,7 +171,17 @@ static void stop_and_serve(CONTEXT *c, xrl_thread *t, int sig)
     u8 fp[512];
     memcpy(fp, &c->FltSave, sizeof fp);   /* XMM_SAVE_AREA32 is the FXSAVE layout, as Linux's user_fpregs_struct */
     xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);
-    serve(r, fp);
+    int cont_sig = serve(r, fp);
+    if (cont_sig > 0 && cont_sig <= 31) {
+        u64 ign, cgt;
+        xrl_sig_proc_masks(&ign, &cgt);
+        u64 bit = 1ull << (cont_sig - 1);
+        if (!(cgt & bit)) {
+            LOGW("tracee: tracer re-delivered signal %d (no handler): terminating", cont_sig);
+            ExitProcess(128 + cont_sig);
+        }
+        LOGW("tracee: tracer re-delivered signal %d (handler at guest): dispatching as fault", cont_sig);
+    }
     memcpy(&c->FltSave, fp, sizeof fp);
     c->MxCsr = c->FltSave.MxCsr;   /* the CONTEXT has two copies; NtContinue loads this one */
     if (r[17] != 0x33 || r[20] != 0x2b) LOGW("tracee: the tracer set cs=%llx ss=%llx: kept 0x33/0x2b (only 64-bit code runs here)", r[17], r[20]);
