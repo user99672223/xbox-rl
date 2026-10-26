@@ -8,9 +8,10 @@
  *   0  event-driven, the endpoint's mix format (float, stereo, 48 kHz)
  *   1  polling (no event), the mix format
  *   2  event-driven, 16-bit PCM stereo 48 kHz when the endpoint accepts it (else skipped)
- *   3  event-driven, a format the endpoint refuses (24-bit): IsFormatSupported must say so
- *      and Initialize must fail
+ *   3  a format the endpoint cannot play (12 channels): IsFormatSupported says S_FALSE and offers
+ *      the mix format, and Initialize fails
  *   4  stop / reset / start again on one stream
+ *   6  event-driven 24-bit and 8-bit PCM (the driver converts them to float for the host)
  *   5  XAudio2 (Wine's FAudio-based xaudio2_9.dll, which plays through WASAPI): a one-second tone
  *      on a source voice; the voice must consume its buffer in real time
  * For every stream it prints how many frames were written, how long that took on the wall clock
@@ -50,7 +51,7 @@ static double now_s(void)
 struct tone
 {
     double phase, step;
-    int kind;          /* 0 float32, 1 pcm16 */
+    int kind;          /* 0 float32, 1 pcm16, 2 pcm8, 3 pcm24, 4 pcm32 */
     int channels;
 };
 
@@ -66,8 +67,16 @@ static void fill(struct tone *t, BYTE *dst, UINT32 frames)
         if (t->phase > 2 * PI) t->phase -= 2 * PI;
         for (c = 0; c < t->channels; c++)
         {
-            if (t->kind == 0) ((float *)dst)[i * t->channels + c] = (float)v;
-            else ((SHORT *)dst)[i * t->channels + c] = (SHORT)(v * 32767.0);
+            BYTE *p = dst + ((size_t)i * t->channels + c) * (t->kind == 0 ? 4 : t->kind == 1 ? 2 : t->kind == 2 ? 1 : t->kind == 3 ? 3 : 4);
+            INT32 n;
+            switch (t->kind)
+            {
+            case 0: *(float *)p = (float)v; break;
+            case 1: *(SHORT *)p = (SHORT)(v * 32767.0); break;
+            case 2: *p = (BYTE)(128 + (int)(v * 127.0)); break;
+            case 3: n = (INT32)(v * 8388607.0); p[0] = n & 0xff; p[1] = (n >> 8) & 0xff; p[2] = (n >> 16) & 0xff; break;
+            default: *(INT32 *)p = (INT32)(v * 2147483647.0); break;
+            }
         }
     }
 }
@@ -115,7 +124,8 @@ static HRESULT play(IAudioClient *client, const WAVEFORMATEX *fmt, int use_event
 
     memset(r, 0, sizeof(*r));
     if (fmt->wFormatTag == WAVE_FORMAT_PCM || (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE &&
-        IsEqualGUID(&((const WAVEFORMATEXTENSIBLE *)fmt)->SubFormat, &subtype_pcm))) t.kind = 1;
+        IsEqualGUID(&((const WAVEFORMATEXTENSIBLE *)fmt)->SubFormat, &subtype_pcm)))
+        t.kind = fmt->wBitsPerSample == 8 ? 2 : fmt->wBitsPerSample == 16 ? 1 : fmt->wBitsPerSample == 24 ? 3 : 4;
 
     IAudioClient_GetDevicePeriod(client, &def, &min);
     hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED, use_event ? AUDCLNT_STREAMFLAGS_EVENTCALLBACK : 0,
@@ -229,13 +239,23 @@ static void run(int n)
     }
     case 3:
     {
-        WAVEFORMATEX pcm24 = { WAVE_FORMAT_PCM, 2, 48000, 48000 * 6, 6, 24, 0 };
-        hr = IAudioClient_IsFormatSupported(client, AUDCLNT_SHAREMODE_SHARED, &pcm24, &closest);
-        STEP("IsFormatSupported(24-bit) -> %#lx, closest %s", hr, closest ? "given" : "none");
-        CHECK(hr == S_FALSE || hr == AUDCLNT_E_UNSUPPORTED_FORMAT, "24-bit must not be accepted (%#lx)", hr);
-        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, &pcm24, NULL);
-        STEP("Initialize(24-bit) -> %#lx", hr);
-        CHECK(FAILED(hr), "Initialize accepted 24-bit");
+        WAVEFORMATEXTENSIBLE wide = {0};
+        wide.Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
+        wide.Format.nChannels = 12;
+        wide.Format.nSamplesPerSec = 48000;
+        wide.Format.wBitsPerSample = 16;
+        wide.Format.nBlockAlign = 24;
+        wide.Format.nAvgBytesPerSec = 48000 * 24;
+        wide.Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
+        wide.Samples.wValidBitsPerSample = 16;
+        wide.dwChannelMask = 0xfff;
+        wide.SubFormat = subtype_pcm;
+        hr = IAudioClient_IsFormatSupported(client, AUDCLNT_SHAREMODE_SHARED, &wide.Format, &closest);
+        STEP("IsFormatSupported(12 channels) -> %#lx, closest %s", hr, closest ? "given" : "none");
+        CHECK(hr == S_FALSE && closest, "12 channels: expected S_FALSE with the mix format (%#lx)", hr);
+        hr = IAudioClient_Initialize(client, AUDCLNT_SHAREMODE_SHARED, 0, 0, 0, &wide.Format, NULL);
+        STEP("Initialize(12 channels) -> %#lx", hr);
+        CHECK(FAILED(hr), "Initialize accepted 12 channels");
         break;
     }
     case 4:
@@ -266,6 +286,28 @@ static void run(int n)
         Sleep(100);
         IAudioClient_Stop(client);
         IAudioRenderClient_Release(render);
+        break;
+    }
+    case 6:
+    {
+        WAVEFORMATEX pcm24 = { WAVE_FORMAT_PCM, 2, 44100, 44100 * 6, 6, 24, 0 };
+        WAVEFORMATEX pcm8 = { WAVE_FORMAT_PCM, 1, 22050, 22050, 1, 8, 0 };
+        WAVEFORMATEX *fmts[2] = { &pcm24, &pcm8 };
+        IAudioClient *c2;
+        int k;
+
+        IAudioClient_Release(client);
+        client = NULL;
+        for (k = 0; k < 2; k++)
+        {
+            if (!(c2 = open_client())) { failures++; break; }
+            hr = IAudioClient_IsFormatSupported(c2, AUDCLNT_SHAREMODE_SHARED, fmts[k], &closest);
+            CHECK(hr == S_OK, "IsFormatSupported(%u bit) %#lx", fmts[k]->wBitsPerSample, hr);
+            hr = play(c2, fmts[k], 1, &r);
+            CHECK(SUCCEEDED(hr), "play %#lx", hr);
+            if (SUCCEEDED(hr)) report(k ? "event/pcm8" : "event/pcm24", &r, fmts[k]);
+            IAudioClient_Release(c2);
+        }
         break;
     }
     case 5:
@@ -311,7 +353,7 @@ static void run(int n)
     }
     CoTaskMemFree(mix);
     CoTaskMemFree(closest);
-    IAudioClient_Release(client);
+    if (client) IAudioClient_Release(client);
     printf("[%d] done\n", n);
     fflush(stdout);
 }
@@ -329,7 +371,7 @@ int main(int argc, char **argv)
     }
     hr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     printf("CoInitializeEx -> %#lx\n", hr);
-    for (i = 0; i <= 5; i++) if (only < 0 || only == i) run(i);
+    for (i = 0; i <= 6; i++) if (only < 0 || only == i) run(i);
     printf("RESULT: %s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
     fflush(stdout);
     return failures != 0;

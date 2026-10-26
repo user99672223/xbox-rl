@@ -154,8 +154,9 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   starts with `xrl`.
   - **Device and formats.** One render endpoint, "Xbox Audio" (no capture endpoint), mix format
     float32 / 2 ch / 48 kHz. IEEE float 32 and PCM 16 (1-8 channels, 1-200 kHz) pass straight to the
-    host's source voices; anything else (24-bit...) is refused and mmdevapi offers the mix format.
-    Shared mode only. Volumes (`set_volumes`) are applied in software when handing data to the host.
+    host's source voices, PCM 8/24/32 are converted to float on the way (XAudio2 does the rate
+    conversion); anything else (more than 8 channels...) gets S_FALSE from `IsFormatSupported`, and
+    mmdevapi then offers the mix format, as on Windows. Shared mode only. Volumes (`set_volumes`) are applied in software when handing data to the host.
   - **Streaming.** App -> `GetBuffer`/`ReleaseBuffer` -> a ring -> the timer thread (a PE thread inside a
     unix call, as in every Wine driver) -> `voice_submit_buffer`, one XAudio2 source voice per WASAPI
     stream on one mastering voice (2 ch, 48 kHz) made on first use. **Pacing comes from the host:** each
@@ -176,7 +177,7 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     compiles that same file (`layer/tests/desktop_audio.cpp` + a stand-in `pch.h`) and plays through
     the laptop's XAudio2; `XRL_NO_AUDIO=1` keeps the old stubs.
   - **Test.** `wine/tests/pe/xrl_audio_test.c` (WASAPI shared: event-driven float, polling, event-driven
-    PCM16, a refused 24-bit format, stop/reset/start, and Wine's XAudio2 on top) all pass under Wine on
+    PCM16, PCM24 and PCM8, a refused 12-channel format, stop/reset/start, and Wine's XAudio2 on top) all pass under Wine on
     the layer: 2 s of audio take 1.96-1.98 s of wall clock (ratio 1.00), 480-frame buffers arrive at
     the host at 100/s with peak 0.100 (the tone's amplitude); `results/desktop-wine-audio-1.txt`.
     Not listened to by a person; not run on the console.
