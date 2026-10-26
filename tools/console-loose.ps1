@@ -76,7 +76,9 @@ if (-not $SkipGame) {
 # 4. register
 $p0 = Get-InstalledPackage $xbox
 Write-Host "[loose] registering LooseApps\$Name"
-Invoke-Dp $xbox "/api/app/packagemanager/register?folder=$([uri]::EscapeDataString($Name))" -Method POST -TimeoutSec 600 | Out-Null
+# the console wants the folder name base64-encoded (plain: HTTP 400 "Failed to find the AppXManifest.xml")
+$b64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Name))
+Invoke-Dp $xbox "/api/app/packagemanager/register?folder=$([uri]::EscapeDataString($b64))" -Method POST -TimeoutSec 600 | Out-Null
 for ($i = 0; $i -lt 90; $i++) {
     $p = Get-InstalledPackage $xbox
     if ($p -and (-not $p0 -or $p.VersionString -ne $p0.VersionString -or $p.PackageFullName -ne $p0.PackageFullName)) { break }
