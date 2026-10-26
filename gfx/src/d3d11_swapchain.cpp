@@ -60,6 +60,10 @@ public:
         }
         if (app_.sample_count == 0) app_.sample_count = 1;
         if (app_.buffer_count == 0) app_.buffer_count = 1;
+        // A swapchain created fullscreen reports fullscreen until SetFullscreenState says otherwise: engines
+        // compare GetFullscreenState with what they asked for, and on a mismatch treat the swapchain as lost
+        // (Unreal minimises the window and stops presenting). The host shows it in its window either way.
+        fullscreen_ = !app_.windowed;
         // Host window size for a 0x0 request, as DXGI takes the client rect of the HWND.
         if (!app_.width || !app_.height) {
             uint32_t w = 0, h = 0;
@@ -74,9 +78,9 @@ public:
         Log(LOG_TRACE, "d3d11 swapchain: host swapchain %p", (void*)host_.Get());
         HRESULT hr = BuildBuffers();
         if (FAILED(hr)) return hr;
-        Log(LOG_INFO, "d3d11 swapchain %p: %ux%u fmt=%u msaa=%u buffers=%u effect=%u hwnd=%llx", static_cast<void*>(this),
+        Log(LOG_INFO, "d3d11 swapchain %p: %ux%u fmt=%u msaa=%u buffers=%u effect=%u %s hwnd=%llx", static_cast<void*>(this),
             app_.width, app_.height, app_.dxgi_format, app_.sample_count, app_.buffer_count, app_.swap_effect,
-            (unsigned long long)app_.hwnd);
+            fullscreen_ ? "fullscreen" : "windowed", (unsigned long long)app_.hwnd);
         return S_OK;
     }
 
@@ -90,6 +94,10 @@ public:
             return S_OK;
         }
         *ppv = nullptr;
+        static std::atomic<int> misses;
+        if (misses++ < 16)
+            Log(LOG_INFO, "d3d11 swapchain: QueryInterface({%08lX-%04X-%04X-...}) -> E_NOINTERFACE", (unsigned long)riid.Data1,
+                riid.Data2, riid.Data3);
         return E_NOINTERFACE;
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
@@ -284,7 +292,13 @@ private:
         if (sync > 4) sync = 4;
         // Only flags valid for a flip-model swapchain on the host window (no tearing).
         UINT hf = flags & (DXGI_PRESENT_TEST | DXGI_PRESENT_DO_NOT_SEQUENCE | DXGI_PRESENT_RESTART | DXGI_PRESENT_DO_NOT_WAIT);
-        if (flags & DXGI_PRESENT_TEST) return host_->Present(sync, hf);
+        if (flags & DXGI_PRESENT_TEST) {
+            HRESULT thr = host_->Present(sync, hf);
+            if (tests_++ % 300 == 0)
+                Log(LOG_INFO, "d3d11 swapchain %p: Present(TEST) #%llu -> 0x%08lX", static_cast<void*>(this),
+                    (unsigned long long)tests_, (unsigned long)thr);
+            return thr;
+        }
         std::lock_guard<std::mutex> l(mu_);
         UINT idx = host_->GetCurrentBackBufferIndex();
         ID3D11Resource* dst = wrapped_[idx].Get();
@@ -303,7 +317,9 @@ private:
                     (unsigned long)dev12_->GetDeviceRemovedReason());
             return hr;
         }
-        presents_++;
+        if (presents_++ % 300 == 0)
+            Log(LOG_INFO, "d3d11 swapchain %p: %llu frames presented (sync %u, buffer %u)", static_cast<void*>(this),
+                (unsigned long long)presents_, sync, idx);
         return hr;
     }
 
@@ -364,6 +380,7 @@ private:
     xrl_swapchain_desc app_;
     bool fullscreen_ = false;
     uint64_t presents_ = 0;
+    uint64_t tests_ = 0;   // Present(DXGI_PRESENT_TEST) calls (occlusion checks)
 };
 
 }  // namespace

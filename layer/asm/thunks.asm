@@ -324,6 +324,7 @@ ct_copy:
     lea     rcx, [rsp+80h]                 ; regs as passed
     lea     rdx, [rbp+40h]                 ; stack args as passed (guest copy)
     mov     r8, rax
+    mov     r9, rbx                        ; the method (per-method counts)
     call    xrl_com_after
     mov     rcx, r12
     mov     edx, r15d

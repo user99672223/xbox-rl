@@ -231,13 +231,75 @@ void xrl_com_scan(const u64 *v, int n)
     for (int i = 0; i < n; i++) consider(v[i]);
 }
 
+/* Calls per method (the hang dump names the busiest): open addressing on the
+ * method address; a full table just stops counting new methods. */
+#define HOT_SET 1024
+static volatile u64 g_hot_fn[HOT_SET];
+static volatile LONG64 g_hot_n[HOT_SET];
+static volatile u64 g_hot_ret[HOT_SET];   /* the last return value */
+
+static void hot_count(u64 fn, u64 ret)
+{
+    for (u32 i = (u32)(fn >> 4) & (HOT_SET - 1), n = 0; n < 32; n++, i = (i + 1) & (HOT_SET - 1)) {
+        u64 k = g_hot_fn[i];
+        if (!k) {   /* claim the slot, or see who did */
+            u64 prev = (u64)InterlockedCompareExchange64((volatile LONG64 *)&g_hot_fn[i], (LONG64)fn, 0);
+            k = prev ? prev : fn;
+        }
+        if (k == fn) { InterlockedIncrement64(&g_hot_n[i]); g_hot_ret[i] = ret; return; }
+    }
+}
+
+/* The hooked vtable slot that calls `fn` (a stub holds its target at +2). */
+static int slot_of(u64 fn, u64 *vt_out)
+{
+    for (u32 i = 0; i < VT_SET; i++) {
+        u64 vt = g_vt[i];
+        if (!vt) continue;
+        const u64 *e = (const u64 *)vt;
+        __try {
+            for (int s = 0; s < 1024 && is_stub(e[s]); s++)
+                if (*(const u64 *)(e[s] + 2) == fn) { *vt_out = vt; return s; }
+        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+    }
+    return -1;
+}
+
+/* The `max` busiest methods, one line each, into `emit`; max < 0: every method
+ * outside d3d11/d3d11on12 (the layer's own gfx objects, DXGI, ...). */
+void xrl_com_hot(void (*emit)(const char *line), int max)
+{
+    int others = max < 0;
+    if (others) max = HOT_SET;
+    static int idx[HOT_SET];
+    int n = 0;
+    for (int i = 0; i < HOT_SET; i++) if (g_hot_fn[i]) idx[n++] = i;
+    for (int k = 0; k < max && k < n; k++) {
+        int best = k;
+        for (int j = k + 1; j < n; j++) if (g_hot_n[idx[j]] > g_hot_n[idx[best]]) best = j;
+        int t = idx[k]; idx[k] = idx[best]; idx[best] = t;
+        u64 fn = g_hot_fn[idx[k]], vt = 0;
+        const img *m = NULL, *vm = NULL;
+        addr_kind(fn, &m);
+        if (others && m && !strncmp(m->name, "d3d11", 5)) continue;
+        int s = slot_of(fn, &vt);
+        if (vt) addr_kind(vt, &vm);
+        char line[200];
+        snprintf(line, sizeof line, "%12lld calls  %s+%llx  (vtable %llx %s+%llx slot %d) last ret %llx", (long long)g_hot_n[idx[k]],
+                 m ? m->name : "?", m ? fn - m->base : fn, vt, vm ? vm->name : "heap", vm ? vt - vm->base : 0ull, s, g_hot_ret[idx[k]]);
+        emit(line);
+    }
+}
+
 /* After a thunked COM call: rcx/rdx/r8/r9 as saved, args 5..16 from the guest
- * stack (the callee may have reused its own copy), and the return value. */
+ * stack (the callee may have reused its own copy), the return value and the method. */
 volatile LONG64 xrl_com_calls;   /* guest -> host COM calls (XRL_PROFILE output) */
 
-void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret)
+void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
 {
     InterlockedIncrement64(&xrl_com_calls);
+    hot_count(fn, ret);
     xrl_com_scan(regs, 4);
     xrl_com_scan(stack_args, 12);
     consider(ret);

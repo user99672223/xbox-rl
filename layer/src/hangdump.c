@@ -20,7 +20,10 @@
 
 #define HD_MAX 256
 #define HD_STK 192
-typedef struct hd_thread { DWORD tid; int guest, in_sys, live; u64 rip, rsp, pend, mask; u64 stk[HD_STK]; int nstk; } hd_thread;
+#define HD_GSTK 2048   /* qwords of guest stack above a syscall's frame */
+typedef struct hd_thread { DWORD tid; int guest, in_sys, live; u64 rip, rsp, pend, mask; u64 stk[HD_STK]; int nstk;
+                           u64 grip, grsp; u64 gstk[HD_GSTK]; int ngstk;
+                           u64 pe_lo, pe_hi, pe_rsp; u64 pstk[HD_GSTK]; int npstk; char name[16]; } hd_thread;
 static hd_thread g_hd[HD_MAX];
 
 static void out(const char *fmt, ...)
@@ -34,6 +37,8 @@ static void out(const char *fmt, ...)
     DWORD w;
     WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, NULL);
 }
+
+static void hot_line(const char *l) { out("[hang]   %s", l); }
 
 typedef BOOL (WINAPI *sym_init_fn)(HANDLE, PCSTR, BOOL);
 typedef BOOL (WINAPI *sym_from_fn)(HANDLE, DWORD64, PDWORD64, PSYMBOL_INFO);
@@ -132,6 +137,28 @@ static void dump_once(void)
                     if (t->win_tid == d->tid) {
                         d->guest = 1; d->in_sys = t->in_sys; d->live = t->teb_guest_live;
                         d->pend = t->sigpending; d->mask = t->sigmask;
+                        memcpy(d->name, t->name, sizeof d->name); d->name[15] = 0;
+                        /* in a syscall: the guest's own state, from its gateway frame (r15..rbp, rip; the stack above) */
+                        const u64 *gf = (const u64 *)t->frame;
+                        if (t->in_sys && gf) {
+                            __try {
+                                d->grip = gf[6]; d->grsp = (u64)(gf + 7);
+                                memcpy(d->gstk, gf + 7, sizeof d->gstk); d->ngstk = HD_GSTK;
+                            } __except (EXCEPTION_EXECUTE_HANDLER) { d->ngstk = 0; }
+                            /* Wine's Unix side runs on its own stack; the Windows-side (PE) stack is the
+                             * guest TEB view's StackLimit..StackBase (swap rows 0/1), and Wine's syscall
+                             * frame on the Unix stack holds the PE rsp: the lowest value in that range */
+                            d->pe_hi = t->teb_guest[0]; d->pe_lo = t->teb_guest[1];
+                            for (int k = 0; k < d->ngstk; k++)
+                                if (d->gstk[k] >= d->pe_lo && d->gstk[k] < d->pe_hi && !(d->gstk[k] & 7) &&
+                                    (!d->pe_rsp || d->gstk[k] < d->pe_rsp)) d->pe_rsp = d->gstk[k];
+                            if (d->pe_rsp) {
+                                u64 nq = (d->pe_hi - d->pe_rsp) / 8;
+                                if (nq > HD_GSTK) nq = HD_GSTK;
+                                __try { memcpy(d->pstk, (const void *)d->pe_rsp, nq * 8); d->npstk = (int)nq; }
+                                __except (EXCEPTION_EXECUTE_HANDLER) { d->npstk = 0; }
+                            }
+                        }
                         break;
                     }
                 __try { memcpy(d->stk, (void *)c.Rsp, sizeof d->stk); d->nstk = HD_STK; }
@@ -153,15 +180,37 @@ static void dump_once(void)
     out("[hang] %s", b);
     xrl_sig_stats(b, sizeof b);
     out("[hang] %s", b);
+    extern volatile LONG64 xrl_com_calls;
+    out("[hang] guest->host COM calls so far: %lld; the busiest methods:", (long long)xrl_com_calls);
+    xrl_com_hot(hot_line, 40);
+    out("[hang] other host COM methods called:");
+    xrl_com_hot(hot_line, -1);
     for (int i = 0; i < n; i++) {
         hd_thread *d = &g_hd[i];
-        out("[hang] tid %lu%s in_sys=%d guest_view=%d sigpend=%llx sigmask=%llx rip=%llx %s", d->tid, d->guest ? " (guest)" : "",
+        out("[hang] tid %lu%s%s%s in_sys=%d guest_view=%d sigpend=%llx sigmask=%llx rip=%llx %s", d->tid, d->guest ? " (guest)" : "",
+            d->name[0] ? " " : "", d->name,
             d->in_sys, d->live, d->pend, d->mask, d->rip, name_of(d->rip, b, sizeof b));
         int shown = 0;
         for (int k = 0; k < d->nstk && shown < 12; k++) {
             name_of(d->stk[k], b, sizeof b);
             if (!b[0] || !strncmp(b, "guest:anon", 10)) continue;
             out("[hang]     [rsp+%03x] %s", k * 8, b);
+            shown++;
+        }
+        if (!d->grip) continue;
+        out("[hang]   guest at syscall: rip=%llx %s rsp=%llx", d->grip, name_of(d->grip, b, sizeof b), d->grsp);
+        shown = 0;
+        for (int k = 0; k < d->ngstk && shown < 20; k++) {
+            if (xrl_mem_is_exec(d->gstk[k]) != 1) continue;
+            out("[hang]     guest [+%04x] %s", k * 8, name_of(d->gstk[k], b, sizeof b));
+            shown++;
+        }
+        if (!d->npstk) continue;
+        out("[hang]   PE stack from %llx (%llx..%llx):", d->pe_rsp, d->pe_lo, d->pe_hi);
+        shown = 0;
+        for (int k = 0; k < d->npstk && shown < 24; k++) {
+            if (xrl_mem_is_exec(d->pstk[k]) != 1) continue;
+            out("[hang]     pe [+%04x] %016llx %s", k * 8, d->pstk[k], name_of(d->pstk[k], b, sizeof b));
             shown++;
         }
     }

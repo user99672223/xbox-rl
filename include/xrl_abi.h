@@ -125,6 +125,8 @@ int64_t xrl_syscall(int64_t nr, int64_t a1, int64_t a2, int64_t a3,
     X(0x290, 5)   /* ActivationContextStack (embedded; 0x2c8 points here) */ \
     X(0x2c8, 1)   /* ActivationContextStackPointer                        */ \
     X(0x7d8, 2)   /* RealClientId                                         */ \
+    X(0x800, 9)   /* Win32ClientInfo: Wine's ntuser_thread_info (desktop  */ \
+                  /* window handles), win32k's CLIENTINFO for the host    */ \
     X(0x1250, 1)  /* LastStatusValue                                      */ \
     X(0x1478, 64) /* DeallocationStack, TlsSlots[0..62]                   */ \
     X(0x1758, 1)  /* ReservedForOle (COM / WinRT apartment state)         */ \
@@ -132,7 +134,7 @@ int64_t xrl_syscall(int64_t nr, int64_t a1, int64_t a2, int64_t a3,
     X(0x17a0, 1)  /* NlsCache                                             */ \
     X(0x17c8, 5)  /* FlsData, Preferred/User/MergedPrefLanguages, flags   */
 #define XRL__TEB_SUM(off, n) + (n)
-#define XRL_TEB_SWAP_QWORDS (0 XRL_TEB_SWAP_RANGES(XRL__TEB_SUM))   /* 91 */
+#define XRL_TEB_SWAP_QWORDS (0 XRL_TEB_SWAP_RANGES(XRL__TEB_SUM))   /* 100 */
 
 /*
  * Linux errno values the layer returns (negated) across xrl_syscall.

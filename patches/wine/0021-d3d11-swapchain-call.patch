@@ -148,7 +148,7 @@ index f36d6bd..5bd1529 100644
 +    {
 +        vtbl = *(const void * const * const *)obj;
 +        if (((qi_func)vtbl[0])( obj, &iid_d3d11_device, &unk ) != S_OK) unk = NULL;
-+        else ((release_func)vtbl[2])( unk );
++        else ((release_func)(*(const void * const * const *)unk)[2])( unk );   /* unk's own Release: obj's may adjust `this` for another interface */
 +    }
 +    __EXCEPT_PAGE_FAULT { unk = NULL; }
 +    __ENDTRY

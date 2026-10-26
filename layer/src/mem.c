@@ -1633,6 +1633,15 @@ int xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off)
     ReleaseSRWLockShared(&g_lock);
     return r;
 }
+/* `a` lies in an executable guest mapping (-1: the lock is busy) */
+int xrl_mem_is_exec(u64 a)
+{
+    if (!TryAcquireSRWLockShared(&g_lock)) return -1;
+    size_t i = vma_lower(a);
+    int r = i < g_n && g_v[i].start <= a && (g_v[i].prot & LX_PROT_EXEC);
+    ReleaseSRWLockShared(&g_lock);
+    return r;
+}
 int xrl_mem_lock_held(void)
 {
     if (!TryAcquireSRWLockExclusive(&g_lock)) return 1;

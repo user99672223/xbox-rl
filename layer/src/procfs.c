@@ -287,7 +287,7 @@ static int dyn_kind(const char *norm, int *is_fd_entry, int *num)
 }
 
 /* ------------------------------------------------------------- file object */
-typedef struct memfile { char *data; size_t len; } memfile;
+typedef struct memfile { char *data; size_t len; int comm_tid; } memfile;   /* comm_tid: a writable comm (-1 = the caller) */
 
 static slong mf_read(xfile *f, void *buf, u64 n, s64 off)
 {
@@ -304,7 +304,23 @@ static slong mf_read(xfile *f, void *buf, u64 n, s64 off)
     if (use_pos) ReleaseSRWLockExclusive(&f->lock);
     return r;
 }
-static slong mf_write(xfile *f, const void *b, u64 n, s64 o) { (void)f; (void)b; (void)o; return n ? -LX_EACCES : 0; }
+/* Only a comm file is writable: it names a thread of this process (as on Linux, up to 15 bytes, the
+ * trailing newline dropped). Wine forwards SetThreadDescription here (pthread_setname_np). */
+static slong mf_write(xfile *f, const void *b, u64 n, s64 o)
+{
+    (void)o;
+    memfile *m = (memfile *)f->priv;
+    if (!n) return 0;
+    if (!m->comm_tid) return -LX_EACCES;
+    char name[16] = { 0 };
+    if (xrl_cfu(name, (u64)(uintptr_t)b, n < 15 ? (size_t)n : 15)) return -LX_EFAULT;
+    char *nlc = strchr(name, '\n');
+    if (nlc) *nlc = 0;
+    xrl_thread *t = m->comm_tid < 0 ? xrl_cur() : xrl_thread_by_tid(m->comm_tid);
+    if (!t) return -LX_ESRCH;
+    memcpy(t->name, name, sizeof name);
+    return (slong)n;
+}
 static slong mf_lseek(xfile *f, s64 off, int wh)
 {
     memfile *m = (memfile *)f->priv;
@@ -416,6 +432,7 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
     }
     memfile *m = (memfile *)calloc(1, sizeof *m);
     m->data = data; m->len = len;
+    if (!strcmp(strrchr(norm, '/') + 1, "comm")) m->comm_tid = e ? -1 : num;
     xfile *f = xfile_new(&g_mf_ops, flags & LX_O_ACCMODE);
     f->priv = m;
     f->gpath = _strdup(gabs);

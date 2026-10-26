@@ -185,6 +185,18 @@ int main(int argc, char **argv)
                     fprintf(stderr, "[catch]   [rsp] %016llx %016llx %016llx %016llx %016llx %016llx\n", stk[0], stk[1], stk[2], stk[3], stk[4], stk[5]);
                 else
                     fprintf(stderr, "[catch]   [rsp] unreadable\n");
+                if (!ev.u.Exception.dwFirstChance) {   /* the code addresses on its stack: who called */
+                    static int sym_ready;
+                    if (!sym_ready) { SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS); sym_ready = SymInitialize(pi.hProcess, NULL, TRUE) ? 1 : -1; }
+                    ULONG64 big[1024]; SIZE_T n = 0;
+                    ReadProcessMemory(pi.hProcess, (LPCVOID)c.Rsp, big, sizeof big, &n);
+                    for (size_t k = 0, shown = 0; k < n / 8 && shown < 24; k++) {
+                        ULONG64 o; const char *mm = mod_of(big[k], &o);
+                        if (!strcmp(mm, "?")) continue;
+                        fprintf(stderr, "[catch]     [rsp+%04zx] %016llx %s+%llx%s\n", k * 8, big[k], mm, o, sym_of(pi.hProcess, big[k]));
+                        shown++;
+                    }
+                }
             }
             fflush(stderr);
             break;

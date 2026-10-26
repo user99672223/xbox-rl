@@ -133,7 +133,8 @@ void xrl_teb_stack_back(const u64 saved[2]);
 
 /* com.c: host COM objects called directly by the guest (docs/gs-teb.md Stage 2) */
 void xrl_com_scan(const u64 *v, int n);
-void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret);   /* from xrl_com_tramp */
+void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn);   /* from xrl_com_tramp */
+void xrl_com_hot(void (*emit)(const char *line), int max);   /* busiest methods (hang dump) */
 extern void xrl_com_tramp(void);                                        /* Win64, r11 = target */
 
 /* Thread lookup: hash of the host TEB Self pointer (gs:[30h]) -> xrl_thread*.
@@ -401,6 +402,7 @@ slong xrl_sig_kill_process(int sig);
 int   xrl_mem_guest_ctx(u64 rip, u64 rsp);
 void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
 int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
+int   xrl_mem_is_exec(u64 a);
 int   xrl_mem_lock_held(void);
 void  xrl_mem_clock_stats(char *b, size_t n);
 void  xrl_sig_stats(char *b, size_t n);

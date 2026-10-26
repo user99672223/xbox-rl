@@ -46,6 +46,8 @@ must share **one** TEB per thread.
 | 0x068 | LastErrorValue (+CountOfOwnedCriticalSections) | per-side error state |
 | 0x108 | CurrentLocale | |
 | 0x2c8 | ActivationContextStackPointer | |
+| 0x7d8 | RealClientId | |
+| 0x800..0x848 | Win32ClientInfo (first 9 qwords) | Wine's `ntuser_thread_info` (the thread's desktop and message-window handles) vs win32k's CLIENTINFO, which real user32/D3D calls on the same OS thread fill in. Unswapped, Rocket League's main window got win32k's value as its desktop handle and creation failed with ERROR_INVALID_WINDOW_HANDLE |
 | 0x1250 | LastStatusValue | |
 | 0x1478 | DeallocationStack | |
 | 0x1480..0x1670 | TlsSlots[0..62] | independent TlsAlloc bitmaps (slot 63 = XRL_TP, never swapped) |
@@ -111,7 +113,7 @@ to a host worker thread (microseconds per call).
 
 Known gaps: host code calling back into guest code (would run with the host
 view on the host stack; D3D does not); every guest COM call pays the full
-91-qword swap twice (a smaller set for COM calls is a possible optimisation).
+100-qword swap twice (a smaller set for COM calls is a possible optimisation).
 
 ## Alternative considered: no Wine for the game
 

@@ -603,6 +603,19 @@ static void test_fs(void)
     CHECK(mn > 20, "/proc/self/maps readable");
     long fe = sc3(89, "/proc/self/exe", mb, 256);
     CHECK(fe > 0, "readlink /proc/self/exe");
+    {   /* naming a thread through its comm file (glibc/musl pthread_setname_np; Wine's SetThreadDescription) */
+        char cp[64] = "/proc/self/task/", nm[17];
+        long tid = sc3(186, 0, 0, 0), t = tid, k = 16;
+        char d[12]; int nd = 0;
+        do d[nd++] = (char)('0' + t % 10); while ((t /= 10));
+        while (nd) cp[k++] = d[--nd];
+        memcpy(cp + k, "/comm", 6);
+        long fc = sc3(2, cp, 1, 0);
+        long w = fc >= 0 ? sc3(1, fc, "xrl-named\n", 10) : fc;
+        memset(nm, 0, sizeof nm);
+        long g = sc3(157, 16 /* PR_GET_NAME */, nm, 0);
+        CHECK(w == 10 && g == 0 && !memcmp(nm, "xrl-named", 10), "write /proc/self/task/<tid>/comm names the thread");
+    }
     CHECK(sc3(2, "/dev/null", 2, 0) >= 0, "/dev/null");
     /* pipes / dup / fcntl / eventfd / epoll */
     int pf[2];
