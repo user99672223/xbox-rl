@@ -72,6 +72,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
         if (ctx->struct_size >= offsetof(xrl_boot_context, exec_path) + sizeof(ctx->exec_path)) ep = ctx->exec_path;
         G.exec_path = _strdup(ep && *ep ? ep : G.argv[0]);
     }
+    { char a0[1024]; if (GetEnvironmentVariableA("XRL_ARGV0", a0, sizeof a0) && G.argc) { free(G.argv[0]); G.argv[0] = _strdup(a0); } }   /* execve's argv[0], when it is not the program's path */
     G.mem_budget = ctx->guest_mem_budget;
     G.exit_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     InitializeSRWLock(&G.cwd_lock);
@@ -79,7 +80,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     G.umask = 022;
 
     const char *tr = env_get("XRL_TRACE");
-    G.trace_syscalls = tr && tr[0] && tr[0] != '0';
+    G.trace_syscalls = tr && tr[0] ? atoi(tr) : 0;   /* 1 raw numbers, 2 decoded (systrace.c) */
 
     LOGI("layer %s booting (ABI v%u), argv[0]=%s, %d args, %d env, budget=%llu MiB", XRL_LAYER_VERSION, XRL_ABI_VERSION,
          G.exec_path, G.argc, G.envc, G.mem_budget >> 20);
@@ -96,6 +97,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     xrl_perf_start();
     xrl_fd_init();
     if (xrl_vfs_init(ctx->vfs_root)) return XRL_ERR_GENERIC;
+    xrl_fd_inherit_boot();   /* memfds a parent passed on through exec (task.c) */
 
     xrl_elf_image img;
     if (xrl_elf_load(G.exec_path, &img)) { LOGE("boot: failed to load %s", G.exec_path); return XRL_ERR_GENERIC; }
@@ -105,6 +107,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     u64 slo, shi;
     u64 sp = xrl_elf_build_stack(&img, &slo, &shi);
     if (!sp) { LOGE("boot: cannot allocate initial stack"); return XRL_ERR_GENERIC; }
+    xrl_tracee_boot(&img.entry, &sp);   /* a program exec'd by a traced fork child waits here for its tracer (tracee.c) */
 
     LOGI("boot: stack sp=%llx", sp);
     xrl_thread *mt = NULL;

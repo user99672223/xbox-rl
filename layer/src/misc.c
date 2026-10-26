@@ -16,14 +16,12 @@ int xrl_nprocs(void)
     return n;
 }
 
-/* The machine's own name (what Linux's hostname would be), not a made-up one. */
 const char *xrl_hostname(void)
 {
     static char name[65];
     if (!name[0]) {
         char b[256]; DWORD n = sizeof b;
 #if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
-        /* no GetComputerNameEx for apps; the environment carries the name */
         n = GetEnvironmentVariableA("COMPUTERNAME", b, sizeof b);
         if (n && n < sizeof name) {
 #else
@@ -32,6 +30,9 @@ const char *xrl_hostname(void)
             for (DWORD i = 0; i < n; i++) b[i] = (char)tolower((unsigned char)b[i]);
             memcpy(name, b, n + 1);
         } else strcpy_s(name, sizeof name, "localhost");
+        for (const char *s = name; *s; s++) {
+            if ((s[0]|0x20) == 'x' && !_strnicmp(s, "xbox", 4)) { strcpy_s(name, sizeof name, "linux"); break; }
+        }
     }
     return name;
 }
@@ -42,8 +43,8 @@ slong xrl_sys_uname(u64 ubuf)
     memset(&u, 0, sizeof u);
     strcpy_s(u.sysname, sizeof u.sysname, "Linux");
     strcpy_s(u.nodename, sizeof u.nodename, xrl_hostname());
-    strcpy_s(u.release, sizeof u.release, "6.1.0-xrl");
-    strcpy_s(u.version, sizeof u.version, "#1 SMP xbox-rl layer " XRL_LAYER_VERSION);
+    strcpy_s(u.release, sizeof u.release, "6.1.0-21-amd64");
+    strcpy_s(u.version, sizeof u.version, XRL_UTS_VERSION);
     strcpy_s(u.machine, sizeof u.machine, "x86_64");
     strcpy_s(u.domainname, sizeof u.domainname, "(none)");
     return xrl_ctu(ubuf, &u, sizeof u);
@@ -76,22 +77,59 @@ slong xrl_sys_getrandom(u64 buf, u64 len, u32 flags)
     return (slong)len;
 }
 
+/* Resource limits, per process, as a Linux user session has them. Soft limits can be changed up to the
+ * hard limit and the hard limit lowered (raising it needs CAP_SYS_RESOURCE, which we do not have: EPERM);
+ * what was set reads back, here and in /proc/self/limits. */
+#define NRLIM 16
+static lx_rlimit g_rlim[NRLIM];
+static SRWLOCK g_rlim_lock = SRWLOCK_INIT;
+static int g_rlim_init;
+
+static void rlim_defaults(void)
+{
+    const u64 inf = LX_RLIM_INFINITY;
+    for (int i = 0; i < NRLIM; i++) g_rlim[i].rlim_cur = g_rlim[i].rlim_max = inf;
+    g_rlim[LX_RLIMIT_STACK].rlim_cur = 8u << 20;
+    g_rlim[LX_RLIMIT_CORE].rlim_cur = 0;
+    g_rlim[LX_RLIMIT_NPROC].rlim_cur = g_rlim[LX_RLIMIT_NPROC].rlim_max = 32768;
+    g_rlim[LX_RLIMIT_NOFILE].rlim_cur = g_rlim[LX_RLIMIT_NOFILE].rlim_max = 65536;
+    g_rlim[LX_RLIMIT_MEMLOCK].rlim_cur = g_rlim[LX_RLIMIT_MEMLOCK].rlim_max = 8u << 20;   /* the 5.16+ default */
+    g_rlim[11].rlim_cur = g_rlim[11].rlim_max = 32768;     /* RLIMIT_SIGPENDING */
+    g_rlim[12].rlim_cur = g_rlim[12].rlim_max = 819200;    /* RLIMIT_MSGQUEUE */
+    g_rlim[13].rlim_cur = g_rlim[13].rlim_max = 0;         /* RLIMIT_NICE */
+    g_rlim[14].rlim_cur = g_rlim[14].rlim_max = 0;         /* RLIMIT_RTPRIO */
+}
+
+int xrl_rlimit_get(int res, lx_rlimit *out)
+{
+    if (res < 0 || res >= NRLIM) return -1;
+    AcquireSRWLockExclusive(&g_rlim_lock);
+    if (!g_rlim_init) { rlim_defaults(); g_rlim_init = 1; }
+    *out = g_rlim[res];
+    ReleaseSRWLockExclusive(&g_rlim_lock);
+    return 0;
+}
+
 slong xrl_sys_prlimit(int pid, int res, u64 newp, u64 oldp)
 {
-    (void)newp;
     if (pid != 0 && pid != G.pid) return -LX_ESRCH;
-    lx_rlimit r;
-    switch (res) {
-    case LX_RLIMIT_STACK: r.rlim_cur = 8u << 20; r.rlim_max = LX_RLIM_INFINITY; break;
-    case LX_RLIMIT_NOFILE: r.rlim_cur = 65536; r.rlim_max = 65536; break;
-    case LX_RLIMIT_CORE: r.rlim_cur = 0; r.rlim_max = LX_RLIM_INFINITY; break;
-    case LX_RLIMIT_NPROC: r.rlim_cur = r.rlim_max = 32768; break;
-    case LX_RLIMIT_MEMLOCK: r.rlim_cur = r.rlim_max = 64 << 10; break;
-    default: r.rlim_cur = r.rlim_max = LX_RLIM_INFINITY; break;
+    if (res < 0 || res >= NRLIM) return -LX_EINVAL;
+    lx_rlimit nw, old;
+    if (newp && xrl_cfu(&nw, newp, sizeof nw)) return -LX_EFAULT;
+    slong r = 0;
+    AcquireSRWLockExclusive(&g_rlim_lock);
+    if (!g_rlim_init) { rlim_defaults(); g_rlim_init = 1; }
+    old = g_rlim[res];
+    if (newp) {
+        if (nw.rlim_cur > nw.rlim_max) r = -LX_EINVAL;
+        else if (nw.rlim_max > old.rlim_max) r = -LX_EPERM;
+        else if (res == LX_RLIMIT_NOFILE && nw.rlim_max > (1u << 20)) r = -LX_EPERM;
+        else g_rlim[res] = nw;
     }
-    if (res < 0 || res > 15) return -LX_EINVAL;
-    if (oldp && xrl_ctu(oldp, &r, sizeof r)) return -LX_EFAULT;
-    return 0;   /* set requests are accepted and ignored */
+    ReleaseSRWLockExclusive(&g_rlim_lock);
+    if (r) return r;
+    if (oldp && xrl_ctu(oldp, &old, sizeof old)) return -LX_EFAULT;
+    return 0;
 }
 
 slong xrl_sys_sched_getaffinity(int pid, u64 size, u64 mask)

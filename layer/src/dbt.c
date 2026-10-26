@@ -35,7 +35,7 @@
 #include "rewrite_core.h"
 #include "x86dec.h"
 
-extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_rawsys(void);
+extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_rawsys(void), xrl_dbt_cpuid(void);
 
 #define TAB_N 262144u
 u64 xrl_dbt_tab[(TAB_N + 4) * 2];        /* {original, translated}: read by dbt.asm */
@@ -168,6 +168,11 @@ static void emit_slot_jmp(dimg *im, int slot)      /* jmp *slot(%rip); slots sit
     e8(im, 0xff); e8(im, 0x25);
     e32(im, (u32)(int32_t)((im->cache_va + 8u * (u32)slot) - (cur(im) + 4)));
 }
+static void emit_slot_call(dimg *im, int slot)     /* call *slot(%rip) */
+{
+    e8(im, 0xff); e8(im, 0x15);
+    e32(im, (u32)(int32_t)((im->cache_va + 8u * (u32)slot) - (cur(im) + 4)));
+}
 
 static int in_any_image(u64 a) { return img_of(a) != NULL; }
 
@@ -234,6 +239,11 @@ static int is_fs_unit(const x86i *in)
 /* one trace: from `pc` until an unconditional transfer */
 static int translate_trace(dimg *im, u64 pc)
 {
+    if (im->hi - im->lo <= 4096) {
+        const u8 *d = (const u8 *)pc;
+        LOGW("dbt: translate_trace(%s, %llx): first bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             im->name, pc, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
+    }
     cm_put(pc, cur(im));
     for (int count = 0;; count++) {
         if (im->used + 4096 > im->cap) { LOGE("dbt: %s: code cache full", im->name); return -1; }
@@ -343,7 +353,8 @@ static int translate_trace(dimg *im, u64 pc)
                 continue;
             }
             if (op == 0x0b) { emit(im, p, (size_t)len); return 0; } /* ud2 */
-            if (op == 0xa2 || op == 0x31 || op == 0x01) { /* cpuid, rdtsc, xgetbv...: executed as they are */ }
+            if (op == 0xa2) { emit_slot_call(im, 4); pc = next; continue; }   /* cpuid: via handler (sanitized brand) */
+            if (op == 0x31 || op == 0x01) { /* rdtsc, xgetbv: executed as they are */ }
         }
 
         /* an ordinary instruction: copied, with a RIP-relative displacement recomputed */
@@ -366,6 +377,8 @@ static u64 translate_locked(u64 pc)
     if (r) return r;
     dimg *im = img_of(pc);
     if (!im) return 0;
+    if (!strncmp(im->name, "/memfd:", 7))
+        xrl_mem_sync_shared_page(pc & ~(u64)(LX_PAGE - 1), LX_PAGE);
     u64 used0 = im->used;
     g_npend = 0; g_nfix = 0; g_nwl = 0;
     enqueue(pc);
@@ -417,6 +430,23 @@ u64 xrl_dbt_translate(u64 pc)
     u64 r = translate_locked(pc);
     ReleaseSRWLockExclusive(&g_lock);
     return r;
+}
+
+/* cache address → original address (for the tracee: present the tracer with addresses it recognises) */
+u64 xrl_dbt_reverse(u64 ca)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    dimg *hit = NULL;
+    for (int i = 0; i < g_nimg; i++)
+        if (ca >= g_img[i].cache_va && ca < g_img[i].cache_va + g_img[i].cap) { hit = &g_img[i]; break; }
+    if (!hit) { ReleaseSRWLockExclusive(&g_lock); return 0; }
+    u64 best_o = 0, best_t = 0;
+    for (u32 i = 0; i < (1u << CM_BITS); i++) {
+        u64 o = g_cmap[i].o, t = g_cmap[i].t;
+        if (o && t && o >= hit->lo && o < hit->hi && t <= ca && t > best_t) { best_o = o; best_t = t; }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return best_o;
 }
 
 /* from dbt.asm through the syscall path (a computed jump to an address of an image without a translation) */
@@ -494,7 +524,10 @@ int xrl_dbt_wanted(const char *path)
 static int policy_on(void);
 int xrl_dbt_wanted_file(const char *gpath)
 {
-    return xrl_dbt_wanted(gpath) || (gpath && !strncmp(gpath, "/memfd:", 7) && policy_on());
+    static int memfd_env = -1;   /* XRL_DBT_MEMFD=1: set for a process its tracer started (task.c): the library its tracer puts into it
+                                  * through a memfd is the same kind of module as the one the bootstrapper downloaded */
+    if (memfd_env < 0) { char v[4]; memfd_env = GetEnvironmentVariableA("XRL_DBT_MEMFD", v, sizeof v) && v[0] == '1'; }
+    return xrl_dbt_wanted(gpath) || (gpath && !strncmp(gpath, "/memfd:", 7) && (policy_on() || memfd_env));
 }
 
 /* A Windows PE image (the EAC bootstrapper): Windows code executes `syscall` as a Windows system call, but
@@ -599,6 +632,7 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
     slots[1] = (u64)(uintptr_t)&xrl_dbt_ijmp;
     slots[2] = (u64)(uintptr_t)&xrl_dbt_icall;
     slots[3] = (u64)(uintptr_t)&xrl_dbt_ret;
+    slots[4] = (u64)(uintptr_t)&xrl_dbt_cpuid;
     DWORD old;
     if (xrl_host_protect((void *)addr, (size_t)len, PAGE_READONLY, &old)) {
         LOGE("dbt: %s: cannot make the image non-executable", name);

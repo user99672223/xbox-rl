@@ -521,6 +521,432 @@ static void cpuid(u32 leaf, u32 sub, u32 r[4])
 {
     __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
 }
+/* what every Linux has under /proc, and resource limits that stick (found by recording what the EAC module
+ * asks of the system: /proc/1/comm, a full /proc/<pid>/status; docs/decisions.md) */
+static long slurp(const char *path, char *buf, long cap)
+{
+    long fd = sc3(2, path, 0, 0), n = 0, r;
+    if (fd < 0) return fd;
+    while (n < cap - 1 && (r = sc3(0, fd, buf + n, cap - 1 - n)) > 0) n += r;
+    sc1(3, fd);
+    buf[n] = 0;
+    return n;
+}
+static void sigh_dummy(int s) { (void)s; }
+static u64 hex16(const char *p) { u64 v = 0; for (int i = 0; i < 16; i++) { char c = p[i]; v = v * 16 + (u64)(c <= '9' ? c - '0' : c - 'a' + 10); } return v; }
+static void test_procfs_rlimits(void)
+{
+    static char b[8192];
+    char t[64];
+    long n = slurp("/proc/self/status", b, sizeof b);
+    CHECK(n > 600, "/proc/self/status is the full kernel layout");
+    const char *must[] = { "Name:\t", "Umask:\t", "State:\t", "Tgid:\t", "Pid:\t", "PPid:\t1\n", "TracerPid:\t0\n", "Uid:\t", "Gid:\t", "Groups:",
+        "NStgid:\t", "NSpid:\t", "VmSize:", "VmRSS:", "VmSwap:", "Threads:\t", "SigQ:\t", "SigBlk:\t", "SigIgn:\t", "SigCgt:\t",
+        "CapInh:\t", "CapPrm:\t", "CapEff:\t", "CapBnd:\t", "CapAmb:\t", "NoNewPrivs:\t0\n", "Seccomp:\t0\n", "Cpus_allowed:\t",
+        "Cpus_allowed_list:\t", "Mems_allowed_list:\t", "voluntary_ctxt_switches:\t" };
+    int miss = 0;
+    for (unsigned i = 0; i < sizeof must / sizeof *must; i++) if (!find(b, must[i])) { out("    missing "); out(must[i]); out("\n"); miss++; }
+    CHECK(!miss, "status has every field a 6.x kernel prints, in order");
+    {   /* Pid/Tgid agree with getpid; the fields come in the kernel's order */
+        long pid = sc1(39, 0);
+        char key[24] = "Tgid:\t"; int k = 6; long v = pid; char d[12]; int nd = 0;
+        do d[nd++] = (char)('0' + v % 10); while ((v /= 10));
+        while (nd) key[k++] = d[--nd];
+        key[k++] = '\n'; key[k] = 0;
+        CHECK(find(b, key) != 0, "status Tgid is getpid()");
+        const char *a1 = find(b, "Name:"), *a2 = find(b, "Groups:"), *a3 = find(b, "VmPeak:"), *a4 = find(b, "Threads:"), *a5 = find(b, "Cpus_allowed:");
+        CHECK(a1 && a2 && a3 && a4 && a5 && a1 < a2 && a2 < a3 && a3 < a4 && a4 < a5, "status fields in kernel order");
+    }
+    /* signal dispositions show up in SigCgt / SigIgn */
+    struct { u64 h, f, r, m; } act = { (u64)(long)sigh_dummy, 0, 0, 0 };
+    sc4(13, 12 /* SIGUSR2 */, &act, 0, 8);
+    act.h = 1;
+    sc4(13, 10 /* SIGUSR1 */, &act, 0, 8);
+    slurp("/proc/self/status", b, sizeof b);
+    const char *cg = find(b, "SigCgt:\t"), *ig = find(b, "SigIgn:\t");
+    CHECK(cg && !memcmp(cg + 8, "0000000000000800", 16), "SigCgt has the caught signal (SIGUSR2)");
+    CHECK(ig && !memcmp(ig + 8, "0000000000000200", 16), "SigIgn has the ignored signal (SIGUSR1)");
+    act.h = 0; sc4(13, 12, &act, 0, 8); sc4(13, 10, &act, 0, 8);
+    /* a thread's own status */
+    {
+        long tid = sc3(186, 0, 0, 0), q = tid, k = 16; char p2[64] = "/proc/self/task/", d[12]; int nd = 0;
+        do d[nd++] = (char)('0' + q % 10); while ((q /= 10));
+        while (nd) p2[k++] = d[--nd];
+        memcpy(p2 + k, "/status", 8);
+        long m = slurp(p2, b, sizeof b);
+        CHECK(m > 600 && find(b, "Name:\t") && find(b, "Seccomp:\t"), "/proc/self/task/<tid>/status is a status file");
+        key_t_dummy:;
+    }
+    /* process 1: PPid points at it, so it must exist; root's private files are EACCES, as for any user */
+    n = slurp("/proc/1/comm", t, sizeof t);
+    CHECK(n > 1 && t[n - 1] == '\n', "/proc/1/comm readable");
+    n = slurp("/proc/1/status", b, sizeof b);
+    CHECK(n > 600 && find(b, "Name:\tinit\n") && find(b, "Pid:\t1\n") && find(b, "PPid:\t0\n"), "/proc/1/status describes an init");
+    n = slurp("/proc/1/cmdline", t, sizeof t);
+    CHECK(n > 0, "/proc/1/cmdline readable");
+    n = slurp("/proc/1/stat", b, sizeof b);
+    CHECK(n > 20 && !memcmp(b, "1 (init) S 0 ", 13), "/proc/1/stat");
+    CHECK(sc3(2, "/proc/1/environ", 0, 0) == -13, "/proc/1/environ: EACCES");
+    CHECK(sc3(2, "/proc/1/maps", 0, 0) == -13, "/proc/1/maps: EACCES");
+    CHECK(sc3(89, "/proc/1/exe", t, sizeof t) == -13, "readlink /proc/1/exe: EACCES");
+    CHECK(sc3(2, "/proc/2/comm", 0, 0) == -2, "a process that does not exist: ENOENT");
+    n = slurp("/proc/mounts", b, sizeof b);
+    CHECK(n > 0 && find(b, " / rootfs ") && find(b, " /proc proc ") && find(b, " /sys sysfs ") && find(b, " /dev devtmpfs "), "/proc/mounts lists the filesystems the layer provides");
+    n = slurp("/proc/self/cgroup", t, sizeof t);
+    CHECK(n > 0 && !memcmp(t, "0::/", 4), "/proc/self/cgroup");
+    n = slurp("/proc/version", b, sizeof b);
+    char un[390]; sc1(63, un);
+    CHECK(n > 0 && find(b, un + 195), "/proc/version carries uname's version string");
+    /* limits that stick */
+    u64 rl[2];
+    CHECK(sc4(302, 0, 7 /* NOFILE */, 0, rl) == 0 && rl[0] > 0 && rl[0] <= rl[1], "prlimit64 NOFILE read");
+    u64 hard = rl[1];
+    u64 nw[2] = { 4096, hard };
+    CHECK(sc4(302, 0, 7, nw, 0) == 0, "prlimit64 lowers the soft NOFILE limit");
+    CHECK(sc4(302, 0, 7, 0, rl) == 0 && rl[0] == 4096 && rl[1] == hard, "... and it reads back");
+    CHECK(sc2(97, 7, rl) == 0 && rl[0] == 4096, "getrlimit sees it too");
+    nw[0] = 100; nw[1] = 50;
+    CHECK(sc4(302, 0, 7, nw, 0) == -22, "soft above hard: EINVAL");
+    nw[0] = 100; nw[1] = hard + 1;
+    CHECK(sc4(302, 0, 7, nw, 0) == -1, "raising the hard limit: EPERM");
+    nw[0] = 2048; nw[1] = hard;
+    CHECK(sc2(160, 7, nw) == 0 && sc2(97, 7, rl) == 0 && rl[0] == 2048, "setrlimit lowers the soft limit");
+    n = slurp("/proc/self/limits", b, sizeof b);
+    CHECK(n > 0 && find(b, "Max open files            2048 ") && find(b, "Max cpu time") && find(b, "Max realtime timeout"), "/proc/self/limits follows the limit table");
+    nw[0] = 8u << 20; nw[1] = ~0ull;
+    sc4(302, 0, 3, nw, 0);
+    CHECK(sc4(302, 0, 7, 0, rl) == 0 && sc4(302, 0, 9999, 0, rl) == -22, "bad resource: EINVAL");
+}
+
+/* fork() and ptrace() for a child that alternates with its parent (XRL_FORK_TASKS=1; layer/src/task.c).
+ * The pattern is the one the EAC module uses on Linux: fork; the child closes its descriptors, sets
+ * PR_SET_DUMPABLE 0, PTRACE_TRACEME, raises SIGSTOP; the parent waits for the stop, sets options, then steps
+ * the child's system calls with PTRACE_SYSCALL, reading its registers at each stop, until it exits. */
+static volatile long child_saw_ppid, child_closed_ok;
+static void test_fork_tasks(void)
+{
+    int pf[2];
+    sc2(293, pf, 0);
+    long me = sc1(39, 0);
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip fork/ptrace tasks (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {   /* child */
+        child_saw_ppid = sc1(110, 0);
+        sc1(3, pf[0]); sc1(3, pf[1]); child_closed_ok = 1;      /* its own table: the parent keeps its descriptors */
+        sc3(157, 4, 0, 0);                                         /* prctl(PR_SET_DUMPABLE, 0) */
+        sc4(101, 0, 0, 0, 0);                                      /* PTRACE_TRACEME */
+        sc2(62, sc1(39, 0), 19);                                   /* kill(getpid(), SIGSTOP) */
+        sc1(39, 0); sc1(39, 0);                                    /* two getpid calls to be seen */
+        sc1(60, 7);                                                /* exit(7) */
+        for (;;) sc1(60, 7);
+    }
+    CHECK(pid > 0 && pid != me, "fork: a child pid of its own");
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 19, "wait4: the traced child stopped with SIGSTOP");
+    CHECK(child_closed_ok == 1 && child_saw_ppid == me, "the child ran, getppid() is the parent's pid");
+    struct { int a; } pst; long fr = sc2(5, pf[0], &pst);
+    CHECK(fr == 0, "the child's close() did not touch the parent's descriptors");
+    CHECK(sc4(101, 0x4200, pid, 0, 1 /* PTRACE_O_TRACESYSGOOD */) == 0, "PTRACE_SETOPTIONS");
+    int getpids = 0, stops = 0, exited = 0;
+    u64 regs[27];
+    for (int i = 0; i < 40 && !exited; i++) {
+        if (sc4(101, 24 /* PTRACE_SYSCALL */, pid, 0, 0) != 0) break;
+        if (sc4(61, pid, &st, 0, 0) != pid) break;
+        if ((st & 0x7f) == 0) { exited = 1; break; }
+        if ((st & 0xff) == 0x7f && ((st >> 8) & 0xff) == (5 | 0x80)) {
+            stops++;
+            if (sc4(101, 12 /* PTRACE_GETREGS */, pid, 0, regs) == 0 && regs[15] == 39 && regs[10] == (u64)-38) getpids++;   /* orig_rax = getpid at entry, rax = -ENOSYS */
+        }
+    }
+    CHECK(stops >= 4 && getpids == 2, "PTRACE_SYSCALL: entry and exit stops, GETREGS shows the two getpid calls");
+    CHECK(exited && ((st >> 8) & 0xff) == 7, "wait4: the child's exit status 7");
+    CHECK(sc4(61, pid, &st, 0, 0) == -10, "wait4 again: no more children");
+}
+
+/* execve in a fork()ed task starts a second layer process (host process). The program is this guest in
+ * "--spawned" mode: it records its argv, one environment variable and its pid in a file and exits with 33. */
+static int spawned_main(long argc, u64 *sp)
+{
+    char buf[512]; int n = 0;
+    u64 *env = sp + 1 + argc + 1;
+    if (argc > 2 && !memcmp((const char *)sp[3], "sleep", 5)) { long ts[2] = { 4, 0 }; sc2(35, ts, 0); return 0; }   /* holds a process slot for a while */
+    if (argc > 2 && !memcmp((const char *)sp[3], "inject", 6)) {
+        /* set up a memfd-mapped executable page (DBT-translated under XRL_DBT_MEMFD=1, same trigger as the
+         * EAC module's own download), write the address its tracer will call into a fixed scratch page, then
+         * trap: this is the system-interface shape of the module's own injection, no module code involved. */
+        volatile u64 *scr = (volatile u64 *)0x700000000000ull;
+        sc(9, 0x700000000000ull, 4096, 3 /*PROT_READ|WRITE*/, 0x32 /*FIXED|PRIVATE|ANON*/, -1, 0);
+        u8 blob[4096]; for (int i = 0; i < 4096; i++) blob[i] = 0;
+        blob[0] = 0x7f; blob[1] = 'E'; blob[2] = 'L'; blob[3] = 'F';
+        blob[4] = 2; blob[5] = 1; blob[6] = 1;                                  /* ELFCLASS64, ELFDATA2LSB, EV_CURRENT */
+        blob[0x10] = 3;                                                         /* e_type = ET_DYN */
+        blob[0x12] = 62;                                                        /* e_machine = EM_X86_64 */
+        blob[0x14] = 1;                                                         /* e_version */
+        blob[0x34] = 64;                                                        /* e_ehsize */
+        blob[0x36] = 56;                                                        /* e_phentsize */
+        blob[0x38] = 1;                                                         /* e_phnum */
+        blob[0x40] = 0x48; blob[0x41] = 0x8b; blob[0x42] = 0x07;                /* mov rax, [rdi] */
+        blob[0x43] = 0x48; blob[0x44] = 0x83; blob[0x45] = 0xc0; blob[0x46] = 1; /* add rax, 1   */
+        blob[0x47] = 0xc3;                                                      /* ret            */
+        blob[0x50] = 0x0f; blob[0x51] = 0xae; blob[0x52] = 0x1f; blob[0x53] = 0xc3;   /* +0x50: stmxcsr [rdi]; ret */
+        blob[0x58] = 0x9c; blob[0x59] = 0x58; blob[0x5a] = 0xc3;                      /* +0x58: pushfq; pop rax; ret */
+        long mfd = sc2(319, "xrl_inject_test", 0);
+        sc3(1, mfd, blob, 4096);
+        void *code = (void *)sc(9, 0, 4096, 5 /*READ|EXEC*/, 2 /*PRIVATE*/, mfd, 0);
+        sc1(3, mfd);
+        scr[0] = (u64)code + 0x40;
+        scr[1] = 0xC0FFEEu;
+        scr[2] = 0x1234;   /* at scratch+16: what the injected call's pointer argument dereferences */
+        __asm__ volatile("int3");
+        for (;;) sc1(60, 95);
+    }
+    const char *want = "XRL_SPAWN_ENV=";
+    for (long i = 2; i < argc; i++) { const char *a = (const char *)sp[1 + i]; while (*a && n < 400) buf[n++] = *a++; buf[n++] = '|'; }
+    for (; *env; env++) { const char *e = (const char *)*env; unsigned long l = slen(want); if (!memcmp(e, want, l)) { while (e[l] && n < 480) buf[n++] = e[l++]; buf[n++] = '|'; } }
+    if (argc > 3) {   /* a descriptor number to read at offset 0: an inherited memfd */
+        long fdn = 0; for (const char *a = (const char *)sp[4]; *a >= '0' && *a <= '9'; a++) fdn = fdn * 10 + (*a - '0');
+        char mb[24]; long got = sc4(17, fdn, mb, 20, 0);
+        buf[n++] = 'm'; buf[n++] = ':'; for (long i = 0; i < got && n < 480; i++) buf[n++] = mb[i]; buf[n++] = '|';
+    }
+    char d[12]; int nd = 0; long v = sc1(39, 0);
+    do d[nd++] = (char)('0' + v % 10); while ((v /= 10));
+    buf[n++] = 'p'; while (nd) buf[n++] = d[--nd];
+    buf[n++] = '\n';
+    long fd = sc4(257, -100, "/tmp/xrl_spawned.txt", 0102 | 01000, 0644);
+    if (fd >= 0) { sc3(1, fd, buf, n); sc1(3, fd); }
+    return 33;
+}
+static void test_spawn(void)
+{
+    sc1(87, "/tmp/xrl_spawned.txt");
+    long me = sc1(39, 0);
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip exec in a forked task (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {
+        const char *av[] = { "/bin/guest.elf", "--spawned", "hello world", "x\"y", 0 };
+        const char *ev[] = { "XRL_SPAWN_ENV=abc", 0 };
+        sc3(59, "/bin/guest.elf", av, ev);
+        sc1(60, 99);                                    /* execve failed */
+        for (;;) sc1(60, 99);
+    }
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid, "wait4 for the exec'd child");
+    CHECK(st == (33 << 8), "its exit status reaches the parent (33)");
+    char b[512]; memset(b, 0, sizeof b);
+    long fd = sc3(2, "/tmp/xrl_spawned.txt", 0, 0), n = fd >= 0 ? sc3(0, fd, b, 500) : -1;
+    if (fd >= 0) sc1(3, fd);
+    CHECK(n > 0 && find(b, "hello world|x\"y|") && find(b, "|abc|"), "the program ran with its arguments (quoting kept) and its environment");   /* the test host adds --fake-host to a child's argv */
+    const char *pp = find(b, "|p");
+    long cp = 0; for (pp = pp ? pp + 2 : ""; *pp >= '0' && *pp <= '9'; pp++) cp = cp * 10 + (*pp - '0');
+    CHECK(cp > 0 && cp != me, "... as a process of its own (pid differs)");
+    long pid2 = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid2 == 0) {
+        const char *av[] = { "/bin/nope", 0 }, *ev[] = { 0 };
+        long r = sc3(59, "/bin/nope", av, ev);
+        sc1(60, r == -2 ? 44 : 45);
+        for (;;) sc1(60, 45);
+    }
+    CHECK(sc4(61, pid2, &st, 0, 0) == pid2 && st == (44 << 8), "execve of a missing program fails with ENOENT in the child");
+    /* the cap: with XRL_MAX_CHILDREN=2 a third live child is refused (EAGAIN), never started */
+    {
+        long a = sc(57, 0, 0, 0, 0, 0, 0), b = 0, c = 0;
+        const char *av[] = { "/bin/guest.elf", "--spawned", "sleep", 0 }, *ev[] = { 0 };
+        if (a == 0) { sc3(59, "/bin/guest.elf", av, ev); sc1(60, 46); for (;;) sc1(60, 46); }
+        b = sc(57, 0, 0, 0, 0, 0, 0);
+        if (b == 0) { sc3(59, "/bin/guest.elf", av, ev); sc1(60, 46); for (;;) sc1(60, 46); }
+        c = sc(57, 0, 0, 0, 0, 0, 0);
+        if (c == 0) { long r = sc3(59, "/bin/guest.elf", av, ev); sc1(60, r == -11 ? 47 : 48); for (;;) sc1(60, 48); }
+        int sa = 0, sb = 0, sc_ = 0;
+        long rc = sc4(61, c, &sc_, 0, 0);
+        sc2(62, a, 9); sc2(62, b, 9);
+        sc4(61, a, &sa, 0, 0); sc4(61, b, &sb, 0, 0);
+        CHECK(rc == c && sc_ == (47 << 8), "the third live child is refused with EAGAIN (XRL_MAX_CHILDREN)");
+        CHECK(sa == 9 && sb == 9, "kill(SIGKILL) ends a task's host process");
+    }
+}
+
+/* A traced exec: the child TRACEMEs, stops, execs; the new program is a second layer process the parent
+ * controls from outside: exec-stop with PTRACE_EVENT_EXEC, /proc/<pid>/maps and exe, PEEK of its ELF header and
+ * entry, POKE of an int3 over the entry, CONT, SIGTRAP stop with rip after the int3, GETREGS/SETREGS (rip back
+ * to the entry), the original byte restored, DETACH, and the program runs on to its exit status. This is the
+ * skeleton of how the EAC module puts its in-game part into the game. */
+static long u2s(char *o, long v) { char d[24]; int n = 0, k = 0; do d[n++] = (char)('0' + v % 10); while ((v /= 10)); while (n) o[k++] = d[--n]; o[k] = 0; return k; }
+static void test_traced_exec(void)
+{
+    long mfd = sc2(319, "tst", 0);
+    char mfs[16]; u2s(mfs, mfd);
+    sc3(1, mfd, "memfd-data", 10);
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip traced exec (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {
+        sc4(101, 0, 0, 0, 0);
+        sc2(62, sc1(39, 0), 19);
+        const char *av[] = { "/bin/guest.elf", "--spawned", "traced", mfs, 0 }, *ev[] = { "XRL_SPAWN_ENV=tr", 0 };
+        sc3(59, "/bin/guest.elf", av, ev);
+        sc1(60, 98);
+        for (;;) sc1(60, 98);
+    }
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 19, "traced child stops with SIGSTOP");
+    sc4(101, 0x4200, pid, 0, 0x10 /* PTRACE_O_TRACEEXEC */);
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 | (4 << 8)) << 8 | 0x7f), "execve: exec-stop (SIGTRAP | PTRACE_EVENT_EXEC)");
+    char path[64] = "/proc/"; long k = 6; k += u2s(path + k, pid);
+    char mp[80], ep[80], b[400]; memcpy(mp, path, 64); memcpy(ep, path, 64);
+    memcpy(mp + k, "/maps", 6); memcpy(ep + k, "/exe", 5);
+    long n = sc3(89, ep, b, 100);
+    CHECK(n == 14 && !memcmp(b, "/bin/guest.elf", 14), "readlink /proc/<pid>/exe of the new process");
+    long fd = sc3(2, mp, 0, 0), m = fd >= 0 ? sc3(0, fd, b, 300) : -1;
+    if (fd >= 0) sc1(3, fd);
+    u64 base = 0;
+    if (m > 0) for (long i = 0; i < m && b[i] != '-'; i++) base = base * 16 + (u64)(b[i] <= '9' ? b[i] - '0' : b[i] - 'a' + 10);
+    u64 w = 0, entry = 0, orig = 0, regs[27];
+    CHECK(base && sc4(101, 2, pid, base, &w) == 0 && (u32)w == 0x464c457f, "/proc/<pid>/maps: the first mapping starts with the ELF header (PEEKDATA)");
+    sc4(101, 2, pid, base + 0x18, &entry);
+    CHECK(entry > base && sc4(101, 12, pid, 0, regs) == 0 && regs[16] == entry && regs[19] != 0, "GETREGS at the exec stop: rip = the entry point, a stack");
+    sc4(101, 2, pid, entry, &orig);
+    CHECK(sc4(101, 5, pid, entry, (orig & ~0xffull) | 0xcc) == 0, "POKEDATA: int3 over the first byte of the entry");
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 << 8) | 0x7f), "CONT: the tracee runs into the int3 and stops with SIGTRAP");
+    CHECK(sc4(101, 12, pid, 0, regs) == 0 && regs[16] == entry + 1, "GETREGS: rip is after the int3");
+    CHECK(sc4(101, 5, pid, entry, orig) == 0, "POKEDATA: the original bytes back");
+    regs[16] = entry;
+    CHECK(sc4(101, 13, pid, 0, regs) == 0, "SETREGS: rip back to the entry");
+    CHECK(sc4(101, 17, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == (33 << 8), "DETACH: the program runs on and exits with 33");
+    char fb[256]; memset(fb, 0, sizeof fb);
+    long ff = sc3(2, "/tmp/xrl_spawned.txt", 0, 0), fn = ff >= 0 ? sc3(0, ff, fb, 250) : -1;
+    if (ff >= 0) sc1(3, ff);
+    CHECK(fn > 0 && find(fb, "traced|") && find(fb, "|tr|"), "it ran with its arguments and environment");
+    CHECK(fn > 0 && find(fb, "m:memfd-data|"), "the memfd was inherited at the same descriptor number, with its contents");
+}
+
+/* The one step of the real EAC injection not yet covered by test_traced_exec: resuming a traced process, via
+ * SETREGS + PTRACE_CONT, straight into a DBT-translated executable mapping (dbt.c, triggered the same way the
+ * EAC module's own downloaded library is: an mmap(PROT_EXEC) of a memfd with a valid ELF header, under
+ * XRL_DBT_MEMFD=1). No module code or data: the helper's own "function" is a single `ret`; the call is set up
+ * with a fake return address (9, as the real injection uses) so that, as on Linux, the call runs and then
+ * faults when it returns there. Ground truth (WSL2, real Linux, same shape): fork, child TRACEME + SIGSTOP,
+ * parent PEEKDATA/GETREGS/POKEDATA(fake retaddr)/SETREGS(rip=target,rsp=scratch)/CONT -> the child stops again
+ * with SIGSEGV, rip == the fake return address exactly, GETSIGINFO si_signo == SIGSEGV. See
+ * docs/eac-trace/ptrace-request-sequence.md. */
+/* One more injected call from the SIGSEGV stop at the fake return address: `nq` qwords of an argument block
+ * POKEd directly below the stop's rsp (the real injection's shape: its third call put 0x328 bytes there),
+ * rsp = the block's start - 8 with the fake return address, rip = fn, rdi = the block. On Linux a stopped
+ * tracee keeps nothing of its own below its rsp, so the call runs and stops at 9 again with the block intact.
+ * Returns the wait4 status; *regs = the registers at the new stop. */
+static int inject_block_call(long pid, u64 regs[27], u64 fn, long nq, u64 seed, const char *what)
+{
+    u64 top = regs[19], base = (top - (u64)nq * 8 - 8) & ~15ull;
+    int bad = 0, st = 0;
+    if (sc4(101, 5, pid, base, 9) != 0) bad++;
+    for (long i = 0; i < nq; i++) if (sc4(101, 5, pid, base + 8 + (u64)i * 8, seed ^ (u64)i) != 0) bad++;
+    regs[16] = fn; regs[19] = base; regs[14] = base + 8;
+    if (sc4(101, 13, pid, 0, regs) != 0) bad++;
+    if (sc4(101, 7, pid, 0, 0) != 0 || sc4(61, pid, &st, 0, 0) != pid) { out("    "); out(what); out(": no stop\n"); return -1; }
+    if (bad) { out("    "); out(what); outn(": failed requests", bad); }
+    if ((st & 0xff) != 0x7f) { out("    "); out(what); outn(": wait4 status", st); return st; }
+    sc4(101, 12, pid, 0, regs);
+    long intact = 0;
+    for (long i = 0; i < nq; i++) { u64 w = 0; if (sc4(101, 2, pid, base + 8 + (u64)i * 8, &w) == 0 && w == (seed ^ (u64)i)) intact++; }
+    if (intact != nq) { out("    "); out(what); outn(": block qwords intact", intact); }
+    return intact == nq && !bad ? st : -2;
+}
+
+static void inject_more(long pid, u64 regs[27], u64 target)
+{
+    u64 f_stmxcsr = target + 0x10, f_flags = target + 0x18;
+    /* (1) the real injection's third call: a 0x328-byte block right below the stop's rsp. The layer used to
+     * keep the exception dispatcher's CONTEXT (and its XSTATE area) there, so the block overwrote it and
+     * NtContinue refused the context: the process ended with 0xc000000d. */
+    int st = inject_block_call(pid, regs, target, 0x328 / 8, 0x5a5a5a5a00000000ull, "inject block 0x328");
+    CHECK(st == ((11 << 8) | 0x7f) && regs[16] == 9 && regs[10] == (0x5a5a5a5a00000000ull + 1),
+          "inject: a 0x328-byte argument block right below rsp, call runs, block intact, SIGSEGV at the fake return");
+    if (st != ((11 << 8) | 0x7f)) return;
+    /* (2) a block 16 KiB deep: nothing of the layer may live anywhere below a stopped tracee's rsp */
+    st = inject_block_call(pid, regs, target, 0x4000 / 8, 0xa5a5a5a500000000ull, "inject block 16K");
+    CHECK(st == ((11 << 8) | 0x7f) && regs[16] == 9 && regs[10] == (0xa5a5a5a500000000ull + 1),
+          "inject: a 16 KiB block below rsp, call runs, block intact, SIGSEGV at the fake return");
+    if (st != ((11 << 8) | 0x7f)) return;
+    /* (3) eflags as Linux's putreg applies them: only CF PF AF ZF SF TF DF OF NT RF AC come from the tracer */
+    u64 old = regs[18], v = 0xffffffff00000000ull | 0x200000 | 0x8 | 0xcd5;   /* ID, a reserved bit, CF PF AF ZF SF DF OF */
+    regs[18] = v;
+    CHECK(sc4(101, 13, pid, 0, regs) == 0 && sc4(101, 12, pid, 0, regs) == 0 && regs[18] == ((old & ~0x54dd5ull) | 0xcd5),
+          "inject: SETREGS eflags: only the user-settable flags change (Linux FLAG_MASK)");
+    st = inject_block_call(pid, regs, f_flags, 4, 0x1111, "inject flags");
+    CHECK(st == ((11 << 8) | 0x7f) && (regs[10] & 0xcd5) == 0xcd5 && (regs[10] & 0x200) && !(regs[10] & 0x200000),
+          "inject: the called code runs with exactly those flags (pushfq)");
+    if (st != ((11 << 8) | 0x7f)) return;
+    regs[18] &= ~0x400ull;   /* DF back to 0 for the rest */
+    u64 bad_cs = regs[17]; regs[17] = 0;
+    CHECK(sc4(101, 13, pid, 0, regs) == -5, "inject: SETREGS with cs = 0 -> -EIO");
+    regs[17] = bad_cs; regs[21] = 0x800000000000ull;
+    CHECK(sc4(101, 13, pid, 0, regs) == -5, "inject: SETREGS with fs_base >= TASK_SIZE_MAX -> -EIO");
+    CHECK(sc4(101, 12, pid, 0, regs) == 0, "inject: GETREGS after the refused SETREGS");
+    /* (4) MXCSR: Linux refuses reserved bits (EINVAL), applies a valid one to the thread */
+    u8 fp[512];
+    CHECK(sc4(101, 14, pid, 0, fp) == 0, "inject: GETFPREGS");
+    u32 mx0 = *(u32 *)(fp + 24);
+    *(u32 *)(fp + 24) = 0x1f80 | 0x10000000;
+    CHECK(sc4(101, 15, pid, 0, fp) == -22, "inject: SETFPREGS with a reserved MXCSR bit -> -EINVAL");
+    *(u32 *)(fp + 24) = 0x7f80;   /* round toward zero */
+    CHECK(sc4(101, 15, pid, 0, fp) == 0, "inject: SETFPREGS with a valid MXCSR");
+    u64 w0 = 0;
+    sc4(101, 5, pid, 0x700000000018ull, 0);
+    regs[16] = f_stmxcsr; regs[14] = 0x700000000018ull;
+    u64 base = (regs[19] - 64) & ~15ull;
+    sc4(101, 5, pid, base, 9); regs[19] = base;
+    sc4(101, 13, pid, 0, regs);
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((11 << 8) | 0x7f) &&
+          sc4(101, 2, pid, 0x700000000018ull, &w0) == 0 && (u32)w0 == 0x7f80,
+          "inject: the called code sees the MXCSR the tracer set (stmxcsr)");
+    *(u32 *)(fp + 24) = mx0;
+    sc4(101, 15, pid, 0, fp);
+}
+
+static void test_inject_call(void)
+{
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip inject call (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {
+        sc4(101, 0, 0, 0, 0);
+        sc2(62, sc1(39, 0), 19);
+        const char *av[] = { "/bin/guest.elf", "--spawned", "inject", 0 }, *ev[] = { 0 };
+        sc3(59, "/bin/guest.elf", av, ev);
+        sc1(60, 98);
+        for (;;) sc1(60, 98);
+    }
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 19, "inject: traced child stops with SIGSTOP");
+    sc4(101, 0x4200, pid, 0, 0x10 /* PTRACE_O_TRACEEXEC */);
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 | (4 << 8)) << 8 | 0x7f), "inject: execve: exec-stop");
+    /* let the exec'd helper run its own setup (memfd + mmap PROT_EXEC + write the scratch page) to its own int3 */
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 << 8) | 0x7f), "inject: CONT: the helper traps with its own int3 after setup");
+    u64 target = 0, magic = 0;
+    CHECK(sc4(101, 2, pid, 0x700000000000ull, &target) == 0 && sc4(101, 2, pid, 0x700000000008ull, &magic) == 0 && magic == 0xC0FFEEu,
+          "inject: PEEKDATA reads the target address the helper set up");
+    u64 regs[27];
+    CHECK(sc4(101, 12, pid, 0, regs) == 0, "inject: GETREGS at the helper's own trap");
+    u64 scratch_rsp = (regs[19] - 512) & ~15ull;
+    CHECK(sc4(101, 5, pid, scratch_rsp, 9 /* fake return address, as the real injection's trace used */) == 0, "inject: POKEDATA the fake return address");
+    regs[16] = target;            /* rip: the function to call */
+    regs[19] = scratch_rsp;       /* rsp: [rsp] = the fake return address */
+    regs[14] = 0x700000000010ull; /* rdi: a pointer argument on the stack, shape only (the called function dereferences it: mov rax,[rdi]) */
+    CHECK(sc4(101, 13, pid, 0, regs) == 0, "inject: SETREGS to call the function with a fake return address");
+    CHECK(sc4(101, 7, pid, 0, 0) == 0, "inject: CONT into the DBT-translated function");
+    long wr = sc4(61, pid, &st, 0, 0);
+    CHECK(wr == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 11,
+          "inject: the call runs and faults at the fake return address with SIGSEGV, same as Linux");
+    if (wr == pid && (st & 0xff) == 0x7f) {
+        memset(regs, 0, sizeof regs);
+        CHECK(sc4(101, 12, pid, 0, regs) == 0 && regs[16] == 9, "inject: GETREGS: rip is exactly the fake return address");
+        u32 si[32]; memset(si, 0, sizeof si);
+        CHECK(sc4(101, 0x4202, pid, 0, si) == 0 && si[0] == 11, "inject: GETSIGINFO: si_signo is SIGSEGV");
+        inject_more(pid, regs, target);
+        sc4(101, 8, pid, 0, 0);
+        sc4(61, pid, &st, 0, 0);
+    } else {
+        outn("    inject: layer wait4 status", st);
+    }
+}
+
 static char cpubuf[1 << 16];
 static void test_cpuinfo(void)
 {
@@ -678,10 +1104,57 @@ static void test_redzone(void)
     sc2(11, lz, 8 << 20);
 }
 
+/* Linux keeps top-down mmaps below mmap_base, >= 128 MiB under the stack: the space right above a process's
+ * highest mapping is free, MAP_FIXED_NOREPLACE there gets exactly that address. The layer used to start its
+ * top-down mmaps at its arena's very end, with host (Windows) allocations right above. */
+static char mapsbuf[1 << 18];
+static void test_mmap_above_top(void)
+{
+    mmap_anon(4096, 3);   /* the newest top-down mapping */
+    long fd = sc3(2, "/proc/self/maps", 0, 0), n = 0, r;
+    while (fd >= 0 && n < (long)sizeof mapsbuf - 1 && (r = sc3(0, fd, mapsbuf + n, sizeof mapsbuf - 1 - n)) > 0) n += r;
+    if (fd >= 0) sc1(3, fd);
+    mapsbuf[n > 0 ? n : 0] = 0;
+    u64 top = 0;
+    for (char *p = mapsbuf; *p;) {
+        char *nl = p; while (*nl && *nl != '\n') nl++;
+        u64 s = 0, e = 0; char *q = p;
+        while (*q && *q != '-') { s = s * 16 + (u64)(*q <= '9' ? *q - '0' : *q - 'a' + 10); q++; }
+        if (*q == '-') q++;
+        while (*q && *q != ' ') { e = e * 16 + (u64)(*q <= '9' ? *q - '0' : *q - 'a' + 10); q++; }
+        char save = *nl; *nl = 0;
+        int special = find(p, "[stack]") || find(p, "[vdso]") || find(p, "[vvar]") || find(p, "[vsyscall]");
+        *nl = save;
+        if (!special && e > top) top = e;
+        p = *nl ? nl + 1 : nl;
+    }
+    CHECK(top != 0, "maps: the highest mapping");
+    u64 want = top + (16ull << 20);
+    long m = sc(9, want, 4096, 3, 0x100022 /* PRIVATE|ANON|FIXED_NOREPLACE */, -1, 0);
+    CHECK(m == (long)want, "MAP_FIXED_NOREPLACE 16 MiB above the highest mapping gets that address (free, as on Linux)");
+    if (m == (long)want) { *(volatile u64 *)want = 5; sc2(11, want, 4096); }
+    CHECK(sc(9, top - 4096, 4096, 3, 0x100022, -1, 0) == -17, "MAP_FIXED_NOREPLACE over the highest mapping -> -EEXIST");
+
+    /* a plain hint (no MAP_FIXED*): a free range is given as asked, a busy one moves elsewhere */
+    long a = sc(9, 0, 3 * 4096, 3, 0x22 /* PRIVATE|ANON */, -1, 0);
+    CHECK(a > 0, "hint test: a scratch mapping");
+    if (a > 0) {
+        u64 hole = (u64)a + 4096;
+        sc2(11, hole, 4096);   /* free its middle page */
+        long h = sc(9, hole, 4096, 3, 0x22, -1, 0);
+        CHECK(h == (long)hole, "mmap hint at a free page inside the mmap area gets that address (as on Linux)");
+        long b = sc(9, (u64)a, 4096, 3, 0x22, -1, 0);
+        CHECK(b > 0 && b != a, "mmap hint at a busy page gets another address, nothing replaced");
+        if (b > 0) sc2(11, b, 4096);
+        sc2(11, (u64)a, 3 * 4096);
+    }
+}
+
 static void test_mem(void)
 {
     out("memory:\n");
     test_redzone();
+    test_mmap_above_top();
     u8 *p = mmap_anon(1 << 20, 3);
     CHECK((long)p > 0x10000, "mmap anon 1MiB");
     p[0] = 1; p[(1 << 20) - 1] = 2;
@@ -1204,12 +1677,18 @@ void cstart(u64 *sp)
         k = 0; while (a[k] && a[k] == g[k]) k++;
         if (!a[k] && !g[k]) no_swap = 1;
     }
+    for (long i = 1; i < argc; i++) { const char *a = (const char *)sp[1 + i]; if (!memcmp(a, "--spawned", 9)) sc1(231, spawned_main(argc, sp)); }   /* the program test_spawn starts */
     out("xrl guest test start\n");
     outn("argc", argc);
     test_misc();
     test_mem();
     test_fs();
     test_cpuinfo();
+    test_procfs_rlimits();
+    test_fork_tasks();
+    test_spawn();
+    test_traced_exec();
+    test_inject_call();
     test_threads();
     test_net();
     test_ntsync();

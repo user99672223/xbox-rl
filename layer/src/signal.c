@@ -46,6 +46,18 @@ void xrl_sig_init(void) { memset(g_act, 0, sizeof g_act); sig_cpu_init(); }
 
 #define SIGBIT(s) (1ull << ((s) - 1))
 
+/* signals ignored / caught by a handler, as bitmasks (bit sig-1), for /proc/self/status */
+void xrl_sig_proc_masks(u64 *ign, u64 *cgt)
+{
+    *ign = *cgt = 0;
+    AcquireSRWLockShared(&g_sig_lock);
+    for (int i = 1; i <= LX_NSIG; i++) {
+        if (g_act[i].handler == 1) *ign |= SIGBIT(i);
+        else if (g_act[i].handler > 1) *cgt |= SIGBIT(i);
+    }
+    ReleaseSRWLockShared(&g_sig_lock);
+}
+
 slong xrl_sys_rt_sigaction(int sig, u64 uact, u64 uoact, u64 size)
 {
     if (size != 8) return -LX_EINVAL;
@@ -509,7 +521,9 @@ static slong send_signal(xrl_thread *t, int sig, int from_kill)
         if (a.handler == LX_SIG_IGN) return 0;
         if (a.handler == LX_SIG_DFL && default_ignored(sig)) return 0;
     }
+    if (t == xrl_cur() && t->task && xrl_task_signal(t, sig)) return 0;
     if (sig == LX_SIGKILL || (a.handler == LX_SIG_DFL && !blocked)) {
+        if (t->task) xrl_task_signal_death(t, sig);
         LOGE("signal %d to tid %d with the default action: terminating process (128+%d)", sig, t->tid, sig);
         xrl_do_exit(128 + sig, 1);
     }
@@ -702,6 +716,20 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
 {
     EXCEPTION_RECORD *r = ep->ExceptionRecord;
     DWORD code = r->ExceptionCode;
+    if (g_trace_faults && code >= 0xC0000000u && code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION && code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_IN_PAGE_ERROR && code != EXCEPTION_FLT_DIVIDE_BY_ZERO && code != EXCEPTION_FLT_INVALID_OPERATION && code != EXCEPTION_INT_OVERFLOW && code != EXCEPTION_DATATYPE_MISALIGNMENT)
+    {
+        void *bt[12]; USHORT nb = 0; bt[nb++] = r->ExceptionAddress; { CONTEXT *cc = ep->ContextRecord; bt[nb++] = (void *)cc->Rip; }
+        { DWORD64 *sp2 = (DWORD64 *)ep->ContextRecord->Rsp; for (int i = 0; i < 8 && nb < 12; i++) { DWORD64 v; __try { v = sp2[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; } bt[nb++] = (void *)v; } }
+        char line[900]; int w = snprintf(line, sizeof line, "veh: exception %08lx (not one the layer handles); frames:", code);
+        for (USHORT i = 0; i < nb && w < 800; i++) {
+            HMODULE m = NULL; char nm[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)bt[i], &m) && m) {
+                GetModuleFileNameA(m, nm, sizeof nm); const char *b = strrchr(nm, '\\'); if (b) memmove(nm, b + 1, strlen(b));
+            }
+            w += snprintf(line + w, sizeof line - w, " %s+%llx", nm, (unsigned long long)((u64)bt[i] - (u64)m));
+        }
+        LOGW("%s", line);
+    }
     /* Only hardware-ish codes concern us. */
     switch (code) {
     case EXCEPTION_ACCESS_VIOLATION: case EXCEPTION_ILLEGAL_INSTRUCTION: case EXCEPTION_PRIV_INSTRUCTION:
@@ -727,6 +755,21 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     }
     if (g_trace_faults) trace_fault(ep, t);
     if (!t) return EXCEPTION_CONTINUE_SEARCH;
+    /* A traced process: a fault in guest code is a signal-delivery-stop for its tracer, whatever the faulting
+     * address is (a tracer that makes an injected call return to address 9 waits for exactly this SIGSEGV). */
+    if (xrl_tracee_active() && code != EXCEPTION_BREAKPOINT && t->in_sys == 0 && t->teb_guest_live && xrl_mem_is_mapped(ep->ContextRecord->Rsp)) {
+        int tsig = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_STACK_OVERFLOW ? LX_SIGSEGV :
+                   code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ? LX_SIGILL :
+                   code == EXCEPTION_SINGLE_STEP ? LX_SIGTRAP :
+                   code == EXCEPTION_IN_PAGE_ERROR || code == EXCEPTION_DATATYPE_MISALIGNMENT ? LX_SIGBUS : LX_SIGFPE;
+        int tg = xrl_teb_enter_host(t);
+        u64 tstk[2];
+        xrl_teb_stack_here(tstk);
+        xrl_tracee_stop(ep->ContextRecord, t, tsig);
+        xrl_teb_stack_back(tstk);
+        xrl_teb_restore(t, tg);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     /* Whose fault is it? Guest code runs with the guest TEB view live, from
      * executable guest memory, on a writable guest stack. (The TEB's stack range
      * cannot tell: in Wine's view it is Wine's stack, so every fault in Wine
@@ -754,6 +797,12 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         }
     }
 
+    if (code == EXCEPTION_BREAKPOINT && xrl_tracee_active()) {   /* a traced process: the tracer sees the int3 (tracee.c) */
+        xrl_tracee_stop(ep->ContextRecord, t, LX_SIGTRAP);
+        xrl_teb_stack_back(stk);
+        xrl_teb_restore(t, was_guest);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     int sig = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_STACK_OVERFLOW ? LX_SIGSEGV :
               code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ? LX_SIGILL :
               code == EXCEPTION_BREAKPOINT || code == EXCEPTION_SINGLE_STEP ? LX_SIGTRAP :

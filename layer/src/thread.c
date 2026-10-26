@@ -238,6 +238,7 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
     xrl_thread *p = xrl_cur();
     if (!p) return -LX_ENOSYS;
     const u64 need = LX_CLONE_VM | LX_CLONE_THREAD;
+    if (!(flags & LX_CLONE_VM) && xrl_fork_tasks_enabled()) return xrl_do_fork();   /* glibc's fork() */
     if ((flags & need) != need) {
         LOGW("clone: flags=0x%llx is not a thread clone (CLONE_VM|CLONE_THREAD required); fork/vfork unsupported", flags);
         return -LX_ENOSYS;
@@ -276,6 +277,23 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
     return t->tid;
 }
 
+/* a fork()ed task's thread (task.c): resumes where the parent's syscall returns, with rax = 0 */
+xrl_thread *xrl_task_thread_new(xrl_thread *p, u64 rsp, struct xrl_task *k)
+{
+    xrl_thread *t = xrl_thread_new();
+    if (!t) return NULL;
+    const u64 *fr = (const u64 *)p->frame;
+    for (int i = 0; i < 7; i++) t->resume[i] = fr[i];
+    t->child_rsp = rsp;
+    t->guest_tp = p->guest_tp;
+    t->sigmask = p->sigmask;
+    t->task = k;
+    t->fdt = xrl_fd_table_clone();
+    if (create_os_thread(t)) { thread_unlink(t); free(t); return NULL; }
+    return t;
+}
+void xrl_task_thread_start(xrl_thread *t) { ResumeThread(t->handle); }
+
 /* ------------------------------------------------------------------ exit */
 void xrl_wake_ctid(xrl_thread *t)
 {
@@ -291,6 +309,14 @@ slong xrl_do_exit(int code, int group)
 {
     xrl_thread *t = xrl_cur();
     if (!t) ExitThread((DWORD)code);
+    if (t->task) {   /* a fork()ed task ends; the process does not */
+        xrl_task_on_exit(t, code);
+        if (t->timer) CloseHandle(t->timer);
+        thread_unlink(t);
+        xrl_thread_unbind();
+        xrl_task_wake_parent(t);
+        ExitThread((DWORD)code);
+    }
     int last = (int)(G.nthreads - G.ndaemons) <= 1 && !t->daemon;
     if (t->daemon) InterlockedDecrement(&G.ndaemons);
     if (group || last) {

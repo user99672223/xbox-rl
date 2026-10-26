@@ -77,50 +77,159 @@ static const char *comm_name(void)
 }
 static char *g_comm(const char *p, size_t *len)
 {
-    (void)p;
+    if (!strncmp(p, "/proc/1/", 8)) return dupfmt(len, "init\n");
     xrl_thread *t = xrl_cur();
     return dupfmt(len, "%.15s\n", t && t->name[0] ? t->name : comm_name());
 }
+/* ---- status / stat of one task: this process, one of its threads, or the nominal init ---- */
+/* The layer has no init process, as WSL1 has none; /proc/1 describes a nominal one (name "init", root,
+ * one thread, nothing mapped) so that what every Linux has (PPid 1 -> a process 1 with a comm, a status,
+ * a cgroup...) is there to read. What a non-root user cannot read of pid 1 on Linux (exe, cwd, root,
+ * environ, maps, fd) fails with EACCES here too. */
+typedef struct pwho { int init; int tid; char name[16]; u64 sigblk, sigpnd; int nthreads; } pwho;
+
+static void pwho_of(const char *path, pwho *w)
+{
+    memset(w, 0, sizeof *w);
+    if (!strncmp(path, "/proc/1/", 8)) {
+        w->init = 1; w->tid = 1; w->nthreads = 1;
+        strcpy_s(w->name, sizeof w->name, "init");
+        return;
+    }
+    w->nthreads = (int)G.nthreads;
+    xrl_thread *t = NULL;
+    if (!strncmp(path, "/proc/self/task/", 16)) t = xrl_thread_by_tid(atoi(path + 16));
+    if (t) {
+        w->tid = t->tid; w->sigblk = t->sigmask; w->sigpnd = t->sigpending;
+        snprintf(w->name, sizeof w->name, "%.15s", t->name);
+    } else {
+        w->tid = G.pid;
+        snprintf(w->name, sizeof w->name, "%.15s", comm_name());
+    }
+}
+
+/* affinity mask as the kernel prints it: 32-bit hex groups, most significant first, comma separated */
+static void cpumask_hex(char *o, size_t cap, int n)
+{
+    size_t w = 0;
+    for (int g = (n - 1) / 32; g >= 0; g--) {
+        int bits = n - g * 32; if (bits > 32) bits = 32;
+        u32 v = bits == 32 ? 0xffffffffu : ((1u << bits) - 1);
+        w += (size_t)snprintf(o + w, cap - w, g == (n - 1) / 32 ? "%x" : ",%08x", v);
+    }
+}
+
 static char *g_status(const char *p, size_t *len)
 {
-    (void)p;
-    u64 vm = xrl_mem_committed() >> 10;
-    return dupfmt(len,
-        "Name:\t%.15s\nUmask:\t0022\nState:\tR (running)\nTgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t1\nTracerPid:\t0\n"
-        "Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t256\nGroups:\t\n"
-        "VmPeak:\t%llu kB\nVmSize:\t%llu kB\nVmRSS:\t%llu kB\nVmData:\t%llu kB\nVmStk:\t132 kB\nThreads:\t%d\n"
-        "SigQ:\t0/31000\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\n"
-        "SigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
-        "CapEff:\t0000000000000000\nCpus_allowed:\tff\nCpus_allowed_list:\t0-7\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t1\n",
-        comm_name(), G.pid, G.pid, vm, vm, vm, vm, (int)G.nthreads);
+    pwho w; pwho_of(p, &w);
+    u64 ign, cgt; xrl_sig_proc_masks(&ign, &cgt);
+    lx_rlimit sigp; xrl_rlimit_get(11, &sigp);
+    int n = xrl_nprocs();
+    char mask[96]; cpumask_hex(mask, sizeof mask, n);
+    u64 vm = w.init ? 4096 : xrl_mem_committed() >> 10;
+    u64 pte = vm / 512 + 8;
+    int pid = w.init ? 1 : G.pid;
+    int uid = w.init ? 0 : 1000;
+    const char *state = w.init ? "S (sleeping)" : "R (running)";
+    const u64 capall = 0x000001ffffffffffull;   /* CAP_LAST_CAP 40 on 6.1 */
+    char *b = (char *)malloc(8192);
+    int k = snprintf(b, 8192,
+        "Name:\t%s\nUmask:\t%04o\nState:\t%s\nTgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n"
+        "Uid:\t%d\t%d\t%d\t%d\nGid:\t%d\t%d\t%d\t%d\nFDSize:\t%d\nGroups:\t\n"
+        "NStgid:\t%d\nNSpid:\t%d\nNSpgid:\t%d\nNSsid:\t%d\n"
+        "VmPeak:\t%8llu kB\nVmSize:\t%8llu kB\nVmLck:\t       0 kB\nVmPin:\t       0 kB\nVmHWM:\t%8llu kB\nVmRSS:\t%8llu kB\n"
+        "RssAnon:\t%8llu kB\nRssFile:\t       0 kB\nRssShmem:\t       0 kB\nVmData:\t%8llu kB\nVmStk:\t     132 kB\n"
+        "VmExe:\t       0 kB\nVmLib:\t       0 kB\nVmPTE:\t%8llu kB\nVmSwap:\t       0 kB\nHugetlbPages:\t       0 kB\n"
+        "CoreDumping:\t0\nTHP_enabled:\t0\nThreads:\t%d\nSigQ:\t0/%llu\n"
+        "SigPnd:\t%016llx\nShdPnd:\t%016llx\nSigBlk:\t%016llx\nSigIgn:\t%016llx\nSigCgt:\t%016llx\n"
+        "CapInh:\t%016llx\nCapPrm:\t%016llx\nCapEff:\t%016llx\nCapBnd:\t%016llx\nCapAmb:\t0000000000000000\n"
+        "NoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunsupported\n"
+        "Cpus_allowed:\t%s\nCpus_allowed_list:\t0-%d\nMems_allowed:\t00000001\nMems_allowed_list:\t0\n"
+        "voluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t1\n",
+        w.name, (unsigned)G.umask & 0777, state, pid, w.tid, w.init ? 0 : 1,
+        uid, uid, uid, uid, uid, uid, uid, uid, w.init ? 64 : 256, pid, pid, pid, pid,
+        vm, vm, vm, vm, vm, vm, pte, w.nthreads, sigp.rlim_cur,
+        w.sigpnd, 0ull, w.sigblk, w.init ? 0ull : ign, w.init ? 0ull : cgt,
+        0ull, w.init ? capall : 0ull, w.init ? capall : 0ull, capall,
+        mask, n - 1);
+    *len = k < 0 ? 0 : (size_t)k;
+    return b;
 }
 static char *g_stat(const char *p, size_t *len)
 {
-    (void)p;
-    u64 pages = xrl_mem_committed() >> 12;
-    u64 up = (xrl_mono_ns() - 0) / 10000000ull;
+    pwho w; pwho_of(p, &w);
+    u64 pages = w.init ? 1024 : xrl_mem_committed() >> 12;
+    u64 up = w.init ? 0 : xrl_mono_ns() / 10000000ull;
+    int pid = w.init ? 1 : G.pid;
+    /* the fields of proc(5) up to exit_code; the ones we do not keep are 0 */
     return dupfmt(len,
-        "%d (%.15s) R 1 %d %d 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 "
+        "%d (%s) %c %d %d %d 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 "
         "0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        G.pid, comm_name(), G.pid, G.pid, (int)G.nthreads, up, pages << 12, pages);
+        w.tid, w.name, w.init ? 'S' : 'R', w.init ? 0 : 1, pid, pid, w.nthreads, up, pages << 12, pages);
 }
 static char *g_statm(const char *p, size_t *len)
 {
-    (void)p;
-    u64 pages = xrl_mem_committed() >> 12;
+    pwho w; pwho_of(p, &w);
+    u64 pages = w.init ? 1024 : xrl_mem_committed() >> 12;
     return dupfmt(len, "%llu %llu 0 0 0 %llu 0\n", pages, pages, pages);
 }
 static char *g_limits(const char *p, size_t *len)
 {
     (void)p;
-    return dupfmt(len,
-        "Limit                     Soft Limit           Hard Limit           Units     \n"
-        "Max stack size            8388608              unlimited            bytes     \n"
-        "Max open files            65536                65536                files     \n"
-        "Max address space         unlimited            unlimited            bytes     \n");
+    static const struct { const char *name; const char *unit; } k[] = {
+        { "Max cpu time", "seconds" }, { "Max file size", "bytes" }, { "Max data size", "bytes" }, { "Max stack size", "bytes" },
+        { "Max core file size", "bytes" }, { "Max resident set", "bytes" }, { "Max processes", "processes" }, { "Max open files", "files" },
+        { "Max locked memory", "bytes" }, { "Max address space", "bytes" }, { "Max file locks", "locks" }, { "Max pending signals", "signals" },
+        { "Max msgqueue size", "bytes" }, { "Max nice priority", "" }, { "Max realtime priority", "" }, { "Max realtime timeout", "us" } };
+    char *b = (char *)malloc(4096);
+    int n = snprintf(b, 4096, "%-25s %-20s %-20s %-10s\n", "Limit", "Soft Limit", "Hard Limit", "Units");
+    for (int i = 0; i < 16; i++) {
+        lx_rlimit r; xrl_rlimit_get(i, &r);
+        char c[24], m[24];
+        if (r.rlim_cur == LX_RLIM_INFINITY) strcpy_s(c, sizeof c, "unlimited"); else snprintf(c, sizeof c, "%llu", r.rlim_cur);
+        if (r.rlim_max == LX_RLIM_INFINITY) strcpy_s(m, sizeof m, "unlimited"); else snprintf(m, sizeof m, "%llu", r.rlim_max);
+        n += snprintf(b + n, 4096 - n, "%-25s %-20s %-20s %-10s\n", k[i].name, c, m, k[i].unit);
+    }
+    *len = (size_t)n;
+    return b;
 }
-static char *g_mounts(const char *p, size_t *len) { (void)p; return dupfmt(len, "rootfs / rootfs rw 0 0\nproc /proc proc rw 0 0\n"); }
-static char *g_mountinfo(const char *p, size_t *len) { (void)p; return dupfmt(len, "1 1 0:1 / / rw - rootfs rootfs rw\n"); }
+static char *g_cgroup(const char *p, size_t *len) { (void)p; return dupfmt(len, "0::/\n"); }
+static char *g_init_cmdline(const char *p, size_t *len) { (void)p; char *b = (char *)malloc(8); memcpy(b, "/init\0", 6); *len = 6; return b; }
+static char *g_oomscore(const char *p, size_t *len) { (void)p; return dupfmt(len, "0\n"); }
+static char *g_personality(const char *p, size_t *len) { (void)p; return dupfmt(len, "00000000\n"); }
+static char *g_uuid(const char *p, size_t *len)
+{
+    (void)p;
+    u8 r[16]; xrl_rng_fill(r, sizeof r);
+    r[6] = (u8)((r[6] & 0x0f) | 0x40); r[8] = (u8)((r[8] & 0x3f) | 0x80);
+    return dupfmt(len, "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x\n", r[0], r[1], r[2], r[3], r[4], r[5],
+                  r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13], r[14], r[15]);
+}
+static char *g_domainname(const char *p, size_t *len) { (void)p; return dupfmt(len, "(none)\n"); }
+static char *g_uts_version(const char *p, size_t *len) { (void)p; return dupfmt(len, XRL_UTS_VERSION "\n"); }
+static char *g_threadsmax(const char *p, size_t *len) { (void)p; return dupfmt(len, "63000\n"); }
+static char *g_corepattern(const char *p, size_t *len) { (void)p; return dupfmt(len, "core\n"); }
+static char *g_one(const char *p, size_t *len) { (void)p; return dupfmt(len, "1\n"); }
+static char *g_paranoid(const char *p, size_t *len) { (void)p; return dupfmt(len, "2\n"); }
+/* the filesystems the layer really provides: the guest's root, and the virtual /proc, /sys and /dev */
+static char *g_mounts(const char *p, size_t *len)
+{
+    (void)p;
+    return dupfmt(len,
+        "rootfs / rootfs rw 0 0\n"
+        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "devtmpfs /dev devtmpfs rw,nosuid,relatime,mode=755 0 0\n");
+}
+static char *g_mountinfo(const char *p, size_t *len)
+{
+    (void)p;
+    return dupfmt(len,
+        "1 1 0:1 / / rw - rootfs rootfs rw\n"
+        "2 1 0:2 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n"
+        "3 1 0:3 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw\n"
+        "4 1 0:4 / /dev rw,nosuid,relatime - devtmpfs devtmpfs rw,mode=755\n");
+}
 static char *g_cpuinfo(const char *p, size_t *len) { (void)p; return xrl_cpuinfo_text(len); }
 static char *g_meminfo(const char *p, size_t *len)
 {
@@ -148,9 +257,9 @@ static char *g_procstat(const char *p, size_t *len)
 }
 static char *g_uptime(const char *p, size_t *len) { (void)p; u64 ms = xrl_mono_ns() / 10000000ull; return dupfmt(len, "%llu.%02llu %llu.%02llu\n", ms / 100, ms % 100, ms / 100, ms % 100); }
 static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, G.pid); }
-static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-xrl (xbox-rl@layer) (gcc) #1 SMP\n"); }
-static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\tproc\nnodev\ttmpfs\n\text4\n"); }
-static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-xrl\n"); }
+static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-21-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40) " XRL_UTS_VERSION "\n"); }
+static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\trootfs\nnodev\tproc\nnodev\tsysfs\nnodev\tdevtmpfs\nnodev\ttmpfs\n\text4\n"); }
+static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-21-amd64\n"); }
 static char *g_ostype(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux\n"); }
 static char *g_hostname(const char *p, size_t *len) { (void)p; return dupfmt(len, "%s\n", xrl_hostname()); }
 static char *g_pidmax(const char *p, size_t *len) { (void)p; return dupfmt(len, "4194304\n"); }
@@ -194,6 +303,10 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     padd("/proc/self/statm", K_FILE, g_statm);
     padd("/proc/self/comm", K_FILE, g_comm);
     padd("/proc/self/limits", K_FILE, g_limits);
+    padd("/proc/self/cgroup", K_FILE, g_cgroup);
+    padd("/proc/self/oom_score", K_FILE, g_oomscore);
+    padd("/proc/self/oom_score_adj", K_FILE, g_oomscore);
+    padd("/proc/self/personality", K_FILE, g_personality);
     padd("/proc/self/mounts", K_FILE, g_mounts);
     padd("/proc/self/mountinfo", K_FILE, g_mountinfo);
     padd("/proc/self/auxv", K_FILE, g_auxv);
@@ -208,8 +321,33 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     padd("/proc/version", K_FILE, g_version);
     padd("/proc/filesystems", K_FILE, g_filesystems);
     padd("/proc/mounts", K_FILE, g_mounts);
+    /* the nominal init (see g_status) */
+    padd("/proc/1", K_DIR, NULL);
+    padd("/proc/1/comm", K_FILE, g_comm);
+    padd("/proc/1/cmdline", K_FILE, g_init_cmdline);
+    padd("/proc/1/status", K_FILE, g_status);
+    padd("/proc/1/stat", K_FILE, g_stat);
+    padd("/proc/1/statm", K_FILE, g_statm);
+    padd("/proc/1/cgroup", K_FILE, g_cgroup);
+    padd("/proc/1/limits", K_FILE, g_limits);
+    padd("/proc/1/oom_score", K_FILE, g_oomscore);
+    padd("/proc/1/oom_score_adj", K_FILE, g_oomscore);
+    padd("/proc/1/exe", K_LINK, NULL);
+    padd("/proc/1/cwd", K_LINK, NULL);
+    padd("/proc/1/root", K_LINK, NULL);
+    padd("/proc/1/environ", K_FILE, NULL);
+    padd("/proc/1/maps", K_FILE, NULL);
+    padd("/proc/1/mem", K_FILE, NULL);
+    padd("/proc/1/fd", K_DIR, NULL);
     padd("/proc/sys", K_DIR, NULL);
     padd("/proc/sys/kernel", K_DIR, NULL);
+    padd("/proc/sys/kernel/version", K_FILE, g_uts_version);
+    padd("/proc/sys/kernel/domainname", K_FILE, g_domainname);
+    padd("/proc/sys/kernel/threads-max", K_FILE, g_threadsmax);
+    padd("/proc/sys/kernel/core_pattern", K_FILE, g_corepattern);
+    padd("/proc/sys/kernel/perf_event_paranoid", K_FILE, g_paranoid);
+    padd("/proc/sys/kernel/kptr_restrict", K_FILE, g_one);
+    padd("/proc/sys/kernel/random/uuid", K_FILE, g_uuid);
     padd("/proc/sys/kernel/osrelease", K_FILE, g_osrelease);
     padd("/proc/sys/kernel/ostype", K_FILE, g_ostype);
     padd("/proc/sys/kernel/hostname", K_FILE, g_hostname);
@@ -281,7 +419,7 @@ static int dyn_kind(const char *norm, int *is_fd_entry, int *num)
         const char *rest = strchr(norm + 16, '/');
         if (!xrl_thread_by_tid(tid) && tid != G.pid) return 0;
         if (!rest) { *num = tid; return K_DIR; }
-        if (!strcmp(rest, "/comm") || !strcmp(rest, "/stat") || !strcmp(rest, "/status")) { *num = tid; return K_FILE; }
+        if (!strcmp(rest, "/comm") || !strcmp(rest, "/stat") || !strcmp(rest, "/status") || !strcmp(rest, "/statm")) { *num = tid; return K_FILE; }
     }
     return 0;
 }
@@ -407,18 +545,43 @@ static xfile *open_dir(const char *norm, const char *orig)
     return f;
 }
 
+/* /proc/<pid>/{maps,exe} of a traced second process (task.c); 1 and sets *pid/leaf when gabs is such a path */
+char *xrl_task_remote_proc(int pid, const char *leaf, size_t *len);
+static int remote_path(const char *g, int *pid, const char **leaf)
+{
+    if (strncmp(g, "/proc/", 6) || g[6] < '0' || g[6] > '9') return 0;
+    const char *p = g + 6; int v = 0;
+    while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+    if (*p != '/' || v == G.pid || v == 1 || xrl_thread_by_tid(v)) return 0;
+    if (strcmp(p + 1, "maps") && strcmp(p + 1, "exe")) return 0;
+    *pid = v; *leaf = p + 1;
+    return 1;
+}
+
 xfile *xrl_proc_open(const char *gabs, int flags, int *err)
 {
     char norm[512];
+    {   int rp; const char *rl;
+        if (remote_path(gabs, &rp, &rl) && !strcmp(rl, "maps")) {
+            size_t n; char *d = xrl_task_remote_proc(rp, rl, &n);
+            if (!d) { *err = LX_ENOENT; return NULL; }
+            memfile *m = (memfile *)calloc(1, sizeof *m);
+            m->data = d; m->len = n;
+            xfile *f = xfile_new(&g_mf_ops, flags & LX_O_ACCMODE);
+            f->priv = m; f->gpath = _strdup(gabs);
+            return f;
+        }
+    }
     normalize(gabs, norm, sizeof norm);
     pent *e = plookup(norm);
     int isfd = 0, num = 0;
     int kind = e ? e->kind : dyn_kind(norm, &isfd, &num);
     if (!kind) {
-        if (G.trace_syscalls) LOGW("vfs: ENOENT proc %s", gabs);
+        if (G.trace_syscalls == 1) LOGW("vfs: ENOENT proc %s", gabs);
         *err = LX_ENOENT;
         return NULL;
     }
+    if (e && !strncmp(norm, "/proc/1/", 8) && (!e->gen || !strcmp(norm, "/proc/1/fd"))) { *err = LX_EACCES; return NULL; }   /* root's, as for a normal user */
     if (kind == K_DIR) return open_dir(norm, gabs);
     if (kind == K_LINK) { *err = LX_ENOENT; return NULL; }   /* callers resolve links via readlink first */
     char *data; size_t len;
@@ -428,11 +591,13 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
         if (!strcmp(leaf, "comm")) {
             xrl_thread *t = xrl_thread_by_tid(num);
             data = dupfmt(&len, "%.15s\n", t ? t->name : comm_name());
-        } else data = g_stat(norm, &len);
+        } else if (!strcmp(leaf, "status")) data = g_status(norm, &len);
+        else if (!strcmp(leaf, "statm")) data = g_statm(norm, &len);
+        else data = g_stat(norm, &len);
     }
     memfile *m = (memfile *)calloc(1, sizeof *m);
     m->data = data; m->len = len;
-    if (!strcmp(strrchr(norm, '/') + 1, "comm")) m->comm_tid = e ? -1 : num;
+    if (!strcmp(strrchr(norm, '/') + 1, "comm") && strncmp(norm, "/proc/1/", 8)) m->comm_tid = e ? -1 : num;
     xfile *f = xfile_new(&g_mf_ops, flags & LX_O_ACCMODE);
     f->priv = m;
     f->gpath = _strdup(gabs);
@@ -442,9 +607,19 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
 slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
 {
     char norm[512];
+    {   int rp; const char *rl;
+        if (remote_path(gabs, &rp, &rl) && !strcmp(rl, "exe")) {
+            size_t n; char *d = xrl_task_remote_proc(rp, rl, &n);
+            if (!d) return -LX_ENOENT;
+            if (n > cap) n = (size_t)cap;
+            memcpy(buf, d, n); free(d);
+            return (slong)n;
+        }
+    }
     normalize(gabs, norm, sizeof norm);
     char tmp[2048];
     tmp[0] = 0;
+    if (!strcmp(norm, "/proc/1/exe") || !strcmp(norm, "/proc/1/cwd") || !strcmp(norm, "/proc/1/root")) return -LX_EACCES;
     if (!strcmp(norm, "/proc/self/exe")) snprintf(tmp, sizeof tmp, "%s", G.exec_path ? G.exec_path : "/bin/wine");
     else if (!strcmp(norm, "/proc/self/cwd")) { AcquireSRWLockShared(&G.cwd_lock); snprintf(tmp, sizeof tmp, "%s", G.cwd); ReleaseSRWLockShared(&G.cwd_lock); }
     else if (!strcmp(norm, "/proc/self/root")) snprintf(tmp, sizeof tmp, "/");
@@ -465,6 +640,16 @@ slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
 int xrl_proc_stat(const char *gabs, lx_stat *st)
 {
     if (strncmp(gabs, "/proc", 5) && strncmp(gabs, "/sys", 4)) return 0;
+    {   int rp; const char *rl;
+        if (remote_path(gabs, &rp, &rl)) {
+            memset(st, 0, sizeof *st);
+            size_t n; char *d = xrl_task_remote_proc(rp, rl, &n);
+            if (!d) return 1;   /* ENOENT */
+            free(d);
+            xrl_stat_synth(st, !strcmp(rl, "exe") ? (LX_S_IFLNK | 0777) : (LX_S_IFREG | 0444), (u64)rp, 0);
+            return 1;
+        }
+    }
     char norm[512];
     normalize(gabs, norm, sizeof norm);
     pent *e = plookup(norm);

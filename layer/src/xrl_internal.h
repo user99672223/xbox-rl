@@ -40,6 +40,7 @@ BOOL WINAPI TerminateThread(HANDLE hThread, DWORD dwExitCode);
 #include "lx.h"
 
 #define XRL_LAYER_VERSION "0.1.0"
+#define XRL_UTS_VERSION "#1 SMP PREEMPT_DYNAMIC Debian " XRL_LAYER_VERSION   /* uname -v and /proc/version */
 
 /* ------------------------------------------------------------------ log */
 void xrl_logf(int level, const char *tag, const char *fmt, ...);
@@ -72,6 +73,7 @@ typedef struct xrl_sigregs {
     __declspec(align(64)) unsigned char xs[1024]; /* 0xC0 XSAVE image, standard format */
 } xrl_sigregs;
 
+struct xrl_task;
 typedef struct xrl_thread xrl_thread;
 struct xrl_thread {
     /* --- asm-visible block (offsets frozen, see thread.c static asserts) --- */
@@ -122,6 +124,9 @@ struct xrl_thread {
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
+    struct xrl_task *task; /* non-NULL: the body of a fork()ed task (task.c, XRL_FORK_TASKS=1) */
+    void *fdt;             /* its fd table (fd.c); NULL: the process's */
+    void *tr_park;         /* tracee.c: this thread's copy of its CONTEXT while a tracer has it stopped */
 };
 
 /* teb.c: guest/host views of the shared TEB (docs/gs-teb.md) */
@@ -153,6 +158,32 @@ xrl_thread *xrl_thread_by_tid(int tid);
 int  xrl_thread_count(void);
 slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc);
 slong xrl_do_exit(int code, int group);
+/* task.c: fork() and ptrace() for children that alternate with their parent (experiment) */
+int  xrl_fork_tasks_enabled(void);
+slong xrl_do_fork(void);
+int  xrl_task_pid(xrl_thread *t, int *ppid);             /* the task's pid (0: not a task) and its parent's */
+slong xrl_task_wait(int pid, u64 ustatus, int options);
+int  xrl_task_kill(int pid, int sig, slong *res);
+slong xrl_task_ptrace(int req, int pid, u64 addr, u64 data);
+void xrl_task_syscall_stop(xrl_thread *t, slong nr, const slong *a, slong ret, int enter);
+int  xrl_task_signal(xrl_thread *t, int sig);
+slong xrl_task_exec(xrl_thread *t, const char *path, u64 uargv, u64 uenvp);
+void xrl_task_on_exit(xrl_thread *t, int code);
+void xrl_task_wake_parent(xrl_thread *t);
+void xrl_task_signal_death(xrl_thread *t, int sig);
+xrl_thread *xrl_task_thread_new(xrl_thread *p, u64 rsp, struct xrl_task *k);   /* thread.c */
+void xrl_task_thread_start(xrl_thread *t);
+size_t xrl_fd_inherit_list(char *out, size_t cap);
+void xrl_fd_inherit_boot(void);
+void *xrl_fd_table_clone(void);                          /* fd.c */
+void xrl_fd_table_free(void *tab);
+/* tracee.c: a traced layer process, controlled from its tracer's process over a named pipe */
+int  xrl_tr_send(HANDLE h, u32 op, u64 a, u64 b, const void *p, u32 len);
+int  xrl_tr_recv(HANDLE h, u32 *op, u64 *a, u64 *b, void **p, u32 *len);
+int  xrl_tracee_active(void);
+void xrl_systrace_arm(void);
+void xrl_tracee_boot(u64 *entry, u64 *sp);
+void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);
 void xrl_threads_terminate_all(void);
@@ -238,6 +269,7 @@ int  xrl_mem_init(u64 budget);
 slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off);
 slong xrl_mem_munmap(u64 addr, u64 len);
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot);
+int   xrl_mem_sync_shared_page(u64 addr, u64 len);
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr);
 slong xrl_mem_brk(u64 addr);
 slong xrl_mem_madvise(u64 addr, u64 len, int advice);
@@ -411,6 +443,7 @@ void  xrl_mem_clock_stats(char *b, size_t n);
 void  xrl_sig_stats(char *b, size_t n);
 void  xrl_hang_watch_start(void);   /* hangdump.c, XRL_HANG_DUMP */   /* bytes in the swap file, written, read */
 /* cpuinfo.c: the real CPU (CPUID) and topology */
+extern int xrl_cpuid_brand[12];    /* sanitized brand string for CPUID leaves 0x80000002-4 (dbt.asm) */
 char *xrl_cpuinfo_text(size_t *len);
 int  xrl_cpu_core_id(int cpu);
 int  xrl_cpu_ncores(void);
@@ -477,11 +510,15 @@ int   xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable 
 void  xrl_dbt_generated(u64 addr, u64 len);   /* a writable+executable anonymous range (generated code) */
 void  xrl_dbt_unmapped(u64 addr, u64 len);    /* a range was unmapped or remapped */
 u64   xrl_dbt_translate(u64 pc);
+u64   xrl_dbt_reverse(u64 ca);            /* cache address → original (for the tracee) */
 slong xrl_dbt_enter_sys(u64 pc);
 void  xrl_dbt_stats(u64 *faults, u64 *translated);
 
 /* -------------------------------------------------------------- syscall */
+int  xrl_rlimit_get(int res, lx_rlimit *out);          /* misc.c: the current limit, for /proc/self/limits */
+void xrl_sig_proc_masks(u64 *ign, u64 *cgt);          /* signal.c: SigIgn / SigCgt of /proc/self/status */
 const char *xrl_sysname(slong nr);
+void xrl_systrace(slong nr, const slong *a, slong r, int tid);   /* XRL_TRACE=2 (systrace.c) */
 void xrl_syscall_table_init(void);
 
 #endif /* XRL_INTERNAL_H */

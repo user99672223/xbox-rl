@@ -184,7 +184,10 @@ static void mounts_load(void)
         while (hn > 2 && h[hn - 2] == L'\\') h[--hn - 1] = 0;
         size_t wl = (size_t)hn + 8;
         wchar_t *w = (wchar_t *)calloc(wl, sizeof(wchar_t));
-        if (wcsncmp(h, L"\\\\?\\", 4) == 0) wcscpy_s(w, wl, h); else { wcscpy_s(w, wl, L"\\\\?\\"); wcscat_s(w, wl, h); }
+        /* extended-length form: \\?\C:\dir, or \\?\UNC\server\share\dir for a network path */
+        if (wcsncmp(h, L"\\\\?\\", 4) == 0) wcscpy_s(w, wl, h);
+        else if (h[0] == L'\\' && h[1] == L'\\') { wcscpy_s(w, wl, L"\\\\?\\UNC\\"); wcscat_s(w, wl, h + 2); }
+        else { wcscpy_s(w, wl, L"\\\\?\\"); wcscat_s(w, wl, h); }
         DWORD a = GetFileAttributesW(w);
         g_mnt[g_nmnt].guest = _strdup(tok); g_mnt[g_nmnt].glen = gl; g_mnt[g_nmnt].host = w;
         g_nmnt++;
@@ -775,16 +778,16 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
 slong xrl_vfs_open(int dirfd, const char *path, int flags, int mode)
 {
     slong r = vfs_open_impl(dirfd, path, flags, mode);
-    if (G.trace_syscalls) LOGT("vfs: open(%s, 0x%x) = %lld", path, flags, r);
+    if (G.trace_syscalls == 1) LOGT("vfs: open(%s, 0x%x) = %lld", path, flags, r);
     return r;
 }
 
 /* memfd: a host temp file (deleted on close) that shows up as Linux shows one: /proc/self/fd/N and
  * /proc/self/maps say "/memfd:NAME (deleted)". f->priv holds its number; opening /proc/self/fd/N reopens it
  * (the new description shares the contents, like on Linux). */
-static slong memfd_host_path(unsigned n, char *g, size_t cap, wchar_t *hp, size_t hpcap)
+static slong memfd_host_path(u64 key, char *g, size_t cap, wchar_t *hp, size_t hpcap)
 {
-    snprintf(g, cap, "/tmp/.memfd-%d-%u", G.pid, n);
+    snprintf(g, cap, "/tmp/.memfd-%u-%u", (unsigned)(key >> 32), (unsigned)key);   /* key: creator's pid, number */
     return xrl_vfs_host_path(g, hp, hpcap);
 }
 
@@ -794,16 +797,47 @@ slong xrl_memfd_create(const char *name, unsigned flags)
     unsigned n = (unsigned)InterlockedIncrement(&ctr);
     char g[128], disp[300];
     wchar_t hp[PATHBUF];
-    slong r = memfd_host_path(n, g, sizeof g, hp, ARRAY_LEN(hp));
+    u64 key = ((u64)(unsigned)G.pid << 32) | n;
+    slong r = memfd_host_path(key, g, sizeof g, hp, ARRAY_LEN(hp));
     if (r) return r;
     HANDLE h = hopen(hp, GENERIC_READ | GENERIC_WRITE | DELETE, CREATE_NEW, FILE_FLAG_DELETE_ON_CLOSE);
     if (h == INVALID_HANDLE_VALUE) return xrl_lasterr();
     snprintf(disp, sizeof disp, "/memfd:%.249s (deleted)", name ? name : "");
     xfile *f = wrap_handle(h, LX_O_RDWR, disp, 0, hp);
-    f->priv = (void *)(uintptr_t)n;
+    f->priv = (void *)(uintptr_t)key;
     int fd = xrl_fd_install(f, (flags & 1) != 0, 0);
     xfile_unref(f);
     return fd;
+}
+
+/* A process started by exec (task.c) inherits the memfds its parent had open without close-on-exec:
+ * XRL_INHERIT_FDS="fd|key|name;..." opens the same host file at the same descriptor number. */
+void xrl_fd_inherit_boot(void)
+{
+    char v[4096];
+    if (!GetEnvironmentVariableA("XRL_INHERIT_FDS", v, sizeof v)) return;
+    for (char *p = v; *p; ) {
+        char *e = strchr(p, ';'); if (e) *e = 0;
+        int fd = atoi(p);
+        char *k = strchr(p, '|'), *nm = k ? strchr(k + 1, '|') : NULL;
+        if (k && nm) {
+            u64 key = strtoull(k + 1, NULL, 10);
+            char g[128], disp[300]; wchar_t hp[PATHBUF];
+            if (!memfd_host_path(key, g, sizeof g, hp, ARRAY_LEN(hp))) {
+                HANDLE h = hopen(hp, GENERIC_READ | GENERIC_WRITE, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);
+                if (h != INVALID_HANDLE_VALUE) {
+                    snprintf(disp, sizeof disp, "/memfd:%.249s (deleted)", nm + 1);
+                    xfile *f = wrap_handle(h, LX_O_RDWR, disp, 0, hp);
+                    f->priv = (void *)(uintptr_t)key;
+                    int got = xrl_fd_install(f, 0, fd);
+                    xfile_unref(f);
+                    LOGW("exec: inherited memfd %s as fd %d (wanted %d)", disp, got, fd);
+                } else LOGW("exec: cannot reopen an inherited memfd (%lu)", GetLastError());
+            }
+        }
+        if (!e) break;
+        p = e + 1;
+    }
 }
 
 /* open("/proc/self/fd/N") where N is a memfd: a new open file description of the same memfd, or <0 if it is not one */
@@ -820,7 +854,7 @@ static slong memfd_reopen(const char *gabs, int flags)
     if (of->ops != &g_file_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) { xfile_unref(of); return -1; }
     char g[128];
     wchar_t hp[PATHBUF];
-    slong r = memfd_host_path((unsigned)(uintptr_t)of->priv, g, sizeof g, hp, ARRAY_LEN(hp));
+    slong r = memfd_host_path((u64)(uintptr_t)of->priv, g, sizeof g, hp, ARRAY_LEN(hp));
     if (r) { xfile_unref(of); return r; }
     int acc = flags & LX_O_ACCMODE;
     HANDLE h = hopen(hp, acc == LX_O_RDONLY ? GENERIC_READ : acc == LX_O_WRONLY ? GENERIC_WRITE : (GENERIC_READ | GENERIC_WRITE), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);

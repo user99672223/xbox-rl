@@ -225,6 +225,188 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     reproduced in the next run with `XRL_PROFILE=1 XRL_HANG_DUMP=170`, cause unknown. If it recurs, rerun with
     those two variables to see where the threads are.
 
+- **2026-10-26 — EAC launch: what the module asks of the system, how it starts the game, and the process model
+  that needs.** Branch `claude/eac-launch`. Observation of the system interface only (decoded syscall trace);
+  nothing of the module's internals was read, nothing was added to hide the layer, Wine or the Xbox.
+  - **Method.** `XRL_TRACE=2` (`layer/src/systrace.c`) logs every call decoded: paths, the bytes a read returned
+    (whole text for /proc, /etc, /sys), sockaddrs, uname, limits, stat results, errno names. It starts at the first
+    `memfd_create` (the module mapping); Wine's futex/clock/pipe noise is left out (`XRL_TRACE_NOISE=1` keeps it).
+    Traces: `docs/eac-trace/module-before.txt` (before the fixes below), `module-after-fork-probe.txt` (after).
+    The `unknown(7ff4...)` lines of the raw trace are not Linux system calls: they are the translator's own
+    entry (`XRL_SYS_DBT_ENTER`, dbt.asm) for an indirect jump into module code that has no translation yet; the
+    argument is the target address, the result its translation.
+  - **Part 1: what the module asked, what a Linux answers, what we answered.** The bootstrapper's published
+    behaviour: `error_launch_ex = "Launch Error: {0}"` in `EasyAntiCheat/Localization/en_us.cfg` is the generic
+    message for a code that has no text of its own; 256 is in no table the launcher ships. Everything below is
+    from the trace of the run that ended in 256.
+
+    | asked | we answered | a Linux (6.x, Debian, Proton) | verdict, action |
+    |---|---|---|---|
+    | `/proc/<pid>/status` | 28 of ~60 fields (no NStgid, NSpid, VmLck, RssAnon, VmPTE, CapBnd, CapAmb, NoNewPrivs, Seccomp, Seccomp_filters, Speculation_*, Mems_allowed, THP_enabled...), SigIgn/SigCgt always 0, Groups empty | the full 6.1 layout, SigCgt/SigIgn from the real dispositions | **gap, fixed**: `procfs.c` prints the 6.1 layout; Sig* from `rt_sigaction`; test `test_procfs_rlimits` |
+    | `/proc/1/comm` (PPid is 1) | ENOENT | process 1 exists, comm readable by anyone | **gap, fixed**: `/proc/1/{comm,cmdline,status,stat,statm,cgroup,limits,oom_score*}` describe a nominal init as WSL1's does; what a non-root user cannot read of pid 1 (exe, cwd, root, environ, maps, mem, fd) is EACCES. It is the layer's init, named `init`, uid 0, one thread |
+    | `/proc/self/task/<tid>/status` | the *stat* text (bug) | status | **bug, fixed** (also `statm`) |
+    | `getrlimit/prlimit64` after a set | `setrlimit` ignored, `prlimit64` set ignored; `/proc/self/limits` 4 lines | what was set; 16 lines; EINVAL soft>hard, EPERM raising the hard limit | **gap, fixed** (`misc.c`, table of 16 limits, Debian defaults except NOFILE 65536) |
+    | `/proc/mounts`, mountinfo, filesystems | `rootfs /` and `proc` only | /sys, /dev too | **fixed**: lists what the layer provides (rootfs, proc, sysfs, devtmpfs) |
+    | `/proc/version` vs `uname -v` | different strings | the same | **fixed** (`XRL_UTS_VERSION`); `/proc/sys/kernel/{version,domainname,threads-max,core_pattern,perf_event_paranoid,kptr_restrict,random/uuid}`, `/proc/self/{cgroup,oom_score,oom_score_adj,personality}` added |
+    | `/tmp/eac.flag`, `/run/host/*`, `/.dockerenv`, `/.flatpak-info`, `/run/.containerenv` | ENOENT | ENOENT on a normal desktop | right as it is |
+    | `/sys/class/dmi/id/*`, `/sys/devices/virtual/dmi/id/*`, `/proc/bus/pci/devices` | ENOENT | present on a PC | **not a gap we can close honestly**: the console denies SMBIOS/ACPI (cat M), and nothing is invented |
+    | `/etc/os-release` | `NAME="xbox-rl"`, ID, PRETTY_NAME | the distribution's | what this system is; unchanged |
+    | `uname` | Linux 6.1.0-xrl, `#1 SMP xbox-rl layer 0.1.0`, x86_64, `(none)` | Linux, a distribution kernel | right in form, the values say what we are |
+    | `userfaultfd` (Wine's probe) | ENOSYS | EPERM/EINVAL or a descriptor | harmless, Wine falls back |
+    | `gettid()` of the main thread | the Windows thread id, not `getpid()` | equal | **known difference, kept**: Wine takes both as its own ids and the TEB's ClientId has to match in both views (docs/gs-teb.md); `/proc/<pid>/task/<pid>` is accepted |
+    | DNS (UDP 53, resolv.conf), TCP 443, TLS 1.2 to `api.epicgames.dev`, one 882-byte request | worked | same | right. This traffic is the module's report after a failure, not the launch (below) |
+
+  - **What those fixes changed.** Not the number: the module takes a *different path* once `/proc/1/comm` exists.
+    Before: survey of the system, a report to Epic, return, `Launcher finished with: 208, 'Launch Error: 256'`.
+    After: it reads `/proc/1/{comm,cmdline,status}`, `/proc/mounts`, DMI, PCI, `/proc/self/exe` and then **forks**.
+    With `fork` answering ENOSYS the process exits with status 1 (nothing logged); with a child but no ptrace the
+    bootstrapper logs `210, 'Unexpected error. (#1)'`. So 256 was what the module said on the path where it
+    saw no init process; it is not a Linux wait status of a child (hypothesis 2 of the Debian note: no child existed
+    on that path). The Debian log (`debian-anticheatlauncher.log`: same bootstrapper 1.9.3, module 12081735 bytes)
+    ends 0.7 s after the module mapping with `301, 'Easy Anti-Cheat successfully loaded in-game'`, "waiting for game
+    window to become visible", `Terminating with: 0`.
+  - **How the module starts the game (hypothesis 1: confirmed in shape).** Seen by running its fork child as a task
+    (below), the system calls are: parent `fork`; child `close` of every descriptor from 3 up,
+    `prctl(PR_SET_DUMPABLE, 0)`, `ptrace(PTRACE_TRACEME)`, `kill(getpid(), SIGSTOP)`; parent `wait4` (sees the
+    stop), `PTRACE_SETOPTIONS`, then a loop of `PTRACE_SYSCALL` / `wait4(WNOHANG)` / `PTRACE_GETREGSET(NT_PRSTATUS)`:
+    **it single-steps every system call of the child** (entry and exit stop). The child meanwhile: `mmap` 6.7 MB,
+    `memfd_create(GUID)` (this becomes **fd 3**), writes a second ELF (6 672 928 bytes: the in-game part) into it,
+    `fcntl`s it, opens `RocketLeague.exe` and reads its first 5 KB (the PE header), `readlink /proc/self/exe`
+    (the Wine loader, `/usr/lib/wine/x86_64-unix/wine64`), then **`execve(wine64, [unix path of RocketLeague.exe,
+    "Z:\game\...\RocketLeague.exe", the Epic launch arguments])`** with the environment plus `EAC_LAUNCHERDIR` and
+    `GNUTLS_SYSTEM_PRIORITY_FILE`. The parent, at the exec stop (`GETSIGINFO`), reads `/proc/<child>/exe` and
+    `/proc/<child>/maps`, `PEEKDATA`s the new image's ELF header and its entry point (twice) and then
+    **`POKEDATA`s a `0xCC` (int3) over the first byte of `_start`**: a breakpoint at the new program's entry. The
+    rest is the usual injection (run to the breakpoint, set registers so the child calls `dlopen` on
+    `/proc/self/fd/3` through its libc, continue); not seen here because the layer cannot do it yet (the run
+    was stopped at that point on purpose: the poke would have written into our own image). `301 ... loaded in-game`
+    is that done; the bootstrapper then has nothing left to do and exits (`WaitForGameProcessExit` false).
+    **So the game is not a Windows child of the bootstrapper, and the module does not stay in the bootstrapper:
+    it is a real Linux process (`wine64`) created by exec from a ptrace-supervised fork child, and the in-game
+    module is put into it from outside.** Static facts that fit: the bootstrapper imports no pipe, mapping or named-
+    object creation (`CreateProcessW`, `DuplicateHandle`, `OpenProcess`, `PeekNamedPipe`, `CreateSemaphore`
+    for its single-instance lock only); `EOSSDK-Win64-Shipping.dll` has `CreateFileMappingW`/`MapViewOfFile` and
+    no module-mapping code, i.e. the game side attaches to what was injected, not to something the bootstrapper made.
+  - **Part 2: process model.** What the module needs (all from the trace): `fork` (a child that runs module code,
+    with its own descriptor table), `ptrace` (TRACEME, signal-stop, syscall-stops, exec-stop, GETREGS(ET),
+    GETSIGINFO, PEEK/POKE, SETREGS, CONT, DETACH, KILL) between two *different address spaces*, `execve` that
+    creates a new process whose `/proc/<pid>/maps` the tracer can read, an inherited memfd, `wait4`/`kill`.
+    Options, against the console's constraints (one app process owns the window and graphics; a UWP app can create
+    child processes of itself, probe cat L; the probe did not measure whether a child outlives its parent or can
+    open another's memory):
+    1. **A second layer OS process per exec'd program (chosen direction).** `execve` in a forked child starts the
+       host executable again with the program, arguments and environment (`XRL_ENV_*`, as the test host already
+       takes them) as a new guest process with its own address space, fd table and pid; the pre-exec child is a
+       task of the parent (below). Needs, in this order: spawn + wait4 + kill (built), a control channel from
+       the tracer to the tracee process (PEEK/POKE/GETREGS/SETREGS/CONT and the stop notifications over a named
+       pipe; on Windows `ReadProcessMemory` for memory is also possible because guest addresses are host
+       addresses), the tracee stopping at its first instruction and at int3 (signal.c: breakpoint exception
+       reported to the tracer instead of the guest), `/proc/<pid>/{exe,maps,status}` of another layer
+       process, inheritance of the memfd by path. **No shared wineserver is needed**: the game is a fresh `wine64`
+       (the module launches it by exec, not through `CreateProcess`), so it gets its own in-process wineserver
+       thread; prefix files are shared, the bootstrapper's wineserver ends with the bootstrapper. (Real Wine
+       would connect it to the prefix's one wineserver; here they are two, which only matters for registry
+       writes made by both.) Console: the game process needs the CoreWindow, so on the console **the game must be
+       the app's main process**; the bootstrapper+module would be the child. That means the app starts the
+       launcher part first as a child and the exec'd game runs in the main process (the spawn of step 1 reversed
+       in who owns the window). This needs a console probe before building (can a package process read another's
+       memory, does a child survive its parent, can the main process receive an exec request from its child).
+    2. **Two Windows processes in one OS process:** rejected. Wine's address-space layout (low 4 GiB reserved,
+       fixed system DLL bases, one musl instance's globals) is per process; the module also pokes the tracee's
+       entry point at the *same virtual address* the tracer's own `wine64` has, which cannot be two different
+       memories in one address space.
+    3. **Exec handover with the old image kept** (what the wineserver thread uses): same problem as 2 for the
+       tracee, and the old image must end before the game is meant to be alone.
+    4. **A real copy-on-write `fork`:** not needed by anything observed (the only fork child runs a few hundred
+       calls and execs); the cost is a host process with a copy of the guest memory *and every layer table*
+       (mem.c VMAs, fd table, vfs, signal, futex, ntsync state), weeks of work. Not planned; fork children are
+       tasks.
+  - **What is built (first step, `XRL_FORK_TASKS=1`, off by default; `layer/src/task.c`, `fd.c`, `thread.c`).**
+    - `fork`/`vfork`/`clone` without `CLONE_VM` start a **task**: another thread, its own fd table (a copy that
+      shares the open files), pid (its thread id), ppid, exit status, and **the parent's memory and stack
+      addresses**. Exactly one of parent and child runs at a time: the parent runs again when the child exits,
+      stops (ptrace) or execs, the child runs when the parent waits for it (`wait4`), and the stack's contents are
+      swapped at every hand-over (up to 1 MiB above the stack pointer). Memory outside the stack is shared.
+    - `wait4` (children exited, ptrace-stopped, or exec'd), `kill(child, SIGKILL)`, `getpid/getppid` of a task, a
+      task's `kill/tgkill` of itself, signal death as a wait status.
+    - `ptrace`: TRACEME, SETOPTIONS (TRACESYSGOOD, TRACEEXEC), CONT, SYSCALL (entry and exit stops with the
+      syscall number, arguments and return value), SINGLESTEP (as CONT), DETACH, KILL, GETREGS and GETREGSET
+      (the registers the layer knows at the stop: callee-saved ones, arguments, rip after the call, rsp, fs base),
+      GETSIGINFO, GETEVENTMSG, PEEKTEXT/DATA, exec-stop. Not: SETREGS, POKE*, ATTACH/SEIZE, FP registers, a tracer
+      other than the parent, a child that runs while its parent runs.
+    - `execve` in a task: a program that exists and is an x86-64 ELF **starts as a second host process** (the same
+      executable and root, arguments, environment, stdin/stdout/stderr); `wait4` gives its exit code, `kill`
+      terminates it. Descriptors other than 0-2 are not inherited. A *traced* task's `execve` is only logged
+      (path, arguments with values shown only for a short allow-list, environment names) and ends the task in the
+      exec stop, because the stop's tracer would now poke an image that does not exist as a separate process.
+    - **A hard cap** (`XRL_MAX_CHILDREN`, default 4, at most 16, group-wide through a named semaphore; nesting
+      `XRL_MAX_SPAWN_DEPTH` default 2 through `XRL_SPAWN_DEPTH`), refused with `EAGAIN`; `XRL_SPAWN_KILL_ON_EXIT=1`
+      ends the whole group with its first process (job object). Why: while this was being written a test program
+      that spawned itself with no limit started 85 host processes and exhausted the laptop's commit. Cause: the
+      guest test's spawn step ran in the *child* too (the child's argv was not recognised yet) and each level
+      spawned the next; nothing counted processes and orphans outlive their parent on Windows. Now: the cap, the
+      depth, the job, `layer/tests/fork-tasks.sh` (timeout, census of `xrl_test_host.exe` before and after, kills
+      and fails on leftovers, skips under 3 GB free).
+    - Test: `test_fork_tasks` and `test_spawn` in `layer/tests/guest/guest.c` (skip unless `XRL_FORK_TASKS=1`),
+      run by `layer/tests/fork-tasks.sh`.
+    - What it does **not** do: a real fork (memory is shared; a child that writes outside its stack changes the
+      parent), concurrency between parent and child, ptrace of a spawned process, signals other than SIGKILL
+      between processes, pipes/sockets/memfds across the process boundary.
+  - **Where it stands.** Part 1: every gap the trace showed is fixed or explained; the module now runs its
+    Linux path and stops where it needs ptrace on a process of its own (it cannot be answered honestly without
+    it: faking a successful trace of the child would be exactly what must not be done). Part 2: decided (option
+    1), first step built and tested on the laptop, next step is the tracer/tracee channel across two layer
+    processes (design above) and a console probe. Not run on the console. EAC with the game still ends before
+    the game starts on this branch.
+  - **Update, end of the session (state of the traced-exec work).** Built after the entry above, all behind `XRL_FORK_TASKS=1`
+    and covered by `layer/tests/fork-tasks.sh`: a *traced* `execve` starts the program as a second layer process whose tracer
+    controls it over a named pipe (`layer/src/tracee.c`): exec stop, PEEK/POKE, GETREGS/SETREGS, FP registers, int3 and
+    fault stops, CONT/DETACH, `/proc/<pid>/maps` and `exe` of that process; descriptors that are memfds are inherited at the
+    same number; the glibc shim is preloaded in the new process; musl patch 0003 leaves `.dynamic`'s hash/symbol/string
+    entries absolute as glibc's ld.so does (the module reads them before any constructor can run). With these the module's
+    launch protocol runs on the layer up to the point where it hands control to its in-game part inside the new process; the
+    bootstrapper then reports `210, 'Unexpected error. (#2) (0)'` because that process ends with a Windows status
+    (0xc000000d, raised by ntdll's exception continue path) as soon as it is resumed into the in-game code. That
+    crash is not understood yet (it is in the layer's resume path, not in a system call). I stopped there on purpose: it is
+    the point where the work stops being about the system interface the module asks for, so Part 1/2 end here. Exactly
+    what is not done: that crash, `ptrace` single-step and syscall stops across processes, signals between processes,
+    pipes/sockets across processes, a console probe, any run on the console.
+  - **The 0xc000000d crash: a layer bug, fixed (commit 3f46d9f).** The CONTEXT logged at each resume (run25: flags
+    0x10005f incl. CONTEXT_XSTATE, cs 33, ss 2b, eflags 202, MxCsr 1f80/1f80, committed rip/rsp pages) was the same for
+    the two resumes that worked and the one that failed. What differed was the memory below the stopped rsp: the
+    layer served the stop inside its VEH, on the stopped thread's own stack, where Windows had just put the
+    exception's CONTEXT, CONTEXT_EX, XSAVE area and the dispatcher's frames (0x700+ bytes below the faulting rsp).
+    The third injected call's argument block (0x328 bytes POKEd right below rsp: legal on Linux, where a stopped
+    tracee keeps its registers in the kernel) overwrote the CONTEXT_EX/XSAVE header NtContinue then loaded, and it
+    refused it with STATUS_INVALID_PARAMETER. Reproduced in `test_inject_call` (a 0x328-byte block below rsp: the
+    tracee ended with exit code 0xc000000d, like the EAC run). Fix: `xrl_tracee_stop` copies the CONTEXT (with XSTATE)
+    out, leaves the exception dispatch at once into `tr_park_main` on the thread's host stack, serves the tracer
+    there and resumes from the copy with NtContinue; nothing of the layer stays below the stopped rsp (also checked
+    with a 16 KiB block). Also as Linux: SETREGS keeps only FLAG_MASK bits of eflags (CF PF AF ZF SF TF DF OF NT RF AC),
+    refuses bad selectors and fs/gs_base >= TASK_SIZE_MAX with -EIO, field by field; SETFPREGS refuses an MXCSR outside
+    the CPU's mask with -EINVAL; CONTEXT.MxCsr follows FltSave.MxCsr. Not checked: whether Windows' exception
+    record also lands in the 128-byte red zone right below a faulting rsp (Linux leaves it alone at a stop).
+    The WSL2 side-by-side run of the same request sequence was not done in this round.
+    EAC after the fix (run26): the third call runs and comes back as a SIGSEGV stop at the fake return address
+    (no 0xc000000d); about a thousand more stop/resume rounds follow, the tracee makes ordinary system calls
+    (mmap, munmap, mprotect, memfd_create/ftruncate/close, a read of /proc/self/maps), then the tracer kills it,
+    and the bootstrapper still logs `210, 'Unexpected error. (#2) (0)'`. Not followed further: the next question
+    is what the module decides from those answers, which is outside what this work looks at. A next layer-side
+    step would be to log the mmap flags in systrace and compare those answers (EEXIST for address hints) with Linux.
+  - **mmap answers in the traced game process (commits 4093584, 96fdf0e).** systrace now logs mmap with every
+    argument and flag by name, and for an EEXIST what the guest's maps and the host hold over the range. run27:
+    175232 `MAP_FIXED_NOREPLACE` requests of one page answered EEXIST. 90841 were over the process's own
+    `libc.so`/`wine64` mappings: the answer Linux gives too. 84391 were just above the main program's image, where
+    the guest's maps show nothing: the layer started top-down mmaps at the very end of its arena, so `wine64` ended
+    exactly there and Windows had a mapped view and a private reservation right above. Linux keeps mmap_base at least
+    128 MiB below the stack, so that space is free and the request gets its address. Fix: top-down mmaps (mmap,
+    mremap) start 128 MiB below the arena end (at most arena/64); the gap stays inside the arena. Test
+    `test_mmap_above_top` (failed before). run28: 1 such request succeeds, 83 EEXIST, all over the process's own
+    mappings, none over free space. The bootstrapper still logs `210, 'Unexpected error. (#2) (0)'`; the tracee
+    later stops about 1000 times with SIGSEGV at one address until its tracer kills it. Not followed further here.
+    Also seen, not changed: a non-fixed mmap with a free hint address inside the arena gets another address
+    (Linux gives the hint).
+
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
   `claude/eac-module-map`. Findings, then what was built, then where it stops.
