@@ -17,5 +17,11 @@ grep -q "child: EXEC-HANDOVER-OK" results/exec-win.txt || { echo "FAIL: child di
 grep -q "parent: CreateProcess returned" results/exec-win.txt && { echo "FAIL: parent continued after CreateProcess"; ok=0; }
 [ "$n_boot" = 1 ] || { echo "FAIL: $n_boot layer boots"; ok=0; }
 grep -q "layer .*exec: .*old image kept" results/exec-win.txt || { echo "FAIL: no exec in the layer log"; ok=0; }
+# two handovers in a row: parent -> chain(first) -> chain(hop2)
+WINEDEBUG="${WINEDEBUG:-err+all}" XRL_ROOTFS="$root" XRL_TIMEOUT="${XRL_TIMEOUT:-170}"     tools/run-desktop-wine.sh 'Z:\exectest\parent.exe' 'Z:\exectest\chain.exe' > results/exec-win-chain.txt 2>&1
+grep -E "chain:|exec: .*kept" results/exec-win-chain.txt | cut -c1-200
+grep -q "hop 2 .*CHAIN-OK" results/exec-win-chain.txt || { echo "FAIL: the chain did not reach hop 2"; ok=0; }
+grep -q "hop 1 continued" results/exec-win-chain.txt && { echo "FAIL: hop 1 continued after CreateProcess"; ok=0; }
+[ "$(grep -c 'exec: .*old image kept' results/exec-win-chain.txt)" = 2 ] || { echo "FAIL: expected two execs"; ok=0; }
 [ $ok = 1 ] && echo "exec-win: OK (rc=$rc)"
 [ $ok = 1 ]
