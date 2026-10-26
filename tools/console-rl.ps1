@@ -6,7 +6,8 @@
 .DESCRIPTION
   1. tools/deploy.ps1                      install/update the latest built package (keeps LocalState)
   2. tools/push-game.ps1 -Source <rootfs>  the staged guest tree -> LocalState\rootfs (incremental;
-                                           the laptop's 'game' junction is not followed)
+                                           the laptop's 'game' junction is not followed), then
+                                           ~\xrl-work\console\rootfs-overrides\* over it (console-only files)
   3. tools/push-game.ps1                   the Rocket League install (GAME_SRC) -> LocalState\rootfs\game
                                            (~42 GB the first time; resumable, later runs upload changes only)
   4. tools/epic-capture.ps1                a fresh exchange code from the Epic Games Launcher (codes
@@ -40,6 +41,17 @@ else {
 Step 2 "upload the guest tree $Rootfs"
 & "$PSScriptRoot\push-game.ps1" -Source $Rootfs -Dest 'rootfs' -Exclude 'game', 'game\*', 'tmp\*' -Yes
 if ($LASTEXITCODE) { throw "guest tree upload failed ($LASTEXITCODE)" }
+# console-only files over the laptop's (e.g. Rocket League's TASystemSettings.ini at the console's
+# resolution): ~\xrl-work\console\rootfs-overrides\<path in the guest tree>, uploaded every run
+$ovr = Join-Path $HOME 'xrl-work\console\rootfs-overrides'
+if (Test-Path $ovr) {
+    foreach ($o in Get-ChildItem $ovr -Recurse -File) {
+        $rel = [IO.Path]::GetDirectoryName($o.FullName.Substring($ovr.Length).TrimStart('\'))
+        $global:LASTEXITCODE = 0
+        & "$PSScriptRoot\push-file.ps1" -Local $o.FullName -Remote ('rootfs\' + $rel)
+        if ($LASTEXITCODE) { throw "override upload failed: $($o.FullName)" }
+    }
+}
 
 if (-not $SkipGame) {
     Step 3 'upload the Rocket League install (resumable)'
