@@ -76,7 +76,6 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     G.exit_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     InitializeSRWLock(&G.cwd_lock);
     InitializeSRWLock(&G.thread_lock);
-    G.umask = 022;
 
     const char *tr = env_get("XRL_TRACE");
     G.trace_syscalls = tr && tr[0] && tr[0] != '0';
@@ -86,6 +85,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
 
     xrl_time_init();
     xrl_threads_init();
+    xrl_proc_init();
     xrl_teb_init();
     xrl_futex_init();
     xrl_rng_init();

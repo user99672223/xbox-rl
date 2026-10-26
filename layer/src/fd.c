@@ -32,60 +32,108 @@ void xfile_unref(xfile *f)
 }
 
 /* ============================================================ fd table */
+/* One table per guest process (proc.c): the calling thread's process, or the init process's for threads the
+ * layer did not start (boot). fork copies the entries (the xfile objects are shared and refcounted, so a pipe end
+ * stays open while any process holds it), CLONE_FILES shares the table. */
 typedef struct fdent { xfile *f; int cloexec; } fdent;
-static fdent *g_fd;
-static int g_fdcap;
-static SRWLOCK g_fdlock = SRWLOCK_INIT;
+struct xrl_files { volatile LONG refs; SRWLOCK lock; fdent *fd; int cap; };
 #define FD_MAX (1 << 16)
 
-static int fd_grow(int need)
+xrl_files *xrl_files_new(void)
 {
-    if (need < g_fdcap) return 0;
-    int nc = g_fdcap ? g_fdcap : 64;
+    xrl_files *t = (xrl_files *)calloc(1, sizeof *t);
+    if (t) { t->refs = 1; InitializeSRWLock(&t->lock); }
+    return t;
+}
+
+void xrl_files_ref(xrl_files *t) { InterlockedIncrement(&t->refs); }
+
+xrl_files *xrl_files_clone(xrl_files *src)
+{
+    xrl_files *t = xrl_files_new();
+    if (!t) return NULL;
+    AcquireSRWLockShared(&src->lock);
+    if (src->cap) {
+        t->fd = (fdent *)calloc((size_t)src->cap, sizeof(fdent));
+        if (!t->fd) { ReleaseSRWLockShared(&src->lock); free(t); return NULL; }
+        t->cap = src->cap;
+        for (int i = 0; i < src->cap; i++)
+            if (src->fd[i].f) { xfile_ref(src->fd[i].f); t->fd[i] = src->fd[i]; }
+    }
+    ReleaseSRWLockShared(&src->lock);
+    return t;
+}
+
+void xrl_files_put(xrl_files *t)
+{
+    if (!t || InterlockedDecrement(&t->refs) != 0) return;
+    for (int i = 0; i < t->cap; i++) if (t->fd[i].f) xfile_unref(t->fd[i].f);
+    free(t->fd);
+    free(t);
+}
+
+/* the table of the calling thread's process; an exited process has none (an empty one stands in) */
+static xrl_files *cur_files(void)
+{
+    static xrl_files none;
+    xrl_proc *p = xrl_curproc();
+    xrl_files *t = p ? p->files : NULL;
+    if (!t) { InitializeSRWLock(&none.lock); return &none; }
+    return t;
+}
+
+static int fd_grow(xrl_files *t, int need)
+{
+    if (need < t->cap) return 0;
+    int nc = t->cap ? t->cap : 64;
     while (nc <= need) nc *= 2;
     if (nc > FD_MAX) nc = FD_MAX;
     if (need >= nc) return -1;
-    fdent *n = (fdent *)realloc(g_fd, nc * sizeof(fdent));
+    fdent *n = (fdent *)realloc(t->fd, nc * sizeof(fdent));
     if (!n) return -1;
-    memset(n + g_fdcap, 0, (nc - g_fdcap) * sizeof(fdent));
-    g_fd = n; g_fdcap = nc;
+    memset(n + t->cap, 0, (nc - t->cap) * sizeof(fdent));
+    t->fd = n; t->cap = nc;
     return 0;
 }
 
 int xrl_fd_install(xfile *f, int cloexec, int minfd)
 {
+    xrl_files *t = cur_files();
     int fd = -LX_EMFILE;
-    AcquireSRWLockExclusive(&g_fdlock);
+    AcquireSRWLockExclusive(&t->lock);
     for (int i = minfd < 0 ? 0 : minfd; i < FD_MAX; i++) {
-        if (i >= g_fdcap && fd_grow(i)) break;
-        if (!g_fd[i].f) {
+        if (i >= t->cap && fd_grow(t, i)) break;
+        if (!t->fd[i].f) {
             xfile_ref(f);
-            g_fd[i].f = f; g_fd[i].cloexec = cloexec;
+            t->fd[i].f = f; t->fd[i].cloexec = cloexec;
             fd = i;
             break;
         }
     }
-    ReleaseSRWLockExclusive(&g_fdlock);
+    ReleaseSRWLockExclusive(&t->lock);
     return fd;
 }
 
-xfile *xrl_fd_get(int fd)
+xfile *xrl_files_get(xrl_files *t, int fd)
 {
     xfile *f = NULL;
-    if (fd < 0) return NULL;
-    AcquireSRWLockShared(&g_fdlock);
-    if (fd < g_fdcap && g_fd[fd].f) { f = g_fd[fd].f; xfile_ref(f); }
-    ReleaseSRWLockShared(&g_fdlock);
+    if (fd < 0 || !t) return NULL;
+    AcquireSRWLockShared(&t->lock);
+    if (fd < t->cap && t->fd[fd].f) { f = t->fd[fd].f; xfile_ref(f); }
+    ReleaseSRWLockShared(&t->lock);
     return f;
 }
 
+xfile *xrl_fd_get(int fd) { return xrl_files_get(cur_files(), fd); }
+
 slong xrl_fd_close(int fd)
 {
+    xrl_files *t = cur_files();
     xfile *f = NULL;
     if (fd < 0) return -LX_EBADF;
-    AcquireSRWLockExclusive(&g_fdlock);
-    if (fd < g_fdcap && g_fd[fd].f) { f = g_fd[fd].f; g_fd[fd].f = NULL; g_fd[fd].cloexec = 0; }
-    ReleaseSRWLockExclusive(&g_fdlock);
+    AcquireSRWLockExclusive(&t->lock);
+    if (fd < t->cap && t->fd[fd].f) { f = t->fd[fd].f; t->fd[fd].f = NULL; t->fd[fd].cloexec = 0; }
+    ReleaseSRWLockExclusive(&t->lock);
     if (!f) return -LX_EBADF;
     xfile_unref(f);
     return 0;
@@ -100,14 +148,15 @@ slong xrl_fd_dup(int oldfd, int newfd, int flags, int use_min)
     if (use_min) {
         r = xrl_fd_install(f, cloexec, newfd);
     } else {
+        xrl_files *t = cur_files();
         if (newfd < 0 || newfd >= FD_MAX) { xfile_unref(f); return -LX_EBADF; }
         xfile *old = NULL;
-        AcquireSRWLockExclusive(&g_fdlock);
-        if (fd_grow(newfd)) { ReleaseSRWLockExclusive(&g_fdlock); xfile_unref(f); return -LX_EMFILE; }
-        old = g_fd[newfd].f;
+        AcquireSRWLockExclusive(&t->lock);
+        if (fd_grow(t, newfd)) { ReleaseSRWLockExclusive(&t->lock); xfile_unref(f); return -LX_EMFILE; }
+        old = t->fd[newfd].f;
         xfile_ref(f);
-        g_fd[newfd].f = f; g_fd[newfd].cloexec = cloexec;
-        ReleaseSRWLockExclusive(&g_fdlock);
+        t->fd[newfd].f = f; t->fd[newfd].cloexec = cloexec;
+        ReleaseSRWLockExclusive(&t->lock);
         if (old) xfile_unref(old);
         r = newfd;
     }
@@ -117,37 +166,47 @@ slong xrl_fd_dup(int oldfd, int newfd, int flags, int use_min)
 
 int xrl_fd_getfd(int fd)
 {
+    xrl_files *t = cur_files();
     int r = -LX_EBADF;
-    AcquireSRWLockShared(&g_fdlock);
-    if (fd >= 0 && fd < g_fdcap && g_fd[fd].f) r = g_fd[fd].cloexec ? LX_FD_CLOEXEC : 0;
-    ReleaseSRWLockShared(&g_fdlock);
+    AcquireSRWLockShared(&t->lock);
+    if (fd >= 0 && fd < t->cap && t->fd[fd].f) r = t->fd[fd].cloexec ? LX_FD_CLOEXEC : 0;
+    ReleaseSRWLockShared(&t->lock);
     return r;
 }
 
 slong xrl_fd_setfd(int fd, int cloexec)
 {
+    xrl_files *t = cur_files();
     slong r = -LX_EBADF;
-    AcquireSRWLockExclusive(&g_fdlock);
-    if (fd >= 0 && fd < g_fdcap && g_fd[fd].f) { g_fd[fd].cloexec = cloexec; r = 0; }
-    ReleaseSRWLockExclusive(&g_fdlock);
+    AcquireSRWLockExclusive(&t->lock);
+    if (fd >= 0 && fd < t->cap && t->fd[fd].f) { t->fd[fd].cloexec = cloexec; r = 0; }
+    ReleaseSRWLockExclusive(&t->lock);
     return r;
 }
 
-/* /proc/self/fd listing support */
-int xrl_fd_list(int *out, int cap)
+/* /proc/<pid>/fd listing support */
+int xrl_files_list(xrl_files *t, int *out, int cap)
 {
     int n = 0;
-    AcquireSRWLockShared(&g_fdlock);
-    for (int i = 0; i < g_fdcap && n < cap; i++) if (g_fd[i].f) out[n++] = i;
-    ReleaseSRWLockShared(&g_fdlock);
+    if (!t) return 0;
+    AcquireSRWLockShared(&t->lock);
+    for (int i = 0; i < t->cap && n < cap; i++) if (t->fd[i].f) out[n++] = i;
+    ReleaseSRWLockShared(&t->lock);
     return n;
 }
+int xrl_fd_list(int *out, int cap) { return xrl_files_list(cur_files(), out, cap); }
 
 slong xrl_fd_close_range(unsigned first, unsigned last, unsigned flags)
 {
-    (void)flags;
+    xrl_files *t = cur_files();
     if (first > last) return -LX_EINVAL;
-    for (unsigned i = first; i <= last && i < (unsigned)g_fdcap; i++) xrl_fd_close((int)i);
+    if (flags & 4) {   /* CLOSE_RANGE_CLOEXEC */
+        AcquireSRWLockExclusive(&t->lock);
+        for (unsigned i = first; i <= last && i < (unsigned)t->cap; i++) if (t->fd[i].f) t->fd[i].cloexec = 1;
+        ReleaseSRWLockExclusive(&t->lock);
+        return 0;
+    }
+    for (unsigned i = first; i <= last && i < (unsigned)t->cap; i++) xrl_fd_close((int)i);
     return 0;
 }
 
@@ -213,7 +272,19 @@ static slong urandom_read(xfile *f, void *b, u64 n, s64 o)
 }
 static const xfile_ops g_urandom_ops = { "urandom", urandom_read, null_write, dev_lseek, urandom_fstat, NULL, dev_ioctl, NULL, NULL, dev_poll, NULL, NULL };
 
-static const xfile_ops g_tty_ops = { "tty", null_read, null_write, dev_lseek, tty_fstat, NULL, dev_ioctl, NULL, NULL, dev_poll, NULL, NULL };
+/* the terminal stand-in: a foreground process group for shells (proc.c) */
+static slong tty_ioctl(xfile *f, u64 req, u64 arg)
+{
+    int v;
+    switch (req) {
+    case LX_TIOCGPGRP: v = xrl_tty_pgrp(); return xrl_ctu(arg, &v, 4) ? -LX_EFAULT : 0;
+    case LX_TIOCSPGRP: if (xrl_cfu(&v, arg, 4)) return -LX_EFAULT; return xrl_tty_set_pgrp(v);
+    case LX_TIOCGSID: v = xrl_curproc()->sid; return xrl_ctu(arg, &v, 4) ? -LX_EFAULT : 0;
+    case LX_TIOCSCTTY: case LX_TIOCNOTTY: return 0;
+    }
+    return dev_ioctl(f, req, arg);
+}
+static const xfile_ops g_tty_ops = { "tty", null_read, null_write, dev_lseek, tty_fstat, NULL, tty_ioctl, NULL, NULL, dev_poll, NULL, NULL };
 
 xfile *xrl_dev_null(int flags) { return xfile_new(&g_null_ops, flags); }
 xfile *xrl_dev_zero(int flags) { return xfile_new(&g_zero_ops, flags); }
@@ -279,15 +350,16 @@ void xrl_fd_init(void)
     xfile_unref(in); xfile_unref(out); xfile_unref(err);
 }
 
-/* execve: every descriptor opened with O_CLOEXEC / FD_CLOEXEC is closed */
+/* execve: every descriptor opened with O_CLOEXEC / FD_CLOEXEC is closed (in the calling process's table) */
 void xrl_fd_close_on_exec(void)
 {
+    xrl_files *t = cur_files();
     for (int i = 0;; i++) {
         int c;
-        AcquireSRWLockShared(&g_fdlock);
-        if (i >= g_fdcap) { ReleaseSRWLockShared(&g_fdlock); break; }
-        c = g_fd[i].f && g_fd[i].cloexec;
-        ReleaseSRWLockShared(&g_fdlock);
+        AcquireSRWLockShared(&t->lock);
+        if (i >= t->cap) { ReleaseSRWLockShared(&t->lock); break; }
+        c = t->fd[i].f && t->fd[i].cloexec;
+        ReleaseSRWLockShared(&t->lock);
         if (c) xrl_fd_close(i);
     }
 }

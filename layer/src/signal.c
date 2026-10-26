@@ -36,13 +36,14 @@ static void emerg(const char *fmt, ...)
 WINBASEAPI BOOL WINAPI SetThreadContext(HANDLE hThread, const CONTEXT *lpContext);
 #endif
 
-static lx_ksigaction g_act[LX_NSIG + 1];
 static SRWLOCK g_sig_lock = SRWLOCK_INIT;
+/* dispositions are per process (proc.c); one process's table is shared by its threads */
+#define ACT_OF(t) ((t)->proc->act)
 static PVOID g_veh;
 volatile LONG64 xrl_fs_rearms;
 
 static void sig_cpu_init(void);
-void xrl_sig_init(void) { memset(g_act, 0, sizeof g_act); sig_cpu_init(); }
+void xrl_sig_init(void) { sig_cpu_init(); }
 
 #define SIGBIT(s) (1ull << ((s) - 1))
 
@@ -55,9 +56,10 @@ slong xrl_sys_rt_sigaction(int sig, u64 uact, u64 uoact, u64 size)
         if (sig == LX_SIGKILL || sig == LX_SIGSTOP) return -LX_EINVAL;
         if (xrl_cfu(&na, uact, sizeof na)) return -LX_EFAULT;
     }
+    lx_ksigaction *act = xrl_curproc()->act;
     AcquireSRWLockExclusive(&g_sig_lock);
-    lx_ksigaction old = g_act[sig];
-    if (uact) g_act[sig] = na;
+    lx_ksigaction old = act[sig];
+    if (uact) act[sig] = na;
     ReleaseSRWLockExclusive(&g_sig_lock);
     if (uoact && xrl_ctu(uoact, &old, sizeof old)) return -LX_EFAULT;
     return 0;
@@ -193,9 +195,10 @@ static int restartable(slong nr)
 
 static int default_ignored(int sig)
 {
-    return sig == LX_SIGCHLD || sig == LX_SIGCONT || sig == 23 /*SIGURG*/ || sig == 28 /*SIGWINCH*/ ||
-           (sig >= 19 && sig <= 22) /* stop signals: no job control here */;
+    return sig == LX_SIGCHLD || sig == LX_SIGCONT || sig == 23 /*SIGURG*/ || sig == 28 /*SIGWINCH*/;
 }
+/* the default action of these stops the process (proc.c) */
+static int default_stops(int sig) { return sig >= 19 && sig <= 22; }
 
 /* Take the lowest pending, unblocked signal whose action is a handler; signals
  * whose action became SIG_IGN are dropped, SIG_DFL ones terminate. 0 = none. */
@@ -211,19 +214,19 @@ static int take_signal(xrl_thread *t, lx_ksigaction *act, lx_siginfo *si)
         int sig = (int)b + 1;
         int from_kill = (int)((InterlockedAnd64((volatile LONG64 *)&t->sig_from_kill, ~(LONG64)(1ull << b)) >> b) & 1);
         AcquireSRWLockExclusive(&g_sig_lock);
-        *act = g_act[sig];
-        if (act->handler > LX_SIG_IGN && (act->flags & LX_SA_RESETHAND)) g_act[sig].handler = LX_SIG_DFL;
+        *act = ACT_OF(t)[sig];
+        if (act->handler > LX_SIG_IGN && (act->flags & LX_SA_RESETHAND)) ACT_OF(t)[sig].handler = LX_SIG_DFL;
         ReleaseSRWLockExclusive(&g_sig_lock);
         if (act->handler == LX_SIG_IGN) continue;
         if (act->handler == LX_SIG_DFL) {
-            if (default_ignored(sig)) continue;
+            if (default_ignored(sig) || default_stops(sig)) continue;   /* a stop was acted on when it was sent */
             LOGE("signal %d delivered to tid %d with the default action: terminating (128+%d)", sig, t->tid, sig);
-            xrl_do_exit(128 + sig, 1);
+            xrl_do_exit_sig(sig);
         }
         memset(si, 0, sizeof *si);
         si->si_signo = sig;
         si->si_code = from_kill ? SI_USER : SI_TKILL;
-        si->u.kill.si_pid = G.pid;
+        si->u.kill.si_pid = t->sig_sender ? t->sig_sender : t->proc->pid;
         si->u.kill.si_uid = 1000;
         return sig;
     }
@@ -314,7 +317,7 @@ static void capture_fp(xrl_sigregs *r)
 static void frame_failed(xrl_thread *t, int sig)
 {
     LOGE("signal %d: cannot write a signal frame for tid %d (bad stack): terminating", sig, t->tid);
-    xrl_do_exit(128 + LX_SIGSEGV, 1);
+    xrl_do_exit_sig(LX_SIGSEGV);
 }
 
 /* End of xrl_syscall_dispatch. `from`: the state to interrupt when it is not
@@ -359,7 +362,7 @@ slong xrl_sig_return(xrl_thread *t, u64 uc_addr)
     lx_ucontext uc;
     if (!t || xrl_cfu(&uc, uc_addr, sizeof uc)) {
         LOGE("rt_sigreturn: no signal frame at %llx: terminating", uc_addr);
-        xrl_do_exit(128 + LX_SIGSEGV, 1);
+        xrl_do_exit_sig(LX_SIGSEGV);
         return -LX_EFAULT;
     }
     xrl_sigregs *r = regs_of(t);
@@ -502,16 +505,22 @@ static BOOL CALLBACK pump_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
 static slong send_signal(xrl_thread *t, int sig, int from_kill)
 {
     AcquireSRWLockShared(&g_sig_lock);
-    lx_ksigaction a = g_act[sig];
+    lx_ksigaction a = ACT_OF(t)[sig];
     ReleaseSRWLockShared(&g_sig_lock);
     int blocked = (t->sigmask & SIGBIT(sig)) != 0;
+    xrl_thread *self = xrl_cur();
+    if (self && self->proc) t->sig_sender = self->proc->pid;
     if (sig != LX_SIGKILL && sig != LX_SIGSTOP) {
         if (a.handler == LX_SIG_IGN) return 0;
         if (a.handler == LX_SIG_DFL && default_ignored(sig)) return 0;
     }
+    /* default actions that end or stop the target's whole process, whichever thread was picked */
+    if (a.handler == LX_SIG_DFL && default_stops(sig) && !blocked) { xrl_proc_stop_signal(t->proc, sig); return 0; }
+    if (sig == LX_SIGSTOP && !blocked) { xrl_proc_stop_signal(t->proc, sig); return 0; }
     if (sig == LX_SIGKILL || (a.handler == LX_SIG_DFL && !blocked)) {
-        LOGE("signal %d to tid %d with the default action: terminating process (128+%d)", sig, t->tid, sig);
-        xrl_do_exit(128 + sig, 1);
+        LOGE("signal %d to tid %d with the default action: terminating process %d", sig, t->tid, t->proc->pid);
+        xrl_proc_fatal_signal(t->proc, sig, self);
+        return 0;
     }
     InterlockedIncrement64(&g_sig_sent);
     if (from_kill) InterlockedOr64((volatile LONG64 *)&t->sig_from_kill, (LONG64)SIGBIT(sig));
@@ -529,32 +538,19 @@ static slong send_signal(xrl_thread *t, int sig, int from_kill)
     return 0;
 }
 
+slong xrl_sig_send_thread(xrl_thread *t, int sig, int from_kill) { return send_signal(t, sig, from_kill); }
+
 slong xrl_sys_tgkill(int tgid, int tid, int sig)
 {
-    if (tgid != G.pid && tgid != -1) return -LX_ESRCH;
     xrl_thread *t = xrl_thread_by_tid(tid);
-    if (!t) return -LX_ESRCH;
+    if (!t || (tgid != -1 && t->proc->pid != tgid)) return -LX_ESRCH;
     if (sig == 0) return 0;
     if (!SIGBIT_OK(sig)) return -LX_EINVAL;
     return send_signal(t, sig, 0);
 }
 
-/* kill(getpid(), sig): the main thread unless it blocks the signal, else any
- * thread that does not */
-slong xrl_sig_kill_process(int sig)
-{
-    if (sig == 0) return 0;
-    if (!SIGBIT_OK(sig)) return -LX_EINVAL;
-    xrl_thread *pick = NULL, *main_t = NULL;
-    AcquireSRWLockShared(&G.thread_lock);
-    for (xrl_thread *t = G.threads; t; t = t->next) {
-        if (t->is_main) main_t = t;
-        if (!(t->sigmask & SIGBIT(sig)) && (!pick || t->is_main)) pick = t;
-    }
-    if (!pick) pick = main_t ? main_t : G.threads;
-    ReleaseSRWLockShared(&G.thread_lock);
-    return pick ? send_signal(pick, sig, 1) : -LX_ESRCH;
-}
+/* kill(getpid(), sig) and friends: see xrl_proc_signal (proc.c) */
+slong xrl_sig_kill_process(int sig) { return xrl_proc_signal(xrl_curproc(), sig, 1); }
 
 /* A fault in guest code with a guest handler for its signal: deliver it from
  * the exception context (Wine's segv/trap/fpe handlers turn it into a Windows
@@ -562,12 +558,12 @@ slong xrl_sig_kill_process(int sig)
 static int deliver_fault(xrl_thread *t, PEXCEPTION_POINTERS ep, int sig, int code, u64 addr, u64 trapno, u64 err)
 {
     AcquireSRWLockShared(&g_sig_lock);
-    lx_ksigaction a = g_act[sig];
+    lx_ksigaction a = ACT_OF(t)[sig];
     ReleaseSRWLockShared(&g_sig_lock);
     if (a.handler <= LX_SIG_IGN || (t->sigmask & SIGBIT(sig))) return 0;   /* Linux: blocked/ignored fault = death */
     if (a.flags & LX_SA_RESETHAND) {
         AcquireSRWLockExclusive(&g_sig_lock);
-        g_act[sig].handler = LX_SIG_DFL;
+        ACT_OF(t)[sig].handler = LX_SIG_DFL;
         ReleaseSRWLockExclusive(&g_sig_lock);
     }
     CONTEXT *c = ep->ContextRecord;
@@ -792,7 +788,7 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         }
     }
     crash_report(ep, t);
-    xrl_do_exit(128 + sig, 1);
+    xrl_do_exit_sig(sig);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 

@@ -73,6 +73,7 @@ typedef struct xrl_sigregs {
 } xrl_sigregs;
 
 typedef struct xrl_thread xrl_thread;
+typedef struct xrl_proc xrl_proc;
 struct xrl_thread {
     /* --- asm-visible block (offsets frozen, see thread.c static asserts) --- */
     u64 host_rsp;          /* 0x00 16-aligned top of host stack used by thunks   */
@@ -119,6 +120,10 @@ struct xrl_thread {
     volatile LONG exec_kill; /* execve is replacing the image: this thread ends at its next syscall return (exec.c) */
     int  daemon;           /* survives an execve that keeps the old image (the wineserver thread) */
     u64  host_teb;         /* this thread's host TEB (key of its xrl_ttab entry) */
+    xrl_proc *proc;        /* the guest process this thread belongs to (proc.c) */
+    volatile LONG suspended; /* SuspendThread'ed by xrl_proc_freeze while in guest code */
+    int  leader;           /* first thread of a forked process (signals to the process prefer it) */
+    int  sig_sender;       /* pid of the last process that signalled this thread (si_pid) */
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
@@ -153,6 +158,11 @@ xrl_thread *xrl_thread_by_tid(int tid);
 int  xrl_thread_count(void);
 slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc);
 slong xrl_do_exit(int code, int group);
+slong xrl_do_exit_sig(int sig);            /* the calling process dies of signal `sig` (wait status = sig) */
+xrl_thread *xrl_thread_new_in(xrl_proc *p);
+int  xrl_thread_clone_prepare(xrl_thread *p, xrl_proc *np, u64 flags, u64 child_stack, u64 tls, u64 resume_pc, xrl_thread **out);
+void xrl_thread_start(xrl_thread *t);
+int  xrl_thread_listed(xrl_thread *t);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);
 void xrl_threads_terminate_all(void);
@@ -161,7 +171,6 @@ void xrl_thread_die(xrl_thread *t);        /* the calling thread ends quietly (e
 /* exec.c */
 slong xrl_sys_execve(u64 path, u64 argv, u64 envp);
 slong xrl_exec_prctl(int op, u64 a2, u64 a3);
-void xrl_mem_release_all(void);            /* mem.c: unmap every guest mapping (plain execve) */
 void xrl_fd_close_on_exec(void);           /* fd.c: close every fd with FD_CLOEXEC */
 
 /* asm entry points (thunks.asm) */
@@ -185,6 +194,101 @@ int  xrl_fd_list(int *out, int cap);
 slong xrl_fd_close_range(unsigned first, unsigned last, unsigned flags);
 slong xrl_memfd_create(const char *name, unsigned flags);
 void xrl_futex_interrupt(xrl_thread *t);
+
+/* ------------------------------------------------------------ processes */
+/*
+ * Guest processes (proc.c, docs/decisions.md "Guest processes"). Many Linux processes live in the one Windows
+ * process and its one address space. A process owns threads, an fd table, a view of the memory map (its mm),
+ * signal dispositions, ids and a wait status. Everything the rest of the layer used to keep in G (fd table,
+ * cwd, umask, handlers, argv, pid) is per process and found through the calling thread (xrl_cur()->proc).
+ */
+typedef struct xrl_files xrl_files;               /* fd.c: a refcounted fd table */
+typedef struct xrl_mm { u32 id; volatile LONG refs; } xrl_mm;   /* owner tag of the VMAs it maps (mem.c) */
+typedef struct xrl_msnap xrl_msnap;               /* mem.c: snapshot of an mm's writable private memory */
+
+#define XRL_CWD_MAX 1024
+enum { XP_RUNNING, XP_STOPPED, XP_ZOMBIE };
+
+struct xrl_proc {
+    int pid, ppid, pgid, sid;
+    xrl_proc *parent, *next;        /* parent (NULL for init), global list */
+    int state;
+    int wstatus;                    /* zombie: the wait4 status (exit<<8 | sig) */
+    int stop_sig, stop_reported, cont_reported;
+    int exit_signal;                /* sent to the parent when this process ends (SIGCHLD) */
+    int is_init;                    /* the process boot started: its exit ends the layer */
+    volatile LONG refs;             /* the process table (until reaped) + one per thread record */
+    volatile LONG nthreads, ndaemons;
+    volatile LONG dying;            /* the process is being torn down: its threads end at their next syscall return */
+    volatile LONG frozen;           /* xrl_proc_freeze: threads park at syscall return */
+    HANDLE thaw_ev;                 /* manual-reset: set while not frozen */
+    xrl_files *files;
+    xrl_mm *mm;
+    char cwd[XRL_CWD_MAX];
+    u32 umask;
+    u32 uid, euid, suid, gid, egid, sgid;
+    lx_rlimit rlim[16];
+    lx_ksigaction act[LX_NSIG + 1];
+    char **argv, **envp;
+    int argc, envc;
+    char *exec_path;
+    u64 start_ns;
+    /* vfork / fork: the parent waits (suspended in its fork syscall) until this child execs or exits */
+    HANDLE vfork_ev;                /* manual-reset event, NULL when no parent waits */
+    xrl_thread *vfork_parent;
+    u8 vfork_frame[2048];           /* the parent's thunk (and rawsys) frames below the child's rsp: the child overwrites them */
+    size_t vfork_len;
+    xrl_msnap *snap;                /* fork(): put the parent's memory back when the child leaves it */
+    u32 snap_mm;
+};
+
+void xrl_proc_init(void);                       /* boot: create the init process (pid = Windows pid) */
+xrl_proc *xrl_curproc(void);                    /* the calling thread's process (init for host threads) */
+xrl_proc *xrl_proc_by_pid(int pid);             /* NULL if none (zombies included); takes a reference: xrl_proc_put */
+void  xrl_proc_put(xrl_proc *p);
+void  xrl_proc_ref(xrl_proc *p);
+int   xrl_proc_stop_signal(xrl_proc *p, int sig);   /* a stop signal with the default action: stop p (1 if it was one) */
+slong xrl_sig_send_thread(xrl_thread *t, int sig, int from_kill);   /* signal.c: queue + deliver */
+xrl_proc *xrl_proc_init_get(void);
+slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc);
+void  xrl_proc_vfork_release(xrl_proc *p);      /* the child left the parent's memory (exec / exit) */
+void  xrl_proc_thread_gone(xrl_thread *t);      /* a thread was unlinked: the last one ends the process */
+void  xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self);   /* end process p (zombie, SIGCHLD, ...) */
+void  xrl_proc_kill_threads(xrl_proc *p, xrl_thread *self, int keep_daemons);   /* stop every other thread of p */
+void  xrl_proc_freeze(xrl_proc *p, xrl_thread *self);
+void  xrl_proc_thaw(xrl_proc *p);
+void  xrl_proc_park(xrl_thread *t);             /* syscall return: a frozen or stopped process waits here */
+void  xrl_proc_exec_done(xrl_proc *p);          /* execve loaded the new image: release a vfork parent */
+void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its own (in place when it is the only user) */
+slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */
+slong xrl_proc_signal(xrl_proc *p, int sig, int from_kill);
+slong xrl_sys_kill(int pid, int sig);
+slong xrl_sys_wait4(int pid, u64 ustatus, int options, u64 urusage);
+slong xrl_sys_waitid(int idtype, int id, u64 uinfo, int options, u64 urusage);
+slong xrl_sys_setpgid(int pid, int pgid);
+slong xrl_sys_getpgid(int pid);
+slong xrl_sys_setsid(void);
+slong xrl_sys_getsid(int pid);
+int   xrl_proc_list(int *out, int cap);         /* pids of every live process (procfs) */
+int   xrl_proc_family_stopped(xrl_proc *p);
+int   xrl_tty_pgrp(void);
+int   xrl_tty_set_pgrp(int pgrp);
+void  xrl_proc_set_comm(xrl_proc *p, const char *path);
+/* fd.c */
+xrl_files *xrl_files_new(void);
+xrl_files *xrl_files_clone(xrl_files *src);     /* fork: same xfile objects, own table */
+void  xrl_files_ref(xrl_files *f);
+void  xrl_files_put(xrl_files *f);              /* drop a reference; the last closes every fd */
+int   xrl_files_list(xrl_files *f, int *out, int cap);
+/* mem.c */
+u32   xrl_mm_new(void);
+void  xrl_mm_release(u32 mm);                   /* unmap every VMA the mm owns, drop its brk window */
+size_t xrl_mem_format_maps_mm(u32 mm, char *buf, size_t cap);
+u64   xrl_mem_mm_size(u32 mm);                  /* bytes mapped (VmSize) */
+xrl_msnap *xrl_mem_snapshot(u32 mm, u64 cap_bytes);   /* NULL: too big or out of memory */
+void  xrl_mem_snap_restore(xrl_msnap *s);
+void  xrl_mem_snap_free(xrl_msnap *s);
+int   xrl_mem_range_foreign(u64 s, u64 e, u32 mm, u32 *owner_out);   /* [s,e) overlaps a mapping of another mm */
 
 /* -------------------------------------------------------------- global */
 typedef struct xrl_global {
@@ -210,11 +314,10 @@ typedef struct xrl_global {
     volatile LONG ndaemons;        /* of nthreads: threads that do not count as "the last one" */
     u64   boot_qpc, qpc_freq;
     u64   boot_time_100ns;         /* FILETIME at boot                   */
-    char  cwd[1024];               /* guest cwd                          */
-    SRWLOCK cwd_lock;
-    u32   umask;
+    SRWLOCK cwd_lock;              /* guards every process's cwd         */
     void *guest_ctx;               /* xrl_guest_ctx visible via auxv     */
     void *wineserver_hook;         /* optional: guest fn started as thread */
+    xrl_proc *init_proc;           /* the process boot started (proc.c) */
 } xrl_global;
 extern xrl_global G;
 
@@ -302,6 +405,7 @@ void   xfile_unref(xfile *f);
 
 int    xrl_fd_install(xfile *f, int cloexec, int minfd);   /* returns fd or -errno */
 xfile *xrl_fd_get(int fd);                                  /* takes a ref; NULL if bad */
+xfile *xrl_files_get(xrl_files *f, int fd);                 /* the same in a given table (procfs: another process's fd) */
 slong   xrl_fd_close(int fd);
 slong   xrl_fd_dup(int oldfd, int newfd, int flags, int use_min);
 int    xrl_fd_getfd(int fd);                                /* cloexec flag or -EBADF */
@@ -456,6 +560,7 @@ typedef struct xrl_elf_image {
     u64 exports_xrl_wineserver_main;  /* dynsym lookup, 0 if absent */
 } xrl_elf_image;
 int xrl_elf_load(const char *guest_path, xrl_elf_image *out);
+int xrl_elf_fixed_range(const char *guest_path, u64 *lo, u64 *hi);   /* 1: a non-PIE image and the range it must map */
 u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_stack_lo, u64 *out_stack_hi);
 
 /* -------------------------------------------------------------- rewrite */

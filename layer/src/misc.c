@@ -76,22 +76,25 @@ slong xrl_sys_getrandom(u64 buf, u64 len, u32 flags)
     return (slong)len;
 }
 
+/* Limits are stored per process (inherited across fork and exec) but not enforced. */
 slong xrl_sys_prlimit(int pid, int res, u64 newp, u64 oldp)
 {
-    (void)newp;
-    if (pid != 0 && pid != G.pid) return -LX_ESRCH;
-    lx_rlimit r;
-    switch (res) {
-    case LX_RLIMIT_STACK: r.rlim_cur = 8u << 20; r.rlim_max = LX_RLIM_INFINITY; break;
-    case LX_RLIMIT_NOFILE: r.rlim_cur = 65536; r.rlim_max = 65536; break;
-    case LX_RLIMIT_CORE: r.rlim_cur = 0; r.rlim_max = LX_RLIM_INFINITY; break;
-    case LX_RLIMIT_NPROC: r.rlim_cur = r.rlim_max = 32768; break;
-    case LX_RLIMIT_MEMLOCK: r.rlim_cur = r.rlim_max = 64 << 10; break;
-    default: r.rlim_cur = r.rlim_max = LX_RLIM_INFINITY; break;
-    }
+    xrl_proc *me = xrl_curproc(), *p = me;
     if (res < 0 || res > 15) return -LX_EINVAL;
-    if (oldp && xrl_ctu(oldp, &r, sizeof r)) return -LX_EFAULT;
-    return 0;   /* set requests are accepted and ignored */
+    if (pid != 0 && pid != me->pid) {
+        p = xrl_proc_by_pid(pid);
+        if (!p) return -LX_ESRCH;
+    }
+    slong rc = 0;
+    lx_rlimit old = p->rlim[res], nw;
+    if (newp) {
+        if (xrl_cfu(&nw, newp, sizeof nw)) rc = -LX_EFAULT;
+        else if (nw.rlim_cur > nw.rlim_max) rc = -LX_EINVAL;
+        else p->rlim[res] = nw;
+    }
+    if (!rc && oldp && xrl_ctu(oldp, &old, sizeof old)) rc = -LX_EFAULT;
+    if (p != me) xrl_proc_put(p);
+    return rc;
 }
 
 slong xrl_sys_sched_getaffinity(int pid, u64 size, u64 mask)

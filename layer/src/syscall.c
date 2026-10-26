@@ -377,7 +377,7 @@ SYS(zero_ok) { UNUSED6; return 0; }
  * elsewhere), lists are empty. */
 SYS(xattr_nodata) { UNUSED6; return -LX_ENODATA; }
 SYS(xattr_notsup) { UNUSED6; return -LX_EOPNOTSUPP; }
-SYS(umask) { UNUSED6; u32 old = G.umask; G.umask = (u32)a1 & 0777; return old; }
+SYS(umask) { UNUSED6; xrl_proc *p = xrl_curproc(); u32 old = p->umask; p->umask = (u32)a1 & 0777; return old; }
 
 SYS(pipe) { UNUSED6; int fds[2]; slong r = xrl_pipe_create(0, fds); if (r) return r; return xrl_ctu((u64)a1, fds, 8); }
 SYS(pipe2) { UNUSED6; int fds[2]; slong r = xrl_pipe_create((int)a2, fds); if (r) return r; if (xrl_ctu((u64)a1, fds, 8)) { xrl_fd_close(fds[0]); xrl_fd_close(fds[1]); return -LX_EFAULT; } return 0; }
@@ -601,14 +601,11 @@ SYS(clone3)
     memset(&ca, 0, sizeof ca);
     if (xrl_cfu(&ca, (u64)a1, 64)) return -LX_EFAULT;
     u64 sp = ca.stack ? ca.stack + ca.stack_size : 0;
-    return xrl_do_clone(ca.flags, sp, ca.parent_tid, ca.child_tid, ca.tls, 0);
+    return xrl_do_clone(ca.flags | (ca.exit_signal & 0xff), sp, ca.parent_tid, ca.child_tid, ca.tls, 0);
 }
-SYS(fork)
-{
-    UNUSED6;
-    LOGE("fork/vfork called: the layer is single-process; use posix_spawn-free paths (-ENOSYS)");
-    return -LX_ENOSYS;
-}
+/* fork / vfork: a new process (proc.c); the child "returns" from this call with 0 */
+SYS(fork) { UNUSED6; return xrl_proc_clone(LX_SIGCHLD, 0, 0, 0, 0, 0); }
+SYS(vfork) { UNUSED6; return xrl_proc_clone(LX_CLONE_VM | LX_CLONE_VFORK | LX_SIGCHLD, 0, 0, 0, 0, 0); }
 SYS(execve) { UNUSED6; return xrl_sys_execve((u64)a1, (u64)a2, (u64)a3); }
 /* exit(status, base, size): B's musl __unmapself passes the dying thread's own
  * stack; unmapped in xrl_do_exit once we are off it (on the host stack). */
@@ -632,11 +629,19 @@ SYS(exit)
     return 0;
 }
 SYS(exit_group) { UNUSED6; xrl_do_exit((int)a1, 1); return 0; }
-SYS(gettid) { UNUSED6; xrl_thread *t = xrl_cur(); return t ? t->tid : G.pid; }
-SYS(getpid) { UNUSED6; return G.pid; }
-SYS(getppid) { UNUSED6; return 1; }
-SYS(uid) { UNUSED6; return 1000; }
-SYS(set_tid_address) { UNUSED6; xrl_thread *t = xrl_cur(); if (t) t->clear_child_tid = (u64)a1; return t ? t->tid : G.pid; }
+SYS(gettid) { UNUSED6; xrl_thread *t = xrl_cur(); return t ? t->tid : xrl_curproc()->pid; }
+SYS(getpid) { UNUSED6; return xrl_curproc()->pid; }
+SYS(getppid) { UNUSED6; return xrl_curproc()->ppid; }
+SYS(getuid) { UNUSED6; return xrl_curproc()->uid; }
+SYS(geteuid) { UNUSED6; return xrl_curproc()->euid; }
+SYS(getgid) { UNUSED6; return xrl_curproc()->gid; }
+SYS(getegid) { UNUSED6; return xrl_curproc()->egid; }
+/* ids: the layer has no privilege model, so setting them just changes what the process reads back */
+SYS(setuid) { UNUSED6; xrl_proc *p = xrl_curproc(); p->uid = p->euid = p->suid = (u32)a1; return 0; }
+SYS(setgid) { UNUSED6; xrl_proc *p = xrl_curproc(); p->gid = p->egid = p->sgid = (u32)a1; return 0; }
+SYS(setresuid) { UNUSED6; xrl_proc *p = xrl_curproc(); if ((u32)a1 != ~0u) p->uid = (u32)a1; if ((u32)a2 != ~0u) p->euid = (u32)a2; if ((u32)a3 != ~0u) p->suid = (u32)a3; return 0; }
+SYS(setresgid) { UNUSED6; xrl_proc *p = xrl_curproc(); if ((u32)a1 != ~0u) p->gid = (u32)a1; if ((u32)a2 != ~0u) p->egid = (u32)a2; if ((u32)a3 != ~0u) p->sgid = (u32)a3; return 0; }
+SYS(set_tid_address) { UNUSED6; xrl_thread *t = xrl_cur(); if (t) t->clear_child_tid = (u64)a1; return t ? t->tid : xrl_curproc()->pid; }
 SYS(set_robust_list) { UNUSED6; xrl_thread *t = xrl_cur(); if (a2 != 24) return -LX_EINVAL; if (t) { t->robust_list = (u64)a1; t->robust_len = (u64)a2; } return 0; }
 SYS(get_robust_list)
 {
@@ -654,16 +659,11 @@ SYS(sched_prio_min) { UNUSED6; return (a1 == 1 || a1 == 2) ? 1 : 0; }
 SYS(sched_getscheduler) { UNUSED6; return 0; }
 SYS(sched_getparam) { UNUSED6; int z = 0; return a2 ? xrl_ctu((u64)a2, &z, 4) : -LX_EINVAL; }
 SYS(getcpu) { UNUSED6; u32 c = (u32)(GetCurrentProcessorNumber() % xrl_nprocs()); u32 z = 0; if (a1 && xrl_ctu((u64)a1, &c, 4)) return -LX_EFAULT; if (a2 && xrl_ctu((u64)a2, &z, 4)) return -LX_EFAULT; return 0; }
-SYS(kill)
-{
-    UNUSED6;
-    int pid = (int)a1, sig = (int)a2;
-    if (pid != G.pid && pid != 0 && pid != -1) return -LX_ESRCH;
-    return xrl_sig_kill_process(sig);
-}
-SYS(tkill) { UNUSED6; return xrl_sys_tgkill(G.pid, (int)a1, (int)a2); }
+SYS(kill) { UNUSED6; return xrl_sys_kill((int)a1, (int)a2); }
+SYS(tkill) { UNUSED6; return xrl_sys_tgkill(-1, (int)a1, (int)a2); }
 SYS(tgkill) { UNUSED6; return xrl_sys_tgkill((int)a1, (int)a2, (int)a3); }
-SYS(wait4) { UNUSED6; return -LX_ECHILD; }
+SYS(wait4) { UNUSED6; return xrl_sys_wait4((int)a1, (u64)a2, (int)a3, (u64)a4); }
+SYS(waitid) { UNUSED6; return xrl_sys_waitid((int)a1, (int)a2, (u64)a3, (int)a4, (u64)a5); }
 SYS(rt_sigaction) { UNUSED6; return xrl_sys_rt_sigaction((int)a1, (u64)a2, (u64)a3, (u64)a4); }
 SYS(rt_sigprocmask) { UNUSED6; return xrl_sys_rt_sigprocmask((int)a1, (u64)a2, (u64)a3, (u64)a4); }
 SYS(sigaltstack) { UNUSED6; return xrl_sys_sigaltstack((u64)a1, (u64)a2); }
@@ -700,7 +700,7 @@ SYS(sysinfo) { UNUSED6; return xrl_sys_sysinfo((u64)a1); }
 SYS(getrandom) { UNUSED6; return xrl_sys_getrandom((u64)a1, (u64)a2, (u32)a3); }
 SYS(prlimit64) { UNUSED6; return xrl_sys_prlimit((int)a1, (int)a2, (u64)a3, (u64)a4); }
 SYS(getrlimit) { UNUSED6; return xrl_sys_prlimit(0, (int)a1, 0, (u64)a2); }
-SYS(setrlimit) { UNUSED6; return 0; }
+SYS(setrlimit) { UNUSED6; return xrl_sys_prlimit(0, (int)a1, (u64)a2, 0); }
 SYS(clock_gettime) { UNUSED6; return xrl_sys_clock_gettime((int)a1, (u64)a2); }
 SYS(clock_getres) { UNUSED6; return xrl_sys_clock_getres((int)a1, (u64)a2); }
 SYS(clock_settime) { UNUSED6; return -LX_EPERM; }
@@ -710,9 +710,14 @@ SYS(gettimeofday) { UNUSED6; return xrl_sys_gettimeofday((u64)a1, (u64)a2); }
 SYS(time) { UNUSED6; return xrl_sys_time((u64)a1); }
 SYS(times) { UNUSED6; return xrl_sys_times((u64)a1); }
 SYS(getrusage) { UNUSED6; return xrl_sys_getrusage((int)a1, (u64)a2); }
-SYS(getpgid) { UNUSED6; return G.pid; }
+SYS(getpgid) { UNUSED6; return xrl_sys_getpgid((int)a1); }
+SYS(getpgrp) { UNUSED6; return xrl_sys_getpgid(0); }
+SYS(setpgid) { UNUSED6; return xrl_sys_setpgid((int)a1, (int)a2); }
+SYS(getsid) { UNUSED6; return xrl_sys_getsid((int)a1); }
+SYS(setsid) { UNUSED6; return xrl_sys_setsid(); }
 SYS(getgroups) { UNUSED6; return 0; }
-SYS(getresuid) { UNUSED6; u32 id = 1000; if (xrl_ctu((u64)a1, &id, 4) || xrl_ctu((u64)a2, &id, 4) || xrl_ctu((u64)a3, &id, 4)) return -LX_EFAULT; return 0; }
+SYS(getresuid) { UNUSED6; xrl_proc *p = xrl_curproc(); if (xrl_ctu((u64)a1, &p->uid, 4) || xrl_ctu((u64)a2, &p->euid, 4) || xrl_ctu((u64)a3, &p->suid, 4)) return -LX_EFAULT; return 0; }
+SYS(getresgid) { UNUSED6; xrl_proc *p = xrl_curproc(); if (xrl_ctu((u64)a1, &p->gid, 4) || xrl_ctu((u64)a2, &p->egid, 4) || xrl_ctu((u64)a3, &p->sgid, 4)) return -LX_EFAULT; return 0; }
 SYS(personality) { UNUSED6; return 0; }
 SYS(restart_syscall) { UNUSED6; return -LX_EINTR; }
 
@@ -729,7 +734,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_rt_sigreturn, rt_sigreturn), T(NR_rt_sigsuspend, rt_sigsuspend), T(NR_rt_sigtimedwait, rt_sigtimedwait),
     T(NR_rt_sigpending, rt_sigpending), T(NR_sigaltstack, sigaltstack), T(NR_tgkill, tgkill), T(NR_tkill, tkill),
     T(NR_kill, kill), T(NR_exit, exit), T(NR_exit_group, exit_group), T(NR_pause, pause),
-    T(NR_fork, fork), T(NR_vfork, fork), T(NR_execve, execve), T(NR_wait4, wait4),
+    T(NR_fork, fork), T(NR_vfork, vfork), T(NR_execve, execve), T(NR_wait4, wait4), T(NR_waitid, waitid),
     /* memory */
     T(NR_mmap, mmap), T(NR_munmap, munmap), T(NR_mprotect, mprotect), T(NR_mremap, mremap), T(NR_brk, brk),
     T(NR_madvise, madvise), T(NR_msync, msync), T(NR_mincore, mincore),
@@ -768,10 +773,10 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_clock_nanosleep, clock_nanosleep), T(NR_nanosleep, nanosleep), T(NR_gettimeofday, gettimeofday),
     T(NR_time, time), T(NR_times, times), T(NR_getrusage, getrusage),
     /* ident / misc */
-    T(NR_getpid, getpid), T(NR_getppid, getppid), T(NR_getuid, uid), T(NR_geteuid, uid), T(NR_getgid, uid), T(NR_getegid, uid),
-    T(NR_getpgid, getpgid), T(NR_getpgrp, getpgid), T(NR_getsid, getpgid), T(NR_setsid, getpgid), T(NR_setpgid, zero_ok),
-    T(NR_setuid, zero_ok), T(NR_setgid, zero_ok), T(NR_setresuid, zero_ok), T(NR_setresgid, zero_ok),
-    T(NR_getgroups, getgroups), T(NR_getresuid, getresuid), T(NR_getresgid, getresuid),
+    T(NR_getpid, getpid), T(NR_getppid, getppid), T(NR_getuid, getuid), T(NR_geteuid, geteuid), T(NR_getgid, getgid), T(NR_getegid, getegid),
+    T(NR_getpgid, getpgid), T(NR_getpgrp, getpgrp), T(NR_getsid, getsid), T(NR_setsid, setsid), T(NR_setpgid, setpgid),
+    T(NR_setuid, setuid), T(NR_setgid, setgid), T(NR_setresuid, setresuid), T(NR_setresgid, setresgid),
+    T(NR_getgroups, getgroups), T(NR_getresuid, getresuid), T(NR_getresgid, getresgid),
     T(NR_prctl, prctl), T(NR_arch_prctl, arch_prctl), T(NR_uname, uname), T(NR_sysinfo, sysinfo), T(NR_getrandom, getrandom), T(NR_membarrier, membarrier),
     T(NR_getrlimit, getrlimit), T(NR_setrlimit, setrlimit), T(NR_prlimit64, prlimit64), T(NR_personality, personality),
     T(NR_sched_getaffinity, sched_getaffinity), T(NR_sched_setaffinity, zero_ok), T(NR_getcpu, getcpu),
@@ -887,7 +892,9 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
     }
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
-    if (t && t->exec_kill) xrl_thread_die(t);   /* execve is replacing the image (exec.c) */
+    if (t && t->exec_kill) xrl_thread_die(t);   /* execve is replacing the image (exec.c), or the process was killed (proc.c) */
+    if (t && t->proc && t->proc->frozen) xrl_proc_park(t);   /* stopped (SIGSTOP) or held by a fork snapshot */
+    if (t && t->exec_kill) xrl_thread_die(t);
     if (t && !t->sig_jump && (t->sigpending & ~t->sigmask)) {
         const slong args[6] = { a1, a2, a3, a4, a5, a6 };
         xrl_sig_at_return(t, nr, args, (const u64 *)frame, r, NULL);

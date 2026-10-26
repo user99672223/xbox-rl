@@ -233,7 +233,6 @@ slong xrl_vfs_init(const char *root)
     sym_add("/dev/stderr", "/proc/self/fd/2", 0);
     sym_add("/dev/fd", "/proc/self/fd", 0);
     mounts_load();
-    strcpy_s(G.cwd, sizeof G.cwd, "/");
     LOGI("vfs: root=%s (%zu symlinks)", G.vfs_root, g_nsym);
     return 0;
 }
@@ -276,7 +275,7 @@ static slong dirfd_path(int dirfd, char *out, size_t cap)
 {
     if (dirfd == LX_AT_FDCWD) {
         AcquireSRWLockShared(&G.cwd_lock);
-        strcpy_s(out, cap, G.cwd);
+        strcpy_s(out, cap, xrl_curproc()->cwd);
         ReleaseSRWLockShared(&G.cwd_lock);
         return 0;
     }
@@ -989,7 +988,7 @@ slong xrl_vfs_chdir(const char *path)
     if (r) return r;
     if ((st.st_mode & LX_S_IFMT) != LX_S_IFDIR) return -LX_ENOTDIR;
     AcquireSRWLockExclusive(&G.cwd_lock);
-    strcpy_s(G.cwd, sizeof G.cwd, gabs);
+    strcpy_s(xrl_curproc()->cwd, XRL_CWD_MAX, gabs);
     ReleaseSRWLockExclusive(&G.cwd_lock);
     return 0;
 }
@@ -997,9 +996,10 @@ slong xrl_vfs_chdir(const char *path)
 slong xrl_vfs_getcwd(char *buf, u64 cap)
 {
     AcquireSRWLockShared(&G.cwd_lock);
-    size_t n = strlen(G.cwd) + 1;
+    const char *cwd = xrl_curproc()->cwd;
+    size_t n = strlen(cwd) + 1;
     slong r = n > cap ? -LX_ERANGE : (slong)n;
-    if (r > 0) memcpy(buf, G.cwd, n);
+    if (r > 0) memcpy(buf, cwd, n);
     ReleaseSRWLockShared(&G.cwd_lock);
     return r;
 }

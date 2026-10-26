@@ -2,7 +2,8 @@
  * procfs.c - synthesized /proc and /sys files.
  *
  * Everything here is generated on open from layer state (VMA list, thread
- * list, fd table, boot context). Only what Wine/musl plausibly read is
+ * list, fd table, boot context). /proc/<pid>/... shows that guest process
+ * (proc.c); /proc/self and a pid of the caller's own process show the caller's. Only what Wine/musl plausibly read is
  * provided; anything else is -ENOENT. Add entries to proc_init() when the
  * ENOENT log (vfs: ENOENT proc ...) shows Wine asking for more.
  */
@@ -41,68 +42,83 @@ static char *dupfmt(size_t *len, const char *fmt, ...)
     return b;
 }
 
+/* The process /proc/<pid>/... names while a file is opened, stat'ed or read-linked (set by norm_enter); the
+ * calling thread's own for /proc/self. */
+static __declspec(thread) xrl_proc *t_target;
+static xrl_proc *tgt(void) { return t_target ? t_target : xrl_curproc(); }
+
 /* ------------------------------------------------------------ generators */
 static char *g_maps(const char *p, size_t *len)
 {
     (void)p;
     size_t cap = 1 << 20;
     char *b = (char *)malloc(cap);
-    *len = xrl_mem_format_maps(b, cap);
+    xrl_proc *t = tgt();
+    *len = t->mm ? xrl_mem_format_maps_mm(t->mm->id, b, cap) : 0;
     return b;
 }
 static char *g_cmdline(const char *p, size_t *len)
 {
     (void)p;
+    xrl_proc *t = tgt();
     size_t n = 0;
-    for (int i = 0; i < G.argc; i++) n += strlen(G.argv[i]) + 1;
+    for (int i = 0; i < t->argc; i++) n += strlen(t->argv[i]) + 1;
     char *b = (char *)malloc(n + 1), *w = b;
-    for (int i = 0; i < G.argc; i++) { size_t l = strlen(G.argv[i]) + 1; memcpy(w, G.argv[i], l); w += l; }
+    for (int i = 0; i < t->argc; i++) { size_t l = strlen(t->argv[i]) + 1; memcpy(w, t->argv[i], l); w += l; }
     *len = n;
     return b;
 }
 static char *g_environ(const char *p, size_t *len)
 {
     (void)p;
+    xrl_proc *t = tgt();
     size_t n = 0;
-    for (int i = 0; i < G.envc; i++) n += strlen(G.envp[i]) + 1;
+    for (int i = 0; i < t->envc; i++) n += strlen(t->envp[i]) + 1;
     char *b = (char *)malloc(n + 1), *w = b;
-    for (int i = 0; i < G.envc; i++) { size_t l = strlen(G.envp[i]) + 1; memcpy(w, G.envp[i], l); w += l; }
+    for (int i = 0; i < t->envc; i++) { size_t l = strlen(t->envp[i]) + 1; memcpy(w, t->envp[i], l); w += l; }
     *len = n;
     return b;
 }
 static const char *comm_name(void)
 {
-    const char *b = G.exec_path ? strrchr(G.exec_path, '/') : NULL;
-    return b ? b + 1 : (G.exec_path ? G.exec_path : "wine");
+    xrl_proc *t = tgt();
+    const char *b = t->exec_path ? strrchr(t->exec_path, '/') : NULL;
+    return b ? b + 1 : (t->exec_path && t->exec_path[0] ? t->exec_path : "wine");
 }
 static char *g_comm(const char *p, size_t *len)
 {
     (void)p;
-    xrl_thread *t = xrl_cur();
+    xrl_thread *t = t_target ? NULL : xrl_cur();
     return dupfmt(len, "%.15s\n", t && t->name[0] ? t->name : comm_name());
 }
+static char state_char(const xrl_proc *t) { return t->state == XP_ZOMBIE ? 'Z' : t->state == XP_STOPPED ? 'T' : 'S'; }
 static char *g_status(const char *p, size_t *len)
 {
     (void)p;
-    u64 vm = xrl_mem_committed() >> 10;
+    xrl_proc *t = tgt();
+    u64 vm = t->mm ? xrl_mem_mm_size(t->mm->id) >> 10 : 0;
+    u64 rss = xrl_mem_committed() >> 10;
+    if (rss > vm) rss = vm;
     return dupfmt(len,
-        "Name:\t%.15s\nUmask:\t0022\nState:\tR (running)\nTgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t1\nTracerPid:\t0\n"
-        "Uid:\t1000\t1000\t1000\t1000\nGid:\t1000\t1000\t1000\t1000\nFDSize:\t256\nGroups:\t\n"
+        "Name:\t%.15s\nUmask:\t%04o\nState:\t%c (%s)\nTgid:\t%d\nNgid:\t0\nPid:\t%d\nPPid:\t%d\nTracerPid:\t0\n"
+        "Uid:\t%u\t%u\t%u\t%u\nGid:\t%u\t%u\t%u\t%u\nFDSize:\t256\nGroups:\t\n"
         "VmPeak:\t%llu kB\nVmSize:\t%llu kB\nVmRSS:\t%llu kB\nVmData:\t%llu kB\nVmStk:\t132 kB\nThreads:\t%d\n"
         "SigQ:\t0/31000\nSigPnd:\t0000000000000000\nShdPnd:\t0000000000000000\nSigBlk:\t0000000000000000\n"
         "SigIgn:\t0000000000000000\nSigCgt:\t0000000000000000\nCapInh:\t0000000000000000\nCapPrm:\t0000000000000000\n"
         "CapEff:\t0000000000000000\nCpus_allowed:\tff\nCpus_allowed_list:\t0-7\nvoluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t1\n",
-        comm_name(), G.pid, G.pid, vm, vm, vm, vm, (int)G.nthreads);
+        comm_name(), t->umask, state_char(t), t->state == XP_ZOMBIE ? "zombie" : t->state == XP_STOPPED ? "stopped" : "sleeping",
+        t->pid, t->pid, t->ppid, t->uid, t->euid, t->suid, t->uid, t->gid, t->egid, t->sgid, t->gid, vm, vm, rss, rss, (int)t->nthreads);
 }
 static char *g_stat(const char *p, size_t *len)
 {
     (void)p;
-    u64 pages = xrl_mem_committed() >> 12;
-    u64 up = (xrl_mono_ns() - 0) / 10000000ull;
+    xrl_proc *t = tgt();
+    u64 pages = (t->mm ? xrl_mem_mm_size(t->mm->id) : 0) >> 12;
+    u64 up = (t->start_ns) / 10000000ull;
     return dupfmt(len,
-        "%d (%.15s) R 1 %d %d 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 "
+        "%d (%.15s) %c %d %d %d 0 %d 4194304 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 "
         "0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        G.pid, comm_name(), G.pid, G.pid, (int)G.nthreads, up, pages << 12, pages);
+        t->pid, comm_name(), state_char(t), t->ppid, t->pgid, t->sid, xrl_tty_pgrp(), (int)t->nthreads, up, pages << 12, pages);
 }
 static char *g_statm(const char *p, size_t *len)
 {
@@ -147,7 +163,7 @@ static char *g_procstat(const char *p, size_t *len)
     return b;
 }
 static char *g_uptime(const char *p, size_t *len) { (void)p; u64 ms = xrl_mono_ns() / 10000000ull; return dupfmt(len, "%llu.%02llu %llu.%02llu\n", ms / 100, ms % 100, ms / 100, ms % 100); }
-static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, G.pid); }
+static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, xrl_curproc()->pid); }
 static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-xrl (xbox-rl@layer) (gcc) #1 SMP\n"); }
 static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\tproc\nnodev\ttmpfs\n\text4\n"); }
 static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-xrl\n"); }
@@ -251,17 +267,26 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     return TRUE;
 }
 
-/* /proc/<digits>/... and /proc/thread-self -> /proc/self/... */
+/* /proc/<digits>/... and /proc/thread-self -> /proc/self/..., with t_target the process it names (a reference,
+ * dropped by norm_leave) */
 static void normalize(const char *in, char *out, size_t cap)
 {
     if (!strncmp(in, "/proc/", 6) && in[6] >= '0' && in[6] <= '9') {
         const char *p = in + 6;
         int v = 0;
         while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
-        if (v == G.pid || xrl_thread_by_tid(v)) { snprintf(out, cap, "/proc/self%s", p); return; }
+        xrl_proc *self = xrl_curproc();
+        if (v == self->pid) { snprintf(out, cap, "/proc/self%s", p); return; }
+        xrl_proc *q = xrl_proc_by_pid(v);
+        if (!q) { xrl_thread *th = xrl_thread_by_tid(v); if (th && th->proc) { q = th->proc; xrl_proc_ref(q); } }
+        if (q) { if (q == self) xrl_proc_put(q); else t_target = q; snprintf(out, cap, "/proc/self%s", p); return; }
     }
     if (!strncmp(in, "/proc/thread-self", 17)) { snprintf(out, cap, "/proc/self%s", in + 17); return; }
     snprintf(out, cap, "%s", in);
+}
+static void norm_leave(void)
+{
+    if (t_target) { xrl_proc_put(t_target); t_target = NULL; }
 }
 
 static pent *plookup(const char *norm)
@@ -279,7 +304,7 @@ static int dyn_kind(const char *norm, int *is_fd_entry, int *num)
     if (!strncmp(norm, "/proc/self/task/", 16)) {
         int tid = atoi(norm + 16);
         const char *rest = strchr(norm + 16, '/');
-        if (!xrl_thread_by_tid(tid) && tid != G.pid) return 0;
+        if (!xrl_thread_by_tid(tid) && tid != tgt()->pid) return 0;
         if (!rest) { *num = tid; return K_DIR; }
         if (!strcmp(rest, "/comm") || !strcmp(rest, "/stat") || !strcmp(rest, "/status")) { *num = tid; return K_FILE; }
     }
@@ -385,11 +410,11 @@ static xfile *open_dir(const char *norm, const char *orig)
     pdir_add(d, ".", LX_DT_DIR);
     pdir_add(d, "..", LX_DT_DIR);
     if (!strcmp(norm, "/proc/self/fd")) {
-        int fds[1024]; int n = xrl_fd_list(fds, 1024);
+        int fds[1024]; int n = xrl_files_list(tgt()->files, fds, 1024);
         for (int i = 0; i < n; i++) { char b[16]; sprintf(b, "%d", fds[i]); pdir_add(d, b, LX_DT_LNK); }
     } else if (!strcmp(norm, "/proc/self/task")) {
         AcquireSRWLockShared(&G.thread_lock);
-        for (xrl_thread *t = G.threads; t; t = t->next) { char b[16]; sprintf(b, "%d", t->tid); pdir_add(d, b, LX_DT_DIR); }
+        for (xrl_thread *t = G.threads; t; t = t->next) if (t->proc == tgt()) { char b[16]; sprintf(b, "%d", t->tid); pdir_add(d, b, LX_DT_DIR); }
         ReleaseSRWLockShared(&G.thread_lock);
     } else {
         size_t pl = strlen(norm);
@@ -398,7 +423,10 @@ static xfile *open_dir(const char *norm, const char *orig)
             if (strncmp(p, norm, pl) || p[pl] != '/' || strchr(p + pl + 1, '/')) continue;
             pdir_add(d, p + pl + 1, g_pe[i].kind == K_DIR ? LX_DT_DIR : g_pe[i].kind == K_LINK ? LX_DT_LNK : LX_DT_REG);
         }
-        if (!strcmp(norm, "/proc")) { char b[16]; sprintf(b, "%d", G.pid); pdir_add(d, b, LX_DT_DIR); }
+        if (!strcmp(norm, "/proc")) {
+            int pids[512], n = xrl_proc_list(pids, 512);
+            for (int i = 0; i < n; i++) { char b[16]; sprintf(b, "%d", pids[i]); pdir_add(d, b, LX_DT_DIR); }
+        }
     }
     xfile *f = xfile_new(&g_pd_ops, LX_O_RDONLY);
     f->priv = d;
@@ -407,7 +435,7 @@ static xfile *open_dir(const char *norm, const char *orig)
     return f;
 }
 
-xfile *xrl_proc_open(const char *gabs, int flags, int *err)
+static xfile *proc_open(const char *gabs, int flags, int *err)
 {
     char norm[512];
     normalize(gabs, norm, sizeof norm);
@@ -439,17 +467,25 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
     return f;
 }
 
-slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
+xfile *xrl_proc_open(const char *gabs, int flags, int *err)
+{
+    xfile *f = proc_open(gabs, flags, err);
+    norm_leave();
+    return f;
+}
+
+static slong proc_readlink(const char *gabs, char *buf, u64 cap)
 {
     char norm[512];
     normalize(gabs, norm, sizeof norm);
     char tmp[2048];
     tmp[0] = 0;
-    if (!strcmp(norm, "/proc/self/exe")) snprintf(tmp, sizeof tmp, "%s", G.exec_path ? G.exec_path : "/bin/wine");
-    else if (!strcmp(norm, "/proc/self/cwd")) { AcquireSRWLockShared(&G.cwd_lock); snprintf(tmp, sizeof tmp, "%s", G.cwd); ReleaseSRWLockShared(&G.cwd_lock); }
+    xrl_proc *tp = tgt();
+    if (!strcmp(norm, "/proc/self/exe")) snprintf(tmp, sizeof tmp, "%s", tp->exec_path && tp->exec_path[0] ? tp->exec_path : "/bin/wine");
+    else if (!strcmp(norm, "/proc/self/cwd")) { AcquireSRWLockShared(&G.cwd_lock); snprintf(tmp, sizeof tmp, "%s", tp->cwd); ReleaseSRWLockShared(&G.cwd_lock); }
     else if (!strcmp(norm, "/proc/self/root")) snprintf(tmp, sizeof tmp, "/");
     else if (!strncmp(norm, "/proc/self/fd/", 14)) {
-        xfile *f = xrl_fd_get(atoi(norm + 14));
+        xfile *f = xrl_files_get(tp->files, atoi(norm + 14));
         if (!f) return -LX_ENOENT;
         if (f->gpath) snprintf(tmp, sizeof tmp, "%s", f->gpath);
         else snprintf(tmp, sizeof tmp, "%s:[%p]", f->ops->name, (void *)f);
@@ -461,8 +497,15 @@ slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
     return (slong)n;
 }
 
+slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
+{
+    slong r = proc_readlink(gabs, buf, cap);
+    norm_leave();
+    return r;
+}
+
 /* Returns 1 if handled. st->st_nlink == 0 on return means "handled: ENOENT". */
-int xrl_proc_stat(const char *gabs, lx_stat *st)
+static int proc_stat(const char *gabs, lx_stat *st)
 {
     if (strncmp(gabs, "/proc", 5) && strncmp(gabs, "/sys", 4)) return 0;
     char norm[512];
@@ -476,6 +519,13 @@ int xrl_proc_stat(const char *gabs, lx_stat *st)
                    (u64)(uintptr_t)(e ? e->path : gabs), 0);
     if (kind == K_DIR) st->st_nlink = 2;
     return 1;
+}
+
+int xrl_proc_stat(const char *gabs, lx_stat *st)
+{
+    int r = proc_stat(gabs, st);
+    norm_leave();
+    return r;
 }
 
 int xrl_proc_is_virtual(const char *gabs) { return !strncmp(gabs, "/proc", 5) || !strncmp(gabs, "/sys", 4); }
