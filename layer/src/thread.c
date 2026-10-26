@@ -46,6 +46,9 @@ C_ASSERT(FIELD_OFFSET(xrl_thread, self) == 0x18);
 C_ASSERT(FIELD_OFFSET(xrl_thread, resume) == 0x20);
 C_ASSERT(FIELD_OFFSET(xrl_thread, child_rsp) == 0x60);
 C_ASSERT(FIELD_OFFSET(xrl_thread, teb_guest_live) == 0x70);
+C_ASSERT(FIELD_OFFSET(xrl_thread, sig_jump) == 0x78);
+C_ASSERT(FIELD_OFFSET(xrl_sigregs, rsp) == 0x78 && FIELD_OFFSET(xrl_sigregs, rip) == 0x80);
+C_ASSERT(FIELD_OFFSET(xrl_sigregs, xmask) == 0x90 && FIELD_OFFSET(xrl_sigregs, xs) == 0xC0);
 
 /* ------------------------------------------------------------ thread table */
 static SRWLOCK g_ttab_lock = SRWLOCK_INIT;
@@ -94,9 +97,10 @@ xrl_thread *xrl_thread_new(void)
     xrl_thread *t = (xrl_thread *)calloc(1, sizeof *t);
     if (!t) return NULL;
     t->self = (u64)t;
-    t->tid = (int)InterlockedIncrement(&G.next_tid) - 1;
+    t->tid = 0;                         /* the OS thread id, set by start_os_thread */
     t->fsb_enabled = (u64)G.fsgsbase;
     t->sigmask = 0;
+    t->sig_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
     strcpy_s(t->name, sizeof t->name, "xrl-guest");
     AcquireSRWLockExclusive(&G.thread_lock);
     t->next = G.threads;
@@ -172,10 +176,25 @@ static DWORD WINAPI thread_main(LPVOID p)
     return 0;
 }
 
+/* Linux tids are the Windows thread ids (and getpid() the Windows process id):
+ * Wine takes them as its own thread/process ids, so the TEB's ClientId is the
+ * same in the guest and host views (docs/gs-teb.md). The OS thread is created
+ * suspended so its id is known (and published) before it runs; ids are never
+ * reused in this process because thread handles are never closed. */
+static int create_os_thread(xrl_thread *t)
+{
+    DWORD id = 0;
+    t->handle = CreateThread(NULL, HOST_STACK_SIZE, thread_main, t, STACK_SIZE_PARAM_IS_A_RESERVATION | CREATE_SUSPENDED, &id);
+    if (!t->handle) return -1;
+    t->tid = (int)id;
+    return 0;
+}
+
 static int start_os_thread(xrl_thread *t)
 {
-    t->handle = CreateThread(NULL, HOST_STACK_SIZE, thread_main, t, STACK_SIZE_PARAM_IS_A_RESERVATION, NULL);
-    return t->handle ? 0 : -1;
+    if (create_os_thread(t)) return -1;
+    ResumeThread(t->handle);
+    return 0;
 }
 
 int xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out)
@@ -244,14 +263,15 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
     t->sigmask = p->sigmask;
     t->clone_flags = (u32)flags;
     if (flags & LX_CLONE_CHILD_CLEARTID) t->clear_child_tid = ctid;
-    if (flags & LX_CLONE_PARENT_SETTID) xrl_ctu(ptid, &t->tid, 4);
-    if (flags & LX_CLONE_CHILD_SETTID) xrl_ctu(ctid, &t->tid, 4);
     t->guest_stack_lo = 0;
-    if (start_os_thread(t)) {
+    if (create_os_thread(t)) {   /* suspended: the tid is known before the child runs */
         thread_unlink(t);
         free(t);
         return -LX_EAGAIN;
     }
+    if (flags & LX_CLONE_PARENT_SETTID) xrl_ctu(ptid, &t->tid, 4);
+    if (flags & LX_CLONE_CHILD_SETTID) xrl_ctu(ctid, &t->tid, 4);
+    ResumeThread(t->handle);
     return t->tid;
 }
 
@@ -355,7 +375,7 @@ void xrl_threads_init(void)
 {
     InitializeSRWLock(&G.thread_lock);
     G.next_tid = 1000;
-    G.pid = 1000;
+    G.pid = (int)GetCurrentProcessId();   /* see create_os_thread */
     int cpuid[4];
     __cpuidex(cpuid, 7, 0);
     int has = (cpuid[1] & 1) != 0;   /* EBX bit 0: FSGSBASE */

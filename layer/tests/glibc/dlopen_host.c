@@ -12,7 +12,7 @@
 int main(int argc, char **argv)
 {
     if (argc < 3) { fprintf(stderr, "usage: dlopen_host MODULE SYMBOL\n"); return 2; }
-    /* what Wine's ntdll does before its first native unix library (patches/wine/0017) */
+    /* what Wine's ntdll does before its first native unix library (patches/wine/0019) */
     const char *compat = getenv("XRL_GLIBC_COMPAT");
     if (!compat) compat = "/lib/libgcompat.so.0";
     if (*compat && !access(compat, R_OK) && !dlopen(compat, RTLD_NOW | RTLD_GLOBAL)) printf("cannot load %s: %s\n", compat, dlerror());

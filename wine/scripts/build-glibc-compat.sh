@@ -5,7 +5,7 @@
 # it into DESTLIB (a guest /lib) as libgcompat.so.0, plus two empty libraries (ld-linux-x86-64.so.2,
 # libresolv.so.2) that glibc-built modules list as DT_NEEDED and musl cannot alias to itself. (musl's
 # loader turns a DT_NEEDED of libc.so.N / libm / libdl / libpthread / librt / libutil into itself, so a
-# shim named libc.so.6 would never be loaded: Wine patch 0017 dlopen()s libgcompat.so.0 RTLD_GLOBAL
+# shim named libc.so.6 would never be loaded: Wine patch 0019 dlopen()s libgcompat.so.0 RTLD_GLOBAL
 # before the first native unix library instead.)
 # Why: docs/decisions.md, "Easy Anti-Cheat" entry. Needs `wine/scripts/build-musl.sh` to have run.
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"

@@ -60,6 +60,18 @@ void xrl_logf(int level, const char *tag, const char *fmt, ...);
  * offsets are asserted in thread.c. Reachable from any layer code via
  * xrl_cur() (hash of the host TEB Self pointer) and from the asm thunks.
  */
+/* Full guest register state for signal delivery and rt_sigreturn (signal.c).
+ * xrl_sig_jump (thunks.asm) loads it: offsets are asm-visible, and the first
+ * 18 qwords are in Linux sigcontext order. */
+typedef struct xrl_sigregs {
+    u64 r8, r9, r10, r11, r12, r13, r14, r15;     /* 0x00 */
+    u64 rdi, rsi, rbp, rbx, rdx, rax, rcx, rsp;   /* 0x40 */
+    u64 rip, eflags;                              /* 0x80 */
+    u64 xmask;                                    /* 0x90 0: fxrstor xs, else xrstor xs with this mask */
+    u64 pad[5];
+    __declspec(align(64)) unsigned char xs[1024]; /* 0xC0 XSAVE image, standard format */
+} xrl_sigregs;
+
 typedef struct xrl_thread xrl_thread;
 struct xrl_thread {
     /* --- asm-visible block (offsets frozen, see thread.c static asserts) --- */
@@ -72,6 +84,8 @@ struct xrl_thread {
     u64 fsb_enabled;       /* 0x68 per-thread copy of global FSGSBASE flag       */
     int teb_guest_live;    /* 0x70 the guest TEB view is live (teb.c; com tramp) */
     int pad0;
+    u64 sig_jump;          /* 0x78 xrl_sigregs* to load on the way out of xrl_syscall
+                            *      (signal delivery / rt_sigreturn), 0 = plain return */
     /* --- C-only --- */
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
@@ -97,6 +111,9 @@ struct xrl_thread {
     int  is_main;
     u64 defer_unmap_addr, defer_unmap_len;
     u32 sig_in_handler;
+    HANDLE sig_ev;         /* auto-reset: set when a signal is queued (interruptible waits) */
+    struct xrl_sigregs *sig_regs;   /* per-thread buffer behind sig_jump (signal.c) */
+    u64 sig_from_kill;     /* pending signals sent by kill() rather than tgkill (si_code) */
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
@@ -274,6 +291,7 @@ slong   xrl_fd_dup(int oldfd, int newfd, int flags, int use_min);
 int    xrl_fd_getfd(int fd);                                /* cloexec flag or -EBADF */
 slong   xrl_fd_setfd(int fd, int cloexec);
 void   xrl_fd_init(void);
+xfile *xrl_dev_ntsync(int flags);                           /* ntsync.c: /dev/ntsync */
 
 slong xrl_vfs_init(const char *root);
 slong xrl_vfs_resolve(int dirfd, const char *path, int follow, char *out_guest, size_t cap);
@@ -361,6 +379,24 @@ slong xrl_sys_prctl(int op, u64 a2, u64 a3, u64 a4, u64 a5);
 slong xrl_sys_prlimit(int pid, int res, u64 newp, u64 oldp);
 slong xrl_sys_sched_getaffinity(int pid, u64 size, u64 mask);
 int  xrl_nprocs(void);
+const char *xrl_hostname(void);
+/* signal.c: delivery (see the "signal delivery" comment there) */
+void  xrl_sig_at_return(xrl_thread *t, slong nr, const slong *args, const u64 *gframe, slong res, xrl_sigregs *from);
+slong xrl_sig_return(xrl_thread *t, u64 uc_addr);
+slong xrl_sig_kill_process(int sig);
+/* mem.c, for signal delivery: rip in executable and rsp in writable guest
+ * memory (1), not (0), or the memory lock is held (-1, retry) */
+int   xrl_mem_guest_ctx(u64 rip, u64 rsp);
+void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
+int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
+int   xrl_mem_lock_held(void);
+void  xrl_mem_clock_stats(char *b, size_t n);
+void  xrl_hang_watch_start(void);   /* hangdump.c, XRL_HANG_DUMP */   /* bytes in the swap file, written, read */
+/* cpuinfo.c: the real CPU (CPUID) and topology */
+char *xrl_cpuinfo_text(size_t *len);
+int  xrl_cpu_core_id(int cpu);
+int  xrl_cpu_ncores(void);
+void xrl_cpu_siblings_list(int cpu, char *out, size_t cap);
 
 /* ----------------------------------------------------------- guest ctx */
 /*

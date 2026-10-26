@@ -1,0 +1,214 @@
+diff --git a/dlls/ntdll/unix/thread.c b/dlls/ntdll/unix/thread.c
+index 5452a67..73a0b44 100644
+--- a/dlls/ntdll/unix/thread.c
++++ b/dlls/ntdll/unix/thread.c
+@@ -1127,6 +1127,8 @@ static DECLSPEC_NORETURN void pthread_exit_wrapper( int status )
+ }
+ 
+ 
++static BOOL xrl_thread_info( HANDLE handle, DWORD *pid, DWORD *tid );
++
+ /***********************************************************************
+  *           start_thread
+  *
+@@ -1145,6 +1147,11 @@ static void start_thread( TEB *teb )
+     thread_data->pthread_id = pthread_self();
+     pthread_setspecific( teb_key, teb );
+     server_init_thread( thread_data->start, &suspend );
++    if (xrl_inproc_server)   /* xbox-rl: our id is now the host OS's (xrl_thread_info) */
++    {
++        DWORD pid, tid;
++        if (xrl_thread_info( GetCurrentThread(), &pid, &tid )) set_thread_id( teb, pid, tid );
++    }
+     signal_start_thread( thread_data->start, thread_data->param, suspend, teb );
+ }
+ 
+@@ -1213,6 +1220,33 @@ void set_thread_id( TEB *teb, DWORD pid, DWORD tid )
+ }
+ 
+ 
++/***********************************************************************
++ *           xrl_thread_info
++ *
++ * xbox-rl: the server gives a thread its host OS id once the thread has
++ * initialised (server/process.c: xrl_rebind_ptid). Read back the ids the server
++ * now has for `handle`; returns FALSE until the thread has initialised.
++ */
++static BOOL xrl_thread_info( HANDLE handle, DWORD *pid, DWORD *tid )
++{
++    BOOL ready = FALSE;
++
++    SERVER_START_REQ( get_thread_info )
++    {
++        req->handle = wine_server_obj_handle( handle );
++        req->access = THREAD_QUERY_LIMITED_INFORMATION;
++        if (!wine_server_call( req ) && reply->teb)
++        {
++            *pid = reply->pid;
++            *tid = reply->tid;
++            ready = TRUE;
++        }
++    }
++    SERVER_END_REQ;
++    return ready;
++}
++
++
+ /***********************************************************************
+  *           init_thread_stack
+  */
+@@ -1480,6 +1514,19 @@ done:
+         close( request_pipe[1] );
+         return status;
+     }
++    if (xrl_inproc_server)
++    {
++        /* xbox-rl: the thread's id changes to the host OS's when it initialises
++         * (xrl_thread_info); wait for that so the caller never sees the temporary id.
++         * A created-suspended thread initialises before it suspends. */
++        DWORD pid, new_tid;
++        int i;
++        for (i = 0; i < 100000; i++)   /* ~5 s worst case; normally well under 1 ms */
++        {
++            if (xrl_thread_info( *handle, &pid, &new_tid )) { set_thread_id( teb, pid, new_tid ); break; }
++            usleep( 50 );
++        }
++    }
+     if (attr_list) status = update_attr_list( attr_list, *handle, &teb->ClientId, teb );
+     return status;
+ }
+diff --git a/server/process.c b/server/process.c
+index c314f85..668fe41 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -492,8 +492,64 @@ static void kill_all_processes(void);
+ 
+ #define PTID_OFFSET 8  /* offset for first ptid value */
+ 
+-static unsigned int index_from_ptid(unsigned int id) { return id / 4; }
+-static unsigned int ptid_from_index(unsigned int index) { return index * 4; }
++/* xbox-rl (docs/gs-teb.md): the TEB is the host's, and the host's exception dispatcher
++ * runs with the guest view of it, ClientId included; host SRW locks taken there record
++ * the waiter by that thread id, so a Wine id different from the OS thread id loses
++ * wake-ups. Threads and the process therefore take the host OS's ids (the layer reports
++ * them as unix tid/pid) once they are known: xrl_rebind_ptid(). Ids handed out by the
++ * table are temporary and live above PTID_BASE, where host ids never are. */
++#define PTID_BASE 0x40000000
++
++static unsigned int index_from_ptid(unsigned int id) { return (id - PTID_BASE) / 4; }
++static unsigned int ptid_from_index(unsigned int index) { return PTID_BASE + index * 4; }
++
++/* host ids -> objects (open addressing, id 0 = empty, ~0 = deleted) */
++struct xrl_host_id { unsigned int id; void *ptr; };
++static struct xrl_host_id *xrl_host_ids;
++static unsigned int xrl_host_cap, xrl_host_used;
++
++static int xrl_host_slot( unsigned int id, int for_insert )
++{
++    unsigned int i, n, del = ~0u;
++    if (!xrl_host_cap) return -1;
++    for (i = (id / 4) & (xrl_host_cap - 1), n = 0; n < xrl_host_cap; n++, i = (i + 1) & (xrl_host_cap - 1))
++    {
++        if (xrl_host_ids[i].id == id) return i;
++        if (xrl_host_ids[i].id == ~0u && del == ~0u) del = i;
++        if (!xrl_host_ids[i].id) return for_insert ? (del != ~0u ? (int)del : (int)i) : -1;
++    }
++    return for_insert && del != ~0u ? (int)del : -1;
++}
++
++static int xrl_host_put( unsigned int id, void *ptr )
++{
++    int i;
++    if ((xrl_host_used + 1) * 2 > xrl_host_cap)
++    {
++        unsigned int j, old_cap = xrl_host_cap, cap = old_cap ? old_cap * 2 : 256;
++        struct xrl_host_id *old = xrl_host_ids;
++        if (!(xrl_host_ids = calloc( cap, sizeof(*xrl_host_ids) ))) { xrl_host_ids = old; return 0; }
++        xrl_host_cap = cap;
++        xrl_host_used = 0;
++        for (j = 0; j < old_cap; j++)
++            if (old[j].id && old[j].id != ~0u) xrl_host_put( old[j].id, old[j].ptr );
++        free( old );
++    }
++    if ((i = xrl_host_slot( id, 1 )) < 0) return 0;
++    xrl_host_ids[i].id = id;
++    xrl_host_ids[i].ptr = ptr;
++    xrl_host_used++;
++    return 1;
++}
++
++unsigned int xrl_rebind_ptid( unsigned int id, unsigned int host_id, void *ptr )
++{
++    if (!host_id || host_id >= PTID_BASE || (host_id & 3) || id == host_id) return id;
++    if (xrl_host_slot( host_id, 0 ) >= 0) return id;   /* taken (never reused while we hold handles) */
++    if (!xrl_host_put( host_id, ptr )) return id;
++    free_ptid( id );
++    return host_id;
++}
+ 
+ /* allocate a new process or thread id */
+ unsigned int alloc_ptid( void *ptr )
+@@ -536,7 +592,15 @@ unsigned int alloc_ptid( void *ptr )
+ void free_ptid( unsigned int id )
+ {
+     unsigned int index = index_from_ptid( id );
+-    struct ptid_entry *entry = &ptid_entries[index - PTID_OFFSET];
++    struct ptid_entry *entry;
++
++    if (id < PTID_BASE)   /* xbox-rl: a host id */
++    {
++        int i = xrl_host_slot( id, 0 );
++        if (i >= 0) { xrl_host_ids[i].id = ~0u; xrl_host_ids[i].ptr = NULL; }
++        return;
++    }
++    entry = &ptid_entries[index - PTID_OFFSET];
+ 
+     entry->ptr  = NULL;
+     entry->next = 0;
+@@ -552,6 +616,11 @@ void free_ptid( unsigned int id )
+ void *get_ptid_entry( unsigned int id )
+ {
+     unsigned int index = index_from_ptid( id );
++    if (id < PTID_BASE)   /* xbox-rl: a host id */
++    {
++        int i = xrl_host_slot( id, 0 );
++        return i >= 0 ? xrl_host_ids[i].ptr : NULL;
++    }
+     if (index < PTID_OFFSET) return NULL;
+     if (index - PTID_OFFSET >= used_ptid_entries) return NULL;
+     return ptid_entries[index - PTID_OFFSET].ptr;
+diff --git a/server/process.h b/server/process.h
+index 5d157d6..6ad596f 100644
+--- a/server/process.h
++++ b/server/process.h
+@@ -97,6 +97,7 @@ struct process
+ extern unsigned int alloc_ptid( void *ptr );
+ extern void free_ptid( unsigned int id );
+ extern void *get_ptid_entry( unsigned int id );
++extern unsigned int xrl_rebind_ptid( unsigned int id, unsigned int host_id, void *ptr );
+ extern struct process *create_process( int fd, struct process *parent, unsigned int flags,
+                                        const struct startup_info_data *info,
+                                        const struct security_descriptor *sd, const obj_handle_t *handles,
+diff --git a/server/thread.c b/server/thread.c
+index 598dce7..1cf5344 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1833,6 +1833,10 @@ DECL_HANDLER(init_first_thread)
+ 
+     current->unix_pid = process->unix_pid = req->unix_pid;
+     current->unix_tid = req->unix_tid;
++    /* xbox-rl: the host OS's ids (the layer's unix pid/tid), see xrl_rebind_ptid() */
++    if (process->group_id == process->id)
++        process->id = process->group_id = xrl_rebind_ptid( process->id, req->unix_pid, process );
++    current->id = xrl_rebind_ptid( current->id, req->unix_tid, current );
+ 
+     if (!process->parent_id)
+         process->affinity = current->affinity = get_thread_affinity( current );
+@@ -1875,6 +1879,7 @@ DECL_HANDLER(init_thread)
+ 
+     current->unix_pid = current->process->unix_pid;
+     current->unix_tid = req->unix_tid;
++    current->id       = xrl_rebind_ptid( current->id, req->unix_tid, current );   /* xbox-rl */
+     current->teb      = req->teb;
+     current->entry_point = req->entry;
+ 

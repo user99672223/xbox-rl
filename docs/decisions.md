@@ -144,6 +144,70 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
+  ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
+  where Rocket League hung after loading. Now real rt_sigframes (ucontext,
+  siginfo, XSAVE fpstate with Linux's magic words, uc_stack, sigmask) go on the
+  guest stack or the sigaltstack, three ways:
+  - **at syscall return**, by the thread itself; `xrl_sig_jump` (thunks.asm)
+    loads the whole register state with `xrstor` + `iretq`, so nothing below
+    the target rsp (the red zone) is touched;
+  - **asynchronously** to a thread running guest code: the sender suspends it,
+    checks rip is in executable and rsp in writable guest memory (a try-lock on
+    the VMA list: a thread in layer code is never waited for), writes the frame
+    and redirects the context. Threads in host code are retried by a pump
+    thread; threads in a syscall get it at syscall return (waits are woken:
+    futex, I/O, ntsync, nanosleep);
+  - **faults in guest code** with a guest handler (SIGSEGV/BUS/ILL/TRAP/FPE with
+    Linux's si_code, trapno and error code, which Wine's handlers read), instead
+    of the crash report. The frame stays below the exception dispatcher's frames.
+  rt_sigreturn restores everything and re-runs a syscall that an SA_RESTART
+  handler interrupted (Linux's -ERESTARTSYS; the frame carries a private
+  record). kill(getpid()) picks a thread that does not block the signal (it
+  looked up tid == pid, which stopped existing with host thread ids). Guest
+  suite: 15 checks incl. all registers intact across an async signal.
+  Unverified on the console: Suspend/Get/SetThreadContext in the app container.
+  Note for glibc programs (the EAC branch's rewriter): the layer takes
+  rt_sigreturn's ucontext from a1, as musl's patched `__restore_rt` passes it.
+
+- **2026-10-26 — Rocket League loads past the shader cache; its own peak is
+  6.4 GiB.** With a 12 GiB test budget it gets through script packages, audio
+  init (no driver), display modes and a second D3D11 device, then hangs: Wine
+  suspends a thread with SIGUSR1 (tgkill) and the layer cannot yet deliver a
+  signal to a running thread. The stack walk (`dbghelp`) just before looks like
+  RL's crash-dump path; most likely the Epic login critical error that RL also
+  hits natively without the launcher (not confirmed). What it took:
+  - **ntsync (Wine 0017, `layer/src/ntsync.c`).** The layer implements
+    `/dev/ntsync` (Linux 6.14 uapi: semaphores, mutexes with abandonment,
+    events, wait-any/all with alert), so Wine's waits no longer queue on the
+    wineserver thread: startup to the game window went 141 s -> 60 s.
+    `XRL_NO_NTSYNC=1` falls back. ioctl requests are now taken as unsigned
+    32-bit (musl passes an `int`; bit 31 of `_IOR` sign-extended).
+  - **Host thread ids (Wine 0018).** Wine's tids/pid are the real Windows ids
+    (the layer's Linux tids are `GetThreadId`, pid `GetCurrentProcessId`), so
+    the TEB's ClientId is the same in the guest and host views. With mismatched
+    ids the host exception dispatcher lost wake-ups (an ntsync mutex owned by
+    one id, released by another) and RL deadlocked while loading.
+  - **Lazy mappings keep their identity.** A new thread commits the whole
+    mapping holding its stack (the kernel pushes exception frames there), but
+    adjacent anonymous mappings had been merged, so every thread start
+    committed RL's 1.6 GiB heap neighbour. VMAs now carry the id of the mmap
+    that made them and only merge within it.
+  - **MAP_FIXED_NOREPLACE over host memory -> EEXIST** (was ENOMEM): Wine's
+    free-area search stopped at KUSER_SHARED_DATA (0x7ffe0000) instead of
+    stepping over it.
+  - **Measured natively on the laptop** (same exe, Windows): private bytes
+    3.3 GB at 5 s, **6.5 GB peak** during the shader-cache load (464 k shaders),
+    ~4-5 GB after. The layer's 6.4 GiB matches: RL really writes that much
+    (write faults 3.8 GiB of the first 4.2). The console's ~4.5 GiB commit
+    wall therefore needs swap in the layer (next), not tighter accounting.
+  - **`/proc/cpuinfo` from the real CPU (`layer/src/cpuinfo.c`).** It was a
+    fixed "AMD Custom APU 0405" text whose flags disagreed with CPUID (listed
+    fsgsbase, svm). Guests execute CPUID directly, so the file must say the
+    same: built from CPUID/XGETBV with Linux's flag names, Windows topology for
+    core ids and `/sys/.../topology`. Hostname is the machine's own name.
+    Nothing about the CPU or the hypervisor is added or hidden.
+
 - **2026-10-26 — The Proton EAC bridge runs on the layer (verified with a
   stand-in client module).** What the runtime really is: `v2/lib64/` holds a
   Wine builtin PE (`easyanticheat_x64.dll`, exports the whole EAC client API:
@@ -169,7 +233,7 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     TLS-bearing `dlopen` under Wine (the real client is C++), not only EAC.
   - **The shim was never loaded** on that path in the first build: my Wine tree's
     Makefiles still pointed at the other agent's sources (a copied build tree
-    records absolute paths) so patch 0017 was not compiled in. `build-wine.sh
+    records absolute paths) so patch 0019 was not compiled in. `build-wine.sh
     configure` in the copy fixes it (about a minute, nothing rebuilds).
   - **`/proc/self/maps` lied**: private file maps showed offset 0, inode 0 and
     only the basename. A module that locates and checksums its own code (the
@@ -258,7 +322,7 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   runtime is installed. One musl behaviour shaped it: musl's loader turns a
   DT_NEEDED of `libc.so.N`, `libm`, `libdl`, `libpthread`, `librt`, `libutil`
   into *itself* (ldso/dynlink.c "block attempts to reload the implementation"),
-  so a shim named `libc.so.6` is never loaded. Wine patch 0017 therefore
+  so a shim named `libc.so.6` is never loaded. Wine patch 0019 therefore
   `dlopen`s `libgcompat.so.0` RTLD_GLOBAL once, right before the first native
   unix library (`XRL_GLIBC_COMPAT` overrides the path, empty disables); the
   only other libraries a glibc module lists that musl cannot alias

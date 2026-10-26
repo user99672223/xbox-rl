@@ -41,6 +41,7 @@ T_FRAME      EQU 10h
 T_RESUME     EQU 20h
 T_CHILD_RSP  EQU 60h
 T_GUEST_LIVE EQU 70h
+T_SIG_JUMP   EQU 78h
 
 ; FIND_THREAD: rax = xrl_thread* (0 if unknown). Clobbers r12, r13, r10.
 FIND_THREAD MACRO
@@ -116,11 +117,17 @@ xrl_syscall PROC
     ; so the first guest access after a blocking syscall would otherwise take
     ; a (recoverable) fault. Cheap insurance.
     cmp     qword ptr [xrl_asm_fsb_flag], 0
-    je      short sc_done
+    je      short sc_fsdone
     mov     rcx, [rbx+T_GUEST_TP]
     test    rcx, rcx
-    jz      short sc_done
+    jz      short sc_fsdone
     db      0F3h, 48h, 0Fh, 0AEh, 0D1h    ; wrfsbase rcx
+sc_fsdone:
+    ; a signal handler to enter, or rt_sigreturn's context to restore: load the
+    ; whole register state instead of returning to the call site
+    mov     rcx, [rbx+T_SIG_JUMP]
+    test    rcx, rcx
+    jnz     sc_sigjump
 sc_done:
     lea     rsp, [rbp-40]                  ; ---- back on the guest stack ----
     pop     r15
@@ -134,7 +141,55 @@ sc_done:
 sc_nothread:
     mov     rax, -38                       ; -ENOSYS: unregistered thread
     jmp     short sc_done
+
+sc_sigjump:
+    mov     qword ptr [rbx+T_SIG_JUMP], 0
+    jmp     xrl_sig_jump                   ; rcx = xrl_sigregs*, never returns
 xrl_syscall ENDP
+
+; --------------------------------------------------------------------------
+; xrl_sig_jump(xrl_sigregs *r /*rcx*/): load r's FP state (XSAVE image) and
+; every GPR, then iretq to r->rip with r->rsp and r->eflags, so no byte below
+; the target rsp (the red zone) is touched. Runs on the host stack.
+; Offsets: struct xrl_sigregs (asserted in thread.c).
+; --------------------------------------------------------------------------
+PUBLIC xrl_sig_jump
+xrl_sig_jump PROC
+    mov     rax, [rcx+90h]                 ; xmask
+    test    rax, rax
+    jz      short sj_fx
+    mov     rdx, rax
+    shr     rdx, 32
+    db      48h, 0Fh, 0AEh, 0A9h, 0C0h, 00h, 00h, 00h   ; xrstor64 [rcx+0C0h]
+    jmp     short sj_gpr
+sj_fx:
+    db      48h, 0Fh, 0AEh, 89h, 0C0h, 00h, 00h, 00h    ; fxrstor64 [rcx+0C0h]
+sj_gpr:
+    xor     eax, eax
+    mov     ax, ss
+    push    rax                            ; SS
+    push    qword ptr [rcx+78h]            ; RSP
+    push    qword ptr [rcx+88h]            ; RFLAGS
+    mov     ax, cs
+    push    rax                            ; CS
+    push    qword ptr [rcx+80h]            ; RIP
+    mov     r8,  [rcx+00h]
+    mov     r9,  [rcx+08h]
+    mov     r10, [rcx+10h]
+    mov     r11, [rcx+18h]
+    mov     r12, [rcx+20h]
+    mov     r13, [rcx+28h]
+    mov     r14, [rcx+30h]
+    mov     r15, [rcx+38h]
+    mov     rdi, [rcx+40h]
+    mov     rsi, [rcx+48h]
+    mov     rbp, [rcx+50h]
+    mov     rbx, [rcx+58h]
+    mov     rdx, [rcx+60h]
+    mov     rax, [rcx+68h]
+    mov     rcx, [rcx+70h]
+    iretq
+xrl_sig_jump ENDP
 
 ; --------------------------------------------------------------------------
 ; Generic SysV -> Win64 downcall. r11 = Win64 target. Up to 8 integer args

@@ -7,7 +7,7 @@
  * loader turns a DT_NEEDED of libc.so.6 (and libm/libdl/libpthread/librt/libutil)
  * into itself and ignores symbol versions, so `memcpy@GLIBC_2.14` already
  * resolves to musl's memcpy; this library, loaded RTLD_GLOBAL before the module
- * (Wine patch 0017), supplies what musl lacks: the fortify (_chk)
+ * (Wine patch 0019), supplies what musl lacks: the fortify (_chk)
  * entry points, the C23 scanf/strtol names, the *64 and __xstat spellings, the
  * ctype table accessors, and a few GNU extras. It is the same idea as Alpine's
  * gcompat, kept small and driven by tools/glibc-compat-check.sh, which lists

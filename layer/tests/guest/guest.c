@@ -14,6 +14,7 @@ static u64 xctx;
 #define AT_RANDOM 25
 static u64 at_random, at_base, at_phnum, at_hwcap2;
 static int fake_host;   /* argv has --fake-host: the desktop test host's fake op tables */
+static int no_swap;     /* argv has --no-swap: skip the (slow) swap test */
 
 #define sc(n, a, b, c, d, e, f) xsc((n), (long)(a), (long)(b), (long)(c), (long)(d), (long)(e), (long)(f))
 #define sc1(n, a) sc(n, a, 0, 0, 0, 0, 0)
@@ -166,6 +167,393 @@ static void test_threads(void)
         CHECK(futex(&w, 0, 6, 0, 0, 0) == -11, "futex wait value mismatch -> -EAGAIN");
         CHECK(futex(&w, 1, 1, 0, 0, 0) == 0, "futex wake with no waiters -> 0");
     }
+}
+
+/* /dev/ntsync (Linux ntsync uapi, Wine's fast sync path) */
+#define NIOC(dir, nr, sz) (((unsigned long)(dir) << 30) | ((unsigned long)(sz) << 16) | ('N' << 8) | (nr))
+#define N_CREATE_SEM   NIOC(1, 0x80, 8)
+#define N_SEM_RELEASE  NIOC(3, 0x81, 4)
+#define N_WAIT_ANY     NIOC(3, 0x82, 40)
+#define N_WAIT_ALL     NIOC(3, 0x83, 40)
+#define N_CREATE_MUTEX NIOC(1, 0x84, 8)
+#define N_MUTEX_UNLOCK NIOC(3, 0x85, 8)
+#define N_MUTEX_KILL   NIOC(1, 0x86, 4)
+#define N_CREATE_EVENT NIOC(1, 0x87, 8)
+#define N_EVENT_SET    NIOC(2, 0x88, 4)
+#define N_EVENT_READ   NIOC(2, 0x8d, 8)
+struct nwait { u64 timeout, objs; unsigned count, index, flags, owner, alert, pad; };
+static volatile int ns_ev_fd, ns_go;
+
+static int ns_setter(void *arg)
+{
+    (void)arg;
+    struct { long s, n; } ts = { 0, 50000000 };
+    sc4(35, &ts, 0, 0, 0);
+    unsigned prev;
+    sc3(16, ns_ev_fd, N_EVENT_SET, &prev);
+    return 0;
+}
+
+static long ns_wait(int dev, int all, unsigned *fds, unsigned n, unsigned owner, u64 timeout, unsigned *index)
+{
+    struct nwait w = { timeout, (u64)(unsigned long)fds, n, ~0u, 0, owner, 0, 0 };
+    /* pass the request sign-extended, as musl's ioctl(int fd, int req, ...) does */
+    long r = sc3(16, dev, (long)(int)(all ? N_WAIT_ALL : N_WAIT_ANY), &w);
+    if (index) *index = w.index;
+    return r;
+}
+
+static void test_ntsync(void)
+{
+    out("ntsync:\n");
+    int dev = (int)sc4(257, -100, "/dev/ntsync", 0x80000, 0);
+    CHECK(dev >= 0, "open /dev/ntsync");
+    if (dev < 0) return;
+    unsigned a2[2];
+    a2[0] = 0; a2[1] = 2;  /* sem count 0, max 2 */
+    int sem = (int)sc3(16, dev, N_CREATE_SEM, a2);
+    a2[0] = 0; a2[1] = 0;  /* manual 0, signaled 0 */
+    int ev = (int)sc3(16, dev, N_CREATE_EVENT, a2);
+    a2[0] = 0; a2[1] = 0;  /* unowned */
+    int mtx = (int)sc3(16, dev, N_CREATE_MUTEX, a2);
+    CHECK(sem >= 0 && ev >= 0 && mtx >= 0, "create semaphore, event, mutex");
+
+    unsigned fds[2] = { (unsigned)sem, (unsigned)ev }, idx = 99;
+    u64 now = mono_ns();
+    CHECK(ns_wait(dev, 0, fds, 2, 7, now + 20000000ull, 0) == -110 && mono_ns() - now >= 18000000ull,
+          "wait-any on unsignaled objects times out (-ETIMEDOUT)");
+    unsigned v = 1;
+    CHECK(sc3(16, sem, N_SEM_RELEASE, &v) == 0 && v == 0, "semaphore release returns previous count");
+    CHECK(ns_wait(dev, 0, fds, 2, 7, ~0ull, &idx) == 0 && idx == 0, "wait-any takes the semaphore (index 0)");
+    v = 3;
+    CHECK(sc3(16, sem, N_SEM_RELEASE, &v) == -75, "release past max -> -EOVERFLOW");
+
+    /* cross-thread wake: a thread sets the auto-reset event after 50 ms */
+    ns_ev_fd = ev;
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+    u8 *stk = mmap_anon(256 * 1024, 3);
+    struct tls *t = mmap_anon(4096, 3); t->self = t;
+    volatile int c = -1;
+    xclone(ns_setter, stk + 256 * 1024 - 64, flags, 0, 0, t, (void *)&c);
+    now = mono_ns();
+    long r = ns_wait(dev, 0, fds, 2, 7, ~0ull, &idx);
+    u64 dt = mono_ns() - now;
+    CHECK(r == 0 && idx == 1 && dt >= 40000000ull && dt < 2000000000ull, "event set by another thread wakes the waiter");
+    wait_eq(&c, 0);
+    CHECK(sc3(16, ev, N_EVENT_READ, a2) == 0 && a2[1] == 0, "auto-reset event is reset by the wait");
+
+    /* mutex: recursion, owner checks, abandonment */
+    unsigned m1[1] = { (unsigned)mtx };
+    CHECK(ns_wait(dev, 0, m1, 1, 7, ~0ull, 0) == 0 && ns_wait(dev, 0, m1, 1, 7, ~0ull, 0) == 0, "mutex acquired twice by owner 7");
+    CHECK(ns_wait(dev, 0, m1, 1, 8, mono_ns() + 1000000ull, 0) == -110, "owner 8 cannot take it");
+    a2[0] = 8; a2[1] = 0;
+    CHECK(sc3(16, mtx, N_MUTEX_UNLOCK, a2) == -1, "unlock by non-owner -> -EPERM");
+    a2[0] = 7;
+    CHECK(sc3(16, mtx, N_MUTEX_UNLOCK, a2) == 0 && a2[1] == 2, "unlock returns previous recursion count");
+    v = 7;
+    CHECK(sc3(16, mtx, N_MUTEX_KILL, &v) == 0, "kill by owner");
+    CHECK(ns_wait(dev, 0, m1, 1, 8, ~0ull, 0) == -130, "next acquire reports abandonment (-EOWNERDEAD)");
+
+    /* wait-all: needs every object at once */
+    a2[0] = 1; a2[1] = 1;  /* manual, signaled */
+    int ev2 = (int)sc3(16, dev, N_CREATE_EVENT, a2);
+    unsigned all2[2] = { (unsigned)ev2, (unsigned)sem };
+    CHECK(ns_wait(dev, 1, all2, 2, 7, mono_ns() + 1000000ull, 0) == -110, "wait-all blocks while one object is unsignaled");
+    v = 1; sc3(16, sem, N_SEM_RELEASE, &v);
+    CHECK(ns_wait(dev, 1, all2, 2, 7, ~0ull, 0) == 0, "wait-all succeeds once all are signaled");
+    CHECK(sc3(16, ev2, N_EVENT_READ, a2) == 0 && a2[1] == 1, "manual event stays signaled");
+    sc1(3, sem); sc1(3, ev); sc1(3, mtx); sc1(3, ev2); sc1(3, dev);
+}
+
+/* ---- signals: delivery at syscall return, async, restart, faults ------------ */
+/* musl's patched __restore_rt (patches/musl): rt_sigreturn(&ucontext) via the gateway */
+void sig_restorer(void);
+__asm__(".text\n.globl sig_restorer\nsig_restorer:\n"
+"  mov %rsp,%rsi\n  and $-16,%rsp\n  sub $16,%rsp\n  movq $0,(%rsp)\n  mov $15,%edi\n"
+"  xor %edx,%edx\n  xor %ecx,%ecx\n  xor %r8d,%r8d\n  xor %r9d,%r9d\n  mov xsc(%rip),%rax\n  call *%rax\n  hlt\n");
+
+/* Spin in pure guest code with known values in every register until *flag;
+ * returns how many registers changed (an async signal lands in the loop). */
+int spin_regs(volatile int *flag);
+__asm__(".text\n.globl spin_regs\nspin_regs:\n"
+"  push %rbx\n  push %rbp\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
+"  mov $0x1111,%rbx\n  mov $0x2222,%rbp\n  mov $0x3333,%r12\n  mov $0x4444,%r13\n  mov $0x5555,%r14\n  mov $0x6666,%r15\n"
+"  mov $0x7777,%rsi\n  mov $0x8888,%r8\n  mov $0x9999,%r9\n  mov $0xaaaa,%r10\n  mov $0xbbbb,%r11\n  mov $0xcccc,%rdx\n"
+"  mov $0xdddd,%rcx\n  movq %rbx,%xmm0\n  movq %rbp,%xmm7\n  movq %r12,%xmm15\n"
+"1: pause\n  cmpl $0,(%rdi)\n  je 1b\n"
+"  xor %eax,%eax\n"
+"  cmp $0x1111,%rbx\n  je 2f\n  inc %eax\n2:\n  cmp $0x2222,%rbp\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x3333,%r12\n  je 2f\n  inc %eax\n2:\n  cmp $0x4444,%r13\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x5555,%r14\n  je 2f\n  inc %eax\n2:\n  cmp $0x6666,%r15\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x7777,%rsi\n  je 2f\n  inc %eax\n2:\n  cmp $0x8888,%r8\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x9999,%r9\n  je 2f\n  inc %eax\n2:\n  cmp $0xaaaa,%r10\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0xbbbb,%r11\n  je 2f\n  inc %eax\n2:\n  cmp $0xcccc,%rdx\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0xdddd,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  movq %xmm0,%rcx\n  cmp $0x1111,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  movq %xmm7,%rcx\n  cmp $0x2222,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  movq %xmm15,%rcx\n  cmp $0x3333,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  pop %r15\n  pop %r14\n  pop %r13\n  pop %r12\n  pop %rbp\n  pop %rbx\n  ret\n");
+
+struct ksa { void *h; u64 flags; void *restorer; u64 mask; };
+#define SA_SIGINFO 4ul
+#define SA_ONSTACK 0x08000000ul
+#define SA_RESTART 0x10000000ul
+#define SA_RESTORER 0x04000000ul
+static long sigact(int sig, void *h, u64 flags)
+{
+    struct ksa a = { h, flags | SA_SIGINFO | SA_RESTORER, (void *)sig_restorer, 0 };
+    return sc4(13, sig, &a, 0, 8);
+}
+static u64 cur_mask(void) { u64 m = 0; sc4(14, 0, 0, &m, 8); return m; }
+static long gettid(void) { return sc1(186, 0); }
+
+/* ucontext offsets (Linux x86-64): mcontext at 40, rip = gregs[16], trapno, sigmask */
+#define UC_RIP 168
+#define UC_TRAPNO 200
+#define UC_FPSTATE 224
+#define UC_SIGMASK 296
+static volatile int h_sig, h_code, h_pid, h_masked, h_tid, h_count, h_alt;
+static volatile u64 h_rip, h_fpstate, segv_addr, segv_trap;
+static volatile int segv_code;
+static u8 *alt_lo, *alt_hi;
+static void h_info(int sig, u8 *si, u8 *uc)
+{
+    h_sig = sig; h_code = *(int *)(si + 8); h_pid = *(int *)(si + 16);
+    h_masked = (int)((cur_mask() >> (sig - 1)) & 1);
+    h_rip = *(u64 *)(uc + UC_RIP); h_fpstate = *(u64 *)(uc + UC_FPSTATE);
+    h_tid = (int)gettid();
+    u8 here; h_alt = alt_lo && &here >= alt_lo && &here < alt_hi;
+    __atomic_fetch_add(&h_count, 1, __ATOMIC_SEQ_CST);
+}
+static volatile int async_flag;
+static void h_async(int sig, u8 *si, u8 *uc) { h_info(sig, si, uc); async_flag = 1; }
+static void h_segv(int sig, u8 *si, u8 *uc)
+{
+    (void)sig;
+    segv_addr = *(u64 *)(si + 16); segv_code = *(int *)(si + 8); segv_trap = *(u64 *)(uc + UC_TRAPNO);
+    *(u64 *)(uc + UC_RIP) += 2;   /* skip the 2-byte faulting load */
+}
+static long fault_read(u64 addr)
+{
+    long v;
+    __asm__ volatile("mov %1,%%rax\n  mov $77,%%edx\n  .byte 0x8b,0x10\n  mov %%rdx,%0"   /* mov (%rax),%edx */
+                     : "=r"(v) : "r"(addr) : "rax", "rdx", "memory");
+    return v;
+}
+
+static volatile int sg_ready, sg_done, sg_tid[4], sg_ctid[4];
+static volatile long sg_ret;
+static volatile int rw;
+static int thr_spin(void *a) { (void)a; sg_ready = 1; futex(&sg_ready, 1, 1, 0, 0, 0); sg_ret = spin_regs(&async_flag); sg_done = 1; futex(&sg_done, 1, 1, 0, 0, 0); return 0; }
+static int thr_futex(void *a)
+{
+    long ts[2] = { 3, 0 };
+    sg_ready = 1; futex(&sg_ready, 1, 1, 0, 0, 0);
+    sg_ret = futex(&rw, 0, 0, a ? ts : 0, 0, 0);   /* a: with a timeout, so a lost signal cannot hang the test */
+    sg_done = 1; futex(&sg_done, 1, 1, 0, 0, 0);
+    return 0;
+}
+static int thr_sleep(void *a)
+{
+    (void)a;
+    long ts[2] = { 2, 0 }, rem[2] = { -1, -1 };
+    sg_ready = 1; futex(&sg_ready, 1, 1, 0, 0, 0);
+    sg_ret = sc2(35, ts, rem);
+    sg_tid[3] = rem[0] == 1 || (rem[0] == 0 && rem[1] > 0);   /* about 2 s minus the time slept */
+    sg_done = 1; futex(&sg_done, 1, 1, 0, 0, 0);
+    return 0;
+}
+static long sg_start(int (*fn)(void *), void *arg, int slot)
+{
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+    u8 *stk = mmap_anon(256 * 1024, 3);
+    struct tls *t = mmap_anon(4096, 3);
+    t->self = t;
+    sg_ready = 0; sg_done = 0; sg_ctid[slot] = -1;
+    long r = xclone(fn, stk + 256 * 1024 - 64, flags, arg, (void *)&sg_tid[slot], t, (void *)&sg_ctid[slot]);
+    wait_ne(&sg_ready, 0);
+    return r;
+}
+static void sleep_ms(long ms) { long ts[2] = { 0, ms * 1000000 }; sc2(35, ts, 0); }
+static int wait_done(void)   /* <= 3 s */
+{
+    for (int i = 0; i < 300 && !sg_done; i++) sleep_ms(10);
+    return sg_done;
+}
+
+static void test_signals(void)
+{
+    out("signals:\n");
+    long pid = sc1(39, 0), me = gettid();
+    sigact(10, h_info, 0);
+    volatile u64 keep = 0x1234567890abcdefull;
+    h_count = 0;
+    long r = sc3(234, pid, me, 10);
+    CHECK(r == 0 && h_count == 1 && h_sig == 10, "tgkill(self): the handler runs before the syscall returns");
+    CHECK(h_code == -6 && h_pid == pid, "siginfo: SI_TKILL from our own pid");
+    CHECK(h_masked, "the signal is blocked inside its handler");
+    CHECK(h_fpstate != 0 && h_rip != 0, "ucontext has the interrupted rip and an fpstate");
+    CHECK(!(cur_mask() & (1ul << 9)) && keep == 0x1234567890abcdefull, "rt_sigreturn restores the mask and the frame");
+    sc4(14, 0, (u64[]){ 1ul << 9 }, 0, 8);          /* block SIGUSR1 */
+    h_count = 0;
+    sc3(234, pid, me, 10);
+    CHECK(h_count == 0, "a blocked signal stays pending");
+    sc4(14, 1, (u64[]){ 1ul << 9 }, 0, 8);          /* unblock: delivered as sigprocmask returns */
+    CHECK(h_count == 1, "unblocking delivers the pending signal");
+
+    /* async: the target spins in guest code, no syscalls */
+    sigact(12, h_async, 0);
+    async_flag = 0; h_count = 0;
+    r = sg_start(thr_spin, 0, 0);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[0], 12);
+    int ok = wait_done();
+    CHECK(ok && h_count == 1 && h_tid == sg_tid[0], "async: the handler ran on the spinning thread");
+    CHECK(ok && sg_ret == 0, "async: every register (GPRs, xmm0/7/15) intact after the handler");
+
+    /* SA_RESTART: an interrupted futex wait carries on */
+    sigact(10, h_info, SA_RESTART);
+    rw = 0; h_count = 0;
+    sg_start(thr_futex, 0, 1);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[1], 10);
+    sleep_ms(50);
+    CHECK(h_count == 1 && !sg_done, "SA_RESTART: the handler ran and the futex wait was restarted");
+    rw = 1; futex(&rw, 1, 1, 0, 0, 0);
+    CHECK(wait_done() && sg_ret == 0, "...and it returns 0 when woken");
+    /* without SA_RESTART: -EINTR */
+    sigact(10, h_info, 0);
+    rw = 0; h_count = 0;
+    sg_start(thr_futex, (void *)1, 2);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[2], 10);
+    CHECK(wait_done() && h_count == 1 && sg_ret == -4, "no SA_RESTART: the futex wait returns -EINTR");
+
+    /* nanosleep is never restarted: -EINTR and the time left */
+    sigact(10, h_info, SA_RESTART);
+    sg_start(thr_sleep, 0, 3);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[3], 10);
+    CHECK(wait_done() && sg_ret == -4 && sg_tid[3], "nanosleep: -EINTR with the remaining time");
+
+    /* a fault in guest code goes to the SIGSEGV handler */
+    sigact(11, h_segv, 0);
+    long v = fault_read(0x1000);
+    CHECK(v == 77 && segv_addr == 0x1000 && segv_code == 1 && segv_trap == 14, "SIGSEGV: si_addr, SEGV_MAPERR, trap 14; handler skips the load");
+    struct ksa dfl = { 0, 0, 0, 0 };
+    sc4(13, 11, &dfl, 0, 8);
+
+    /* sigaltstack + SA_ONSTACK */
+    alt_lo = mmap_anon(64 * 1024, 3); alt_hi = alt_lo + 64 * 1024;
+    struct { void *sp; int flags, pad; u64 size; } ss = { alt_lo, 0, 0, 64 * 1024 };
+    sc2(131, &ss, 0);
+    sigact(10, h_info, SA_ONSTACK);
+    h_alt = 0;
+    sc3(234, pid, me, 10);
+    CHECK(h_alt, "SA_ONSTACK: the handler runs on the sigaltstack");
+    ss.flags = 2;   /* SS_DISABLE */
+    sc2(131, &ss, 0);
+    alt_lo = 0;
+    sc4(13, 10, &dfl, 0, 8);
+    sc4(13, 12, &dfl, 0, 8);
+}
+
+/* ---- swap: touch more than the commit budget (the suite runs with 1 GiB) -- */
+static void test_swap(void)
+{
+    out("swap:\n");
+    const u64 len = 1280ull << 20, pages = len >> 12;
+    u8 *m = mmap_anon(len, 3);
+    CHECK((long)m > 0, "mmap 1.25 GiB (more than the 1 GiB budget)");
+    if ((long)m <= 0) return;
+    for (u64 i = 0; i < pages; i++) { *(u64 *)(m + (i << 12)) = i ^ 0x5157415055ull; *(u64 *)(m + (i << 12) + 4088) = ~i; }
+    CHECK(1, "every page written (evictions made room)");
+    u64 bad = 0;
+    for (u64 i = 0; i < pages; i++)
+        if (*(u64 *)(m + (i << 12)) != (i ^ 0x5157415055ull) || *(u64 *)(m + (i << 12) + 4088) != ~i) bad++;
+    CHECK(bad == 0, "every page reads back its own data (swapped in on touch)");
+    /* the kernel reads a buffer that was swapped out: write() it to a file */
+    long fd = sc4(257, -100, "/tmp/xrl_swap_test", 0102 | 01000, 0644);   /* O_RDWR|O_CREAT|O_TRUNC */
+    for (u64 i = 0; i < pages; i++) m[(i << 12) + 8] = (u8)i;   /* touch all again: the first MiB goes out */
+    long w = fd >= 0 ? sc3(1, fd, m, 1 << 20) : -1;
+    static u8 rb[1 << 20];
+    long rr = fd >= 0 ? sc4(17, fd, rb, sizeof rb, 0) : -1;
+    int same = rr == (1 << 20) && !memcmp(rb, m, 1 << 20);
+    CHECK(w == (1 << 20) && same, "write() from swapped-out memory writes the right bytes");
+    if (fd >= 0) { sc1(3, fd); sc1(87, "/tmp/xrl_swap_test"); }
+    /* read back (clean), written again (dirty), evicted again: nothing lost */
+    bad = 0;
+    for (u64 i = 0; i < pages; i++)
+        if (*(u64 *)(m + (i << 12)) != (i ^ 0x5157415055ull) || m[(i << 12) + 8] != (u8)i || *(u64 *)(m + (i << 12) + 4088) != ~i) bad++;
+    CHECK(bad == 0, "pages written after a read-back keep the new data through another eviction");
+    /* mprotect over partly swapped-out memory: read-only, then writable again */
+    long pr = sc3(10, m, len, 1);
+    bad = 0;
+    for (u64 i = 0; i < pages; i += 7) if (*(u64 *)(m + (i << 12) + 4088) != ~i) bad++;
+    long pw = sc3(10, m, len, 3);
+    for (u64 i = 0; i < pages; i += 7) m[(i << 12) + 9] = 0x5a;
+    for (u64 i = 0; i < pages; i += 7) if (m[(i << 12) + 9] != 0x5a || *(u64 *)(m + (i << 12)) != (i ^ 0x5157415055ull)) bad++;
+    CHECK(pr == 0 && pw == 0 && bad == 0, "mprotect read-only and back over swapped memory keeps the data");
+    /* unmapped while swapped out: a new mapping there is zero */
+    sc2(11, m, len);
+    u8 *m2 = (u8 *)sc(9, m, 1 << 20, 3, 0x22 | 0x100000 /*FIXED_NOREPLACE*/, -1, 0);
+    CHECK(m2 == m && *(u64 *)m2 == 0 && *(u64 *)(m2 + 4096) == 0, "after munmap the address range is fresh zero memory");
+    if ((long)m2 > 0) sc2(11, m2, 1 << 20);
+}
+
+/* /proc/cpuinfo must agree with what CPUID says about the CPU */
+static const char *find(const char *h, const char *n)
+{
+    unsigned long l = slen(n);
+    for (; *h; h++) if (!memcmp(h, n, l)) return h;
+    return 0;
+}
+static int has_flag(const char *flags, const char *f)   /* whole word on the first flags line */
+{
+    char w[40]; unsigned long l = slen(f);
+    w[0] = ' '; memcpy(w + 1, f, l); w[l + 1] = 0;
+    for (const char *p = flags; *p && *p != '\n'; p++) {
+        if (!memcmp(p, w, l + 1) && (p[l + 1] == ' ' || p[l + 1] == '\n')) return 1;
+    }
+    return 0;
+}
+static void cpuid(u32 leaf, u32 sub, u32 r[4])
+{
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+}
+static char cpubuf[1 << 16];
+static void test_cpuinfo(void)
+{
+    long fd = sc3(2, "/proc/cpuinfo", 0, 0), n = 0, r;
+    while (fd >= 0 && n < (long)sizeof cpubuf - 1 && (r = sc3(0, fd, cpubuf + n, sizeof cpubuf - 1 - n)) > 0) n += r;
+    if (fd >= 0) sc1(3, fd);
+    cpubuf[n > 0 ? n : 0] = 0;
+    CHECK(n > 0, "read /proc/cpuinfo");
+    u32 v[4], l1[4], l7[4];
+    cpuid(0, 0, v);
+    char vendor[13]; memcpy(vendor, &v[1], 4); memcpy(vendor + 4, &v[3], 4); memcpy(vendor + 8, &v[2], 4); vendor[12] = 0;
+    const char *vl = find(cpubuf, "vendor_id\t: ");
+    CHECK(vl && !memcmp(vl + 12, vendor, 12), "cpuinfo vendor_id = CPUID vendor");
+    cpuid(1, 0, l1);
+    cpuid(7, 0, l7);
+    u32 fam = (l1[0] >> 8) & 15; if (fam == 15) fam += (l1[0] >> 20) & 255;
+    const char *fl = find(cpubuf, "cpu family\t: ");
+    long cf = 0; if (fl) for (const char *p = fl + 13; *p >= '0' && *p <= '9'; p++) cf = cf * 10 + (*p - '0');
+    CHECK(fl && cf == (long)fam, "cpuinfo cpu family = CPUID family");
+    const char *flags = find(cpubuf, "flags\t\t: ");
+    CHECK(flags != 0, "cpuinfo has a flags line");
+    if (!flags) return;
+    flags += 8;   /* the space before the first flag stays: has_flag matches " name" */
+    CHECK(has_flag(flags, "sse2") == (int)((l1[3] >> 26) & 1), "flag sse2 matches CPUID");
+    CHECK(has_flag(flags, "fsgsbase") == (int)(l7[1] & 1), "flag fsgsbase matches CPUID (hidden on the console)");
+    CHECK(has_flag(flags, "hypervisor") == (int)(l1[2] >> 31), "flag hypervisor matches CPUID");
+    CHECK(has_flag(flags, "rdrand") == (int)((l1[2] >> 30) & 1), "flag rdrand matches CPUID");
+    long procs = 0;
+    for (const char *p = cpubuf; (p = find(p, "processor\t: ")); p++) procs++;
+    u64 mask[16]; memset(mask, 0, sizeof mask);
+    long ab = sc3(204, 0, sizeof mask, mask), bits = 0;   /* sched_getaffinity */
+    for (long i = 0; ab > 0 && i < ab / 8; i++) for (u64 m = mask[i]; m; m &= m - 1) bits++;
+    CHECK(procs > 0 && procs == bits, "one cpuinfo entry per CPU in the affinity mask");
 }
 
 static void test_fs(void)
@@ -760,17 +1148,23 @@ void cstart(u64 *sp)
     }
     if (!xsc) { __asm__ volatile("ud2"); }
     for (long i = 1; i < argc; i++) {
-        const char *a = (const char *)sp[1 + i], *f = "--fake-host";
+        const char *a = (const char *)sp[1 + i], *f = "--fake-host", *g = "--no-swap";
         int k = 0; while (a[k] && a[k] == f[k]) k++;
         if (!a[k] && !f[k]) fake_host = 1;
+        k = 0; while (a[k] && a[k] == g[k]) k++;
+        if (!a[k] && !g[k]) no_swap = 1;
     }
     out("xrl guest test start\n");
     outn("argc", argc);
     test_misc();
     test_mem();
     test_fs();
+    test_cpuinfo();
     test_threads();
     test_net();
+    test_ntsync();
+    test_signals();
+    if (!no_swap) test_swap();
     test_v2();
     test_teb();
     outn("TOTAL FAILS", fails);

@@ -2,6 +2,7 @@
  * misc.c - uname, sysinfo, getrandom, rlimits, affinity, clocks, sleeps.
  */
 #include "xrl_internal.h"
+#include <ctype.h>
 
 int xrl_nprocs(void)
 {
@@ -15,12 +16,32 @@ int xrl_nprocs(void)
     return n;
 }
 
+/* The machine's own name (what Linux's hostname would be), not a made-up one. */
+const char *xrl_hostname(void)
+{
+    static char name[65];
+    if (!name[0]) {
+        char b[256]; DWORD n = sizeof b;
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
+        /* no GetComputerNameEx for apps; the environment carries the name */
+        n = GetEnvironmentVariableA("COMPUTERNAME", b, sizeof b);
+        if (n && n < sizeof name) {
+#else
+        if (GetComputerNameExA(ComputerNameDnsHostname, b, &n) && n && n < sizeof name) {
+#endif
+            for (DWORD i = 0; i < n; i++) b[i] = (char)tolower((unsigned char)b[i]);
+            memcpy(name, b, n + 1);
+        } else strcpy_s(name, sizeof name, "localhost");
+    }
+    return name;
+}
+
 slong xrl_sys_uname(u64 ubuf)
 {
     lx_utsname u;
     memset(&u, 0, sizeof u);
     strcpy_s(u.sysname, sizeof u.sysname, "Linux");
-    strcpy_s(u.nodename, sizeof u.nodename, "xbox");
+    strcpy_s(u.nodename, sizeof u.nodename, xrl_hostname());
     strcpy_s(u.release, sizeof u.release, "6.1.0-xrl");
     strcpy_s(u.version, sizeof u.version, "#1 SMP xbox-rl layer " XRL_LAYER_VERSION);
     strcpy_s(u.machine, sizeof u.machine, "x86_64");
@@ -151,15 +172,27 @@ slong xrl_sys_time(u64 ut)
     return (slong)t;
 }
 
+/* A signal ends the sleep: -EINTR with the time left in *urem (never restarted) */
+static slong sleep_or_eintr(u64 ns, u64 urem)
+{
+    u64 t0 = xrl_mono_ns();
+    int intr = 0;
+    xrl_sleep_ns(ns, &intr);
+    u64 el = xrl_mono_ns() - t0, left = intr && ns > el ? ns - el : 0;
+    if (urem) {
+        lx_timespec z = { (s64)(left / 1000000000ull), (s64)(left % 1000000000ull) };
+        xrl_ctu(urem, &z, sizeof z);
+    }
+    return intr ? -LX_EINTR : 0;
+}
+
 slong xrl_sys_nanosleep(u64 ureq, u64 urem)
 {
     lx_timespec ts;
     if (xrl_cfu(&ts, ureq, sizeof ts)) return -LX_EFAULT;
     u64 ns = xrl_ts_to_ns(&ts);
     if (ns == ~0ull) return -LX_EINVAL;
-    xrl_sleep_ns(ns, NULL);
-    if (urem) { lx_timespec z = {0, 0}; xrl_ctu(urem, &z, sizeof z); }
-    return 0;
+    return sleep_or_eintr(ns, urem);
 }
 
 slong xrl_sys_clock_nanosleep(int clk, int flags, u64 ureq, u64 urem)
@@ -174,9 +207,9 @@ slong xrl_sys_clock_nanosleep(int clk, int flags, u64 ureq, u64 urem)
         slong r = clock_ns(clk, &now);
         if (r) return r;
         ns = ns > now ? ns - now : 0;
-    } else if (urem) { lx_timespec z = {0, 0}; xrl_ctu(urem, &z, sizeof z); }
-    xrl_sleep_ns(ns, NULL);
-    return 0;
+        return sleep_or_eintr(ns, 0);   /* absolute: nothing to report back */
+    }
+    return sleep_or_eintr(ns, urem);
 }
 
 slong xrl_sys_times(u64 ubuf)
