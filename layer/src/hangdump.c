@@ -127,6 +127,9 @@ static void dump_once(void)
             if (GetThreadContext(h, &c)) {
                 d->rip = c.Rip;
                 d->rsp = c.Rsp;
+                /* the layer's view of the thread, read while it is stopped so it matches rip */
+                for (xrl_thread *t = G.threads; t; t = t->next)
+                    if (t->win_tid == d->tid) { d->guest = 1; d->in_sys = t->in_sys; d->live = t->teb_guest_live; break; }
                 __try { memcpy(d->stk, (void *)c.Rsp, sizeof d->stk); d->nstk = HD_STK; }
                 __except (EXCEPTION_EXECUTE_HANDLER) { d->nstk = 0; }
             }
@@ -136,10 +139,6 @@ static void dump_once(void)
         CloseHandle(h);
     }
     CloseHandle(snap);
-    /* guest threads: which ones are in a syscall, which have the guest TEB view */
-    for (xrl_thread *t = G.threads; t; t = t->next)
-        for (int i = 0; i < n; i++)
-            if (g_hd[i].tid == t->win_tid) { g_hd[i].guest = 1; g_hd[i].in_sys = t->in_sys; g_hd[i].live = t->teb_guest_live; }
     u64 sn, so, si;
     xrl_mem_swap_stats(&sn, &so, &si);
     refresh_modules();
