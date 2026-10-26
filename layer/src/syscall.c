@@ -551,7 +551,13 @@ SYS(epoll_wait) { UNUSED6; return xrl_epoll_wait((int)a1, (u64)a2, (int)a3, (int
 SYS(epoll_pwait) { UNUSED6; return xrl_epoll_wait((int)a1, (u64)a2, (int)a3, (int)a4, NULL); }
 
 /* ============================================================== memory */
-SYS(mmap) { UNUSED6; return xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6); }
+SYS(mmap)
+{
+    UNUSED6;
+    slong r = xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6);
+    if (r > 0 && (a3 & LX_PROT_EXEC) && !(a4 & LX_MAP_ANONYMOUS)) xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
+    return r;
+}
 SYS(munmap)
 {
     UNUSED6;
@@ -566,7 +572,13 @@ SYS(munmap)
     }
     return xrl_mem_munmap(addr, len);
 }
-SYS(mprotect) { UNUSED6; return xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3); }
+SYS(mprotect)
+{
+    UNUSED6;
+    slong r = xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3);
+    if (!r && (a3 & LX_PROT_EXEC)) xrl_dbt_exec_hint((u64)a1, (u64)a2);   /* dbt.c: Windows images loaded by Wine */
+    return r;
+}
 SYS(mremap) { UNUSED6; return xrl_mem_mremap((u64)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5); }
 SYS(brk) { UNUSED6; return xrl_mem_brk((u64)a1); }
 SYS(madvise) { UNUSED6; return xrl_mem_madvise((u64)a1, (u64)a2, (int)a3); }
@@ -591,7 +603,7 @@ SYS(fork)
     LOGE("fork/vfork called: the layer is single-process; use posix_spawn-free paths (-ENOSYS)");
     return -LX_ENOSYS;
 }
-SYS(execve) { UNUSED6; LOGE("execve called: not supported (in-process exec is handled by Wine, not the kernel)"); return -LX_ENOSYS; }
+SYS(execve) { UNUSED6; return xrl_sys_execve((u64)a1, (u64)a2, (u64)a3); }
 /* exit(status, base, size): B's musl __unmapself passes the dying thread's own
  * stack; unmapped in xrl_do_exit once we are off it (on the host stack). */
 SYS(exit)
@@ -850,6 +862,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     if (nr == 15 && t) r = xrl_sig_return(t, (u64)a1);   /* rt_sigreturn: never a plain return */
     else if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
+    else if (nr == XRL_SYS_DBT_ENTER) r = xrl_dbt_enter_sys((u64)a1);   /* dbt.asm */
     else r = enosys(nr, a1, a2, a3);
     if (g_prof && (u64)nr < XRL_NR_MAX) {
         QueryPerformanceCounter(&t1);
@@ -860,6 +873,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
     }
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
+    if (t && t->exec_kill) xrl_thread_die(t);   /* execve is replacing the image (exec.c) */
     if (t && !t->sig_jump && (t->sigpending & ~t->sigmask)) {
         const slong args[6] = { a1, a2, a3, a4, a5, a6 };
         xrl_sig_at_return(t, nr, args, (const u64 *)frame, r, NULL);

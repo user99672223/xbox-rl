@@ -24,6 +24,10 @@ rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclud
 log "stage: prefix -> $dest/prefix"
 rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
 
+# glibc-ABI shim for native modules built against glibc (the EAC runtime); see docs/decisions.md.
+# musl is already in $dest/lib/ld-musl-x86_64.so.1, so this only adds libgcompat.so.0 and two stubs.
+"$WINE_DIR/scripts/build-glibc-compat.sh" "$dest/lib"
+
 # Wine's unix side reads a stable machine identity; keep one per staged tree.
 mkdir -p "$dest/etc"
 # Name resolution: musl's resolver reads /etc/resolv.conf and /etc/hosts and talks plain UDP/TCP, which the
@@ -35,7 +39,8 @@ nameserver 8.8.8.8
 [ -s "$dest/etc/hosts" ] || printf '127.0.0.1 localhost
 ::1 localhost ip6-localhost
 ' > "$dest/etc/hosts"
-[ -s "$dest/etc/machine-id" ] || { tr -dc 'a-f0-9' < /dev/urandom | head -c 32; echo; } > "$dest/etc/machine-id"
+# (not `tr < /dev/urandom | head`: under pipefail the SIGPIPE to tr aborted a first-time stage)
+[ -s "$dest/etc/machine-id" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$dest/etc/machine-id"
 # Root CAs: Wine's crypt32 fills the Windows root store from the Linux bundle (dlls/crypt32/unixlib.c), and
 # TLS clients verify servers against it (Rocket League's Epic SDK). The build machine's public Mozilla bundle.
 ca=/etc/ssl/certs/ca-certificates.crt

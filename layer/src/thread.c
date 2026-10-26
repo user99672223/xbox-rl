@@ -167,6 +167,7 @@ static DWORD WINAPI thread_main(LPVOID p)
 {
     xrl_thread *t = (xrl_thread *)p;
     t->win_tid = GetCurrentThreadId();
+    t->host_teb = __readgsqword(0x30);
     xrl_thread_bind(t);
     tp_slot_set(t->guest_tp);           /* slot 63 is outside the TEB swap set */
     xrl_teb_thread_init(t);             /* pristine TEB: capture the host view  */
@@ -290,7 +291,8 @@ slong xrl_do_exit(int code, int group)
 {
     xrl_thread *t = xrl_cur();
     if (!t) ExitThread((DWORD)code);
-    int last = (int)G.nthreads <= 1;
+    int last = (int)(G.nthreads - G.ndaemons) <= 1 && !t->daemon;
+    if (t->daemon) InterlockedDecrement(&G.ndaemons);
     if (group || last) {
         InterlockedExchange(&G.exit_code, code);
         InterlockedExchange(&G.exiting, 1);
@@ -307,6 +309,31 @@ slong xrl_do_exit(int code, int group)
     /* leave the record allocated: other threads may briefly hold pointers via tgkill lookup */
     ExitThread((DWORD)code);
     return 0;
+}
+
+/* A thread that ends because execve is replacing the image (or that exec.c terminated while it ran
+ * guest code): no CLEARTID wake, no exit_group; just its records. */
+static void thread_forget(xrl_thread *t, u64 teb)
+{
+    AcquireSRWLockExclusive(&g_ttab_lock);
+    size_t i = (teb >> 12) & (XRL_TTAB_SIZE - 1);
+    for (size_t n = 0; n < XRL_TTAB_SIZE; n++) {
+        if (xrl_ttab[i].key == teb) { xrl_ttab[i].key = 1; break; }
+        if (!xrl_ttab[i].key) break;
+        i = (i + 1) & (XRL_TTAB_SIZE - 1);
+    }
+    ReleaseSRWLockExclusive(&g_ttab_lock);
+    if (t->timer) { CloseHandle(t->timer); t->timer = NULL; }
+    if (t->daemon) { t->daemon = 0; InterlockedDecrement(&G.ndaemons); }
+    thread_unlink(t);
+}
+
+void xrl_thread_reap(xrl_thread *t) { thread_forget(t, t->host_teb); }
+
+void xrl_thread_die(xrl_thread *t)
+{
+    thread_forget(t, __readgsqword(0x30));
+    ExitThread(0);
 }
 
 void xrl_threads_terminate_all(void)
@@ -424,6 +451,6 @@ slong xrl_sys_prctl(int op, u64 a2, u64 a3, u64 a4, u64 a5)
     case LX_PR_GET_NO_NEW_PRIVS: return 0;
     case LX_PR_GET_TIMERSLACK: return 50000;
     default:
-        return -LX_EINVAL;
+        return xrl_exec_prctl(op, a2, a3);
     }
 }

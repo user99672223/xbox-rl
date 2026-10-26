@@ -278,3 +278,16 @@ void xrl_fd_init(void)
     xrl_fd_install(err, 0, 2);
     xfile_unref(in); xfile_unref(out); xfile_unref(err);
 }
+
+/* execve: every descriptor opened with O_CLOEXEC / FD_CLOEXEC is closed */
+void xrl_fd_close_on_exec(void)
+{
+    for (int i = 0;; i++) {
+        int c;
+        AcquireSRWLockShared(&g_fdlock);
+        if (i >= g_fdcap) { ReleaseSRWLockShared(&g_fdlock); break; }
+        c = g_fd[i].f && g_fd[i].cloexec;
+        ReleaseSRWLockShared(&g_fdlock);
+        if (c) xrl_fd_close(i);
+    }
+}

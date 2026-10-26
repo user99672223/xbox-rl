@@ -630,7 +630,7 @@ static slong open_special(const char *gabs, int flags, int *handled)
     return 0;
 }
 
-slong xrl_vfs_open(int dirfd, const char *path, int flags, int mode)
+static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
 {
     (void)mode;
     char gabs[PATHBUF];
@@ -693,6 +693,14 @@ slong xrl_vfs_open(int dirfd, const char *path, int flags, int mode)
     int fd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
     xfile_unref(f);
     return fd;
+}
+
+/* XRL_TRACE=1 also logs every path the guest opens (the syscall trace only has pointers) */
+slong xrl_vfs_open(int dirfd, const char *path, int flags, int mode)
+{
+    slong r = vfs_open_impl(dirfd, path, flags, mode);
+    if (G.trace_syscalls) LOGT("vfs: open(%s, 0x%x) = %lld", path, flags, r);
+    return r;
 }
 
 slong xrl_memfd_create(const char *name, unsigned flags)

@@ -189,6 +189,234 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   Laptop: Rocket League ran under a 1.5 GiB budget (thrashing at that size,
   before batching/compression). Not yet run on the console (sparse files and the
   Compression API there are unverified; both fall back cleanly).
+- **2026-10-26 — TLS for Wine (gnutls on musl), and what the real EAC bootstrapper
+  does next: it needs raw Linux system calls from Windows code.** The bootstrapper's
+  libcurl has only the schannel backend, so it needs Wine's schannel, which needs
+  gnutls (dlopen'ed by secur32/bcrypt, only if Wine is configured `--with-gnutls`).
+  - `wine/scripts/build-gnutls.sh` builds nettle 3.10.2 (mini-gmp, no assembler) and
+    gnutls 3.8.12 (included libtasn1/unistring, no p11-kit, no zlib, no non-Suite-B curves)
+    against our musl into `$WORK/deps` (pins and sha256 recorded when first fetched,
+    2026-10-26); `build-wine.sh` configures `--with-gnutls` when `deps/` exists and
+    installs `libgnutls.so.30`, `libnettle.so.8`, `libhogweed.so.6` into the rootfs
+    (the thread-pointer check covers them). Costs: the whole unix side rebuilds once,
+    about 6 MB more in the rootfs, Wine logs "Compiled without DH support".
+  - Verified on the layer without Wine (`layer/tests/tls-test.sh`): gnutls does a TLS 1.3
+    handshake with certificate verification against the CA bundle and an HTTPS request
+    to `modules-cdn.eac-prod.on.epicgames.com` (DNS, Winsock sockets, handshake).
+  - Verified through Wine: the bootstrapper's download now succeeds (curl: "No error (0)
+    Response Code: 200", a 12 MB blob; it keeps it in memory, there is no file). The blob
+    is not an ELF (no header; the bootstrapper unpacks and loads it itself), so nothing
+    was read from it or run.
+  - **Side effect, stated:** with TLS working the bootstrapper no longer takes its
+    "CDN unreachable, launching with null client" fallback, so `RocketLeague_EAC.exe`
+    now stops at "Failed to load the anti-cheat module" instead of starting the game.
+    Epic's own switch `EOS_USE_ANTICHEATCLIENTNULL=1` (the bootstrapper's debug
+    variable; `XRL_ENV_EOS_USE_ANTICHEATCLIENTNULL=1` through the test host) gives the
+    old behaviour, which is what the exec-handover check on the real bootstrapper needs.
+    Running `RocketLeague.exe` directly (tools/run-rl.sh) is not affected.
+  - **Where it stops (the next job).** After the download the log says "Starting Wine
+    module mapping, Wine version: 11.0." and, in the same millisecond, "Failed to map the
+    anti-cheat module." Reading the bootstrapper (static disassembly, strings): the
+    mapping routine (function at 0x140034a30 -> 0x14001cc10) checks a global (0x14038b340)
+    that, when set, makes it call `syscall3(nr, ...)` wrappers that are **raw `syscall`
+    instructions in the Windows executable** (wrappers at 0x14004b9f0 and neighbours:
+    `mov rax,rcx; mov rdi,rdx; mov rsi,r8; mov rdx,r9; syscall`), with Linux numbers:
+    `memfd_create` (319, flags MFD_ALLOW_SEALING) and `write` (1) to put the unpacked
+    module into an anonymous file, then (strings) `/proc/%i/maps` to find libc ("libc.so",
+    "/libc-"), `dlopen`/`dlsym`/`__libc_dlopen_mode` in it, `/proc/self/fd/%i` and
+    `/tmp/eac_wine_pid_%X`. On Linux a PE `syscall` really is a Linux system call; here the
+    Windows kernel would execute it, and no `memfd_create` was ever issued in our run: the
+    global is null, and nothing in the executable stores to it directly (it is set through
+    something else; not found). Two consequences to plan for: **(1)** raw Linux `syscall`s in
+    *Windows* code must reach the layer (what `dbt.c` does for ELF code can do the same for
+    the PE pages that hold a `syscall`; a first version is in: when the program being run
+    matches the `XRL_DBT` policy (default `easyanticheat,_eac`), a range that becomes
+    executable inside a Windows image gets its `syscall` pages translated: for the
+    bootstrapper that is the page of the wrappers and one page of data that decodes as a
+    `syscall`; no call through them was observed yet); **(2)** its libc discovery looks for
+    a mapping named like glibc's libc, which our musl mapping (`/lib/ld-musl-x86_64.so.1`)
+    is not: the module it loads is glibc-built (our glibc-ABI shim answers its symbol
+    needs), so this is an ABI adaptation to settle with care, not by renaming things to
+    look like glibc. Not done, and not guessed.
+  - The PE translation has limits beyond the ELF ones: code in translated pages has no
+    Windows unwind data (an exception inside it cannot be unwound; only the pages with a
+    `syscall` are translated), and the cache for a Windows image has to sit within 2 GiB
+    of it (it is searched for in 4 MiB steps from the image, in the address space Wine
+    manages with fixed addresses).
+
+- **2026-10-26 — Easy Anti-Cheat module byte-identical: chosen (b), translation
+  into a code cache next to the image (`layer/src/dbt.c`, `layer/asm/dbt.asm`),
+  selected with `XRL_DBT`. Rewriting in place stays the default for everything
+  else.** Why a change was needed: the rewriter patches the module's code, and an
+  anti-cheat checks its own code; the stand-in measured 69 of 8192 bytes changed.
+  On Linux an unmodified program simply has its vendor's bytes; so the aim here is
+  the same, not a way to hide anything. Why the code cannot run as it is: a raw
+  `syscall` executed on Windows enters the *Windows* kernel with a Linux number
+  (no exception, no way to intercept), and the console has no FSGSBASE, so `%fs` is
+  base 0 (a `%fs:0x28` canary read hits the null page). Compared:
+
+  | | (a) x86-64 interpreter for the module's threads | (b) translation into a code cache | (c) other: make only the two instructions fault |
+  |---|---|---|---|
+  | Image bytes | untouched | untouched (pages stay readable, r-xp in /proc/self/maps) | untouched |
+  | `syscall`, `%fs` | emulated | replaced by the rewriter's own sequences, in the cache | `%fs`: an AV in the null page per access, decoded and emulated by the exception handler (one exception, microseconds, each; one or two per stack-protected call; not measured); `syscall`: **cannot** be made to fault on Windows, so single-stepping every instruction (TF) is the only way: an interpreter that is slower than (a) |
+  | What has to be written | a whole x86-64 + SSE/AVX2 interpreter (Blink is not vendored; it is built around its own page tables, not our identity-mapped memory, so pointers Wine and the module exchange would need a translation layer) | a length decoder (we have it), an emitter for the few instruction classes that are not copied verbatim, three helpers (about 700 lines of C and 190 of asm) | an emulator for the `%fs` memory forms plus (a) for `syscall` |
+  | Calls between Wine (native) and the module | Wine calling a module function pointer must enter the interpreter; the module calling musl needs a native-call gateway for every import | none needed: translated code is native code; a call from the module to musl is a plain call; a call from Wine into the image enters by an instruction-fetch fault (once per target) | as (b) |
+  | Return addresses / stack walks | whatever the interpreter keeps | a call *inside the image* pushes the **original** return address (the unwinder, `backtrace()` and the module itself see original addresses; C++ exceptions through the module work, tested); a call to native code pushes the cache continuation | original |
+  | Speed (measured, `glibc/bench.c`, same process) | typically 10-50x slower than native (the usual figure for interpreters; not measured here) | straight-line code 1.0x (hash loop 59 ms vs 58 ms), 100k `getpid` syscalls 16 -> 19 ms, 400k-element `qsort` (7 M indirect calls through the lookup helper) 36 -> 106 ms (3x) | `%fs`-heavy code: very slow |
+  | Serves the general Linux layer | yes, but only as a slow fallback | yes: any prebuilt x86-64 program can run unmodified, with its code untouched | no |
+
+  How (b) works. The mapping of the module's code stays as the file has it but is
+  made non-executable for the host. A jump or call into it from outside (Wine got a
+  function pointer by `dlsym`, a thread start routine, a callback) faults on the
+  instruction fetch; the handler (`dbt_veh`, first in the chain) translates the code
+  at that address and, following direct jumps and calls, everything reachable from it
+  (a trace ends at an unconditional transfer), writes it into a cache that sits right
+  after the image (RIP-relative operands need it within 2 GiB; it is a visible
+  anonymous RWX mapping) and resumes there. Instructions are copied as they are,
+  except `syscall` and `%fs:` operands (`rewrite_core.c`'s sequences, now emitted at
+  any address), RIP-relative operands (displacement recomputed so they still reach
+  the same original address: `lea fn(%rip),%rax` still yields the original function
+  address) and control flow: `jmp`/`jcc`/`call` to image addresses become jumps in the
+  cache (a call pushes the original return address with `push imm32; movl $hi,4(%rsp)`:
+  no register, because gcc `-fipa-ra` keeps values in r10/r11 across calls to local
+  functions; found the hard way: the first version corrupted `__printf_fp`), a call
+  through a PLT stub becomes an indirect call through its GOT slot, and `ret`, `jmp *`,
+  `call *` look the original target up in a hash table (`dbt.asm`; a hit continues in
+  the cache; `jmp *` and `ret` preserve every register, since a jump table can sit in
+  the middle of a function; a miss on `jmp *` into the image asks the layer to translate
+  through the syscall path, not by faulting, because a fault's exception frame would
+  land on the red zone). Targets outside the image are plain jumps/calls (natives
+  return straight into the cache).
+  Verified (`layer/tests/dbt-test.sh`): the stand-in module's self-checksum sees **69
+  changed bytes with the rewriter and 0 translated**, its raw `syscall`, `%fs`
+  canary/TLS and 3-thread checks pass; an unmodified static glibc program (30
+  checks: threads, setjmp, IFUNC, stdio, qsort) and a C++ program (exceptions through 6
+  frames with destructors, virtual calls, `std::function`, `backtrace()`) pass with the
+  whole image translated; the Proton EAC bridge chain on Wine runs with **Valve's real
+  `easyanticheat_x64.so` bridge and the stand-in module both translated**.
+  Limits, stated: self-modifying code and generated code are not followed (executing
+  original pages faults, which the guest sees as SIGSEGV); `ret imm16`, far transfers,
+  and `%fs` operands inside branch instructions or with `%rsp` as base are not
+  translated (the site becomes `ud2` and is logged); a fault inside translated code
+  reports the cache address; frames of calls *into native code* show cache addresses to
+  an unwinder (an exception propagating out of native code into the module would
+  fail); entering the image from native code costs one exception per target (a
+  callback invoked 100 000 times from musl is slow; calls inside the image are not);
+  unmapping an image does not drop its translations; a guest `mprotect` of the
+  module's code makes it executable again untranslated; the table has four probe slots
+  per hash (crowding is logged, the target then takes the slow path); the cache is
+  8x the image, 1-64 MiB, committed up front. **Default: an image whose path contains
+  `easyanticheat` is translated, every other foreign image is still rewritten**;
+  `XRL_DBT=0` rewrites everything, `XRL_DBT=1` translates every image the rewriter would
+  patch, `XRL_DBT=a,b` only paths containing `a` or `b`; `XRL_DBT_DUMP=prefix` writes the
+  cache and the original->cache map for `objdump -D -b binary -mi386:x86-64`.
+  Not verified on the real client: the module is a 12 MB opaque blob that the bootstrapper
+  downloads (`modules-cdn.eac-prod.on.epicgames.com/modules/<product>/<deployment>/linux64`,
+  no ELF header: the bootstrapper unpacks and loads it itself), and the bootstrapper's TLS
+  needs gnutls in Wine (see the exec handover entry), so no run could reach it. The
+  translator was exercised on Valve's real bridge `.so`, the stand-in, a static glibc
+  program (about 650 KB of code translated) and a C++ program.
+
+- **2026-10-26 — Exec handover: the process a Windows program creates replaces it
+  inside the same OS process (layer `execve` + Wine 0020).** Rocket League starts
+  EAC only through `RocketLeague_EAC.exe`, the Epic "EOS bootstrapper"
+  (v1.9.3, 3.9 MB, libcurl + SDL inside), which `CreateProcess`es
+  `RocketLeague.exe`. One OS process holds one Windows process's address space
+  (PE bases such as 0x140000000, Wine's reserved ranges and ntdll's unix state are
+  per process), so parent and child cannot run side by side here.
+  What the bootstrapper does (static reading of the PE, plus a run on our stack
+  with `anticheatlauncher.log`, which it writes to
+  `C:\users\<u>\AppData\Roaming\EasyAntiCheat\<productid>\<deploymentid>\`):
+  - reads `EasyAntiCheat\Settings.json` next to itself: `title`, `executable`
+    (`RocketLeague.exe`, relative), `productid`, `sandboxid`, `deploymentid`,
+    `requested_splash`, `wait_for_game_process_exit` (false here), `hide_bootstrapper`,
+    `hide_gui`; takes `EOS_ANTICHEAT_BOOTSTRAPPER_*` env switches; single instance by a
+    named semaphore (`EasyAntiCheatLauncherSemaphore`);
+  - detects Wine (it looks up `wine_get_version` in ntdll and reads `/proc/self/maps`
+    for libc, to `dlopen` what it downloaded), names the system **`linux64`**, and
+    downloads the anti-cheat module over HTTPS from
+    `https://modules-cdn.eac-prod.on.epicgames.com/modules/<productid>/<deploymentid>/linux64`
+    (cached with `etag`/`sha1`, certificate-checked with `WinVerifyTrust`);
+  - **on our Wine that download fails in TLS** (curl error 35, "no schannel support":
+    Wine was built without gnutls; the TCP connect to the CDN works, so the layer's
+    sockets are fine), and the bootstrapper then sets
+    `EOS_USE_ANTICHEATCLIENTNULL=1` in its own environment and launches the game
+    *without* EAC ("launching with null client": its own fallback, not ours). So **TLS
+    for Wine (gnutls on musl) is a prerequisite for ever seeing the real module**, and
+    what the real path does after the download (does the module live in the bootstrapper
+    process next to the game? what does it pass?) could not be observed. Not guessed;
+    to be read from the log once TLS works;
+  - starts the game with `CreateProcessW(app = "<dir>\RocketLeague.exe", cmdline = the
+    quoted path alone, no handle inheritance, flags CREATE_DEFAULT_ERROR_MODE |
+    CREATE_UNICODE_ENVIRONMENT, environment = NULL i.e. inherited)`. No pipe, no
+    duplicated handle and no argument goes to the child in that path; only the
+    environment (`SteamNoOverlayUIDrawing`, and `EOS_USE_ANTICHEATCLIENTNULL` in the null
+    path). Afterwards it logs "waiting for game window to become visible" (imports:
+    `GetWindowThreadProcessId`, `Process32First/Next`, `OpenProcess`, `PeekNamedPipe`,
+    `DuplicateHandle`, semaphores/events; what each is used for in the real path is
+    unconfirmed) and ends with "Terminating with: 0".
+
+  Decision (with the user): the child **replaces** the parent, like Linux `execve`.
+  - **Layer (`layer/src/exec.c`).** A real `execve`: other guest threads are stopped
+    (flagged and woken; a thread inside the layer ends itself on the way out of its
+    syscall, a thread in guest code is suspended and terminated: no layer lock can be
+    held there), guest memory is released, CLOEXEC descriptors closed, signal handlers
+    reset (SIG_IGN stays), the new ELF is loaded by the boot loader and its main thread
+    started; pid is unchanged, the new main thread has a new host thread id; errors that
+    can be known up front come back as errno (`ENOENT`, `ENOEXEC`) before anything is
+    destroyed. This is the general Linux-layer feature; tested alone
+    (`layer/tests/exec-test.sh`: a parent with three threads in a spin loop, a futex
+    wait and a nanosleep, an open CLOEXEC and a plain pipe, a handler and an ignored
+    signal, execs a child that checks all of it).
+  - **Keeping the server (`prctl` 0x58524c01 / 0x58524c02, layer-private).** Wine's
+    wineserver is a thread of the guest (patch 0005), so a Wine process that execs the
+    next Windows process must not take it along. The server thread marks itself
+    `PR_XRL_DAEMON` (it survives and does not count as the last thread) and the Wine
+    side calls `PR_XRL_EXEC_KEEP(ranges, n)` before `execve`: the old image then stays
+    mapped except the `n` ranges (every Wine view, which Wine lists itself:
+    `xrl_virtual_view_ranges`), CLOEXEC descriptors stay open (the survivors own
+    some). The new loader starts a *second* musl/Wine instance next to the first (the
+    old one only serves the server thread; 25 MiB of the bootstrapper's 36 MiB stay
+    resident after the handover in the test). Rejected: re-initialising Wine's unix
+    state in place (hundreds of init-once globals, no way to know it is complete), and
+    a second guest process model with its own address space (the layer has one
+    address space; PE bases collide).
+  - **Wine 0020.** `NtCreateUserProcess` under `XRL_NO_SPAWN` ran stubs for Wine's
+    system helpers and failed for everything else; now everything else is handed
+    over: the child's server objects exist (`new_process`), its first thread is resumed
+    (kernelbase would do that after `NtCreateUserProcess` returns, which it never
+    does), the parent ends the way `ExitProcess` ends it on the server
+    (`terminate_process` for the other threads, then for itself), and instead of
+    `exit()` the loader of the child is exec'ed in place with `WINESERVERSOCKET`,
+    `WINELOADERNOEXEC` and `XRL_SESSION_BLOCK_FN` (the address of the server's
+    session-block lookup in the old image; the new Wine instance did not start the
+    server, so win32u reaches it through that pointer). The command line, working
+    directory and `WINEDEBUG` of the child are the ones `spawn_process` would have used.
+  - **Test (`layer/tests/exec-win.sh`, `exec-win/parent.c`, `child.c`):** a Windows
+    program `CreateProcess`es a second one (three arguments, one with a space; an
+    environment variable set just before) and exits. One layer boot, one `exec:` line
+    with the old image kept, the child prints its pid, its arguments and the inherited
+    variable and exits 0; the parent never comes back from `CreateProcess`. Verified
+    on the laptop harness.
+
+  Verified on the real bootstrapper (laptop harness, `XRL_TEST_BUDGET_MB=1536`):
+  `RocketLeague_EAC.exe` reads its settings, fails the module download in TLS (before gnutls
+  was added; now use `EOS_USE_ANTICHEATCLIENTNULL=1`, see the TLS entry), takes its
+  own null-client path, and its `CreateProcess` of `RocketLeague.exe` becomes the handover
+  ("this process hands the OS process to ...Win64\RocketLeague.exe", 92 -> 30 MiB
+  committed after the old image is released); the game then starts as the new process and
+  gets as far as launching it directly does (EOS init, D3D11On12 device creation; where
+  both then fail the same way on this tree: the graphics path is the other agent's).
+
+  Costs, stated plainly: a program that `CreateProcess`es and then keeps working or
+  waits for the child (a shell, an installer, `cmd /c`, any launcher that does
+  something after the child starts) loses everything after the call; the child's
+  parent id names a process that is gone; the old unix side is never freed (about
+  25 MiB per handover); `CREATE_SUSPENDED` is ignored (the child runs). For the EAC
+  bootstrapper this is exactly the shape of the null-client path. For the real path it
+  is an open question whether the module the bootstrapper loads into its own process
+  has to stay next to the game; that cannot be decided before the module can be
+  downloaded.
 
 - **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
   ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
@@ -298,6 +526,138 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     same: built from CPUID/XGETBV with Linux's flag names, Windows topology for
     core ids and `/sys/.../topology`. Hostname is the machine's own name.
     Nothing about the CPU or the hypervisor is added or hidden.
+
+- **2026-10-26 — The Proton EAC bridge runs on the layer (verified with a
+  stand-in client module).** What the runtime really is: `v2/lib64/` holds a
+  Wine builtin PE (`easyanticheat_x64.dll`, exports the whole EAC client API:
+  `CreateGameClient`, `GameClient_*`, `ClientAuth_*`, `NetProtectClient_*`) and
+  an 18 KB glibc-built unix half (`easyanticheat_x64.so`, NEEDED ntdll.so /
+  libc.so.6 / libdl / libpthread, no `syscall`, no `%fs`, exports
+  `__wine_unix_call_funcs`). The PE half's DllMain asks Wine for the bridge
+  unix lib, then passes the unix path of its own module to `eac_init_library`,
+  which replaces the file name with `easyanticheat_x64.so` and `dlopen`s it:
+  **the real EAC client module is a second `easyanticheat_x64.so` that must sit
+  next to the game's own Windows `easyanticheat_x64.dll`** (Wine only picks the
+  bridge when that `.so` exists there; `get_load_order`). It is not in the
+  runtime and not in the laptop's Rocket League folder (only
+  `EasyAntiCheat_EOS_Setup.exe`, certificates and `Settings.json`), so the real
+  module could not be run. `layer/tests/glibc/run-eac-bridge.sh` runs the same
+  chain with `standin_eac.c` as that module: LoadLibrary of the DLL ->
+  bridge PE -> bridge unix half -> dlopen of a glibc module with rewriting and
+  the shim -> `CreateGameClient` -> a client object. Found and fixed on the way:
+  - **`membarrier` (324) was ENOSYS** and musl's `dlopen` of any library with a
+    TLS segment in a multi-threaded process calls it (PRIVATE_EXPEDITED), falling
+    back to signalling every thread, which the layer cannot deliver: the process
+    hung. Now answered with Windows' `FlushProcessWriteBuffers`. This hits every
+    TLS-bearing `dlopen` under Wine (the real client is C++), not only EAC.
+  - **The shim was never loaded** on that path in the first build: my Wine tree's
+    Makefiles still pointed at the other agent's sources (a copied build tree
+    records absolute paths) so patch 0019 was not compiled in. `build-wine.sh
+    configure` in the copy fixes it (about a minute, nothing rebuilds).
+  - **`/proc/self/maps` lied**: private file maps showed offset 0, inode 0 and
+    only the basename. A module that locates and checksums its own code (the
+    stand-in does, as an anti-cheat would) read the wrong bytes. Maps now carry
+    the full guest path, the file offset and the inode (mem.c: three fields on
+    `vma`). With that, the stand-in measures honestly that the mapped copy of
+    its code differs from the file in 69 of 8192 bytes: the rewriter's patches.
+    **A module that hashes its own `.text` against the file will see exactly
+    this; nothing here hides it.**
+  - `XRL_TRACE=1` now also logs every path the guest opens (vfs.c).
+  Also found: `stage-rootfs.sh` died on a first-time stage (a `tr | head`
+  pipeline under `pipefail`).
+
+- **2026-10-26 — Real network sockets (layer/src/net.c): AF_INET/AF_INET6
+  TCP and UDP over Winsock.** The layer had only pipes and socketpairs; EAC's
+  module talks to Epic's servers and any Linux program needs sockets. Shape:
+  every Winsock socket is non-blocking and registered with `WSAEventSelect` on
+  one shared event; a helper thread waits on it and bumps the layer's I/O epoch
+  (ipc.c), the word poll/epoll and the pipe waits already sleep on, so
+  `poll`/`epoll_wait` needed no change (a socket's `poll` op is one `WSAPoll`
+  with a zero timeout). Blocking is the layer's own loop (try, sleep on the
+  epoch, retry; interruptible; `SO_RCVTIMEO`/`SO_SNDTIMEO`), so nothing ever
+  sits in the Windows kernel and exit/tgkill always win. Guest buffers go
+  through a 64 KiB bounce buffer, never to Winsock directly (lazy-committed
+  guest memory). Chosen over overlapped I/O + completion ports (IOCP would
+  need a completion thread per outstanding op and still needs the epoch for
+  poll) and over `select`-in-a-thread (64 fds, same epoch needed). Linux
+  behaviour kept where Windows differs: connect to 0.0.0.0/:: reaches
+  loopback, AF_INET6 sockets are dual-stack, getsockname on an unbound socket
+  answers with the family and zeros, `SO_REUSEADDR` on TCP does not get
+  Windows' port-stealing meaning (UDP does: several sockets on one port),
+  EPIPE instead of SIGPIPE, `connect()` to a refusing loopback port fails in
+  milliseconds (SYN retransmission is switched off for loopback peers only;
+  otherwise Windows takes 2 s). Tested in the layer's guest suite
+  (layer/tests/guest/guest.c, section "network"): TCP echo, non-blocking
+  connect, accept, half close, blocking accept/read across threads, 3 MiB with
+  back-pressure, poll/epoll, UDP with addresses/peek/truncation/sendmsg, IPv6,
+  options, `SO_RCVTIMEO`, refused connections. **Not done:** AF_UNIX by path,
+  raw/packet/netlink sockets (`getifaddrs` needs netlink), ancillary data,
+  `/etc/resolv.conf` synthesis (stage-rootfs.sh writes one; musl resolves over
+  UDP to it). **Console:** the app manifest has no network capability on
+  purpose today (host/Package.appxmanifest: "runs offline"); sockets there need
+  the general capabilities `internetClient`, `internetClientServer` and
+  `privateNetworkClientServer` (not device capabilities). Not changed here:
+  untested on the console, and a manifest the shell rejects would break
+  deploys.
+
+- **2026-10-26 — Easy Anti-Cheat: run a glibc-built native module inside the
+  musl/no-`syscall`/no-`%fs` world. Chosen: (c) load-time rewriting of ELF
+  images in the layer + (b) a small glibc-ABI shim over musl. Rejected: (a).**
+  Rocket League's EAC is the closed Linux module `easyanticheat_x64.so` from
+  Valve's "Proton EasyAntiCheat Runtime", which Wine's unix side `dlopen`s
+  (`PROTON_EAC_RUNTIME`). It is built against glibc, may issue raw `syscall`
+  instructions and uses `%fs` (TLS, `%fs:0x28` stack-protector canary), none of
+  which can run here: Wine's unix side is musl, a `syscall` instruction would
+  enter the *Windows* kernel with a Linux number, and the console has no
+  FSGSBASE so `%fs` carries nothing (the thread pointer lives in TEB slot 63,
+  see the FSGSBASE entry below). Three ways to make that work:
+
+  | | (a) Wine unix side on patched glibc | (b) glibc-ABI shim over musl (gcompat style) | (c) rewrite `syscall`/`%fs` at load time |
+  |---|---|---|---|
+  | Fixes closed `.so` symbol/ABI needs (`libc.so.6`, `__memcpy_chk`, `__isoc23_*`, versioned names) | yes, natively | yes, for the functions we list | no |
+  | Fixes closed `.so` raw `syscall` and `%fs` | no: the *Wine-side* glibc could be patched (we build it), the closed `.so` still carries both | no | yes, whatever the libc it was built with |
+  | Work / risk | Rebuild Wine's whole unix side on glibc; patch glibc's ~hundreds of inline `syscall` sites and every direct `%fs` form (errno, canary, TLS IE/LE) which glibc's build does not allow to be turned off; redo patches/musl equivalents; lose the working, tested Wine build | A few hundred lines of C (the `_chk` family, `__isoc99/23_*`, `__xstat`, `gnu_get_libc_version`, a `libc.so.6`/`libm.so.6`/`libdl.so.2`/`libpthread.so.0` set that depends on musl); musl's loader already ignores symbol versions | A length decoder, a trampoline pool and a tiny asm entry (`rawsys`); about 1500 lines; testable on any ELF (we diff its findings against `objdump`) |
+  | Serves the general Linux layer (unmodified Linux programs) | no: only Wine's own unix side | partly (glibc programs that load through musl), but a glibc *program* still needs its own libc rewritten | **yes**: it is the one mechanism that makes any prebuilt x86-64 ELF (static glibc, Alpine, Go, a closed `.so`) safe to run without a kernel |
+  | Failure mode | a mixed-libc process does not exist; we would be rebuilding the project's foundation | missing symbol = clean `dlopen` error naming it (we ship a checker listing them) | an instruction we cannot move falls back to a trap (`int3` + handler), a decode failure is logged and the function is left alone |
+
+  Decision: **(c) is the foundation, (b) is the thin adapter, (a) is dropped.**
+  `layer/src/rewrite.c` rewrites every file-backed ELF mapping that the layer
+  sees becoming executable (the layer's own loader for the main program and its
+  interpreter, and the `mmap(PROT_EXEC)` of any later `dlopen`) before a guest
+  instruction of it runs. A `syscall` becomes a jump into a trampoline that
+  calls `xrl_syscall` through `rawsys` (register state and red zone preserved,
+  every Linux syscall-ABI register kept as the kernel would); each `%fs:` memory
+  operand becomes the same operand relative to the TEB-slot thread pointer
+  (`mov %gs:0x1678,%r11; <insn with %fs dropped and r11 added as base>`; the
+  tpfix form `mov %fs:0,%reg` is patched in place). Images the build already
+  verified clean (`tools/xrl-tpfix.py` stamps `e_flags`, Wine's whole unix side)
+  are skipped, so Wine pays nothing. `%fs`-less glibc features (IFUNC, `cpuid`,
+  `rdtsc`) are left alone: they run natively. The shim (`wine/glibc-compat/`,
+  built by `wine/scripts/build-glibc-compat.sh` into the guest's
+  `/lib/libgcompat.so.0`) is only needed for a glibc `.so` dlopen'ed into the
+  musl process; it is deliberately small and list-driven
+  (`tools/glibc-compat-check.sh LIB.so` prints every undefined symbol musl and
+  the shim cannot satisfy), because we cannot read the closed module until the
+  runtime is installed. One musl behaviour shaped it: musl's loader turns a
+  DT_NEEDED of `libc.so.N`, `libm`, `libdl`, `libpthread`, `librt`, `libutil`
+  into *itself* (ldso/dynlink.c "block attempts to reload the implementation"),
+  so a shim named `libc.so.6` is never loaded. Wine patch 0019 therefore
+  `dlopen`s `libgcompat.so.0` RTLD_GLOBAL once, right before the first native
+  unix library (`XRL_GLIBC_COMPAT` overrides the path, empty disables); the
+  only other libraries a glibc module lists that musl cannot alias
+  (`ld-linux-x86-64.so.2`, `libresolv.so.2`) are shipped as empty stubs.
+  Verified on the laptop harness: an unmodified glibc static-PIE program
+  (`layer/tests/glibc/glibc_test.c`, 30 checks) and a glibc-built stand-in
+  module dlopen'ed from a musl program the way Wine does it
+  (`layer/tests/glibc/standin_eac.c`: raw `syscall`, `%fs` TLS and canary,
+  threads, glibc-only symbols), both with FSGSBASE hidden.
+  Costs, stated plainly: the rewritten code differs from the vendor's bytes in
+  memory (a module that hashes its own `.text` will notice; we do not hide
+  that), every guest `%fs` access in glibc code costs
+  a jump pair, and unusual encodings (`%fs` on `push/pop/call/jmp` memory
+  operands, VEX-encoded `%fs`) are reported, not guessed. Not done and not
+  needed for the EAC module: instruction-level handling of self-modifying code,
+  text relocations (`DT_TEXTREL`), `mprotect(PROT_EXEC)` on anonymous memory.
 
 - **2026-10-26 — Rocket League starts on the laptop through the whole stack**
   (console Wine build, real layer, gfx/ on the laptop GPU via

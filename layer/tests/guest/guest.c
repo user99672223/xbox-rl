@@ -1161,6 +1161,7 @@ void cstart(u64 *sp)
     test_fs();
     test_cpuinfo();
     test_threads();
+    test_net();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

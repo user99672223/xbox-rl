@@ -17,8 +17,11 @@ rdfsbase/wrfsbase) is an error: the build flags are wrong, and patching around
 it would hide that. Instructions are located with objdump, so bytes that merely
 look like the pattern inside other instructions are never touched.
 
-usage: xrl-tpfix.py [--check] FILE...
+usage: xrl-tpfix.py [--check] [--stamp] FILE...
   --check   only verify that no %fs use remains (exit 1 if any does)
+  --stamp   with --check: a file with no %fs use and no `syscall`/`sysenter`/`int $0x80` gets
+            e_flags = XRL_ELF_E_FLAGS_CLEAN, which tells the layer's load-time rewriter
+            (layer/src/rewrite.c) it has nothing to do there. Foreign binaries are never stamped.
 """
 import os
 import re
@@ -63,17 +66,34 @@ def vaddr_to_off(segs, addr):
 LINE = re.compile(r'^\s*([0-9a-f]+):\s+((?:[0-9a-f]{2} )+)\s*(.*)$')
 
 
-def fs_uses(path):
+SYS_MNEMONIC = re.compile(r'^(syscall|sysenter|int\s+\$0x80)(\s|$)')
+E_FLAGS_CLEAN = 0x58524c01          # XRL_ELF_E_FLAGS_CLEAN in layer/src/xrl_internal.h
+
+
+def insn_lines(path):
     out = subprocess.run(['objdump', '-d', '-w', path], capture_output=True, text=True)
     if out.returncode:
         raise RuntimeError(f'objdump failed on {path}: {out.stderr.strip()}')
     for line in out.stdout.splitlines():
         m = LINE.match(line)
-        if not m:
-            continue
-        text = m.group(3)
+        if m:
+            yield int(m.group(1), 16), bytes.fromhex(m.group(2).replace(' ', '')), m.group(3).strip()
+
+
+def fs_uses(path):
+    for addr, raw, text in insn_lines(path):
         if '%fs' in text or 'fsbase' in text:
-            yield int(m.group(1), 16), bytes.fromhex(m.group(2).replace(' ', '')), text.strip()
+            yield addr, raw, text
+
+
+def sys_uses(path):
+    return [addr for addr, raw, text in insn_lines(path) if SYS_MNEMONIC.match(text)]
+
+
+def stamp_clean(path):
+    with open(path, 'r+b') as f:
+        f.seek(0x30)
+        f.write(struct.pack('<I', E_FLAGS_CLEAN))
 
 
 def is_tp_load(b):
@@ -89,7 +109,7 @@ def hint(text):
     return 'direct TLS access: build with -mno-tls-direct-seg-refs'
 
 
-def process(path, check_only, gs_off):
+def process(path, check_only, gs_off, stamp=False):
     with open(path, 'rb') as f:
         data = bytearray(f.read())
     segs = exec_segments(data)
@@ -104,6 +124,12 @@ def process(path, check_only, gs_off):
     if check_only:
         left = len(bad) + len(sites)
         print(f'xrl-tpfix: {path}: {"OK, no %fs use" if not left else f"{left} %fs use(s) remain"}')
+        if stamp and not left:
+            sysc = sys_uses(path)
+            if sysc:
+                print(f'xrl-tpfix: {path}: {len(sysc)} syscall instruction(s), first at {sysc[0]:#x}: not stamped', file=sys.stderr)
+            else:
+                stamp_clean(path)
         return left == 0
     if bad:
         print(f'xrl-tpfix: {path}: {len(bad)} unsupported %fs use(s); not patched', file=sys.stderr)
@@ -124,11 +150,12 @@ def process(path, check_only, gs_off):
 
 def main(argv):
     check = '--check' in argv
-    files = [a for a in argv if a != '--check']
+    stamp = '--stamp' in argv
+    files = [a for a in argv if a not in ('--check', '--stamp')]
     if not files:
         sys.exit(__doc__)
     gs_off = tp_gs_offset()
-    ok = all([process(p, check, gs_off) for p in files])
+    ok = all([process(p, check, gs_off, stamp) for p in files])
     sys.exit(0 if ok else 1)
 
 

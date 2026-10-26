@@ -11,4 +11,7 @@ gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-
 # XRL_TP_GS_OFFSET in include/xrl_abi.h). Same step the Wine build runs.
 python3 ../../../tools/xrl-tpfix.py out/guest.elf
 python3 ../../../tools/xrl-tpfix.py --check out/guest.elf
-echo built out/guest.elf
+# the execve test: one program in two roles (layer/tests/exec-test.sh)
+gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall     -o out/exec_test.elf exec_test.c
+python3 ../../../tools/xrl-tpfix.py out/exec_test.elf
+echo built out/guest.elf out/exec_test.elf
