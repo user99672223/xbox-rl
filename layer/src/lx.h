@@ -199,6 +199,18 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_preadv 295
 #define NR_pwritev 296
 #define NR_preadv2 327
+#define NR_setxattr 188
+#define NR_lsetxattr 189
+#define NR_fsetxattr 190
+#define NR_getxattr 191
+#define NR_lgetxattr 192
+#define NR_fgetxattr 193
+#define NR_listxattr 194
+#define NR_llistxattr 195
+#define NR_flistxattr 196
+#define NR_removexattr 197
+#define NR_lremovexattr 198
+#define NR_fremovexattr 199
 #define NR_pwritev2 328
 #define NR_prlimit64 302
 #define NR_getcpu 309
@@ -255,6 +267,7 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define LX_EOVERFLOW 75
 #define LX_ENOTSOCK 88
 #define LX_EOPNOTSUPP 95
+#define LX_ENODATA 61
 #define LX_ENOTSUP LX_EOPNOTSUPP
 #define LX_EAFNOSUPPORT 97
 #define LX_ENOTCONN 107

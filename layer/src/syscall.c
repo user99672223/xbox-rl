@@ -369,6 +369,11 @@ SYS(utimes)
 SYS(statfs) { UNUSED6; char p[PATH_MAX_]; lx_statfs s; slong r = getpath(p, (u64)a1); if (r) return r; r = xrl_vfs_statfs(p, &s); return r ? r : xrl_ctu((u64)a2, &s, sizeof s); }
 SYS(fstatfs) { UNUSED6; lx_statfs s; xfile *f = xrl_fd_get((int)a1); if (!f) return -LX_EBADF; xfile_unref(f); slong r = xrl_vfs_statfs("/", &s); return r ? r : xrl_ctu((u64)a2, &s, sizeof s); }
 SYS(zero_ok) { UNUSED6; return 0; }
+/* Extended attributes: none are stored (NTFS has no user xattrs here). Reads say
+ * "no such attribute", writes "not supported" (Wine then keeps DOS attributes
+ * elsewhere), lists are empty. */
+SYS(xattr_nodata) { UNUSED6; return -LX_ENODATA; }
+SYS(xattr_notsup) { UNUSED6; return -LX_EOPNOTSUPP; }
 SYS(umask) { UNUSED6; u32 old = G.umask; G.umask = (u32)a1 & 0777; return old; }
 
 SYS(pipe) { UNUSED6; int fds[2]; slong r = xrl_pipe_create(0, fds); if (r) return r; return xrl_ctu((u64)a1, fds, 8); }
@@ -601,6 +606,10 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     /* files */
     T(NR_read, read), T(NR_write, write), T(NR_pread64, pread64), T(NR_pwrite64, pwrite64),
     T(NR_readv, readv), T(NR_writev, writev), T(NR_preadv, preadv), T(NR_pwritev, pwritev), T(NR_preadv2, preadv2), T(NR_pwritev2, pwritev2),
+    T(NR_getxattr, xattr_nodata), T(NR_lgetxattr, xattr_nodata), T(NR_fgetxattr, xattr_nodata),
+    T(NR_removexattr, xattr_nodata), T(NR_lremovexattr, xattr_nodata), T(NR_fremovexattr, xattr_nodata),
+    T(NR_setxattr, xattr_notsup), T(NR_lsetxattr, xattr_notsup), T(NR_fsetxattr, xattr_notsup),
+    T(NR_listxattr, zero_ok), T(NR_llistxattr, zero_ok), T(NR_flistxattr, zero_ok),
     T(NR_open, open), T(NR_openat, openat), T(NR_creat, creat), T(NR_close, close), T(NR_close_range, close_range),
     T(NR_lseek, lseek), T(NR_stat, stat), T(NR_fstat, fstat), T(NR_lstat, lstat), T(NR_newfstatat, newfstatat),
     T(NR_statx, statx), T(NR_access, access), T(NR_faccessat, faccessat), T(NR_faccessat2, faccessat),
