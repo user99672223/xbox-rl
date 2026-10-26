@@ -144,6 +144,98 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Exec handover: the process a Windows program creates replaces it
+  inside the same OS process (layer `execve` + Wine 0020).** Rocket League starts
+  EAC only through `RocketLeague_EAC.exe`, the Epic "EOS bootstrapper"
+  (v1.9.3, 3.9 MB, libcurl + SDL inside), which `CreateProcess`es
+  `RocketLeague.exe`. One OS process holds one Windows process's address space
+  (PE bases such as 0x140000000, Wine's reserved ranges and ntdll's unix state are
+  per process), so parent and child cannot run side by side here.
+  What the bootstrapper does (static reading of the PE, plus a run on our stack
+  with `anticheatlauncher.log`, which it writes to
+  `C:\users\<u>\AppData\Roaming\EasyAntiCheat\<productid>\<deploymentid>\`):
+  - reads `EasyAntiCheat\Settings.json` next to itself: `title`, `executable`
+    (`RocketLeague.exe`, relative), `productid`, `sandboxid`, `deploymentid`,
+    `requested_splash`, `wait_for_game_process_exit` (false here), `hide_bootstrapper`,
+    `hide_gui`; takes `EOS_ANTICHEAT_BOOTSTRAPPER_*` env switches; single instance by a
+    named semaphore (`EasyAntiCheatLauncherSemaphore`);
+  - detects Wine (it looks up `wine_get_version` in ntdll and reads `/proc/self/maps`
+    for libc, to `dlopen` what it downloaded), names the system **`linux64`**, and
+    downloads the anti-cheat module over HTTPS from
+    `https://modules-cdn.eac-prod.on.epicgames.com/modules/<productid>/<deploymentid>/linux64`
+    (cached with `etag`/`sha1`, certificate-checked with `WinVerifyTrust`);
+  - **on our Wine that download fails in TLS** (curl error 35, "no schannel support":
+    Wine was built without gnutls; the TCP connect to the CDN works, so the layer's
+    sockets are fine), and the bootstrapper then sets
+    `EOS_USE_ANTICHEATCLIENTNULL=1` in its own environment and launches the game
+    *without* EAC ("launching with null client": its own fallback, not ours). So **TLS
+    for Wine (gnutls on musl) is a prerequisite for ever seeing the real module**, and
+    what the real path does after the download (does the module live in the bootstrapper
+    process next to the game? what does it pass?) could not be observed. Not guessed;
+    to be read from the log once TLS works;
+  - starts the game with `CreateProcessW(app = "<dir>\RocketLeague.exe", cmdline = the
+    quoted path alone, no handle inheritance, flags CREATE_DEFAULT_ERROR_MODE |
+    CREATE_UNICODE_ENVIRONMENT, environment = NULL i.e. inherited)`. No pipe, no
+    duplicated handle and no argument goes to the child in that path; only the
+    environment (`SteamNoOverlayUIDrawing`, and `EOS_USE_ANTICHEATCLIENTNULL` in the null
+    path). Afterwards it logs "waiting for game window to become visible" (imports:
+    `GetWindowThreadProcessId`, `Process32First/Next`, `OpenProcess`, `PeekNamedPipe`,
+    `DuplicateHandle`, semaphores/events; what each is used for in the real path is
+    unconfirmed) and ends with "Terminating with: 0".
+
+  Decision (with the user): the child **replaces** the parent, like Linux `execve`.
+  - **Layer (`layer/src/exec.c`).** A real `execve`: other guest threads are stopped
+    (flagged and woken; a thread inside the layer ends itself on the way out of its
+    syscall, a thread in guest code is suspended and terminated: no layer lock can be
+    held there), guest memory is released, CLOEXEC descriptors closed, signal handlers
+    reset (SIG_IGN stays), the new ELF is loaded by the boot loader and its main thread
+    started; pid is unchanged, the new main thread has a new host thread id; errors that
+    can be known up front come back as errno (`ENOENT`, `ENOEXEC`) before anything is
+    destroyed. This is the general Linux-layer feature; tested alone
+    (`layer/tests/exec-test.sh`: a parent with three threads in a spin loop, a futex
+    wait and a nanosleep, an open CLOEXEC and a plain pipe, a handler and an ignored
+    signal, execs a child that checks all of it).
+  - **Keeping the server (`prctl` 0x58524c01 / 0x58524c02, layer-private).** Wine's
+    wineserver is a thread of the guest (patch 0005), so a Wine process that execs the
+    next Windows process must not take it along. The server thread marks itself
+    `PR_XRL_DAEMON` (it survives and does not count as the last thread) and the Wine
+    side calls `PR_XRL_EXEC_KEEP(ranges, n)` before `execve`: the old image then stays
+    mapped except the `n` ranges (every Wine view, which Wine lists itself:
+    `xrl_virtual_view_ranges`), CLOEXEC descriptors stay open (the survivors own
+    some). The new loader starts a *second* musl/Wine instance next to the first (the
+    old one only serves the server thread; 25 MiB of the bootstrapper's 36 MiB stay
+    resident after the handover in the test). Rejected: re-initialising Wine's unix
+    state in place (hundreds of init-once globals, no way to know it is complete), and
+    a second guest process model with its own address space (the layer has one
+    address space; PE bases collide).
+  - **Wine 0020.** `NtCreateUserProcess` under `XRL_NO_SPAWN` ran stubs for Wine's
+    system helpers and failed for everything else; now everything else is handed
+    over: the child's server objects exist (`new_process`), its first thread is resumed
+    (kernelbase would do that after `NtCreateUserProcess` returns, which it never
+    does), the parent ends the way `ExitProcess` ends it on the server
+    (`terminate_process` for the other threads, then for itself), and instead of
+    `exit()` the loader of the child is exec'ed in place with `WINESERVERSOCKET`,
+    `WINELOADERNOEXEC` and `XRL_SESSION_BLOCK_FN` (the address of the server's
+    session-block lookup in the old image; the new Wine instance did not start the
+    server, so win32u reaches it through that pointer). The command line, working
+    directory and `WINEDEBUG` of the child are the ones `spawn_process` would have used.
+  - **Test (`layer/tests/exec-win.sh`, `exec-win/parent.c`, `child.c`):** a Windows
+    program `CreateProcess`es a second one (three arguments, one with a space; an
+    environment variable set just before) and exits. One layer boot, one `exec:` line
+    with the old image kept, the child prints its pid, its arguments and the inherited
+    variable and exits 0; the parent never comes back from `CreateProcess`. Verified
+    on the laptop harness.
+
+  Costs, stated plainly: a program that `CreateProcess`es and then keeps working or
+  waits for the child (a shell, an installer, `cmd /c`, any launcher that does
+  something after the child starts) loses everything after the call; the child's
+  parent id names a process that is gone; the old unix side is never freed (about
+  25 MiB per handover); `CREATE_SUSPENDED` is ignored (the child runs). For the EAC
+  bootstrapper this is exactly the shape of the null-client path. For the real path it
+  is an open question whether the module the bootstrapper loads into its own process
+  has to stay next to the game; that cannot be decided before the module can be
+  downloaded.
+
 - **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
   ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
   where Rocket League hung after loading. Now real rt_sigframes (ucontext,

@@ -185,6 +185,7 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
     LOGI("exec: pid %d tid %d -> %s (%d args, %d env)%s", G.pid, self->tid, gpath, ac, ec, keep ? ", old image kept" : "");
 
     /* ---- point of no return ---- */
+    u64 before = xrl_mem_committed();
     kill_others(self, keep);
     if (keep) {
         for (int i = 0; i < nrg; i++) {
@@ -196,6 +197,7 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
         xrl_fd_close_on_exec();
     }
     free(rg);
+    LOGI("exec: guest memory committed %llu MiB -> %llu MiB after releasing the old image", before >> 20, xrl_mem_committed() >> 20);
     /* signals: handlers go back to the default, SIG_IGN stays (Linux) */
     for (int s = 1; s <= LX_NSIG; s++) {
         lx_ksigaction a;
