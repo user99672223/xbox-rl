@@ -38,6 +38,9 @@ xrl_status Op_swapchain_resize(xrl_handle sc, uint32_t n, uint32_t w, uint32_t h
 }
 int32_t Op_last_hresult(void) { return xrl_gfx_last_hresult(); }
 xrl_status Op_get_adapter_info(xrl_adapter_info* out) { return AdapterInfoOp(out); }
+xrl_status Op_d3d11_create_swapchain(xrl_handle dev, xrl_handle q, const xrl_swapchain_desc* desc, xrl_handle* out) {
+    return D3D11SwapchainCreateOp(dev, q, desc, out);
+}
 
 xrl_gfx_ops g_ops = {
     sizeof(xrl_gfx_ops),
@@ -51,6 +54,7 @@ xrl_gfx_ops g_ops = {
     Op_swapchain_resize,
     Op_last_hresult,
     Op_get_adapter_info,
+    Op_d3d11_create_swapchain,
 };
 
 }  // namespace

@@ -5,7 +5,8 @@
  *   xrl_test_host.exe <rootfs_dir> <guest_elf_path_inside_rootfs> [guest args...]
  *
  * Env: XRL_TRACE=1 traces every syscall. XRL_REAL_GFX=1 replaces the stub gfx
- * table with gfx/'s real one on a desktop window. Exit code = guest exit code.
+ * table with gfx/'s real one on a desktop window. Audio goes to XAudio2 through the console
+ * host's own op table unless XRL_NO_AUDIO=1. Exit code = guest exit code.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -33,6 +34,8 @@ static xrl_status host_pad(uint32_t slot, xrl_pad_state *o) { memset(o, 0, sizeo
 static xrl_status host_xaudio_create(xrl_handle *o) { *o = 0xA0D10ull; return XRL_OK; }
 
 const xrl_gfx_ops *xrl_desktop_gfx(void (*log)(int, const char *, const char *));   /* desktop_gfx.cpp */
+const xrl_audio_ops *xrl_host_audio_ops(void);                       /* host/src/audio_ops.cpp (XAudio2) */
+void xrl_desktop_audio_set_log(xrl_log_fn log);                      /* desktop_audio.cpp */
 
 int main(int argc, char **argv)
 {
@@ -67,6 +70,14 @@ int main(int argc, char **argv)
         const xrl_gfx_ops *real = xrl_desktop_gfx(log_cb);
         if (!real) return 3;
         ctx.gfx = real;
+    }
+    /* real audio (the console host's XAudio2 op table) unless XRL_NO_AUDIO=1; the guest test
+     * suite (--fake-host) checks the stub table's values */
+    int fake_host = 0;
+    for (int i = 3; i < argc; i++) if (!strcmp(argv[i], "--fake-host")) fake_host = 1;
+    if (!fake_host && !(GetEnvironmentVariableA("XRL_NO_AUDIO", mb, sizeof mb) && mb[0] == '1')) {
+        xrl_desktop_audio_set_log(log_cb);
+        ctx.audio = xrl_host_audio_ops();
     }
     ctx.guest_mem_budget = (GetEnvironmentVariableA("XRL_TEST_BUDGET_MB", mb, sizeof mb) ? strtoull(mb, NULL, 10) : 1024ull) << 20;
     int rc = xrl_layer_boot(&ctx);

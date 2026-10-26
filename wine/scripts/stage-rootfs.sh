@@ -48,6 +48,15 @@ ca=/etc/ssl/certs/ca-certificates.crt
 mkdir -p "$dest/etc/ssl/certs"
 cp "$ca" "$dest/etc/ssl/certs/ca-certificates.crt"
 
+# xbox-rl's own builtin PE modules added after the prefix was baked have no fake DLL in system32,
+# and Wine does not find them there ("Failed to load module", status c0000135). The baked fakes
+# are byte-identical copies of the build's own files, so the real file does the job. (Re-baking
+# the prefix from a build that has the module would make this unnecessary.)
+sys32="$dest/prefix/drive_c/windows/system32"
+for m in winexrl.drv; do
+  [ -e "$sys32/$m" ] || { cp "$rootfs/usr/lib/wine/x86_64-windows/$m" "$sys32/$m" && log "stage: $m added to the prefix's system32"; }
+done
+
 bad=$(find "$rootfs" "$prefix" -type f -name '*[:*?"<>|\\]*' | head -5)
 [ -z "$bad" ] || die "file names NTFS cannot store (need the layer's U+F000 escaping): $bad"
 

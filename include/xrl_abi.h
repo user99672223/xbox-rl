@@ -175,6 +175,22 @@ typedef struct xrl_adapter_info {
     uint16_t description[128];        /* UTF-16, NUL-terminated               */
 } xrl_adapter_info;
 
+/* v2: what a D3D11 game asked for in DXGI_SWAP_CHAIN_DESC / DXGI_SWAP_CHAIN_DESC1
+ * (same numeric values as the DXGI enums). Zero width/height = window size. */
+typedef struct xrl_swapchain_desc {
+    uint32_t struct_size;             /* sizeof(xrl_swapchain_desc)           */
+    uint32_t width, height;
+    uint32_t buffer_count;
+    uint32_t dxgi_format;
+    uint32_t sample_count, sample_quality;
+    uint32_t buffer_usage;            /* DXGI_USAGE_*                         */
+    uint32_t swap_effect;             /* DXGI_SWAP_EFFECT_*                   */
+    uint32_t flags;                   /* DXGI_SWAP_CHAIN_FLAG_*               */
+    uint32_t windowed;
+    uint32_t reserved;
+    uint64_t hwnd;                    /* the guest's HWND; reported by GetHwnd only */
+} xrl_swapchain_desc;
+
 /*
  * Graphics forwarding. The host owns the CoreWindow and creates devices and
  * swapchains on its gfx thread (D3D creation on the Xbox UI thread hangs).
@@ -214,6 +230,20 @@ typedef struct xrl_gfx_ops {
     /* HRESULT behind the most recent failing gfx op on THIS thread; 0 if none. */
     int32_t    (*last_hresult)(void);
     xrl_status (*get_adapter_info)(xrl_adapter_info *out);
+
+    /* ---- v2, appended after the first presented frame ---- */
+    /* Swapchain for a D3D11 game: `d3d11_device` is the ID3D11Device* that
+     * d3d11on12_create returned, `d3d12_queue` the queue it was made with. The
+     * result is NOT the DXGI swapchain of the OS but an IDXGISwapChain1 object
+     * made by gfx/ that the guest calls directly: GetBuffer(0, ID3D11Texture2D)
+     * returns one stable D3D11 texture, Present copies it into the current
+     * buffer of a flip-model D3D12 swapchain on the host window and presents
+     * (the D3D11 swapchain contract on top of D3D11On12). Release it with
+     * `release`. */
+    xrl_status (*d3d11_create_swapchain)(xrl_handle d3d11_device,
+                                         xrl_handle d3d12_queue,
+                                         const struct xrl_swapchain_desc *desc,
+                                         xrl_handle *out_swapchain);
 } xrl_gfx_ops;
 
 /* Audio forwarding -> native XAudio2 (xaudio2_9.dll on the console). */

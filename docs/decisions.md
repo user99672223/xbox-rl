@@ -417,6 +417,105 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   is an open question whether the module the bootstrapper loads into its own process
   has to stay next to the game; that cannot be decided before the module can be
   downloaded.
+- **2026-10-26 — Sound: `winexrl.drv`, an mmdevapi driver over `xrl_audio_ops`.** Wine logged
+  `No driver from L"pulse,alsa,oss,coreaudio" could be initialized`, so every WASAPI client failed in
+  `GetDefaultAudioEndpoint`. Design choice: a **new Wine mmdevapi driver** (Wine patch 0023,
+  `dlls/winexrl.drv`, a unix library like winealsa.drv with an empty PE stub) instead of an XAudio2
+  forwarder. Wine's own `xaudio2_7/8/9` are FAudio on top of WASAPI, DirectSound and winmm waveOut are
+  too, and Wwise's WASAPI sink talks to mmdevapi directly: one driver under mmdevapi serves all of them
+  with no XAudio2 COM-object forwarding and no callback thunking. mmdevapi's default driver list now
+  starts with `xrl`.
+  - **Device and formats.** One render endpoint, "Xbox Audio" (no capture endpoint), mix format
+    float32 / 2 ch / 48 kHz. IEEE float 32 and PCM 16 (1-8 channels, 1-200 kHz) pass straight to the
+    host's source voices, PCM 8/24/32 are converted to float on the way (XAudio2 does the rate
+    conversion); anything else (more than 8 channels...) gets S_FALSE from `IsFormatSupported`, and
+    mmdevapi then offers the mix format, as on Windows. Shared mode only. Volumes (`set_volumes`) are applied in software when handing data to the host.
+  - **Streaming.** App -> `GetBuffer`/`ReleaseBuffer` -> a ring -> the timer thread (a PE thread inside a
+    unix call, as in every Wine driver) -> `voice_submit_buffer`, one XAudio2 source voice per WASAPI
+    stream on one mastering voice (2 ch, 48 kHz) made on first use. **Pacing comes from the host:** each
+    period (10 ms) the thread asks `voice_get_state` (ABI v2, `SamplesPlayed`) how much the voice has
+    played, keeps four periods queued at the host and signals the app's event, so padding and
+    `GetPosition` follow the host's audio device and the app needs no clock of its own (a host without
+    `voice_get_state` is paced by the wall clock). The queued frames are *hidden* from the app as in
+    winealsa (padding = written - played - hidden, ring = buffer + hidden, `GetStreamLatency` = hidden
+    = 40 ms): without it the app can never have more than its 30 ms buffer outstanding and the host
+    queue ran dry between two ticks of the coarse Windows timer (15.6 ms; the layer's sleeps do not
+    get finer), which starved the stream at 90% of real time (measured; fixed, ratio now 1.00).
+    `Reset` makes a new voice because the host ABI cannot flush.
+  - **Host side.** `host/src/audio_ops.cpp` gained `voice_get_state` (the slot existed in the ABI,
+    the console host never filled it), COM initialisation on whichever guest thread creates voices
+    (`CreateMasteringVoice` failed with CO_E_NOTINITIALIZED from a Wine thread), and per-voice
+    counters: one log line `voice X: N buffers, M frames so far; last K buffers peak P` about every
+    second of audio, so a log proves buffers arrive and how loud they are. The desktop test host now
+    compiles that same file (`layer/tests/desktop_audio.cpp` + a stand-in `pch.h`) and plays through
+    the laptop's XAudio2; `XRL_NO_AUDIO=1` keeps the old stubs.
+  - **Test.** `wine/tests/pe/xrl_audio_test.c` (WASAPI shared: event-driven float, polling, event-driven
+    PCM16, PCM24 and PCM8, a refused 12-channel format, stop/reset/start, and Wine's XAudio2 on top) all pass under Wine on
+    the layer: 2 s of audio take 1.96-1.98 s of wall clock (ratio 1.00), 480-frame buffers arrive at
+    the host at 100/s with peak 0.100 (the tone's amplitude); `results/desktop-wine-audio-1.txt`.
+    Not listened to by a person; not run on the console.
+  - **Prefix.** The baked prefix predates the module, and Wine does not find a builtin that has no
+    fake DLL in `system32` (status c0000135); `stage-rootfs.sh` copies `winexrl.drv` there (the baked
+    fakes are byte-identical copies of the build's files). Re-baking from a build that has the module
+    makes this unnecessary.
+  - **Build flags gotcha.** After editing `configure.ac` for a new directory, `config.status --recheck`
+    loses the cross flags (they come from the environment: `x86_64_CFLAGS` became `-g -O2`, the
+    rebuilt PE DLLs grew by 17 MB). Re-run it as `CROSSCFLAGS=-O1 ./config.status --recheck` and
+    delete the objects built in between.
+
+- **2026-10-26 — First frames on screen: a D3D11 program presents through the whole stack.**
+  `wine/tests/pe/xrl_present_test.c` (Windows x64, mingw) creates a window, a D3D11 device and
+  swapchains by every route a game uses (`IDXGIFactory::CreateSwapChain`,
+  `IDXGIFactory2::CreateSwapChainForHwnd`, `D3D11CreateDeviceAndSwapChain`; discard, flip-discard,
+  flip-sequential; R8G8B8A8 and B8G8R8A8; 1-3 buffers), clears to changing colours, presents, resizes
+  once, and reads a pixel back each frame. Under Wine on the layer with `XRL_REAL_GFX=1` all of them
+  work, and `tools/test-present.sh` screenshots the host window for each and finds the colour the
+  program last presented (51,153,255) in the centre (`results/present-N.png`,
+  `results/desktop-wine-present-1.txt`); with `PATTERN=1` the program holds four quadrants
+  (red, green / blue, yellow) and the screenshot has them in the right places and channel order for
+  both RGBA and BGRA (`results/present-pattern-N.png`). What was missing and is now there:
+  - **A D3D11 swapchain object (`gfx/src/d3d11_swapchain.cpp`, ABI v2 append
+    `xrl_gfx_ops.d3d11_create_swapchain` + `xrl_swapchain_desc`).** Wine's dxgi used to return the host's
+    raw `IDXGISwapChain3`, whose `GetBuffer(IID_ID3D11Texture2D)` fails (`E_NOINTERFACE`), so no D3D11
+    program could even start rendering. The new object is an `IDXGISwapChain1` implemented in gfx/
+    (native vtable, handed to the guest like every other host COM object): `GetBuffer(0)` returns ONE
+    stable D3D11 texture on the game's own device; `Present` copies (or resolves, for MSAA) it into the
+    current buffer of the real flip-model swapchain through `ID3D11On12Device` wrapped resources
+    (acquire, copy, release to PRESENT, flush) and presents that. Chosen over exposing the rotating
+    buffers: D3D11 games take their render-target view once and keep it, flip model included, and a
+    copy per frame also makes discard/sequential semantics, sRGB views and MSAA trivially right. Cost:
+    one full-frame copy per Present (bandwidth only; to be measured on the console). Implemented in
+    gfx/ rather than as a Wine-side wrapper: real headers, no hand-written COM vtables in PE C, and the
+    layer already routes calls into host objects. Not IDXGISwapChain2+ on purpose (the
+    frame-latency waitable object is a native handle the guest cannot wait on), buffer index > 0 is
+    refused (D3D11 only exposes buffer 0), fullscreen/ResizeTarget are accepted and ignored (the host
+    owns the window), `GetContainingOutput` fails (Wine's dxgi owns the outputs the game enumerated).
+    The D3D12 path (game passes its own queue) still gets the raw host swapchain.
+  - **Wine 0021.** `xrlhost` call `XRL_CALL_GFX_D3D11_CREATE_SWAPCHAIN`; dxgi's native-swapchain helper
+    picks it for devices that `d3d11.dll` created, so does `D3D11CreateDeviceAndSwapChain`; the
+    device-to-queue lookup now compares the `ID3D11Device` identity (a game may pass `IDXGIDevice`) and
+    replaces a stale record when a freed device's address comes back. Appended ABI members are checked
+    against the host table's `struct_size` (`NEED_V`). (QueryInterface for `IID_IUnknown` on a D3D11On12
+    device from guest code crashed inside d3d11.dll, so the identity is taken with `IID_ID3D11Device`;
+    not investigated further.)
+  - **Wine 0022, tick counts.** The console's real `KUSER_SHARED_DATA` counts clock ticks (64 Hz,
+    `TickCountMultiplier` 0x0fa00000); Wine ignored the multiplier because its own copy counts
+    milliseconds, so `GetTickCount`, `GetTickCount64`, `NtGetTickCount` (both sides) and window-message
+    timestamps ran 15.6x slow. The first thing to notice was a test that waited on `GetTickCount` and
+    never finished. Every game timer that is not QPC (`timeGetTime`, `GetTickCount`) was affected.
+  - Test tooling: `wine/tests/build-pe-tests.sh`, `tools/capture-window.ps1` (screenshots the host
+    window of the right `xrl_test_host`, retries until the colour shows),
+    `tools/test-present.sh` (needs `XRL_ROOTFS`). `stage-rootfs.sh` died silently under `pipefail` when
+    generating `etc/machine-id` (`tr | head -c`), so a first staging produced no symlink table.
+  - Seen, not fixed (informational config 9 of the test): a game that takes its factory from the
+    D3D11On12 device (`IDXGIDevice::GetAdapter` -> `GetParent`) gets the host's own DXGI factory, and
+    `CreateSwapChain` on it with the game's (Wine) HWND succeeds without touching our code and
+    presents nowhere visible. Unreal-style code takes the factory from `CreateDXGIFactory`, which is
+    Wine's; if Rocket League does not, its device would have to be wrapped.
+  - Console path: `gfx\build.ps1 -Uwp` (CoreWindow swapchain, UWP link check) still builds, zero
+    warnings; the new object is created by the same `HostSwapchainCreate` that `create_swapchain` uses
+    (CoreWindow on the console, `cfg.test_hwnd` on the laptop), so `CreateSwapChainForCoreWindow`
+    remains the only window-specific call. Not run on the console.
 
 - **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
   ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
