@@ -332,13 +332,26 @@ static slong remote_ptrace(xrl_task *k, int req, u64 addr, u64 data)
         if (olen != 8) { free(out); return -LX_EIO; }
         e = xrl_ctu(data, out, 8) ? -LX_EFAULT : 0; free(out); return e; }
     case 4: case 5: return rcall(k, 11 /* POKE */, addr, 0, &data, 8, NULL, NULL) ? -LX_EIO : 0;
-    case 12: case 0x4204: {
+    case 14: case 0x4204: if (req == 14 || addr == 2) {   /* GETFPREGS, GETREGSET(NT_PRFPREG) */
+        if ((e = rcall(k, 18 /* GETFP */, 0, 0, NULL, 0, &out, &olen))) return e;
+        if (req == 14) { e = xrl_ctu(data, out, olen) ? -LX_EFAULT : 0; free(out); return e; }
+        u64 iov[2]; if (xrl_cfu(iov, data, 16)) { free(out); return -LX_EFAULT; }
+        u64 n = iov[1] < olen ? iov[1] : olen; iov[1] = n;
+        e = (xrl_ctu(iov[0], out, (size_t)n) || xrl_ctu(data, iov, 16)) ? -LX_EFAULT : 0; free(out); return e; }
+        /* fall through */
+    case 12: {
         if ((e = rcall(k, 12 /* GETREGS */, 0, 0, NULL, 0, &out, &olen))) return e;
         if (req == 12) { e = xrl_ctu(data, out, olen) ? -LX_EFAULT : 0; free(out); return e; }
         u64 iov[2]; if (xrl_cfu(iov, data, 16)) { free(out); return -LX_EFAULT; }
         u64 n = iov[1] < olen ? iov[1] : olen; iov[1] = n;
         e = (xrl_ctu(iov[0], out, (size_t)n) || xrl_ctu(data, iov, 16)) ? -LX_EFAULT : 0; free(out); return e; }
-    case 13: case 0x4205: {
+    case 15: case 0x4205: if (req == 15 || addr == 2) {   /* SETFPREGS, SETREGSET(NT_PRFPREG) */
+        u8 f[512]; u64 src = data;
+        if (req == 0x4205) { u64 iov[2]; if (xrl_cfu(iov, data, 16) || iov[1] < sizeof f) return -LX_EINVAL; src = iov[0]; }
+        if (xrl_cfu(f, src, sizeof f)) return -LX_EFAULT;
+        return rcall(k, 19 /* SETFP */, 0, 0, f, sizeof f, NULL, NULL); }
+        /* fall through */
+    case 13: {
         u64 r[27]; u64 src = data;
         if (req == 0x4205) { u64 iov[2]; if (xrl_cfu(iov, data, 16) || iov[1] < sizeof r) return -LX_EINVAL; src = iov[0]; }
         if (xrl_cfu(r, src, sizeof r)) return -LX_EFAULT;
@@ -408,7 +421,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
     wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
     wchar_t *cur = GetEnvironmentStringsW();
     for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
-        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE=", 11) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE=", 11) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16) && wcsncmp(e, L"XRL_DBT_MEMFD=", 14)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
     FreeEnvironmentStringsW(cur);
     for (int i = 0; i < 256; i++) {
         u64 sp; char s[4096];
@@ -432,6 +445,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
     char pname[128] = "";
     HANDLE pipe = INVALID_HANDLE_VALUE;
     if (traced) {
+        { const wchar_t *kv = L"XRL_DBT_MEMFD=1"; size_t kl = wcslen(kv) + 1; memcpy(o, kv, kl * sizeof(wchar_t)); o += kl; }
         snprintf(pname, sizeof pname, "\\\\.\\pipe\\xrl-tracee-%lu-%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
         pipe = CreateNamedPipeA(pname, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT, 1, 1 << 16, 1 << 16, 0, NULL);
         if (pipe == INVALID_HANDLE_VALUE) { free(blk); spawn_slot_give(); return -LX_EAGAIN; }

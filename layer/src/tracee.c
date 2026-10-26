@@ -15,7 +15,7 @@
  */
 #include "xrl_internal.h"
 
-enum { TR_HELLO = 1, TR_STOP, TR_RESP, TR_PEEK = 10, TR_POKE, TR_GETREGS, TR_SETREGS, TR_CONT, TR_MAPS, TR_KILL, TR_DETACH };
+enum { TR_HELLO = 1, TR_STOP, TR_RESP, TR_PEEK = 10, TR_POKE, TR_GETREGS, TR_SETREGS, TR_CONT, TR_MAPS, TR_KILL, TR_DETACH, TR_GETFP, TR_SETFP };
 
 int xrl_tr_send(HANDLE h, u32 op, u64 a, u64 b, const void *p, u32 len)
 {
@@ -69,7 +69,7 @@ static int poke(u64 addr, const void *src, size_t n)
 }
 
 /* answer requests until the tracer continues (or detaches/kills) the tracee. regs: user_regs_struct */
-static void serve(u64 regs[27])
+static void serve(u64 regs[27], u8 fp[512])
 {
     for (;;) {
         u32 op, len; u64 a, b; void *p;
@@ -85,6 +85,8 @@ static void serve(u64 regs[27])
         case TR_POKE: xrl_tr_send(g_tr, TR_RESP, (u64)(s64)poke(a, p, len), 0, NULL, 0); break;
         case TR_GETREGS: xrl_tr_send(g_tr, TR_RESP, 0, 0, regs, 27 * 8); break;
         case TR_SETREGS: if (len == 27 * 8) { memcpy(regs, p, len); xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); } else xrl_tr_send(g_tr, TR_RESP, (u64)(s64)-LX_EINVAL, 0, NULL, 0); break;
+        case TR_GETFP: xrl_tr_send(g_tr, TR_RESP, 0, 0, fp, 512); break;
+        case TR_SETFP: if (len == 512) { memcpy(fp, p, 512); xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); } else xrl_tr_send(g_tr, TR_RESP, (u64)(s64)-LX_EINVAL, 0, NULL, 0); break;
         case TR_MAPS: {
             size_t cap = 1 << 20; char *t = (char *)malloc(cap);
             size_t n = xrl_mem_format_maps(t, cap);
@@ -113,8 +115,10 @@ void xrl_tracee_boot(u64 *entry, u64 *sp)
     InterlockedExchange(&g_tr_on, 1);
     u64 regs[27] = { 0 };
     regs[15] = (u64)-1; regs[16] = *entry; regs[17] = 0x33; regs[18] = 0x202; regs[19] = *sp; regs[20] = 0x2b;
+    u8 fp[512] = { 0 };
+    *(u16 *)fp = 0x37f; *(u32 *)(fp + 24) = 0x1f80; *(u32 *)(fp + 28) = 0xffff;   /* the state a new process starts with */
     xrl_tr_send(g_tr, TR_HELLO, *entry, *sp, NULL, 0);
-    serve(regs);
+    serve(regs, fp);
     *entry = regs[16]; *sp = regs[19];
     LOGW("tracee: continues at %llx, stack %llx", *entry, *sp);
 }
@@ -127,8 +131,11 @@ void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
     r[0] = c->R15; r[1] = c->R14; r[2] = c->R13; r[3] = c->R12; r[4] = c->Rbp; r[5] = c->Rbx; r[6] = c->R11; r[7] = c->R10;
     r[8] = c->R9; r[9] = c->R8; r[10] = c->Rax; r[11] = c->Rcx; r[12] = c->Rdx; r[13] = c->Rsi; r[14] = c->Rdi;
     r[15] = (u64)-1; r[16] = c->Rip + 1; r[17] = 0x33; r[18] = c->EFlags; r[19] = c->Rsp; r[20] = 0x2b; r[21] = t->guest_tp;
+    u8 fp[512];
+    memcpy(fp, &c->FltSave, sizeof fp);   /* XMM_SAVE_AREA32 is the FXSAVE layout, as Linux's user_fpregs_struct */
     xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);
-    serve(r);
+    serve(r, fp);
+    memcpy(&c->FltSave, fp, sizeof fp);
     c->R15 = r[0]; c->R14 = r[1]; c->R13 = r[2]; c->R12 = r[3]; c->Rbp = r[4]; c->Rbx = r[5]; c->R11 = r[6]; c->R10 = r[7];
     c->R9 = r[8]; c->R8 = r[9]; c->Rax = r[10]; c->Rcx = r[11]; c->Rdx = r[12]; c->Rsi = r[13]; c->Rdi = r[14];
     c->Rip = r[16]; c->EFlags = (DWORD)r[18]; c->Rsp = r[19];

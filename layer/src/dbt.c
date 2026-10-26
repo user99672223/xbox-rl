@@ -494,7 +494,10 @@ int xrl_dbt_wanted(const char *path)
 static int policy_on(void);
 int xrl_dbt_wanted_file(const char *gpath)
 {
-    return xrl_dbt_wanted(gpath) || (gpath && !strncmp(gpath, "/memfd:", 7) && policy_on());
+    static int memfd_env = -1;   /* XRL_DBT_MEMFD=1: set for a process its tracer started (task.c): the library its tracer puts into it
+                                  * through a memfd is the same kind of module as the one the bootstrapper downloaded */
+    if (memfd_env < 0) { char v[4]; memfd_env = GetEnvironmentVariableA("XRL_DBT_MEMFD", v, sizeof v) && v[0] == '1'; }
+    return xrl_dbt_wanted(gpath) || (gpath && !strncmp(gpath, "/memfd:", 7) && (policy_on() || memfd_env));
 }
 
 /* A Windows PE image (the EAC bootstrapper): Windows code executes `syscall` as a Windows system call, but
