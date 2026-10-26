@@ -572,7 +572,13 @@ SYS(munmap)
     }
     return xrl_mem_munmap(addr, len);
 }
-SYS(mprotect) { UNUSED6; return xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3); }
+SYS(mprotect)
+{
+    UNUSED6;
+    slong r = xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3);
+    if (!r && (a3 & LX_PROT_EXEC)) xrl_dbt_exec_hint((u64)a1, (u64)a2);   /* dbt.c: Windows images loaded by Wine */
+    return r;
+}
 SYS(mremap) { UNUSED6; return xrl_mem_mremap((u64)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5); }
 SYS(brk) { UNUSED6; return xrl_mem_brk((u64)a1); }
 SYS(madvise) { UNUSED6; return xrl_mem_madvise((u64)a1, (u64)a2, (int)a3); }

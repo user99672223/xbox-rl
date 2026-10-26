@@ -144,6 +144,61 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — TLS for Wine (gnutls on musl), and what the real EAC bootstrapper
+  does next: it needs raw Linux system calls from Windows code.** The bootstrapper's
+  libcurl has only the schannel backend, so it needs Wine's schannel, which needs
+  gnutls (dlopen'ed by secur32/bcrypt, only if Wine is configured `--with-gnutls`).
+  - `wine/scripts/build-gnutls.sh` builds nettle 3.10.2 (mini-gmp, no assembler) and
+    gnutls 3.8.12 (included libtasn1/unistring, no p11-kit, no zlib, no non-Suite-B curves)
+    against our musl into `$WORK/deps` (pins and sha256 recorded when first fetched,
+    2026-10-26); `build-wine.sh` configures `--with-gnutls` when `deps/` exists and
+    installs `libgnutls.so.30`, `libnettle.so.8`, `libhogweed.so.6` into the rootfs
+    (the thread-pointer check covers them). Costs: the whole unix side rebuilds once,
+    about 6 MB more in the rootfs, Wine logs "Compiled without DH support".
+  - Verified on the layer without Wine (`layer/tests/tls-test.sh`): gnutls does a TLS 1.3
+    handshake with certificate verification against the CA bundle and an HTTPS request
+    to `modules-cdn.eac-prod.on.epicgames.com` (DNS, Winsock sockets, handshake).
+  - Verified through Wine: the bootstrapper's download now succeeds (curl: "No error (0)
+    Response Code: 200", a 12 MB blob; it keeps it in memory, there is no file). The blob
+    is not an ELF (no header; the bootstrapper unpacks and loads it itself), so nothing
+    was read from it or run.
+  - **Side effect, stated:** with TLS working the bootstrapper no longer takes its
+    "CDN unreachable, launching with null client" fallback, so `RocketLeague_EAC.exe`
+    now stops at "Failed to load the anti-cheat module" instead of starting the game.
+    Epic's own switch `EOS_USE_ANTICHEATCLIENTNULL=1` (the bootstrapper's debug
+    variable; `XRL_ENV_EOS_USE_ANTICHEATCLIENTNULL=1` through the test host) gives the
+    old behaviour, which is what the exec-handover check on the real bootstrapper needs.
+    Running `RocketLeague.exe` directly (tools/run-rl.sh) is not affected.
+  - **Where it stops (the next job).** After the download the log says "Starting Wine
+    module mapping, Wine version: 11.0." and, in the same millisecond, "Failed to map the
+    anti-cheat module." Reading the bootstrapper (static disassembly, strings): the
+    mapping routine (function at 0x140034a30 -> 0x14001cc10) checks a global (0x14038b340)
+    that, when set, makes it call `syscall3(nr, ...)` wrappers that are **raw `syscall`
+    instructions in the Windows executable** (wrappers at 0x14004b9f0 and neighbours:
+    `mov rax,rcx; mov rdi,rdx; mov rsi,r8; mov rdx,r9; syscall`), with Linux numbers:
+    `memfd_create` (319, flags MFD_ALLOW_SEALING) and `write` (1) to put the unpacked
+    module into an anonymous file, then (strings) `/proc/%i/maps` to find libc ("libc.so",
+    "/libc-"), `dlopen`/`dlsym`/`__libc_dlopen_mode` in it, `/proc/self/fd/%i` and
+    `/tmp/eac_wine_pid_%X`. On Linux a PE `syscall` really is a Linux system call; here the
+    Windows kernel would execute it, and no `memfd_create` was ever issued in our run: the
+    global is null, and nothing in the executable stores to it directly (it is set through
+    something else; not found). Two consequences to plan for: **(1)** raw Linux `syscall`s in
+    *Windows* code must reach the layer (what `dbt.c` does for ELF code can do the same for
+    the PE pages that hold a `syscall`; a first version is in: when the program being run
+    matches the `XRL_DBT` policy (default `easyanticheat,_eac`), a range that becomes
+    executable inside a Windows image gets its `syscall` pages translated: for the
+    bootstrapper that is the page of the wrappers and one page of data that decodes as a
+    `syscall`; no call through them was observed yet); **(2)** its libc discovery looks for
+    a mapping named like glibc's libc, which our musl mapping (`/lib/ld-musl-x86_64.so.1`)
+    is not: the module it loads is glibc-built (our glibc-ABI shim answers its symbol
+    needs), so this is an ABI adaptation to settle with care, not by renaming things to
+    look like glibc. Not done, and not guessed.
+  - The PE translation has limits beyond the ELF ones: code in translated pages has no
+    Windows unwind data (an exception inside it cannot be unwound; only the pages with a
+    `syscall` are translated), and the cache for a Windows image has to sit within 2 GiB
+    of it (it is searched for in 4 MiB steps from the image, in the address space Wine
+    manages with fixed addresses).
+
 - **2026-10-26 — Easy Anti-Cheat module byte-identical: chosen (b), translation
   into a code cache next to the image (`layer/src/dbt.c`, `layer/asm/dbt.asm`),
   selected with `XRL_DBT`. Rewriting in place stays the default for everything
@@ -300,7 +355,8 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     on the laptop harness.
 
   Verified on the real bootstrapper (laptop harness, `XRL_TEST_BUDGET_MB=1536`):
-  `RocketLeague_EAC.exe` reads its settings, fails the module download in TLS, takes its
+  `RocketLeague_EAC.exe` reads its settings, fails the module download in TLS (before gnutls
+  was added; now use `EOS_USE_ANTICHEATCLIENTNULL=1`, see the TLS entry), takes its
   own null-client path, and its `CreateProcess` of `RocketLeague.exe` becomes the handover
   ("this process hands the OS process to ...Win64\RocketLeague.exe", 92 -> 30 MiB
   committed after the old image is released); the game then starts as the new process and

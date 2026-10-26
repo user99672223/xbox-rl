@@ -121,6 +121,7 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
 
     REhdr eh;
     if (pread_all(f, &eh, sizeof eh, 0)) return;
+    if (eh.ident[0] == 'M' && eh.ident[1] == 'Z') return;           /* a Windows image: not ours (dbt.c xrl_dbt_exec_hint) */
     if (memcmp(eh.ident, "\177ELF", 4) || eh.ident[4] != 2 || eh.ident[5] != 1 || eh.machine != 62) return;
     if (eh.flags == XRL_ELF_E_FLAGS_CLEAN) return;                 /* verified clean at build time */
     if (eh.phentsize != sizeof(RPhdr) || eh.phnum == 0 || eh.phnum > 128) return;

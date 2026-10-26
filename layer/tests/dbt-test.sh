@@ -9,8 +9,8 @@
 cd "$(dirname "$0")/.."
 fail=0
 standin() { sh tests/glibc/run-standin.sh 2>&1; }
-echo "== stand-in module, rewritten (control)"
-n=$(standin | sed -n 's/.*differs from the file in \([0-9]*\) byte.*/\1/p')
+echo "== stand-in module, rewritten in place (control, XRL_DBT=0)"
+n=$(XRL_DBT=0 standin | sed -n 's/.*differs from the file in \([0-9]*\) byte.*/\1/p')
 echo "   bytes changed in its own code: $n"
 [ -n "$n" ] && [ "$n" -gt 0 ] || { echo "   FAIL: expected the rewriter's patches to be visible"; fail=1; }
 echo "== stand-in module, translated (XRL_DBT=standin)"

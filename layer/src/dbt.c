@@ -85,10 +85,23 @@ static u64 cm_get(u64 o)
     }
 }
 
-static void cm_put(u64 o, u64 t)
+static void cm_forget(u64 o)
 {
     for (u32 i = (u32)((o * 0x9e3779b97f4a7c15ull) >> (64 - CM_BITS));; i = (i + 1) & ((1u << CM_BITS) - 1)) {
-        if (g_cmap[i].o == o || !g_cmap[i].o) { g_cmap[i].o = o; g_cmap[i].t = t; break; }
+        if (g_cmap[i].o == o) { g_cmap[i].t = 0; return; }
+        if (!g_cmap[i].o) return;
+    }
+}
+
+static u32 g_ncm;
+static int g_cm_full;     /* the map is too full to take more: the translation in progress fails */
+
+static void cm_put(u64 o, u64 t)
+{
+    if (g_ncm >= (3u << CM_BITS) / 4) { if (!g_cm_full) LOGE("dbt: translation map full (%u entries)", g_ncm); g_cm_full = 1; return; }
+    for (u32 i = (u32)((o * 0x9e3779b97f4a7c15ull) >> (64 - CM_BITS));; i = (i + 1) & ((1u << CM_BITS) - 1)) {
+        if (g_cmap[i].o == o) { g_cmap[i].t = t; break; }
+        if (!g_cmap[i].o) { g_cmap[i].o = o; g_cmap[i].t = t; g_ncm++; break; }
     }
     if (g_npend < (int)(sizeof g_pend / sizeof g_pend[0])) { g_pend[g_npend].o = o; g_pend[g_npend].t = t; g_npend++; }
 }
@@ -226,7 +239,10 @@ static int translate_trace(dimg *im, u64 pc)
         const u8 *p = (const u8 *)pc;
         u64 end = img_of(pc)->hi;
         x86i in;
-        int len = x86_decode(p, (size_t)(end - pc < 15 ? end - pc : 15), &in);
+        /* an instruction may straddle the end of the translated range: read on while the memory is mapped */
+        size_t avail = (size_t)(end - pc);
+        if (avail < 15) { avail = 15; while (avail > (size_t)(end - pc) && !xrl_mem_is_mapped(pc + avail - 1)) avail--; }
+        int len = x86_decode(p, avail, &in);
         if (!len) { emit_ud2(im, pc, "an undecodable instruction"); return 0; }
         u64 next = pc + (u64)len;
         u8 b[640]; int n;
@@ -362,7 +378,12 @@ static u64 translate_locked(u64 pc)
             memcpy(g_fix[i].site, &d, 4);
         }
     }
-    if (!ok) { LOGE("dbt: %s: translation of %llx failed", im->name, pc); return 0; }
+    if (g_cm_full) ok = 0;
+    if (!ok) {
+        LOGE("dbt: %s: translation of %llx failed", im->name, pc);
+        for (int i = 0; i < g_npend; i++) cm_forget(g_pend[i].o);               /* what was half built */
+        return 0;
+    }
     FlushInstructionCache(GetCurrentProcess(), im->cache + used0, (SIZE_T)(im->used - used0));
     for (int i = 0; i < g_npend; i++) tab_put(g_pend[i].o, g_pend[i].t);
     InterlockedAdd64(&g_ntrans, g_npend);
@@ -427,18 +448,81 @@ int xrl_dbt_wanted(const char *path)
     if (mode < 0) {
         char v[256];
         DWORD n = GetEnvironmentVariableA("XRL_DBT", v, sizeof v);
-        if (!n) { mode = 2; strcpy_s(list, sizeof list, "easyanticheat"); }   /* the default: the anti-cheat's own modules */
+        if (!n) { mode = 2; strcpy_s(list, sizeof list, "easyanticheat,_eac"); }   /* the default: the anti-cheat's own modules */
         else if (n >= sizeof v || !strcmp(v, "0")) mode = 0;
         else if (!strcmp(v, "1")) mode = 1;
         else { mode = 2; strcpy_s(list, sizeof list, v); }
     }
     if (mode == 0) return 0;
     if (mode == 1) return 1;
-    char buf[256]; strcpy_s(buf, sizeof buf, list);
-    char *ctx = NULL;
-    for (char *tok = strtok_s(buf, ",", &ctx); tok; tok = strtok_s(NULL, ",", &ctx))
-        if (*tok && path && strstr(path, tok)) return 1;
+    char buf[256], low[512]; strcpy_s(buf, sizeof buf, list);
+    size_t n = 0;
+    for (; path && path[n] && n < sizeof low - 1; n++) low[n] = (char)((path[n] >= 'A' && path[n] <= 'Z') ? path[n] + 32 : path[n]);
+    low[n] = 0;
+    for (char *tok = buf, *ctx = NULL, *t = strtok_s(buf, ",", &ctx); t; t = strtok_s(NULL, ",", &ctx)) {
+        char lt[64]; size_t k = 0;
+        for (; t[k] && k < sizeof lt - 1; k++) lt[k] = (char)((t[k] >= 'A' && t[k] <= 'Z') ? t[k] + 32 : t[k]);
+        lt[k] = 0;
+        if (k && strstr(low, lt)) return 1;
+        (void)tok;
+    }
     return 0;
+}
+
+/* A Windows PE image (the EAC bootstrapper): Windows code executes `syscall` as a Windows system call, but
+ * this one issues raw LINUX system calls (memfd_create, write, mmap...: it loads the downloaded module
+ * itself). Only the pages that hold a `syscall` instruction are translated, so that those calls reach the
+ * layer; the rest of the image runs natively (translated frames have no unwind data, which Windows
+ * exceptions need). `[addr, addr+len)` is a mapped executable section, readable now. */
+void xrl_dbt_attach_pe(const char *name, u64 addr, u64 len)
+{
+    if (img_of(addr)) return;     /* already translated */
+    u32 npg = (u32)((len + LX_PAGE - 1) / LX_PAGE);
+    u8 *mark = (u8 *)calloc(npg ? npg : 1, 1);
+    if (!mark) return;
+    const u8 *p = (const u8 *)addr;
+    size_t i = 0, found = 0;
+    while (i + 2 <= len) {
+        x86i in;
+        size_t avail = len - i < 15 ? len - i : 15;
+        int l = x86_decode(p + i, avail, &in);
+        if (!l) { i++; continue; }
+        if (!in.vex && in.map == 1 && in.opcode == 0x05) { mark[i / LX_PAGE] = 1; found++; }
+        i += (size_t)l;
+    }
+    for (u32 pg = 0; pg < npg;) {
+        if (!mark[pg]) { pg++; continue; }
+        u32 e = pg;
+        while (e < npg && mark[e]) e++;
+        LOGI("dbt: %s: %zu `syscall` instruction(s) in a Windows image; translating pages %llx-%llx", name, found, addr + (u64)pg * LX_PAGE, addr + (u64)e * LX_PAGE);
+        xrl_dbt_attach(name, addr + (u64)pg * LX_PAGE, (u64)(e - pg) * LX_PAGE);
+        pg = e;
+    }
+    free(mark);
+}
+
+/* Wine loads a PE image into anonymous memory (pread, not mmap) and then mprotects the sections. When a range
+ * becomes executable inside a Windows image (an "MZ" header a few pages below) and the program being run is
+ * one of the anti-cheat's (its command line matches the XRL_DBT policy), look for raw `syscall`s. */
+void xrl_dbt_exec_hint(u64 addr, u64 len)
+{
+    static int mode = -1;
+    if (mode < 0) mode = G.argc > 1 && G.argv[1] && xrl_dbt_wanted(G.argv[1]);
+    if (!mode || len < LX_PAGE || len > (64u << 20) || (addr & (LX_PAGE - 1))) return;
+    for (int back = 1; back <= 8; back++) {
+        u64 hdr = addr - (u64)back * LX_PAGE;
+        if (!xrl_mem_is_mapped(hdr)) return;
+        const u8 *h = (const u8 *)hdr;
+        if (h[0] == 'M' && h[1] == 'Z') {
+            u32 lfa = *(const u32 *)(h + 0x3c);
+            if (lfa < LX_PAGE - 4 && !memcmp(h + lfa, "PE\0\0", 4)) {
+                char name[160];
+                snprintf(name, sizeof name, "%s (Windows image at %llx)", G.argv[1], hdr);
+                xrl_dbt_attach_pe(name, addr, len);
+            }
+            return;
+        }
+    }
 }
 
 /* The mapping [addr, addr+len) of `name` becomes translated code. */
@@ -451,8 +535,18 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
     cap = ALIGN_UP(cap, LX_PAGE);
     len = ALIGN_UP(len, LX_PAGE);
     /* RIP-relative operands and direct jumps need the cache within 2 GiB of the image: right after it, else anywhere near */
-    slong cm = xrl_mem_mmap(addr + len, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
-                            LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE | LX_MAP_FIXED_NOREPLACE, -1, 0);
+    slong cm = -1;
+    /* up in 4 MiB steps from the image, then down: a Windows image sits far from the guest arena, in space
+     * Wine manages with fixed addresses, and the first free stretch near it is what is wanted */
+    for (int k = 0; k < 512 && cm < 0; k++) {
+        u64 step = (u64)(k & 255) * (4u << 20), a;
+        if (k < 256) a = ALIGN_UP(addr + len, 0x10000) + step;
+        else a = addr > cap + step + 0x10000 ? addr - cap - step : 0;
+        if (a < 0x10000) continue;
+        cm = xrl_mem_mmap(a, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
+                          LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE | LX_MAP_FIXED_NOREPLACE, -1, 0);
+        if (cm >= 0 && ((u64)cm > addr ? (u64)cm + cap - addr : addr + len - (u64)cm) > 0x70000000ull) { xrl_mem_munmap((u64)cm, cap); cm = -1; }
+    }
     if (cm < 0) cm = xrl_mem_mmap(0, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
                                   LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
     if (cm < 0) { LOGE("dbt: %s: no memory for the code cache (%lld)", name, cm); goto out; }

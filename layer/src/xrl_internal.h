@@ -464,6 +464,8 @@ void xrl_rewrite_fd_mapped(int fd, u64 addr, u64 len, s64 off, int prot);
 #define XRL_SYS_DBT_ENTER 0x10010      /* layer-private: dbt.asm asks for the translation of rdi */
 int   xrl_dbt_wanted(const char *path);
 int   xrl_dbt_attach(const char *name, u64 addr, u64 len);
+void  xrl_dbt_attach_pe(const char *name, u64 addr, u64 len);
+void  xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable (mprotect) */
 u64   xrl_dbt_translate(u64 pc);
 slong xrl_dbt_enter_sys(u64 pc);
 void  xrl_dbt_stats(u64 *faults, u64 *translated);
