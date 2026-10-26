@@ -81,9 +81,11 @@ static char *g_environ(const char *p, size_t *len)
 }
 static const char *comm_name(void)
 {
+    static __declspec(thread) char c[16];
     xrl_proc *t = tgt();
-    const char *b = t->exec_path ? strrchr(t->exec_path, '/') : NULL;
-    return b ? b + 1 : (t->exec_path && t->exec_path[0] ? t->exec_path : "wine");
+    xrl_proc_comm(t, c);
+    if (!c[0]) { const char *b = t->exec_path ? strrchr(t->exec_path, '/') : NULL; return b ? b + 1 : "wine"; }
+    return c;
 }
 static char *g_comm(const char *p, size_t *len)
 {

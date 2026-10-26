@@ -140,9 +140,21 @@ int xrl_proc_list(int *out, int cap)
     return n;
 }
 
-void xrl_proc_set_comm(xrl_proc *p, const char *path)
+/* comm of a process: the name of its main thread (prctl(PR_SET_NAME), or the program's basename after exec) */
+void xrl_proc_comm(xrl_proc *p, char out[16])
 {
-    (void)p; (void)path;
+    xrl_thread *best = NULL;
+    AcquireSRWLockShared(&G.thread_lock);
+    for (xrl_thread *t = G.threads; t; t = t->next)
+        if (t->proc == p && (!best || t->is_main || t->leader)) best = t;
+    if (best) memcpy(out, best->name, 16);
+    ReleaseSRWLockShared(&G.thread_lock);
+    if (!best || !strcmp(out, "xrl-guest")) {   /* never named: the program's basename */
+        const char *b = p->exec_path ? strrchr(p->exec_path, '/') : NULL;
+        memset(out, 0, 16);
+        strncpy_s(out, 16, b ? b + 1 : (p->exec_path ? p->exec_path : ""), _TRUNCATE);
+    }
+    out[15] = 0;
 }
 
 /* the child's copy of the parent's per-process state (clone flags decide what is shared) */
@@ -563,7 +575,6 @@ static void proc_continue(xrl_proc *p)
 
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self)
 {
-    LOGW("signal %d: process %d terminated (default action)", sig, p->pid);
     if (self && self->proc == p) { xrl_do_exit_sig(sig); return 0; }
     if (p->is_init) { xrl_layer_request_exit(128 + sig); return 0; }
     xrl_proc_exit(p, sig, self);

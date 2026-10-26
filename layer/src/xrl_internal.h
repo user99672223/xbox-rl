@@ -280,7 +280,7 @@ int   xrl_proc_list(int *out, int cap);         /* pids of every live process (p
 int   xrl_proc_family_stopped(xrl_proc *p);
 int   xrl_tty_pgrp(void);
 int   xrl_tty_set_pgrp(int pgrp);
-void  xrl_proc_set_comm(xrl_proc *p, const char *path);
+void  xrl_proc_comm(xrl_proc *p, char out[16]);   /* the main thread's name (the program's basename after exec) */
 /* fd.c */
 xrl_files *xrl_files_new(void);
 xrl_files *xrl_files_clone(xrl_files *src);     /* fork: same xfile objects, own table */

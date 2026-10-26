@@ -267,7 +267,10 @@ int xrl_thread_clone_prepare(xrl_thread *p, xrl_proc *np, u64 flags, u64 child_s
     if (child_stack) xrl_mem_populate_containing(child_stack - 1);
     t->guest_tp = (flags & LX_CLONE_SETTLS) ? tls : p->guest_tp;
     t->sigmask = p->sigmask;
-    if (np != p->proc) t->altstack = p->altstack;   /* a forked process keeps its sigaltstack, a thread starts without */
+    if (np != p->proc) {   /* a forked process keeps its sigaltstack and its comm, a thread starts without */
+        t->altstack = p->altstack;
+        memcpy(t->name, p->name, sizeof t->name);
+    }
     t->clone_flags = (u32)flags;
     t->guest_stack_lo = 0;
     if (create_os_thread(t)) {   /* suspended: the tid is known before the child runs */
