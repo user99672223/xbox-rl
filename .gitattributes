@@ -1,0 +1,17 @@
+# Repo-wide line endings. Anything executed or applied in WSL/Linux must stay LF on a
+# Windows clone (core.autocrlf=true would otherwise turn it into CRLF and break bash).
+* text=auto
+*.sh      text eol=lf
+*.bash    text eol=lf
+*.S       text eol=lf
+*.patch   -text
+*.pins    text eol=lf
+pins.env  text eol=lf
+# Windows-side files stay native.
+*.ps1     text eol=crlf
+*.vcxproj text eol=crlf
+*.sln     text eol=crlf
+# Binary assets.
+*.png binary
+*.pfx binary
+*.cer binary
