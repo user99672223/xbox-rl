@@ -42,6 +42,7 @@ int main(int argc, char **argv)
 
     const char *gargv[32]; int n = 0;
     gargv[n++] = argv[2];
+    gargv[n++] = "--fake-host";   /* guest: our op tables are fakes, test them as such */
     for (int i = 3; i < argc && n < 30; i++) gargv[n++] = argv[i];
     gargv[n] = NULL;
     const char *envp[8]; int e = 0;

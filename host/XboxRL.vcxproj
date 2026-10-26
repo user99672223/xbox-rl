@@ -134,7 +134,8 @@
   <!-- Optional libs from the other workstreams (any of these may be absent). -->
   <ItemDefinitionGroup Condition="'$(XrlLayerLib)' != ''">
     <Link>
-      <AdditionalDependencies>$(XrlLayerLib);%(AdditionalDependencies)</AdditionalDependencies>
+      <!-- the layer's own Win32 deps (layer/notes-C.md): BCryptGenRandom, WaitOnAddress -->
+      <AdditionalDependencies>$(XrlLayerLib);bcrypt.lib;synchronization.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(XrlGfxLib)' != ''">

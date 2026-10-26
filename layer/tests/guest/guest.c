@@ -13,6 +13,7 @@ static u64 xctx;
 #define AT_XRL_CTX 0x5802
 #define AT_RANDOM 25
 static u64 at_random, at_base, at_phnum, at_hwcap2;
+static int fake_host;   /* argv has --fake-host: the desktop test host's fake op tables */
 
 #define sc(n, a, b, c, d, e, f) xsc((n), (long)(a), (long)(b), (long)(c), (long)(d), (long)(e), (long)(f))
 #define sc1(n, a) sc(n, a, 0, 0, 0, 0, 0)
@@ -271,7 +272,8 @@ static void test_mem(void)
     *(volatile int *)(b0 + 100) = 5;
     CHECK(sc3(28, q, 4096 * 4, 4) == 0, "madvise(DONTNEED)");
     CHECK(q[100] == 0, "DONTNEED zeroes pages");
-    long big = sc(9, 0, 2ull << 30, 3, 0x22, -1, 0);
+    u64 budget = *(u64 *)(xctx + 64);     /* xrl_guest_ctx.guest_mem_budget */
+    long big = sc(9, 0, budget + (1ull << 30), 3, 0x22, -1, 0);
     CHECK(big == -12, "mmap beyond guest_mem_budget -> -ENOMEM");
 }
 
@@ -295,11 +297,27 @@ static void test_misc(void)
     struct gfx { u32 sz; u32 pad; int (*create)(u64 *); int (*swap)(u64, u64, u32, u32, u32, u32, u64 *); void *gb, *p, *d11; void (*release)(u64); };
     struct gctx { u32 sz, magic, abi, flags; u64 sysc, tlsoff; void (*log)(int, const char *, const char *); struct gfx *g; void *a; void *i; u64 budget; } *c = (void *)xctx;
     struct gfx *g = c->g;
-    u64 dev = 0; int r = g->create(&dev);
-    CHECK(r == 0 && dev == 0xD3D12DEull, "downcall gfx.d3d12_create_device (host Win64 fn via SysV stub)");
-    u64 sw = 0; r = g->swap(0x10, 0x01, 1920, 1080, 3, 28, &sw);
-    CHECK(r == 0 && sw == (0x10 ^ 0x01 ^ ((u64)1920 << 32 | 1080) ^ (3ull << 8) ^ 28), "downcall with 7 args (stack-passed args marshalled)");
-    g->release(0x77);
+    if (fake_host) {
+        u64 dev = 0; int r = g->create(&dev);
+        CHECK(r == 0 && dev == 0xD3D12DEull, "downcall gfx.d3d12_create_device (host Win64 fn via SysV stub)");
+        u64 sw = 0; r = g->swap(0x10, 0x01, 1920, 1080, 3, 28, &sw);
+        CHECK(r == 0 && sw == (0x10 ^ 0x01 ^ ((u64)1920 << 32 | 1080) ^ (3ull << 8) ^ 28), "downcall with 7 args (stack-passed args marshalled)");
+        g->release(0x77);
+    } else {
+        /* real host: one safe end-to-end downcall into the native gfx library
+         * (v2 slot 9 = get_adapter_info; the host runs it on its gfx thread) */
+        struct gfx2 { u32 sz; u32 pad; u64 slot[10]; } *g2 = (void *)c->g;
+        if (g2->sz >= 88 && g2->slot[9]) {
+            struct { u32 sz, ven, dev, sub, rev, fl; u64 vram, sysm, shared, luid; unsigned short desc[128]; } ai;
+            memset(&ai, 0, sizeof ai);
+            int r = ((int (*)(void *))g2->slot[9])(&ai);
+            outn("real gfx.get_adapter_info rc", r); outn("  vendor", ai.ven); outn("  device", ai.dev);
+            outn("  max feature level", ai.fl); outn("  dedicated VRAM MiB", (long)(ai.vram >> 20));
+            CHECK(r == 0 && ai.ven && ai.fl >= 0xb000, "downcall real gfx.get_adapter_info from a guest thread");
+        } else {
+            out("  skip  real gfx downcall (host table has no get_adapter_info)\n");
+        }
+    }
     c->log(1, "guest", "log via host stub");
 }
 
@@ -367,6 +385,11 @@ void cstart(u64 *sp)
         else if (p[0] == 26) at_hwcap2 = p[1];
     }
     if (!xsc) { __asm__ volatile("ud2"); }
+    for (long i = 1; i < argc; i++) {
+        const char *a = (const char *)sp[1 + i], *f = "--fake-host";
+        int k = 0; while (a[k] && a[k] == f[k]) k++;
+        if (!a[k] && !f[k]) fake_host = 1;
+    }
     out("xrl guest test start\n");
     outn("argc", argc);
     test_misc();

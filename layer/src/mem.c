@@ -61,12 +61,29 @@ static DWORD winprot(int prot, int *exec_out)
     return w ? PAGE_READWRITE : PAGE_READONLY;
 }
 
+/* In the UWP flavour the WINAPI_FAMILY_APP headers define VirtualAlloc and
+ * VirtualProtect as inline wrappers over the *FromApp variants. Referencing them
+ * emits that body into this object, which then collides with kernel32.lib's
+ * real export in the host link (LNK2005), and would silently give us the
+ * FromApp rules. The host links kernel32.lib, and the console probe showed the
+ * real VirtualAlloc grants RWX under codeGeneration, so call the real exports
+ * through their import slots. */
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP && !XRL_UWP_FROMAPP
+extern LPVOID (WINAPI *__imp_VirtualAlloc)(LPVOID, SIZE_T, DWORD, DWORD);
+extern BOOL (WINAPI *__imp_VirtualProtect)(LPVOID, SIZE_T, DWORD, PDWORD);
+#define XRL_VIRTUAL_ALLOC   __imp_VirtualAlloc
+#define XRL_VIRTUAL_PROTECT __imp_VirtualProtect
+#else
+#define XRL_VIRTUAL_ALLOC   VirtualAlloc
+#define XRL_VIRTUAL_PROTECT VirtualProtect
+#endif
+
 static void *w_alloc(void *addr, u64 len, DWORD type, DWORD prot)
 {
 #if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP && XRL_UWP_FROMAPP
     return VirtualAllocFromApp(addr, (SIZE_T)len, type, prot);
 #else
-    return VirtualAlloc(addr, (SIZE_T)len, type, prot);
+    return XRL_VIRTUAL_ALLOC(addr, (SIZE_T)len, type, prot);
 #endif
 }
 
@@ -75,7 +92,7 @@ static BOOL w_protect(void *addr, u64 len, DWORD prot, DWORD *old)
 #if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP && XRL_UWP_FROMAPP
     return VirtualProtectFromApp(addr, (SIZE_T)len, prot, old);
 #else
-    return VirtualProtect(addr, (SIZE_T)len, prot, old);
+    return XRL_VIRTUAL_PROTECT(addr, (SIZE_T)len, prot, old);
 #endif
 }
 
@@ -330,7 +347,7 @@ int xrl_mem_init(u64 budget)
     g_budget = budget ? budget : (3ull << 30);
     static const u64 tries[] = { 1ull << 40, 1ull << 38, 1ull << 36, 1ull << 34, 1ull << 32, 1ull << 31 };
     for (size_t i = 0; i < ARRAY_LEN(tries); i++) {
-        void *p = VirtualAlloc(NULL, (SIZE_T)tries[i], MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
+        void *p = XRL_VIRTUAL_ALLOC(NULL, (SIZE_T)tries[i], MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
         if (p) { g_arena_base = (u64)p; g_arena_size = tries[i]; break; }
     }
     if (!g_arena_base) { LOGE("mem: cannot reserve any arena"); return -1; }
