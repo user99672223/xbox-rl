@@ -169,6 +169,8 @@ void xrl_task_wake_parent(xrl_thread *t);
 void xrl_task_signal_death(xrl_thread *t, int sig);
 xrl_thread *xrl_task_thread_new(xrl_thread *p, u64 rsp, struct xrl_task *k);   /* thread.c */
 void xrl_task_thread_start(xrl_thread *t);
+size_t xrl_fd_inherit_list(char *out, size_t cap);
+void xrl_fd_inherit_boot(void);
 void *xrl_fd_table_clone(void);                          /* fd.c */
 void xrl_fd_table_free(void *tab);
 /* tracee.c: a traced layer process, controlled from its tracer's process over a named pipe */

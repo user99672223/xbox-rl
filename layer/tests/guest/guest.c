@@ -673,6 +673,11 @@ static int spawned_main(long argc, u64 *sp)
     const char *want = "XRL_SPAWN_ENV=";
     for (long i = 2; i < argc; i++) { const char *a = (const char *)sp[1 + i]; while (*a && n < 400) buf[n++] = *a++; buf[n++] = '|'; }
     for (; *env; env++) { const char *e = (const char *)*env; unsigned long l = slen(want); if (!memcmp(e, want, l)) { while (e[l] && n < 480) buf[n++] = e[l++]; buf[n++] = '|'; } }
+    if (argc > 3) {   /* a descriptor number to read at offset 0: an inherited memfd */
+        long fdn = 0; for (const char *a = (const char *)sp[4]; *a >= '0' && *a <= '9'; a++) fdn = fdn * 10 + (*a - '0');
+        char mb[24]; long got = sc4(17, fdn, mb, 20, 0);
+        buf[n++] = 'm'; buf[n++] = ':'; for (long i = 0; i < got && n < 480; i++) buf[n++] = mb[i]; buf[n++] = '|';
+    }
     char d[12]; int nd = 0; long v = sc1(39, 0);
     do d[nd++] = (char)('0' + v % 10); while ((v /= 10));
     buf[n++] = 'p'; while (nd) buf[n++] = d[--nd];
@@ -700,7 +705,7 @@ static void test_spawn(void)
     char b[512]; memset(b, 0, sizeof b);
     long fd = sc3(2, "/tmp/xrl_spawned.txt", 0, 0), n = fd >= 0 ? sc3(0, fd, b, 500) : -1;
     if (fd >= 0) sc1(3, fd);
-    CHECK(n > 0 && find(b, "hello world|x\"y|") && find(b, "|abc|p"), "the program ran with its arguments (quoting kept) and its environment");   /* the test host adds --fake-host to a child's argv */
+    CHECK(n > 0 && find(b, "hello world|x\"y|") && find(b, "|abc|"), "the program ran with its arguments (quoting kept) and its environment");   /* the test host adds --fake-host to a child's argv */
     const char *pp = find(b, "|p");
     long cp = 0; for (pp = pp ? pp + 2 : ""; *pp >= '0' && *pp <= '9'; pp++) cp = cp * 10 + (*pp - '0');
     CHECK(cp > 0 && cp != me, "... as a process of its own (pid differs)");
@@ -738,12 +743,15 @@ static void test_spawn(void)
 static long u2s(char *o, long v) { char d[24]; int n = 0, k = 0; do d[n++] = (char)('0' + v % 10); while ((v /= 10)); while (n) o[k++] = d[--n]; o[k] = 0; return k; }
 static void test_traced_exec(void)
 {
+    long mfd = sc2(319, "tst", 0);
+    char mfs[16]; u2s(mfs, mfd);
+    sc3(1, mfd, "memfd-data", 10);
     long pid = sc(57, 0, 0, 0, 0, 0, 0);
     if (pid == -38) { out("  skip traced exec (XRL_FORK_TASKS=1 not set)\n"); return; }
     if (pid == 0) {
         sc4(101, 0, 0, 0, 0);
         sc2(62, sc1(39, 0), 19);
-        const char *av[] = { "/bin/guest.elf", "--spawned", "traced", 0 }, *ev[] = { "XRL_SPAWN_ENV=tr", 0 };
+        const char *av[] = { "/bin/guest.elf", "--spawned", "traced", mfs, 0 }, *ev[] = { "XRL_SPAWN_ENV=tr", 0 };
         sc3(59, "/bin/guest.elf", av, ev);
         sc1(60, 98);
         for (;;) sc1(60, 98);
@@ -777,6 +785,7 @@ static void test_traced_exec(void)
     long ff = sc3(2, "/tmp/xrl_spawned.txt", 0, 0), fn = ff >= 0 ? sc3(0, ff, fb, 250) : -1;
     if (ff >= 0) sc1(3, ff);
     CHECK(fn > 0 && find(fb, "traced|") && find(fb, "|tr|"), "it ran with its arguments and environment");
+    CHECK(fn > 0 && find(fb, "m:memfd-data|"), "the memfd was inherited at the same descriptor number, with its contents");
 }
 
 static char cpubuf[1 << 16];

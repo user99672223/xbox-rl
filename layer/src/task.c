@@ -408,7 +408,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
     wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
     wchar_t *cur = GetEnvironmentStringsW();
     for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
-        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE=", 11) && wcsncmp(e, L"XRL_ARGV0=", 10)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE=", 11) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
     FreeEnvironmentStringsW(cur);
     for (int i = 0; i < 256; i++) {
         u64 sp; char s[4096];
@@ -418,6 +418,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         free(a);
     }
     { wchar_t dv[40]; swprintf(dv, 40, L"XRL_SPAWN_DEPTH=%d", g_spawn_depth + 1); size_t l = wcslen(dv) + 1; memcpy(o, dv, l * sizeof(wchar_t)); o += l; }
+    {   char inh[3000]; if (xrl_fd_inherit_list(inh, sizeof inh)) { wchar_t *wi = widen(inh); size_t l = wcslen(wi); if ((size_t)(o - blk) + l + 32 < (1u << 19)) { memcpy(o, L"XRL_INHERIT_FDS=", 16 * sizeof(wchar_t)); o += 16; memcpy(o, wi, (l + 1) * sizeof(wchar_t)); o += l + 1; } free(wi); } }
     char pname[128] = "";
     HANDLE pipe = INVALID_HANDLE_VALUE;
     if (traced) {

@@ -288,6 +288,26 @@ void xrl_fd_init(void)
     xfile_unref(in); xfile_unref(out); xfile_unref(err);
 }
 
+/* the memfds of the calling task/process that survive exec, as "fd|key|name;" (vfs.c reopens them in the new process) */
+size_t xrl_fd_inherit_list(char *out, size_t cap)
+{
+    fdtab *T = cur_tab();
+    size_t n = 0;
+    out[0] = 0;
+    AcquireSRWLockShared(&T->lock);
+    for (int i = 3; i < T->cap; i++) {
+        xfile *f = T->e[i].f;
+        if (!f || T->e[i].cloexec || !f->gpath || strncmp(f->gpath, "/memfd:", 7)) continue;
+        char name[260]; snprintf(name, sizeof name, "%s", f->gpath + 7);
+        char *d = strstr(name, " (deleted)"); if (d) *d = 0;
+        int w = snprintf(out + n, cap - n, "%d|%llu|%s;", i, (unsigned long long)(uintptr_t)f->priv, name);
+        if (w < 0 || (size_t)w >= cap - n) break;
+        n += (size_t)w;
+    }
+    ReleaseSRWLockShared(&T->lock);
+    return n;
+}
+
 /* execve: every descriptor opened with O_CLOEXEC / FD_CLOEXEC is closed */
 void xrl_fd_close_on_exec(void)
 {

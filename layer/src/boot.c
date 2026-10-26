@@ -96,6 +96,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     xrl_hang_watch_start();
     xrl_fd_init();
     if (xrl_vfs_init(ctx->vfs_root)) return XRL_ERR_GENERIC;
+    xrl_fd_inherit_boot();   /* memfds a parent passed on through exec (task.c) */
 
     xrl_elf_image img;
     if (xrl_elf_load(G.exec_path, &img)) { LOGE("boot: failed to load %s", G.exec_path); return XRL_ERR_GENERIC; }
