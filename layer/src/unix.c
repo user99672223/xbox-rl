@@ -84,6 +84,7 @@ struct usock {
     usock **acc; int nacc, accmax;     /* accepted-but-not-yet connections (references) */
     int backlog;
     int passcred, rcvbuf, sndbuf, rcvtimeo_ms, sndtimeo_ms, reuseaddr, keepalive;
+    u32 gen;                       /* bumped on every arrival or state change a poller could care about (EPOLLET, ipc.c) */
     lx_ucred cred, peercred; int have_peercred;
 };
 
@@ -138,6 +139,7 @@ static void queue_push(usock *u, uchunk *c)
     if (u->qt) u->qt->next = c; else u->qh = c;
     u->qt = c;
     u->qbytes += c->len - c->off; u->qmsgs++;
+    u->gen++;
 }
 
 static void queue_pop(usock *u)
@@ -381,6 +383,7 @@ static slong connect_stream(xfile *f, usock *u, const u8 *addr, u32 alen, int ab
                 u->state = US_CONN;
                 if (l->nacc == l->accmax) { l->accmax = l->accmax ? l->accmax * 2 : 8; l->acc = (usock **)realloc(l->acc, l->accmax * sizeof(usock *)); }
                 l->acc[l->nacc++] = s;
+                l->gen++;
                 r = 0;
             }
         }
@@ -503,8 +506,8 @@ slong xrl_unix_shutdown(int fd, int how)
     else {
         AcquireSRWLockExclusive(&g_ul);
         usock *p = u->peer;
-        if (how == LX_SHUT_RD || how == LX_SHUT_RDWR) { u->shut_rd = 1; if (p && conn_oriented(u)) p->shut_wr = 1; }
-        if (how == LX_SHUT_WR || how == LX_SHUT_RDWR) { u->shut_wr = 1; if (p && conn_oriented(u)) p->shut_rd = 1; }
+        if (how == LX_SHUT_RD || how == LX_SHUT_RDWR) { u->shut_rd = 1; u->gen++; if (p && conn_oriented(u)) { p->shut_wr = 1; p->gen++; } }
+        if (how == LX_SHUT_WR || how == LX_SHUT_RDWR) { u->shut_wr = 1; u->gen++; if (p && conn_oriented(u)) { p->shut_rd = 1; p->gen++; } }
         ReleaseSRWLockExclusive(&g_ul);
         xrl_io_notify();
     }
@@ -1039,7 +1042,7 @@ static void un_close(xfile *f)
         usock *s = u->acc[i];
         s->state = US_CLOSED;
         usock *cp = s->peer;
-        if (cp) { cp->shut_rd = cp->shut_wr = 1; cp->err = LX_ECONNRESET; s->peer = NULL; un_unref(cp); }
+        if (cp) { cp->shut_rd = cp->shut_wr = 1; cp->gen++; cp->err = LX_ECONNRESET; s->peer = NULL; un_unref(cp); }
         while (s->qh) { uchunk *c = s->qh; queue_pop(s); chunk_free(c, &fl); }
         un_unref(s);
     }
@@ -1049,7 +1052,7 @@ static void un_close(xfile *f)
     usock *p = u->peer;
     u->peer = NULL;
     if (p) {
-        if (conn_oriented(u)) { p->shut_rd = p->shut_wr = 1; if (unread) p->err = LX_ECONNRESET; }   /* p->peer keeps u until p closes */
+        if (conn_oriented(u)) { p->shut_rd = p->shut_wr = 1; p->gen++; if (unread) p->err = LX_ECONNRESET; }   /* p->peer keeps u until p closes */
         un_unref(p);
     }
     ReleaseSRWLockExclusive(&g_ul);
@@ -1058,7 +1061,9 @@ static void un_close(xfile *f)
     un_unref(u);
 }
 
-static const xfile_ops g_un_ops = { "socket", un_read, un_write, un_lseek, un_fstat, NULL, un_ioctl, NULL, NULL, un_poll, un_close, NULL };
+static u32 un_edge(xfile *f) { return ((usock *)f->priv)->gen; }
+
+static const xfile_ops g_un_ops = { "socket", un_read, un_write, un_lseek, un_fstat, NULL, un_ioctl, NULL, NULL, un_poll, un_close, NULL, un_edge };
 
 /* ============================================================ sockopts */
 slong xrl_unix_setsockopt(int fd, int level, int opt, u64 uval, u64 len)

@@ -1800,6 +1800,40 @@ static void test_timers(void)
     sc1(3, p1[0]); sc1(3, p1[1]); sc1(3, p2[0]); sc1(3, p2[1]);
 }
 
+/* ---- EPOLLET: new data is an edge even when the fd was ready before and was drained in between --- */
+static void test_epoll_et(void)
+{
+    out("edge-triggered epoll:\n");
+    struct { u32 e; u64 d; } __attribute__((packed)) ev = { 1 | (1u << 31), 0x11 }, evo;
+    char b[16];
+    int sp[2], pf[2];
+    long ep = sc1(291, 0);
+    sc4(53, 1, 1, 0, sp);
+    sc4(233, ep, 1, sp[1], &ev);
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET: a socket with nothing to read is quiet");
+    sc3(1, sp[0], "a", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1 && evo.d == 0x11, "ET: data arrives -> one event");
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET: not reported again while nothing new came");
+    CHECK(sc3(0, sp[1], b, 16) == 1, "(drain it)");
+    sc3(1, sp[0], "b", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET: drained and refilled between two waits is a new edge (the lost-wake-up an X server hit)");
+    sc3(0, sp[1], b, 16);
+    sc3(1, sp[0], "c", 1);
+    sc3(1, sp[0], "d", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1 && sc4(232, ep, &evo, 1, 0) == 0, "ET: two more writes before the wait are still one report");
+    sc1(3, ep);
+    /* a pipe */
+    ep = sc1(291, 0);
+    sc2(293, pf, 04000);
+    sc4(233, ep, 1, pf[0], &ev);
+    sc3(1, pf[1], "x", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET pipe: data -> event");
+    sc3(0, pf[0], b, 16);
+    sc3(1, pf[1], "y", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET pipe: drained and refilled -> event");
+    sc1(3, ep); sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf[1]);
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -1831,6 +1865,7 @@ void cstart(u64 *sp)
     test_threads();
     test_net();
     test_unix();
+    test_epoll_et();
     test_shm();
     test_pty();
     test_timers();

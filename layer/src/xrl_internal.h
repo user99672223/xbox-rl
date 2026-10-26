@@ -282,6 +282,7 @@ typedef struct xfile_ops {
     u32  (*poll)(xfile *f, u32 events);                      /* ready mask */
     void (*close)(xfile *f);
     slong (*mmap_read)(xfile *f, void *dst, u64 n, s64 off);  /* for file mmap */
+    u32  (*edge)(xfile *f);   /* optional: a counter that changes whenever new data/state arrives, for EPOLLET (see ipc.c) */
 } xfile_ops;
 
 struct xfile {

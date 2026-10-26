@@ -29,6 +29,7 @@ typedef struct tfd {
     int armed;
     u64 next_ns, interval_ns;     /* on the layer's monotonic clock */
     u64 expirations;
+    u32 gen;                      /* expirations booked so far, for EPOLLET (ipc.c) */
 } tfd;
 
 static SRWLOCK g_tm_lock = SRWLOCK_INIT;     /* guards every timer below */
@@ -53,6 +54,7 @@ static DWORD WINAPI tm_thread(LPVOID unused)
             if (t->next_ns <= now) {
                 if (t->interval_ns) { u64 k = 1 + (now - t->next_ns) / t->interval_ns; t->expirations += k; t->next_ns += k * t->interval_ns; }
                 else { t->expirations++; t->armed = 0; }
+                t->gen++;
                 notify = 1;
             }
             if (t->armed && t->next_ns < earliest) earliest = t->next_ns;
@@ -141,7 +143,8 @@ static void tfd_close(xfile *f)
     tm_wake();
     free(t);
 }
-static const xfile_ops g_tfd_ops = { "timerfd", tfd_read, tfd_write, tfd_lseek, tfd_fstat, NULL, tfd_ioctl, NULL, NULL, tfd_poll, tfd_close, NULL };
+static u32 tfd_edge(xfile *f) { return ((tfd *)f->priv)->gen; }
+static const xfile_ops g_tfd_ops = { "timerfd", tfd_read, tfd_write, tfd_lseek, tfd_fstat, NULL, tfd_ioctl, NULL, NULL, tfd_poll, tfd_close, NULL, tfd_edge };
 
 slong xrl_timerfd_create(int clock, int flags)
 {

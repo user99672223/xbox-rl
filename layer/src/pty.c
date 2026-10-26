@@ -81,7 +81,7 @@
 typedef struct ktermios { u32 iflag, oflag, cflag, lflag; u8 line; u8 cc[19]; u32 ispeed, ospeed; } ktermios;   /* the kernel's termios + termios2 speeds */
 typedef struct winsz { u16 row, col, xpix, ypix; } winsz;
 
-typedef struct ring { u8 *b; size_t head, len; } ring;
+typedef struct ring { u8 *b; size_t head, len; u32 gen; } ring;   /* gen: bytes ever put (EPOLLET, ipc.c) */
 
 typedef struct pty {
     volatile LONG refs;
@@ -90,10 +90,12 @@ typedef struct pty {
     ring in, out;               /* in: bytes the slave reads; out: bytes the master reads */
     size_t canon;               /* bytes at the front of `in` that are complete lines (canonical mode) */
     int eofs;                   /* ^D typed on an empty line: that many zero-length slave reads */
+    u32 eofs_gen;
     u8 line[PTY_LINE]; int linelen;    /* the line being edited */
     ktermios t;
     winsz ws;
     int locked, master_open, slave_opens, slave_ever;
+    u32 hupgen;                 /* the other side went away */
     int pgrp, sid;
     u32 owner_uid;
 } pty;
@@ -118,7 +120,7 @@ static int ring_put(ring *r, u8 c)   /* 0 = full */
 {
     if (r->len == PTY_BUF) return 0;
     r->b[(r->head + r->len) % PTY_BUF] = c;
-    r->len++;
+    r->len++; r->gen++;
     return 1;
 }
 static size_t ring_take(ring *r, u8 *dst, size_t n)
@@ -199,7 +201,7 @@ static int in_char(pty *p, u8 c)
     /* canonical: edit the line until a newline / EOL / EOF completes it */
     if (c == cc[V_EOF] && c) {
         if (p->linelen) { for (int i = 0; i < p->linelen; i++) ring_put(&p->in, p->line[i]); p->canon += (size_t)p->linelen; p->linelen = 0; }
-        else p->eofs++;
+        else { p->eofs++; p->eofs_gen++; }
         return 0;
     }
     if ((c == cc[V_ERASE] || c == 8) && c) {
@@ -521,7 +523,7 @@ static void master_close(xfile *f)
     pty *p = (pty *)f->priv;
     int pg, last;
     AcquireSRWLockExclusive(&p->lock);
-    p->master_open = 0;
+    p->master_open = 0; p->hupgen++;
     pg = p->pgrp;
     last = p->slave_opens == 0;
     ReleaseSRWLockExclusive(&p->lock);
@@ -536,6 +538,7 @@ static void slave_close(xfile *f)
     pty *p = (pty *)f->priv;
     int last;
     AcquireSRWLockExclusive(&p->lock);
+    p->hupgen++;
     last = --p->slave_opens == 0 && !p->master_open;
     ReleaseSRWLockExclusive(&p->lock);
     xrl_io_notify();
@@ -543,8 +546,10 @@ static void slave_close(xfile *f)
     pty_unref(p);
 }
 
-static const xfile_ops g_pm_ops = { "ptmx", master_read, master_write, pty_lseek, master_fstat, NULL, master_ioctl, NULL, NULL, master_poll, master_close, NULL };
-static const xfile_ops g_ps_ops = { "pts", slave_read, slave_write, pty_lseek, slave_fstat, NULL, slave_ioctl, NULL, NULL, slave_poll, slave_close, NULL };
+static u32 master_edge(xfile *f) { pty *p = (pty *)f->priv; return p->out.gen + p->hupgen; }
+static u32 slave_edge(xfile *f) { pty *p = (pty *)f->priv; return p->in.gen + p->hupgen + p->eofs_gen; }
+static const xfile_ops g_pm_ops = { "ptmx", master_read, master_write, pty_lseek, master_fstat, NULL, master_ioctl, NULL, NULL, master_poll, master_close, NULL, master_edge };
+static const xfile_ops g_ps_ops = { "pts", slave_read, slave_write, pty_lseek, slave_fstat, NULL, slave_ioctl, NULL, NULL, slave_poll, slave_close, NULL, slave_edge };
 
 /* ------------------------------------------------------------------ open */
 xfile *xrl_pty_open_master(int flags, int *err)

@@ -206,7 +206,12 @@ static void pipe_close(xfile *f)
     if (e->tx) pb_unref(e->tx);
     free(e);
 }
-static const xfile_ops g_pipe_ops = { "pipe", pipe_read, pipe_write, pipe_lseek, pipe_fstat, NULL, pipe_ioctl, NULL, NULL, pipe_poll, pipe_close, NULL };
+static u32 pipe_edge(xfile *f)   /* the bytes ever written to what this end reads, and writers going away */
+{
+    pipeend *e = (pipeend *)f->priv;
+    return e->rx ? (u32)e->rx->wpos + (u32)e->rx->writers * 0x10000001u : 0;
+}
+static const xfile_ops g_pipe_ops = { "pipe", pipe_read, pipe_write, pipe_lseek, pipe_fstat, NULL, pipe_ioctl, NULL, NULL, pipe_poll, pipe_close, NULL, pipe_edge };
 static xfile *mk_end(const xfile_ops *ops, pipebuf *rx, pipebuf *tx, int flags, int is_sock, int type)
 {
     pipeend *e = (pipeend *)calloc(1, sizeof *e);
@@ -234,7 +239,7 @@ slong xrl_pipe_create(int flags, int fds[2])
 
 
 /* ============================================================== eventfd */
-typedef struct efd { SRWLOCK lock; u64 count; int sem; } efd;
+typedef struct efd { SRWLOCK lock; u64 count; int sem; u32 gen; } efd;
 
 static slong ev_read(xfile *f, void *b, u64 n, s64 o)
 {
@@ -273,7 +278,7 @@ static slong ev_write(xfile *f, const void *b, u64 n, s64 o)
             if (xrl_io_wait(seen, -1) < 0) return -LX_EINTR;
             continue;
         }
-        e->count += v;
+        e->count += v; e->gen++;
         ReleaseSRWLockExclusive(&e->lock);
         xrl_io_notify();
         return 8;
@@ -297,7 +302,8 @@ static slong ev_ioctl(xfile *f, u64 req, u64 arg)
     return -LX_ENOTTY;
 }
 static void ev_close(xfile *f) { free(f->priv); }
-static const xfile_ops g_ev_ops = { "eventfd", ev_read, ev_write, pipe_lseek, ev_fstat, NULL, ev_ioctl, NULL, NULL, ev_poll, ev_close, NULL };
+static u32 ev_edge(xfile *f) { return ((efd *)f->priv)->gen; }
+static const xfile_ops g_ev_ops = { "eventfd", ev_read, ev_write, pipe_lseek, ev_fstat, NULL, ev_ioctl, NULL, NULL, ev_poll, ev_close, NULL, ev_edge };
 
 slong xrl_eventfd_create(u32 initval, int flags)
 {
@@ -359,7 +365,7 @@ slong xrl_poll(u64 ufds, u64 nfds, s64 timeout_ns, u64 sigmask)
 }
 
 /* ================================================================ epoll */
-typedef struct epi { int fd; xfile *f; u32 events; u64 data; u32 last; int disabled; } epi;
+typedef struct epi { int fd; xfile *f; u32 events; u64 data; u32 last; int disabled; u32 gen; } epi;
 typedef struct epoll { SRWLOCK lock; epi *e; size_t n, cap; } epoll;
 
 static slong ep_nop_rw(xfile *f, void *b, u64 n, s64 o) { (void)f; (void)b; (void)n; (void)o; return -LX_EINVAL; }
@@ -415,10 +421,10 @@ slong xrl_epoll_ctl(int epfd, int op, int fd, u64 uev)
         else {
             if (p->n == p->cap) { p->cap = p->cap ? p->cap * 2 : 16; p->e = (epi *)realloc(p->e, p->cap * sizeof(epi)); }
             xfile_ref(tf);
-            p->e[p->n++] = (epi){ fd, tf, ev.events, ev.data, 0, 0 };
+            p->e[p->n++] = (epi){ fd, tf, ev.events, ev.data, 0, 0, 0 };
         }
     } else if (op == LX_EPOLL_CTL_MOD) {
-        if (i >= p->n) r = -LX_ENOENT; else { p->e[i].events = ev.events; p->e[i].data = ev.data; p->e[i].disabled = 0; p->e[i].last = 0; }
+        if (i >= p->n) r = -LX_ENOENT; else { p->e[i].events = ev.events; p->e[i].data = ev.data; p->e[i].disabled = 0; p->e[i].last = 0; p->e[i].gen = 0; }
     } else if (op == LX_EPOLL_CTL_DEL) {
         if (i >= p->n) r = -LX_ENOENT; else { xfile_unref(p->e[i].f); p->e[i] = p->e[--p->n]; }
     } else r = -LX_EINVAL;
@@ -449,7 +455,15 @@ slong xrl_epoll_wait(int epfd, u64 uevents, int maxevents, int timeout_ms, int *
             if (e->disabled) continue;
             u32 mask = (e->events & 0xffff) | LX_POLLERR | LX_POLLHUP;
             u32 r = file_ready(e->f, mask) & mask;
-            u32 report = (e->events & LX_EPOLLET) ? (r & ~e->last) : r;
+            u32 report = r;
+            if (e->events & LX_EPOLLET) {
+                /* An edge is new data, not only a change of the ready mask: a socket that was drained and refilled between
+                 * two waits is ready both times. A file with an edge counter reports when it moved; any other one when
+                 * something in the layer woke sleepers since (a spurious extra report is allowed, a lost one is not). */
+                u32 g = e->f->ops->edge ? e->f->ops->edge(e->f) : (u32)xrl_io_epoch;
+                report = (r & ~e->last) | (g != e->gen ? r : 0);
+                e->gen = g;
+            }
             e->last = r;
             if (report) {
                 out[n].events = report; out[n].data = e->data; n++;
