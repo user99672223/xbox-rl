@@ -169,6 +169,51 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   Unverified on the console: Suspend/Get/SetThreadContext in the app container.
   Note for glibc programs (the EAC branch's rewriter): the layer takes
   rt_sigreturn's ucontext from a1, as musl's patched `__restore_rt` passes it.
+- **2026-10-26 — Real network sockets (layer/src/net.c): AF_INET/AF_INET6
+  TCP and UDP over Winsock.** The layer had only pipes and socketpairs; EAC's
+  module talks to Epic's servers and any Linux program needs sockets. Shape:
+  every Winsock socket is non-blocking and registered with `WSAEventSelect` on
+  one shared event; a helper thread waits on it and bumps the layer's I/O epoch
+  (ipc.c), the word poll/epoll and the pipe waits already sleep on, so
+  `poll`/`epoll_wait` needed no change (a socket's `poll` op is one `WSAPoll`
+  with a zero timeout). Blocking is the layer's own loop (try, sleep on the
+  epoch, retry; interruptible; `SO_RCVTIMEO`/`SO_SNDTIMEO`), so nothing ever
+  sits in the Windows kernel and exit/tgkill always win. Guest buffers go
+  through a 64 KiB bounce buffer, never to Winsock directly (lazy-committed
+  guest memory). Chosen over overlapped I/O + completion ports (IOCP would
+  need a completion thread per outstanding op and still needs the epoch for
+  poll) and over `select`-in-a-thread (64 fds, same epoch needed). Linux
+  behaviour kept where Windows differs: connect to 0.0.0.0/:: reaches
+  loopback, AF_INET6 sockets are dual-stack, getsockname on an unbound socket
+  answers with the family and zeros, `SO_REUSEADDR` on TCP does not get
+  Windows' port-stealing meaning (UDP does: several sockets on one port),
+  EPIPE instead of SIGPIPE, `connect()` to a refusing loopback port fails in
+  milliseconds (SYN retransmission is switched off for loopback peers only;
+  otherwise Windows takes 2 s). Tested in the layer's guest suite
+  (layer/tests/guest/guest.c, section "network"): TCP echo, non-blocking
+  connect, accept, half close, blocking accept/read across threads, 3 MiB with
+  back-pressure, poll/epoll, UDP with addresses/peek/truncation/sendmsg, IPv6,
+  options, `SO_RCVTIMEO`, refused connections. **Not done:** AF_UNIX by path,
+  raw/packet/netlink sockets (`getifaddrs` needs netlink), ancillary data,
+  `/etc/resolv.conf` synthesis (stage-rootfs.sh writes one; musl resolves over
+  UDP to it). **Console:** the app manifest has no network capability on
+  purpose today (host/Package.appxmanifest: "runs offline"); sockets there need
+  the general capabilities `internetClient`, `internetClientServer` and
+  `privateNetworkClientServer` (not device capabilities). Not changed here:
+  untested on the console, and a manifest the shell rejects would break
+  deploys.
+
+- **2026-10-26 — Easy Anti-Cheat: run a glibc-built native module inside the
+  musl/no-`syscall`/no-`%fs` world. Chosen: (c) load-time rewriting of ELF
+  images in the layer + (b) a small glibc-ABI shim over musl. Rejected: (a).**
+  Rocket League's EAC is the closed Linux module `easyanticheat_x64.so` from
+  Valve's "Proton EasyAntiCheat Runtime", which Wine's unix side `dlopen`s
+  (`PROTON_EAC_RUNTIME`). It is built against glibc, may issue raw `syscall`
+  instructions and uses `%fs` (TLS, `%fs:0x28` stack-protector canary), none of
+  which can run here: Wine's unix side is musl, a `syscall` instruction would
+  enter the *Windows* kernel with a Linux number, and the console has no
+  FSGSBASE so `%fs` carries nothing (the thread pointer lives in TEB slot 63,
+  see the FSGSBASE entry below). Three ways to make that work:
 
 - **2026-10-26 — Rocket League loads past the shader cache; its own peak is
   6.4 GiB.** With a 12 GiB test budget it gets through script packages, audio

@@ -812,6 +812,326 @@ static void test_teb(void)
     for (int i = 0; i < 4; i++) gs_write(offs[i], saved[i]);
 }
 
+/* ---- real sockets: AF_INET / AF_INET6 over Winsock (layer/src/net.c) ------- */
+struct sa4 { u16 fam, port; u32 addr; u8 z[8]; };
+struct sa6 { u16 fam, port; u32 flow; u8 addr[16]; u32 scope; };
+struct pfd { int fd; short ev, rev; };
+struct iov_ { u64 base, len; };
+struct msg_ { u64 name; u32 nl, p0; u64 iov, iovlen, ctl, ctllen; u32 fl, p1; };
+
+#define S_socket 41
+#define S_connect 42
+#define S_accept 43
+#define S_sendto 44
+#define S_recvfrom 45
+#define S_sendmsg 46
+#define S_recvmsg 47
+#define S_shutdown 48
+#define S_bind 49
+#define S_listen 50
+#define S_getsockname 51
+#define S_getpeername 52
+#define S_setsockopt 54
+#define S_getsockopt 55
+#define SOCK_NB 04000
+
+static void sa4_loop(struct sa4 *s, u16 port_be) { memset(s, 0, sizeof *s); s->fam = 2; s->port = port_be; s->addr = 0x0100007f; }
+
+/* a listening TCP socket on 127.0.0.1:<ephemeral>; returns fd, port (network order) in *port */
+static long listen_loop(u16 *port, int type_flags)
+{
+    long ls = sc3(S_socket, 2, 1 | type_flags, 0);
+    struct sa4 a; sa4_loop(&a, 0);
+    if (ls < 0 || sc3(S_bind, ls, &a, 16) != 0 || sc2(S_listen, ls, 8) != 0) return -1;
+    struct sa4 b; u32 bl = 16; memset(&b, 0, sizeof b);
+    if (sc3(S_getsockname, ls, &b, &bl) != 0 || bl != 16 || b.fam != 2) return -1;
+    *port = b.port;
+    return ls;
+}
+
+static long wait_poll(long fd, short ev, int ms, short *rev)
+{
+    struct pfd p = { (int)fd, ev, 0 };
+    long r = sc3(7, &p, 1, ms);
+    if (rev) *rev = p.rev;
+    return r;
+}
+
+static volatile int nt_done;
+static u16 nt_port;
+static volatile long nt_fd;
+
+static long spawn_thread(int (*fn)(void *), void *arg, volatile int *ctid)
+{
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+    u8 *stk = mmap_anon(256 * 1024, 3);
+    struct tls *t = mmap_anon(4096, 3); t->self = t;
+    *ctid = -1;
+    return xclone(fn, stk + 256 * 1024 - 64, flags, arg, 0, t, (void *)ctid);
+}
+static void nap_ms(long ms) { struct { long s, n; } ts = { ms / 1000, (ms % 1000) * 1000000 }; sc4(35, &ts, 0, 0, 0); }
+
+/* connects to 127.0.0.1:nt_port after a pause, then writes a greeting */
+static int net_client_thr(void *arg)
+{
+    (void)arg;
+    nap_ms(60);
+    long c = sc3(S_socket, 2, 1, 0);
+    struct sa4 a; sa4_loop(&a, nt_port);
+    long r = sc3(S_connect, c, &a, 16);          /* blocking connect */
+    if (r == 0) sc3(1, c, "late-hello", 10);
+    nap_ms(60);
+    sc1(3, c);
+    nt_done = r == 0 ? 1 : -1;
+    return 0;
+}
+
+/* streams NT_TOTAL bytes of a known pattern on nt_fd (blocking sends), then closes its side */
+#define NT_TOTAL (3u << 20)
+#define PAT(i) ((u8)((i) * 31 + ((i) >> 8)))
+static int net_sender_thr(void *arg)
+{
+    (void)arg;
+    static u8 buf[40000];
+    u32 sent = 0;
+    while (sent < NT_TOTAL) {
+        u32 n = NT_TOTAL - sent < sizeof buf ? NT_TOTAL - sent : (u32)sizeof buf;
+        for (u32 i = 0; i < n; i++) buf[i] = PAT(sent + i);
+        long r = sc3(1, nt_fd, buf, n);
+        if (r <= 0) { nt_done = -1; return 1; }
+        sent += (u32)r;                          /* a short write: the next lap regenerates from `sent` */
+    }
+    sc2(S_shutdown, nt_fd, 1);
+    nt_done = 1;
+    return 0;
+}
+
+static void test_net(void)
+{
+    out("network (Winsock):\n");
+    u16 port;
+    long ls = listen_loop(&port, 0);
+    CHECK(ls >= 3 && port != 0, "TCP: socket+bind(127.0.0.1:0)+listen+getsockname");
+    if (ls < 3) { out("  skip  rest of the network tests\n"); return; }
+
+    long cs = sc3(S_socket, 2, 1 | SOCK_NB, 0);
+    struct sa4 a; sa4_loop(&a, port);
+    long cr = sc3(S_connect, cs, &a, 16);
+    CHECK(cr == -115 || cr == 0, "non-blocking connect -> -EINPROGRESS (or 0)");
+    short rev = 0;
+    CHECK(wait_poll(cs, 4 /*POLLOUT*/, 3000, &rev) == 1 && (rev & 4), "poll(POLLOUT) reports the connect complete");
+    int soerr = -1; u32 sl = 4;
+    CHECK(sc(S_getsockopt, cs, 1, 4 /*SO_ERROR*/, &soerr, &sl, 0) == 0 && soerr == 0, "getsockopt(SO_ERROR) == 0 after connect");
+    struct sa4 peer; u32 pl = 16; memset(&peer, 0, sizeof peer);
+    long as = sc3(S_accept, ls, &peer, &pl);
+    CHECK(as >= 3 && pl == 16 && peer.fam == 2 && peer.addr == 0x0100007f && peer.port != 0, "accept returns the client's address");
+    struct sa4 cn, pn; u32 l1 = 16, l2 = 16;
+    CHECK(sc3(S_getsockname, cs, &cn, &l1) == 0 && sc3(S_getpeername, as, &pn, &l2) == 0 && cn.port == pn.port && cn.addr == pn.addr, "getsockname(client) == getpeername(server)");
+    CHECK(sc3(1, cs, "hello", 5) == 5, "write() on a socket sends");
+    char buf[64]; memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, as, buf, 64) == 5 && !memcmp(buf, "hello", 5), "read() on a socket (blocking) receives");
+    CHECK(sc(S_sendto, as, "world!", 6, 0, 0, 0) == 6, "sendto(NULL addr) on a connected socket");
+    CHECK(wait_poll(cs, 1 /*POLLIN*/, 3000, &rev) == 1 && (rev & 1), "poll(POLLIN) wakes when data arrives");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc(S_recvfrom, cs, buf, 64, 0, 0, 0) == 6 && !memcmp(buf, "world!", 6), "recvfrom on the non-blocking client");
+    CHECK(sc(S_recvfrom, cs, buf, 64, 0, 0, 0) == -11, "recv on an empty non-blocking socket -> -EAGAIN");
+    u64 st[18]; memset(st, 0, sizeof st);
+    CHECK(sc2(5, cs, st) == 0 && (st[3] & 0170000) == 0140000, "fstat: S_ISSOCK");
+
+    /* vectored I/O on a socket */
+    struct iov_ wv[2] = { { (u64)"ab", 2 }, { (u64)"cde", 3 } };
+    CHECK(sc3(20, cs, wv, 2) == 5, "writev on a socket");
+    char r1[2], r2[8]; struct iov_ rv[2] = { { (u64)r1, 2 }, { (u64)r2, 8 } };
+    long rn = sc3(19, as, rv, 2);
+    CHECK(rn == 5 && !memcmp(r1, "ab", 2) && !memcmp(r2, "cde", 3), "readv on a socket");
+
+    /* half close */
+    CHECK(sc2(S_shutdown, cs, 1) == 0, "shutdown(SHUT_WR)");
+    CHECK(sc3(0, as, buf, 64) == 0, "peer reads EOF (0) after shutdown(SHUT_WR)");
+    CHECK(wait_poll(as, 1, 1000, &rev) == 1 && (rev & 1), "poll(POLLIN) is true at EOF");
+    CHECK(sc3(1, as, "still", 5) == 5 && wait_poll(cs, 1, 3000, 0) == 1 && sc(S_recvfrom, cs, buf, 64, 0, 0, 0) == 5, "the other direction still works");
+
+    /* dup keeps the socket alive */
+    long d = sc1(32, as);
+    sc1(3, as);
+    CHECK(d >= 3 && sc3(1, d, "x", 1) == 1, "dup'ed socket survives closing the original");
+    sc1(3, d); sc1(3, cs);
+
+    /* options */
+    long os = sc3(S_socket, 2, 1, 0);
+    int one = 1, got = 0; u32 gl = 4;
+    CHECK(sc(S_setsockopt, os, 1, 2 /*SO_REUSEADDR*/, &one, 4, 0) == 0 && sc(S_getsockopt, os, 1, 2, &got, &gl, 0) == 0 && got == 1, "SO_REUSEADDR round trip");
+    got = 0; gl = 4;
+    CHECK(sc(S_setsockopt, os, 6 /*IPPROTO_TCP*/, 1 /*TCP_NODELAY*/, &one, 4, 0) == 0 && sc(S_getsockopt, os, 6, 1, &got, &gl, 0) == 0 && got != 0, "TCP_NODELAY round trip");
+    got = 0; gl = 4;
+    CHECK(sc(S_getsockopt, os, 1, 3 /*SO_TYPE*/, &got, &gl, 0) == 0 && got == 1, "SO_TYPE == SOCK_STREAM");
+    got = 0; gl = 4;
+    CHECK(sc(S_getsockopt, os, 1, 8 /*SO_RCVBUF*/, &got, &gl, 0) == 0 && got > 0, "SO_RCVBUF > 0");
+    CHECK(sc(S_setsockopt, os, 1, 999, &one, 4, 0) == -92, "unknown option -> -ENOPROTOOPT");
+    sc1(3, os);
+
+    /* blocking accept + blocking connect/recv across threads */
+    nt_port = port; nt_done = 0;
+    volatile int ct = -1;
+    long th = spawn_thread(net_client_thr, 0, &ct);
+    CHECK(th > 0, "client thread started");
+    u64 t0 = mono_ns();
+    pl = 16;
+    long as2 = sc3(S_accept, ls, &peer, &pl);          /* blocks ~60 ms until the thread connects */
+    u64 dt = mono_ns() - t0;
+    CHECK(as2 >= 3 && dt >= 40000000ull && dt < 4000000000ull, "blocking accept waits for the connection");
+    memset(buf, 0, sizeof buf);
+    long n2 = sc3(0, as2, buf, 64);                    /* blocks until the greeting */
+    CHECK(n2 == 10 && !memcmp(buf, "late-hello", 10), "blocking read gets the greeting");
+    CHECK(sc3(0, as2, buf, 64) == 0, "blocking read returns 0 when the peer closes");
+    wait_eq(&ct, 0);
+    CHECK(nt_done == 1, "client thread connected and exited");
+    sc1(3, as2);
+
+    /* poll timeout */
+    long ps = sc3(S_socket, 2, 1 | SOCK_NB, 0);
+    sa4_loop(&a, port);
+    sc3(S_connect, ps, &a, 16);
+    wait_poll(ps, 4, 3000, 0);
+    long pa = sc3(S_accept, ls, 0, 0);
+    t0 = mono_ns();
+    long pr = wait_poll(ps, 1, 80, 0);
+    dt = mono_ns() - t0;
+    CHECK(pr == 0 && dt >= 60000000ull && dt < 2000000000ull, "poll(POLLIN, 80 ms) on an idle socket times out");
+    sc1(3, ps); sc1(3, pa);
+
+    /* epoll over listener + sockets */
+    long ep = sc1(291, 0);
+    struct { u32 e; u64 d; } __attribute__((packed)) ev = { 1, 0x7001 }, oev[4];
+    CHECK(sc4(233, ep, 1, ls, &ev) == 0, "epoll_ctl(ADD, listening socket)");
+    long ec = sc3(S_socket, 2, 1 | SOCK_NB, 0);
+    sa4_loop(&a, port);
+    sc3(S_connect, ec, &a, 16);
+    CHECK(sc4(232, ep, oev, 4, 3000) == 1 && oev[0].d == 0x7001, "epoll_wait: the listener is readable when a connection is pending");
+    long ea = sc3(S_accept, ls, 0, 0);
+    ev.d = 0x7002; ev.e = 1;
+    CHECK(sc4(233, ep, 1, ea, &ev) == 0, "epoll_ctl(ADD, accepted socket)");
+    sc3(1, ec, "ping", 4);
+    CHECK(sc4(232, ep, oev, 4, 3000) >= 1 && oev[0].d == 0x7002, "epoll_wait: the accepted socket is readable after the peer sends");
+    sc1(3, ea); sc1(3, ec); sc1(3, ep);
+
+    /* bulk transfer with back-pressure: one thread sends 3 MiB blocking, we read blocking */
+    long bs = sc3(S_socket, 2, 1, 0);
+    sa4_loop(&a, port);
+    CHECK(sc3(S_connect, bs, &a, 16) == 0, "blocking connect");
+    nt_fd = sc3(S_accept, ls, 0, 0);
+    nt_done = 0;
+    volatile int bt = -1;
+    long bth = spawn_thread(net_sender_thr, 0, &bt);
+    CHECK(bth > 0, "sender thread started");
+    static u8 big[50000];
+    u32 total = 0; int pat_ok = 1, eof = 0;
+    for (;;) {
+        long r = sc3(0, bs, big, sizeof big);
+        if (r <= 0) { eof = r == 0; break; }
+        for (long i = 0; i < r; i++) if (big[i] != PAT(total + i)) { pat_ok = 0; break; }
+        total += (u32)r;
+    }
+    wait_eq(&bt, 0);
+    outn("bulk bytes received", total);
+    CHECK(eof && total == NT_TOTAL && pat_ok && nt_done == 1, "3 MiB arrived in order and ended with EOF through blocking send/recv");
+    sc1(3, bs); sc1(3, nt_fd);
+
+    /* connecting to 0.0.0.0 reaches this host, as on Linux */
+    long zs = sc3(S_socket, 2, 1, 0);
+    struct sa4 z; sa4_loop(&z, port); z.addr = 0;
+    CHECK(sc3(S_connect, zs, &z, 16) == 0, "connect(0.0.0.0:port) reaches the loopback listener (Linux behaviour)");
+    sc1(3, zs);
+    sc1(3, sc3(S_accept, ls, 0, 0));
+
+    /* connection refused */
+    u16 dead;
+    long tmp = listen_loop(&dead, 0);
+    sc1(3, tmp);                                           /* nobody listens on `dead` now */
+    long rs = sc3(S_socket, 2, 1 | SOCK_NB, 0);
+    sa4_loop(&a, dead);
+    t0 = mono_ns();
+    long rr = sc3(S_connect, rs, &a, 16);
+    if (rr == -115) {
+        wait_poll(rs, 4, 6000, &rev);
+        soerr = 0; sl = 4;
+        sc(S_getsockopt, rs, 1, 4, &soerr, &sl, 0);
+        rr = -soerr;
+    }
+    outn("connection-refused latency ms", (long)((mono_ns() - t0) / 1000000));
+    CHECK(rr == -111, "connect to a closed port -> ECONNREFUSED (poll error + SO_ERROR)");
+    sc1(3, rs);
+
+    /* a blocking socket with SO_RCVTIMEO */
+    long ts_ = sc3(S_socket, 2, 1, 0);
+    sa4_loop(&a, port);
+    sc3(S_connect, ts_, &a, 16);
+    long tsa = sc3(S_accept, ls, 0, 0);
+    long tv[2] = { 0, 70000 };
+    CHECK(sc(S_setsockopt, ts_, 1, 20 /*SO_RCVTIMEO*/, tv, 16, 0) == 0, "setsockopt(SO_RCVTIMEO)");
+    t0 = mono_ns();
+    long tr = sc(S_recvfrom, ts_, buf, 8, 0, 0, 0);
+    dt = mono_ns() - t0;
+    CHECK(tr == -11 && dt >= 50000000ull && dt < 3000000000ull, "blocking recv honours SO_RCVTIMEO (-EAGAIN after ~70 ms)");
+    sc1(3, ts_); sc1(3, tsa);
+
+    /* UDP */
+    long u1 = sc3(S_socket, 2, 2, 0), u2 = sc3(S_socket, 2, 2, 0);
+    struct sa4 ua; sa4_loop(&ua, 0);
+    CHECK(u1 >= 3 && sc3(S_bind, u1, &ua, 16) == 0, "UDP: socket+bind");
+    struct sa4 ub; u32 ubl = 16;
+    CHECK(sc3(S_getsockname, u1, &ub, &ubl) == 0 && ub.port != 0, "UDP: getsockname");
+    CHECK(sc(S_sendto, u2, "dgram-1", 7, 0, &ub, 16) == 7, "UDP: sendto");
+    struct sa4 from; u32 fl = 16; memset(&from, 0, sizeof from);
+    memset(buf, 0, sizeof buf);
+    CHECK(wait_poll(u1, 1, 3000, 0) == 1, "UDP: poll(POLLIN) after a datagram");
+    CHECK(sc(S_recvfrom, u1, buf, 64, 2 /*MSG_PEEK*/, 0, 0) == 7, "UDP: MSG_PEEK leaves the datagram queued");
+    long ur = sc(S_recvfrom, u1, buf, 64, 0, &from, &fl);
+    struct sa4 u2n; u32 u2l = 16;
+    sc3(S_getsockname, u2, &u2n, &u2l);
+    CHECK(ur == 7 && !memcmp(buf, "dgram-1", 7) && fl == 16 && from.fam == 2 && from.port == u2n.port, "UDP: recvfrom returns the data and the sender's address");
+    struct iov_ siov[2] = { { (u64)"two-", 4 }, { (u64)"parts", 5 } };
+    struct msg_ sm = { (u64)&ub, 16, 0, (u64)siov, 2, 0, 0, 0, 0 };
+    CHECK(sc3(S_sendmsg, u2, &sm, 0) == 9, "UDP: sendmsg gathers two iovecs into one datagram");
+    wait_poll(u1, 1, 3000, 0);
+    char small[4]; struct iov_ riov = { (u64)small, 4 };
+    struct sa4 rn_; memset(&rn_, 0, sizeof rn_);
+    struct msg_ rm = { (u64)&rn_, 16, 0, (u64)&riov, 1, 0, 0, 0, 0 };
+    long mr = sc3(S_recvmsg, u1, &rm, 0);
+    CHECK(mr == 4 && !memcmp(small, "two-", 4) && (rm.fl & 0x20 /*MSG_TRUNC*/) && rm.nl == 16 && rn_.port == u2n.port, "UDP: recvmsg truncates with MSG_TRUNC and reports the sender");
+    CHECK(sc3(S_connect, u2, &ub, 16) == 0 && sc3(1, u2, "conn", 4) == 4, "UDP: connect + write");
+    wait_poll(u1, 1, 3000, 0);
+    CHECK(sc(S_recvfrom, u1, buf, 64, 0, 0, 0) == 4, "UDP: the connected sender's datagram arrives");
+    got = 0; gl = 4;
+    CHECK(sc(S_getsockopt, u1, 1, 3, &got, &gl, 0) == 0 && got == 2, "SO_TYPE == SOCK_DGRAM");
+    sc1(3, u1); sc1(3, u2);
+
+    /* IPv6 loopback, if the host has it */
+    long s6 = sc3(S_socket, 10, 1, 0);
+    if (s6 < 0) outn("  skip  IPv6 (socket(AF_INET6) failed with)", s6);
+    else {
+        struct sa6 a6; memset(&a6, 0, sizeof a6); a6.fam = 10; a6.addr[15] = 1;
+        long br = sc3(S_bind, s6, &a6, 28);
+        sc2(S_listen, s6, 4);
+        struct sa6 b6; u32 b6l = 28; memset(&b6, 0, sizeof b6);
+        long gn = sc3(S_getsockname, s6, &b6, &b6l);
+        CHECK(br == 0 && gn == 0 && b6l == 28 && b6.fam == 10 && b6.port != 0 && b6.addr[15] == 1, "IPv6: bind(::1) + listen + getsockname");
+        long c6 = sc3(S_socket, 10, 1, 0);
+        a6.port = b6.port;
+        CHECK(sc3(S_connect, c6, &a6, 28) == 0, "IPv6: connect(::1)");
+        long a6s = sc3(S_accept, s6, 0, 0);
+        CHECK(a6s >= 3 && sc3(1, c6, "v6", 2) == 2 && sc3(0, a6s, buf, 8) == 2, "IPv6: data both ways");
+        sc1(3, c6); sc1(3, a6s); sc1(3, s6);
+    }
+
+    /* what is not a network socket */
+    int pf2[2]; sc2(293, pf2, 0);
+    CHECK(sc3(S_bind, pf2[0], &a, 16) == -88, "bind on a pipe -> -ENOTSOCK");
+    CHECK(sc3(S_socket, 1, 1, 0) == -97, "socket(AF_UNIX) (not socketpair) -> -EAFNOSUPPORT");
+    CHECK(sc3(S_socket, 2, 3, 0) == -1, "socket(AF_INET, SOCK_RAW) -> -EPERM");
+    sc1(3, ls);
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -844,6 +1164,7 @@ void cstart(u64 *sp)
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();
+    test_net();
     test_v2();
     test_teb();
     outn("TOTAL FAILS", fails);

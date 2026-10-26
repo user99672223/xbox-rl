@@ -192,6 +192,8 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_epoll_pwait 281
 #define NR_fallocate 285
 #define NR_accept4 288
+#define NR_recvmmsg 299
+#define NR_sendmmsg 307
 #define NR_eventfd2 290
 #define NR_epoll_create1 291
 #define NR_dup3 292

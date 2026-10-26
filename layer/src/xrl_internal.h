@@ -338,6 +338,26 @@ extern volatile LONG xrl_io_epoch;
 void xrl_io_notify(void);
 int  xrl_io_wait(LONG seen, s64 timeout_ns);   /* 1 woken, 0 timeout, -1 interrupted */
 
+/* net.c: AF_INET/AF_INET6 TCP+UDP over Winsock. Each returns XRL_NOT_NET when `fd` (or the
+ * domain) is not one of ours, so the caller can fall back to the AF_UNIX socketpair code. */
+#define XRL_NOT_NET ((slong)0x7ffffffffffffff0ll)
+slong xrl_net_socket(int domain, int type, int proto);
+slong xrl_net_bind(int fd, u64 addr, u64 len);
+slong xrl_net_listen(int fd, int backlog);
+slong xrl_net_accept(int fd, u64 addr, u64 lenp, int flags);
+slong xrl_net_connect(int fd, u64 addr, u64 len);
+slong xrl_net_getsockname(int fd, u64 addr, u64 lenp);
+slong xrl_net_getpeername(int fd, u64 addr, u64 lenp);
+slong xrl_net_shutdown(int fd, int how);
+slong xrl_net_sendto(int fd, u64 buf, u64 len, int flags, u64 addr, u64 addrlen);
+slong xrl_net_recvfrom(int fd, u64 buf, u64 len, int flags, u64 addr, u64 lenp);
+slong xrl_net_sendmsg(int fd, u64 msg, int flags);
+slong xrl_net_recvmsg(int fd, u64 msg, int flags);
+slong xrl_net_sendmmsg(int fd, u64 vec, u32 vlen, int flags);
+slong xrl_net_recvmmsg(int fd, u64 vec, u32 vlen, int flags);
+slong xrl_net_setsockopt(int fd, int level, int opt, u64 val, u64 len);
+slong xrl_net_getsockopt(int fd, int level, int opt, u64 val, u64 lenp);
+
 /* -------------------------------------------------------------- signals */
 void xrl_sig_init(void);
 slong xrl_sys_rt_sigaction(int sig, u64 act, u64 oact, u64 sigsetsize);

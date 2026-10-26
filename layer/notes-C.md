@@ -102,8 +102,9 @@ exports the dynsym `xrl_wineserver_main` (SysV `int (*)(void)`), boot starts it 
 guest thread (1 MiB stack, returns -> `exit`). Otherwise B starts the wineserver thread
 itself with `clone`. Socket channel: `socketpair(AF_UNIX)` is real (in-memory, SCM_RIGHTS
 works), so a socket-shaped channel is possible; B may bypass it with a direct in-memory
-channel. Real `socket/connect/bind/listen/accept` are NOT implemented
-(`socket()` -> -EAFNOSUPPORT, logged once).
+channel. Real AF_INET/AF_INET6 TCP/UDP sockets exist since net.c (Winsock; see
+docs/syscall-abi.md "Sockets"); `socket(AF_UNIX)` other than `socketpair` is still
+-EAFNOSUPPORT (logged once).
 
 **3.7 Signals - NOT delivered yet.** `rt_sigaction/rt_sigprocmask/sigaltstack` record
 state; `tgkill` marks pending and interrupts futex/poll waits but no handler runs;
