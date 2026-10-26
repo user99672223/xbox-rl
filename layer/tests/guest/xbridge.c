@@ -12,6 +12,7 @@
  *             ABS_X/ABS_Y -> a warp to the point, REL_X/REL_Y -> relative motion. (Opening event2 keeps the host cursor
  *             free; the bridge always opens event2 and event0, and event1 only when --rel is given, since opening event1
  *             alone would capture the host mouse.)
+ *   --dump <file>: at the end write /dev/fb0's pixels (raw BGRX) to <file>
  *   --verify: at the end ask the server where the pointer is (QueryPointer) and print it: proves the injection landed.
  *
  * The X server is reached over TCP (Xvfb -listen tcp -ac; the layer's AF_INET) or a unix socket (needs AF_UNIX in the
@@ -193,6 +194,7 @@ static void x_query_pointer(void)
 }
 /* ---- the screen ------------------------------------------------------------------------ */
 static int fb = -1, xwd = -1;
+static const char *xwd_file;
 static u32 fb_w, fb_h, fb_line;
 static u32 xw_w, xw_h, xw_line, xw_off;
 static u8 *cur, *prev;
@@ -200,10 +202,13 @@ static u64 frames, rows_sent;
 
 static int xwd_open(const char *path)
 {
+    xwd_file = path;
     xwd = (int)sc3(2, path, 0, 0);
     if (xwd < 0) return -1;
     u8 h[100];
-    if (sc4(17, xwd, h, 100, 0) != 100) return -2;
+    long hr = sc4(17, xwd, h, 100, 0);
+    sc1(3, xwd);   /* closed again: screen_poll reopens per poll */
+    if (hr != 100) return -2;
     u32 hs = be32(h), ncol = be32(h + 76);
     xw_w = be32(h + 16); xw_h = be32(h + 20); xw_line = be32(h + 48);
     u32 bpp = be32(h + 44), order = be32(h + 28), rm = be32(h + 56), gm = be32(h + 60), bm = be32(h + 64);
@@ -235,7 +240,12 @@ static void screen_poll(void)
 {
     u32 w = xw_w < fb_w ? xw_w : fb_w, h = xw_h < fb_h ? xw_h : fb_h;
     u64 need = (u64)xw_line * xw_h;
-    long r = sc4(17, xwd, cur, need, xw_off);
+    /* open it afresh every time: a writer that replaces the file in place (the copier of the screenshot loop, a
+     * Windows-side cp) must not find it held open */
+    int fd = (int)sc3(2, xwd_file, 0, 0);
+    if (fd < 0) return;
+    long r = sc4(17, fd, cur, need, xw_off);
+    sc1(3, fd);
     if (r < (long)need) return;   /* the file is being rewritten */
     int in_run = 0;
     u32 run0 = 0;
@@ -300,6 +310,7 @@ void cstart(u64 *sp)
     if (!xsc) { __asm__ volatile("ud2"); }
     const char *xwd_path = 0, *tcp = 0, *unixp = 0;
     int seconds = 30, verify = 0, rel = 0;
+    const char *dump = 0;
     for (long i = 1; i < argc; i++) {
         const char *a = (const char *)sp[1 + i];
         const char *nx = i + 1 < argc ? (const char *)sp[2 + i] : "";
@@ -309,11 +320,14 @@ void cstart(u64 *sp)
         else if (streq(a, "--seconds")) { int v = 0; for (int k = 0; nx[k] >= '0' && nx[k] <= '9'; k++) v = v * 10 + nx[k] - '0'; seconds = v; i++; }
         else if (streq(a, "--verify")) verify = 1;
         else if (streq(a, "--rel")) rel = 1;
+        else if (streq(a, "--dump")) { dump = nx; i++; }
     }
     if (!xwd_path) die("usage: xbridge --xwd <Xvfb_screen0 copy> [--tcp ip:port | --unix path] [--seconds N] [--verify] [--rel]", 0);
     out("xbridge start\n");
 
-    if (xwd_open(xwd_path)) die("cannot read the XWD screen file", 0);
+    int tries = 0, orr;
+    while ((orr = xwd_open(xwd_path)) != 0 && ++tries < 100) { long ts[2] = { 0, 100000000 }; sc2(35, ts, 0); }   /* a copier may be rewriting it */
+    if (orr) die("cannot read the XWD screen file", orr);
     outn("XWD width", xw_w); outn("XWD height", xw_h);
     fb_setup();
     cur = mmap_anon((u64)xw_line * xw_h); prev = mmap_anon((u64)xw_line * xw_h);
@@ -355,6 +369,13 @@ void cstart(u64 *sp)
     outn("screen polls", (long)frames); outn("rows written", (long)rows_sent); outn("input requests", nreq);
     if (verify && xfd >= 0) {
         x_query_pointer();
+    }
+    if (dump) {   /* the framebuffer as the host sees it, raw BGRX (convert on the host), for a check without a screenshot */
+        int df = (int)sc3(2, dump, 0x241, 0644);   /* O_WRONLY|O_CREAT|O_TRUNC */
+        u64 bytes = (u64)fb_line * fb_h;
+        u8 *buf = mmap_anon(bytes);
+        if (df >= 0 && (u64)buf > 0x10000 && sc4(17, fb, buf, bytes, 0) == (long)bytes) { sc3(1, df, buf, bytes); out("dumped the framebuffer\n"); }
+        if (df >= 0) sc1(3, df);
     }
     sc1(231, 0);
     for (;;) {}
