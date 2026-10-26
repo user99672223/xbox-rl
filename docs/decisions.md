@@ -177,14 +177,27 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   verified clean (`tools/xrl-tpfix.py` stamps `e_flags`, Wine's whole unix side)
   are skipped, so Wine pays nothing. `%fs`-less glibc features (IFUNC, `cpuid`,
   `rdtsc`) are left alone: they run natively. The shim (`wine/glibc-compat/`,
-  built by `wine/scripts/build-glibc-compat.sh`) is only needed for a glibc
-  `.so` dlopen'ed into the musl process; it is deliberately small and
-  list-driven (`tools/glibc-compat-check.sh LIB.so` prints every undefined
-  symbol musl and the shim cannot satisfy), because we cannot read the closed
-  module until the runtime is installed.
+  built by `wine/scripts/build-glibc-compat.sh` into the guest's
+  `/lib/libgcompat.so.0`) is only needed for a glibc `.so` dlopen'ed into the
+  musl process; it is deliberately small and list-driven
+  (`tools/glibc-compat-check.sh LIB.so` prints every undefined symbol musl and
+  the shim cannot satisfy), because we cannot read the closed module until the
+  runtime is installed. One musl behaviour shaped it: musl's loader turns a
+  DT_NEEDED of `libc.so.N`, `libm`, `libdl`, `libpthread`, `librt`, `libutil`
+  into *itself* (ldso/dynlink.c "block attempts to reload the implementation"),
+  so a shim named `libc.so.6` is never loaded. Wine patch 0017 therefore
+  `dlopen`s `libgcompat.so.0` RTLD_GLOBAL once, right before the first native
+  unix library (`XRL_GLIBC_COMPAT` overrides the path, empty disables); the
+  only other libraries a glibc module lists that musl cannot alias
+  (`ld-linux-x86-64.so.2`, `libresolv.so.2`) are shipped as empty stubs.
+  Verified on the laptop harness: an unmodified glibc static-PIE program
+  (`layer/tests/glibc/glibc_test.c`, 30 checks) and a glibc-built stand-in
+  module dlopen'ed from a musl program the way Wine does it
+  (`layer/tests/glibc/standin_eac.c`: raw `syscall`, `%fs` TLS and canary,
+  threads, glibc-only symbols), both with FSGSBASE hidden.
   Costs, stated plainly: the rewritten code differs from the vendor's bytes in
   memory (a module that hashes its own `.text` will notice; we do not hide
-  that, see NEEDS-USER/EAC report), every guest `%fs` access in glibc code costs
+  that), every guest `%fs` access in glibc code costs
   a jump pair, and unusual encodings (`%fs` on `push/pop/call/jmp` memory
   operands, VEX-encoded `%fs`) are reported, not guessed. Not done and not
   needed for the EAC module: instruction-level handling of self-modifying code,
