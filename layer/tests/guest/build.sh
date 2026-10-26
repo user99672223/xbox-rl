@@ -17,4 +17,7 @@ python3 ../../../tools/xrl-tpfix.py out/exec_test.elf
 # the display/input devices test (layer/tests/fbdemo-test.sh)
 gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall -Wno-unused-function     -o out/fbdemo.elf fbdemo.c
 python3 ../../../tools/xrl-tpfix.py out/fbdemo.elf
-echo built out/guest.elf out/exec_test.elf out/fbdemo.elf
+# the X display bridge (docs: layer/tests/xbridge-test.sh)
+gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall -Wno-unused-function     -o out/xbridge.elf xbridge.c
+python3 ../../../tools/xrl-tpfix.py out/xbridge.elf
+echo built out/guest.elf out/exec_test.elf out/fbdemo.elf out/xbridge.elf
