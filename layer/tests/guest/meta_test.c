@@ -48,6 +48,7 @@ static void phase_root(void)
     sc1(3, fd);
     CHECK(sc3(92, "/m/plain", -1, 7) == 0 && stat_("/m/plain", &s) == 0 && s.uid == 1000 && s.gid == 7, "chown(-1, gid) leaves the owner");
     CHECK(sc2(82, "/m/plain", "/m/renamed") == 0 && stat_("/m/renamed", &s) == 0 && (s.mode & 07777) == 0640 && s.uid == 1000, "rename carries mode and owner");
+    CHECK(sc2(82, "/m/renamed", "/m/renamed") == 0 && stat_("/m/renamed", &s) == 0 && (s.mode & 07777) == 0640 && s.uid == 1000, "rename onto itself changes nothing");
     CHECK(sc2(86, "/m/renamed", "/m/linked") == 0 && stat_("/m/linked", &s) == 0 && (s.mode & 07777) == 0640 && s.uid == 1000, "link: the new name has the same mode and owner");
     CHECK(sc2(82, "/m", "/m2") == 0 && stat_("/m2/secret", &s) == 0 && (s.mode & 07777) == 0600 && stat_("/m2/d700", &s) == 0 && (s.mode & 07777) == 0700, "renaming a directory moves the entries below it");
     CHECK(sc1(87, "/m2/secret") == 0 && mk("/m2/secret", 0644) >= 0 && stat_("/m2/secret", &s) == 0 && (s.mode & 07777) == 0644 && s.uid == 0, "unlink then create again: a fresh 0644 file, not the old mode");

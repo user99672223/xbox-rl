@@ -793,7 +793,7 @@ static slong recv_locked(usock *u, const lx_iovec *iov, u64 niov, u64 got, u64 w
             if (took && c->nfiles) break;                     /* never merge across a chunk that carries fds */
             size_t avail = c->len - c->off;
             size_t take = (size_t)(want - got - took < avail ? want - got - took : avail);
-            if (take && iov_scatter(iov, niov, got + took, c->data + c->off, take)) { if (took || got) break; return -LX_EFAULT; }
+            if (take && iov_scatter(iov, niov, got + took, c->data + c->off, take)) { if (took) break; return -LX_EFAULT; }   /* un_recv returns what it already has */
             if (!took) { o->cred = c->cred; o->have_cred = 1; }
             took += take;
             if (c->nfiles && !o->nfiles) {
@@ -867,7 +867,7 @@ static u64 build_control(usock *u, rxout *o, u64 ucontrol, u64 clen, int flags, 
         if (cb && used + need <= cap) {
             lx_cmsghdr h = { need, LX_SOL_SOCKET, LX_SCM_CREDENTIALS };
             memcpy(cb + used, &h, sizeof h); memcpy(cb + used + sizeof h, &o->cred, sizeof o->cred);
-            used += (need + 7) & ~7ull;
+            used += ((need + 7) & ~7ull) < cap - used ? ((need + 7) & ~7ull) : cap - used;   /* CMSG_SPACE, but never past the buffer */
         } else *msgflags |= LX_MSG_CTRUNC;
     }
     if (o->nfiles) {
@@ -884,7 +884,7 @@ static u64 build_control(usock *u, rxout *o, u64 ucontrol, u64 clen, int flags, 
             u64 need = sizeof(lx_cmsghdr) + 4ull * ni;
             lx_cmsghdr h = { need, LX_SOL_SOCKET, LX_SCM_RIGHTS };
             memcpy(cb + used, &h, sizeof h); memcpy(cb + used + sizeof h, fds, 4 * (size_t)ni);
-            used += (need + 7) & ~7ull;
+            used += ((need + 7) & ~7ull) < cap - used ? ((need + 7) & ~7ull) : cap - used;
         }
         free(fds); free(o->files); o->files = NULL; o->nfiles = 0;
     }

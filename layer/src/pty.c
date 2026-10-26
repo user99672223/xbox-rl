@@ -234,7 +234,7 @@ static void termios_changed(pty *p, u32 old_lflag)
     if ((old_lflag & T_ICANON) && !(p->t.lflag & T_ICANON)) {
         for (int i = 0; i < p->linelen; i++) ring_put(&p->in, p->line[i]);
         p->linelen = 0; p->canon = 0;
-    } else if (!(old_lflag & T_ICANON) && (p->t.lflag & T_ICANON)) p->canon = 0;
+    } else if (!(old_lflag & T_ICANON) && (p->t.lflag & T_ICANON)) p->canon = p->in.len;   /* typed-ahead bytes are one complete line */
 }
 
 /* ------------------------------------------------------------------ I/O */
@@ -286,11 +286,13 @@ static slong master_write(xfile *f, const void *buf, u64 n, s64 off)
             if (room) { sig = in_char(p, tmp[i]); i++; }
             int pg = p->pgrp;
             ReleaseSRWLockExclusive(&p->lock);
-            if (room) { xrl_io_notify(); if (sig) xrl_tty_signal(pg, sig); continue; }
+            if (room) { if (sig && pg > 0) { xrl_io_notify(); xrl_tty_signal(pg, sig); } continue; }
+            xrl_io_notify();   /* let the slave drain what is queued before we sleep */
             if (nonblock(f)) return done + i ? (slong)(done + i) : -LX_EAGAIN;
             if (xrl_io_wait(seen, -1) < 0) return done + i ? (slong)(done + i) : -LX_EINTR;
         }
         done += k;
+        xrl_io_notify();
     }
     return (slong)done;
 }
@@ -573,14 +575,17 @@ xfile *xrl_pty_open_master(int flags, int *err)
     return f;
 }
 
-static xfile *slave_file(pty *p, int flags)   /* takes a reference of its own */
+/* A new slave description (a reference of its own). The master must still be open and the pty unlocked (TIOCGPTPEER ignores the
+ * lock: that is what it is for), checked and counted under one lock hold: a master closing in between would release the pty twice. */
+static xfile *slave_file(pty *p, int flags, int ignore_lock, int *err)
 {
     xfile *f = xfile_new(&g_ps_ops, (flags & (LX_O_ACCMODE | LX_O_NONBLOCK)) ? (flags & (LX_O_ACCMODE | LX_O_NONBLOCK)) : LX_O_RDWR);
-    if (!f) return NULL;
-    pty_ref(p);
+    if (!f) { *err = LX_ENOMEM; return NULL; }
     AcquireSRWLockExclusive(&p->lock);
+    if ((p->locked && !ignore_lock) || !p->master_open) { ReleaseSRWLockExclusive(&p->lock); f->ops = NULL; xfile_unref(f); *err = LX_EIO; return NULL; }   /* no close hook: it has no pty yet */
     p->slave_opens++; p->slave_ever = 1;
     ReleaseSRWLockExclusive(&p->lock);
+    pty_ref(p);
     f->priv = p;
     f->mode = LX_S_IFCHR;
     return f;
@@ -588,8 +593,9 @@ static xfile *slave_file(pty *p, int flags)   /* takes a reference of its own */
 
 static slong open_slave_of(pty *p, int flags)
 {
-    xfile *f = slave_file(p, flags);
-    if (!f) return -LX_ENOMEM;
+    int err = 0;
+    xfile *f = slave_file(p, flags, 1, &err);
+    if (!f) return -err;
     int fd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
     xfile_unref(f);
     return fd;
@@ -610,13 +616,8 @@ xfile *xrl_pty_open_slave(int index, int flags, int *err)
 {
     pty *p = pty_by_index(index);
     if (!p) { *err = LX_ENOENT; return NULL; }
-    AcquireSRWLockShared(&p->lock);
-    int locked = p->locked, master = p->master_open;
-    ReleaseSRWLockShared(&p->lock);
-    if (locked || !master) { pty_unref(p); *err = LX_EIO; return NULL; }
-    xfile *f = slave_file(p, flags);
+    xfile *f = slave_file(p, flags, 0, err);
     pty_unref(p);
-    if (!f) *err = LX_ENOMEM;
     return f;
 }
 

@@ -1834,6 +1834,71 @@ static void test_epoll_et(void)
     sc1(3, ep); sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf[1]);
 }
 
+/* ---- regressions found by review: control buffer sizes, WAITALL + bad iovec, shm sizes, pty mode switch, memfd seals --- */
+static void test_review_fixes(void)
+{
+    out("review regressions:\n");
+    char b[64];
+    int sp[2];
+    sc4(53, 1, 1, 0, sp);
+    int pf[2]; sc2(293, pf, 0);
+
+    /* a control buffer of exactly CMSG_LEN(4) = 20 bytes: nothing is written past it, controllen is 20 */
+    struct { u8 buf[32]; } ctl;
+    memset(&ctl, 0x7e, sizeof ctl);
+    struct cm_fd cm1 = { 20, 1, 1, pf[1], 0 };
+    struct iov_ iv1 = { (u64)"F", 1 };
+    struct msg_ m1 = { 0, 0, 0, (u64)&iv1, 1, (u64)&cm1, 24, 0, 0 };
+    sc3(S_sendmsg, sp[0], &m1, 0);
+    struct iov_ riv = { (u64)b, 4 };
+    struct msg_ rm = { 0, 0, 0, (u64)&riv, 1, (u64)ctl.buf, 20, 0, 0 };
+    long r = sc3(S_recvmsg, sp[1], &rm, 0);
+    CHECK(r == 1 && rm.ctllen == 20 && ctl.buf[20] == 0x7e && ctl.buf[23] == 0x7e && *(int *)(ctl.buf + 16) >= 3, "recvmsg with a 20-byte control buffer: fd delivered, controllen 20, no write past it");
+    sc1(3, *(int *)(ctl.buf + 16));
+
+    /* MSG_WAITALL with a bad second iovec returns EFAULT instead of spinning */
+    sc3(1, sp[0], "abc", 3);
+    struct iov_ biv[2] = { { (u64)b, 2 }, { 1, 8 } };
+    struct msg_ bm = { 0, 0, 0, (u64)biv, 2, 0, 0, 0, 0 };
+    CHECK(sc3(S_recvmsg, sp[1], &bm, 0x100 /*MSG_WAITALL*/) == -14, "MSG_WAITALL with an unwritable iovec -> -EFAULT (no spin)");
+    { struct msg_ dm = { 0, 0, 0, (u64)&riv, 1, 0, 0, 0, 0 }; sc3(S_recvmsg, sp[1], &dm, 0x40); }
+
+    /* shmget compares with the size asked for, not the page-rounded one */
+    long id = sc3(29, 0x58524c40, 100, 01000 | 0600);
+    CHECK(id >= 0 && sc3(29, 0x58524c40, 4000, 0) == -22 && sc3(29, 0x58524c40, 100, 0) == id, "shmget(existing, bigger than asked but within the page) -> -EINVAL");
+    sc3(31, id, 0, 0);
+
+    /* raw -> canonical: what was typed ahead becomes one complete line */
+    long m = sc3(2, "/dev/ptmx", 02 | 04000, 0);
+    int zero = 0; sc3(16, m, 0x40045431, &zero);
+    u32 n = 0; sc3(16, m, 0x80045430, &n);
+    char path[32] = "/dev/pts/"; { char d[12]; int k = 0, t = (int)n; do d[k++] = (char)('0' + t % 10); while ((t /= 10)); int o = 9; while (k) path[o++] = d[--k]; path[o] = 0; }
+    long s = sc3(2, path, 02 | 04000, 0);
+    struct ktio t0, t1;
+    sc3(16, s, 0x5401, &t0);
+    t1 = t0; t1.lflag &= ~(2u | 8u); t1.cc[6] = 1;
+    sc3(16, s, 0x5402, &t1);
+    sc3(1, m, "ab", 2);
+    sc3(16, s, 0x5402, &t0);   /* ICANON back on */
+    CHECK(sc3(0, s, b, 16) == 2 && b[0] == 'a' && b[1] == 'b', "raw -> canonical: typed-ahead bytes are readable at once as one line");
+    sc1(3, s); sc1(3, m);
+
+    /* memfd seals as the kernel's shmem: GROW stops a write past the end, WRITE/FUTURE_WRITE any write, truncation checks only SHRINK/GROW */
+    long f = sc3(319, "xrl-seals", 2, 0);
+    sc2(77, f, 4096);
+    sc3(72, f, 1033, 4 /*F_SEAL_GROW*/);
+    CHECK(sc4(18 /*pwrite64*/, f, "x", 1, 4095) == 1 && sc4(18, f, "xy", 2, 4095) == -1, "F_SEAL_GROW: a write inside the file works, one past its end -> -EPERM");
+    sc3(72, f, 1033, 8 /*F_SEAL_WRITE*/);
+    CHECK(sc2(77, f, 4096) == 0, "F_SEAL_WRITE does not forbid a same-size ftruncate");
+    sc1(3, f);
+    long g = sc3(319, "xrl-fw", 2, 0);
+    sc2(77, g, 4096);
+    sc3(72, g, 1033, 0x10 /*F_SEAL_FUTURE_WRITE*/);
+    CHECK(sc3(1, g, "x", 1) == -1, "F_SEAL_FUTURE_WRITE: write() -> -EPERM");
+    sc1(3, g);
+    sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]);
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -1869,6 +1934,7 @@ void cstart(u64 *sp)
     test_shm();
     test_pty();
     test_timers();
+    test_review_fixes();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

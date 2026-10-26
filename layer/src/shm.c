@@ -9,7 +9,8 @@
  * Linux lets shmat(NULL) and mmap(NULL, ...) return any address, so this is legal; what it cannot do is put one
  * object at two addresses (MAP_FIXED over it, mapping a memfd twice side by side for a ring buffer, shmat at a
  * chosen address): those get the ordinary private-copy mapping or -EINVAL. Protection is per object, not per
- * mapping: a PROT_READ attach of a segment is writable.
+ * mapping: a PROT_READ attach of a segment is writable. A munmap that runs over the edge of one of these regions (into
+ * its neighbours) fails with -EINVAL; none of the programs here does that.
  *
  * An object lives while something maps it:
  *   - a SysV segment: until shmctl(IPC_RMID) and the last shmdt (nattch), as on Linux; the pages are allocated at
@@ -107,7 +108,7 @@ slong xrl_shmget(int key, u64 size, int flags)
     if (key != LX_IPC_PRIVATE) for (g = g_segs; g; g = g->next) if (g->sysv && !g->removed && g->key == key) break;
     if (g) {
         if ((flags & LX_IPC_CREAT) && (flags & LX_IPC_EXCL)) r = -LX_EEXIST;
-        else if (size > g->size) r = -LX_EINVAL;
+        else if (size > g->reqsize) r = -LX_EINVAL;
         else r = g->id;
     } else if (key != LX_IPC_PRIVATE && !(flags & LX_IPC_CREAT)) r = -LX_ENOENT;
     else if (size == 0 || size > SHM_MAX_BYTES) r = -LX_EINVAL;

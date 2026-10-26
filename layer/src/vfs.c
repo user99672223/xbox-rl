@@ -636,9 +636,9 @@ static void meta_drop(const char *path)
 }
 
 /* rename: the entry of `from` and, for a directory, everything below it, now live under `to` */
-static void meta_move(const char *from, const char *to)
+static void meta_move(const char *from, const char *to, int isdir)
 {
-    if (!g_meta_on) return;
+    if (!g_meta_on || !strcmp(from, to)) return;
     size_t fl = strlen(from);
     AcquireSRWLockExclusive(&g_meta_lock);
     mentry *e = meta_find(to, hash_str(to));
@@ -647,7 +647,7 @@ static void meta_move(const char *from, const char *to)
     mentry **list = NULL;   /* collected first: moving changes the table under the walk */
     for (size_t i = 0; i < g_mbn; i++)
         for (mentry *x = g_mb[i]; x; x = x->next)
-            if (!strncmp(x->path, from, fl) && (x->path[fl] == 0 || x->path[fl] == '/')) {
+            if (!strncmp(x->path, from, fl) && (x->path[fl] == 0 || (isdir && x->path[fl] == '/'))) {
                 if (nmv == cap) { cap = cap ? cap * 2 : 16; list = (mentry **)realloc(list, cap * sizeof *list); }
                 list[nmv++] = x;
             }
@@ -853,7 +853,12 @@ static slong dfile_write(xfile *f, const void *buf, u64 n, s64 off)
 {
     if (f->h == INVALID_HANDLE_VALUE || f->mode != 0) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EBADF;
-    if (memfd_sealed(f, 8 /*F_SEAL_WRITE*/)) return -LX_EPERM;
+    if (memfd_sealed(f, 8 /*F_SEAL_WRITE*/ | 0x10 /*F_SEAL_FUTURE_WRITE*/)) return -LX_EPERM;
+    if (memfd_sealed(f, 4 /*F_SEAL_GROW*/)) {   /* a write may not extend the file */
+        LARGE_INTEGER cur;
+        s64 at = off >= 0 ? off : (f->flags & LX_O_APPEND) ? (GetFileSizeEx(f->h, &cur) ? cur.QuadPart : 0) : f->pos;
+        if (GetFileSizeEx(f->h, &cur) && at + (s64)n > cur.QuadPart) return -LX_EPERM;
+    }
     slong pr = xrl_mem_populate((u64)(uintptr_t)buf, n);   /* the kernel reads buf: no lazy pages */
     if (pr) return pr;
     int use_pos = off < 0;
@@ -918,7 +923,7 @@ static slong dfile_ftruncate(xfile *f, s64 len)
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EINVAL;
     if (f->gpath && !strncmp(f->gpath, "/memfd:", 7)) {   /* a sealed memfd keeps its size (and its contents) */
         LARGE_INTEGER cur;
-        if (GetFileSizeEx(f->h, &cur) && ((len < cur.QuadPart && memfd_sealed(f, 2 /*F_SEAL_SHRINK*/)) || (len > cur.QuadPart && memfd_sealed(f, 4 /*F_SEAL_GROW*/)) || memfd_sealed(f, 8))) return -LX_EPERM;
+        if (GetFileSizeEx(f->h, &cur) && ((len < cur.QuadPart && memfd_sealed(f, 2 /*F_SEAL_SHRINK*/)) || (len > cur.QuadPart && memfd_sealed(f, 4 /*F_SEAL_GROW*/)))) return -LX_EPERM;   /* only SHRINK and GROW count for a truncation */
     }
     FILE_END_OF_FILE_INFO e; e.EndOfFile.QuadPart = len;
     if (!SetFileInformationByHandle(f->h, FileEndOfFileInfo, &e, sizeof e)) return xrl_lasterr();
@@ -1471,7 +1476,7 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
         if (!RemoveDirectoryW(hn)) return xrl_lasterr();   /* ENOTEMPTY if not empty */
     } else if (an != INVALID_FILE_ATTRIBUTES && (ao & FILE_ATTRIBUTE_DIRECTORY)) return -LX_ENOTDIR;
     if (!MoveFileExW(ho, hn, MOVEFILE_REPLACE_EXISTING)) return xrl_lasterr();
-    meta_move(go, gn);
+    meta_move(go, gn, (ao & FILE_ATTRIBUTE_DIRECTORY) != 0);
     return 0;
 }
 
