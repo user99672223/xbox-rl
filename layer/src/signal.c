@@ -710,7 +710,16 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     }
     if (g_trace_faults) trace_fault(ep, t);
     if (!t) return EXCEPTION_CONTINUE_SEARCH;
-    if (t->in_sys > 0 || host_stack_fault(ep->ContextRecord)) return EXCEPTION_CONTINUE_SEARCH;   /* layer/host code: SEH handles it */
+    /* Whose fault is it? Guest code runs with the guest TEB view live, from
+     * executable guest memory, on a writable guest stack. (The TEB's stack range
+     * cannot tell: in Wine's view it is Wine's stack, so every fault in Wine
+     * code used to look like a host-stack fault and went unhandled.) Layer and
+     * host code (the exception dispatcher included) is left to SEH. */
+    {
+        const CONTEXT *c = ep->ContextRecord;
+        int guest = t->in_sys == 0 && t->teb_guest_live && xrl_mem_guest_ctx(c->Rip, c->Rsp) == 1;
+        if (!guest) return EXCEPTION_CONTINUE_SEARCH;
+    }
     /* A guest fault: the guest TEB view is live; the handler below is host code. */
     int was_guest = xrl_teb_enter_host(t);
     u64 stk[2];
