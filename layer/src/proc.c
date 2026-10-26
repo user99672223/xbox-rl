@@ -663,7 +663,8 @@ slong xrl_sys_setsid(void)
     xrl_proc *me = xrl_curproc();
     slong r = me->pid;
     AcquireSRWLockExclusive(&g_proc_lock);
-    for (xrl_proc *q = g_procs; q; q = q->next)
+    if (me->pgid == me->pid) r = -LX_EPERM;     /* a process group leader cannot start a session */
+    for (xrl_proc *q = g_procs; q && r > 0; q = q->next)
         if (q != me && q->pgid == me->pid && q->state != XP_ZOMBIE) { r = -LX_EPERM; break; }
     if (r > 0) { me->sid = me->pgid = me->pid; }
     ReleaseSRWLockExclusive(&g_proc_lock);
