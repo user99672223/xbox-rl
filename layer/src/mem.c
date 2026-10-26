@@ -387,6 +387,7 @@ static void vma_name(vma *v, const char *n)
 
 /* --------------------------------------------------------------- init */
 static void swap_disable(void);
+static void swap_knobs(void);
 
 int xrl_mem_init(u64 budget)
 {
@@ -399,6 +400,7 @@ int xrl_mem_init(u64 budget)
     char lm[24];
     if (GetEnvironmentVariableA("XRL_LAZY_MIN_KB", lm, sizeof lm)) LAZY_MIN = strtoull(lm, NULL, 10) << 10;
     if (GetEnvironmentVariableA("XRL_NO_SWAP", lm, sizeof lm) && lm[0] == '1') swap_disable();
+    swap_knobs();
     if (GetEnvironmentVariableA("XRL_LAZY_CHUNK_KB", lm, sizeof lm)) {
         u64 c = strtoull(lm, NULL, 10) << 10;
         if (c >= LX_PAGE && !(c & (c - 1))) g_lazy_chunk = c;   /* power of two, >= one page */
@@ -477,7 +479,7 @@ static slong populate_from(u64 addr, u64 len, int src);
  * and new-thread stacks, where the kernel itself pushes exception frames.
  * All of it runs under g_lock (exclusive). XRL_NO_SWAP=1 turns it off. */
 #define SPAN 0x10000ull
-enum { SP_FREE, SP_HOT, SP_PROBE, SP_OUT };
+enum { SP_FREE, SP_HOT, SP_PROBE, SP_OUT, SP_QUEUED };   /* QUEUED: picked for this pass's batch eviction */
 /* mask: pages whose copy in `slot` is valid: all of them when OUT; when HOT/PROBE
  * and `clean`, a span read back and not written since (its pages stay read-only,
  * so the first write faults and drops the copy) */
@@ -490,10 +492,14 @@ static u32 *g_sph, g_sph_cap, g_sph_used;   /* open addressing: span index + 1; 
 static HANDLE g_swapf = INVALID_HANDLE_VALUE;
 static u32 *g_slotfree, g_nslotfree, g_capslotfree, g_nslots;
 static int g_swap = 1;
+static int g_swap_nobatch, g_swap_nora;   /* XRL_SWAP_NOBATCH / XRL_SWAP_NORA: debugging */
 static u64 g_swap_excl_s, g_swap_excl_e;     /* never probe/evict here (mremap's source while copying) */
 static volatile LONG64 g_swap_out, g_swap_in, g_swap_now;   /* bytes written, read back, in the file now */
 static volatile LONG64 g_swap_clean;                         /* evicted again without a write (clean) */
 static volatile LONG64 g_clk_steps, g_clk_probes, g_clk_evicts, g_clk_empty, g_clk_runs;   /* clock work */
+static volatile LONG64 g_io_w, g_io_wt, g_io_r, g_io_rt, g_ev_t, g_in_t;   /* I/O calls and QPC ticks; whole evict/swapin */
+static volatile LONG64 g_ra_spans;                                        /* spans read ahead */
+static u64 qpc(void) { LARGE_INTEGER q; QueryPerformanceCounter(&q); return (u64)q.QuadPart; }
 
 static u32 sph_home(u64 base) { return (u32)(((base >> 16) * 0x9E3779B97F4A7C15ull) >> 40) & (g_sph_cap - 1); }
 
@@ -614,17 +620,18 @@ static int swap_open(void)
 /* Apply fn to the lazy anonymous parts of the span at b (a span can hold
  * pieces of several mappings; only lazy ones are ever probed or evicted). */
 typedef int (*part_fn)(u64 s, u64 e, vma *v, void *ctx);
-static int span_parts(u64 b, part_fn fn, void *ctx)
+static int range_parts(u64 a, u64 b, part_fn fn, void *ctx)
 {
-    for (size_t i = vma_lower(b); i < g_n && g_v[i].start < b + SPAN; i++) {
+    for (size_t i = vma_lower(a); i < g_n && g_v[i].start < b; i++) {
         vma *v = &g_v[i];
         if (!v->lazy || v->file) continue;
-        u64 s = v->start > b ? v->start : b, e = v->end < b + SPAN ? v->end : b + SPAN;
+        u64 s = v->start > a ? v->start : a, e = v->end < b ? v->end : b;
         int r = fn(s, e, v, ctx);
         if (r) return r;
     }
     return 0;
 }
+static int span_parts(u64 b, part_fn fn, void *ctx) { return range_parts(b, b + SPAN, fn, ctx); }
 
 static int part_probe(u64 s, u64 e, vma *v, void *ctx)
 {
@@ -669,7 +676,10 @@ static int op_ev_write(u64 s, u64 e, DWORD state, void *ctx)
     memset(&ov, 0, sizeof ov);
     ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
     DWORD w = 0;
-    if (!WriteFile(g_swapf, (void *)s, (DWORD)(e - s), &w, &ov) || w != e - s) { c->err = GetLastError() ? GetLastError() : 1; return 1; }
+    u64 t0 = qpc();
+    BOOL wok = WriteFile(g_swapf, (void *)s, (DWORD)(e - s), &w, &ov);
+    g_io_wt += qpc() - t0; g_io_w++;
+    if (!wok || w != e - s) { c->err = GetLastError() ? GetLastError() : 1; return 1; }
     for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
     c->bytes += e - s;
     return 0;
@@ -753,14 +763,17 @@ static slong swapin(u32 idx, int keep_clean)
         if (!((m >> a) & 1)) { a++; continue; }
         u32 b = a;
         while (b < 16 && ((m >> b) & 1)) b++;
-        u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;
+        u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;   /* (one run of saved pages) */
         if (!w_alloc((void *)s, e - s, MEM_COMMIT, PAGE_READWRITE)) { r = -LX_ENOMEM; break; }
         u64 off = (u64)p->slot * SPAN + (u64)a * LX_PAGE;
         OVERLAPPED ov;
         memset(&ov, 0, sizeof ov);
         ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
         DWORD got = 0;
-        if (!ReadFile(g_swapf, (void *)s, (DWORD)(e - s), &got, &ov) || got != e - s) {
+        u64 t0 = qpc();
+        BOOL rok = ReadFile(g_swapf, (void *)s, (DWORD)(e - s), &got, &ov);
+        g_io_rt += qpc() - t0; g_io_r++;
+        if (!rok || got != e - s) {
             LOGE("mem: swap read of %llx failed (%lu)", s, GetLastError());
             r = -LX_EIO;
             break;
@@ -798,6 +811,70 @@ static void spans_in(u64 s, u64 e, span_visit fn)
         for (u32 i = 0; i < g_nsp; i++)
             if (g_sp[i].state != SP_FREE && g_sp[i].base < e && g_sp[i].base + SPAN > s) fn(i, s, e);
     }
+}
+
+/* Protection for read-back pages in [s,e): the mappings' own, minus write when clean. */
+static void protect_back(u64 s, u64 e, int clean)
+{
+    for (size_t i = vma_lower(s); i < g_n && g_v[i].start < e; i++) {
+        int pr = g_v[i].prot;
+        if (clean) pr &= ~LX_PROT_WRITE;
+        if (pr == (LX_PROT_READ | LX_PROT_WRITE)) continue;
+        u64 ps = g_v[i].start > s ? g_v[i].start : s, pe = g_v[i].end < e ? g_v[i].end : e;
+        DWORD old;
+        w_protect((void *)ps, pe - ps, pr ? winprot(pr, NULL) : PAGE_NOACCESS, &old);
+    }
+}
+
+/* A fault in an evicted span: read it and up to 7 following spans that were
+ * written to consecutive slots in one read (loading is mostly sequential);
+ * the extra ones come back clean. */
+static slong swapin_ahead(u32 idx, int keep_clean)
+{
+    span *p = &g_sp[idx];
+    if (g_swap_nora || p->mask != 0xffff || g_swapf == INVALID_HANDLE_VALUE) return swapin(idx, keep_clean);
+    u32 run[8];
+    int k = 1;
+    run[0] = idx;
+    while (k < 8) {
+        int j = sp_find(p->base + (u64)k * SPAN);
+        if (j < 0 || g_sp[j].state != SP_OUT || g_sp[j].mask != 0xffff || g_sp[j].slot != p->slot + (u32)k) break;
+        run[k++] = (u32)j;
+    }
+    if (k == 1) return swapin(idx, keep_clean);
+    u64 a = p->base, b = a + (u64)k * SPAN, bytes = b - a;
+    if (commit_account_ex(bytes, a, b)) return swapin(idx, keep_clean);   /* tight: just this one */
+    p = &g_sp[idx];
+    if (!w_alloc((void *)a, bytes, MEM_COMMIT, PAGE_READWRITE)) {
+        InterlockedAdd64(&g_committed, -(LONG64)bytes);
+        return swapin(idx, keep_clean);
+    }
+    u64 off = (u64)p->slot * SPAN;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD got = 0;
+    u64 t0 = qpc();
+    BOOL ok = ReadFile(g_swapf, (void *)a, (DWORD)bytes, &got, &ov);
+    g_io_rt += qpc() - t0; g_io_r++;
+    if (!ok || got != bytes) {
+        LOGE("mem: swap read of %llx (+%llu KiB) failed (%lu)", a, bytes >> 10, GetLastError());
+        VirtualFree((void *)a, (SIZE_T)bytes, MEM_DECOMMIT);
+        InterlockedAdd64(&g_committed, -(LONG64)bytes);
+        return -LX_EIO;
+    }
+    protect_back(a, a + SPAN, keep_clean);
+    protect_back(a + SPAN, b, 1);
+    InterlockedAdd64(&g_swap_in, (LONG64)bytes);
+    InterlockedAdd64(&g_swap_now, -(LONG64)bytes);
+    for (int q = 0; q < k; q++) {
+        span *r = &g_sp[run[q]];
+        r->state = SP_HOT;
+        if (q == 0 && !keep_clean) { slot_free(r->slot); r->mask = 0; r->clean = 0; }
+        else r->clean = 1;   /* copy in the file still good */
+    }
+    g_ra_spans += (u64)(k - 1);
+    return 0;
 }
 
 static void visit_restore(u32 idx, u64 s, u64 e)
@@ -855,33 +932,187 @@ static void swap_note(u64 s, u64 e, int pin)
 
 /* Advance the clock up to `steps` spans: hot -> probed; with `evict`, probed
  * -> written out, until `want` bytes are freed. Skips [xs,xe). */
+/* Batching: every protection change and decommit makes Windows flush the TLB
+ * on all cores, so spans are probed and evicted in address-sorted runs of
+ * neighbours, one call per run instead of three per 64 KiB. */
+#define CLK_BATCH 256
+static int cmp_span_base(const void *a, const void *b)
+{
+    u64 x = g_sp[*(const u32 *)a].base, y = g_sp[*(const u32 *)b].base;
+    return x < y ? -1 : x > y;
+}
+
+/* consecutive spans from sorted v[i..]: returns the run length (<= 64) */
+static int span_run(const u32 *v, int i, int n)
+{
+    int j = i + 1;
+    while (j < n && j - i < 64 && g_sp[v[j]].base == g_sp[v[j - 1]].base + SPAN) j++;
+    return j - i;
+}
+
+static void probe_batch(u32 *v, int n)
+{
+    if (!n) return;
+    qsort(v, (size_t)n, sizeof *v, cmp_span_base);
+    for (int i = 0; i < n;) {
+        int k = span_run(v, i, n);
+        range_parts(g_sp[v[i]].base, g_sp[v[i]].base + (u64)k * SPAN, part_probe, NULL);
+        i += k;
+    }
+}
+
+typedef struct evb_ctx { u64 base; u32 slot; u32 mask; u64 bytes; DWORD err; } evb_ctx;
+static int op_evb_write(u64 s, u64 e, DWORD state, void *ctx)
+{
+    evb_ctx *c = (evb_ctx *)ctx;
+    if (state != MEM_COMMIT) return 0;
+    u64 off = (u64)c->slot * SPAN + (s - c->base);
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD w = 0;
+    u64 t0 = qpc();
+    BOOL ok = WriteFile(g_swapf, (void *)s, (DWORD)(e - s), &w, &ov);
+    g_io_wt += qpc() - t0; g_io_w++;
+    if (!ok || w != e - s) { c->err = GetLastError() ? GetLastError() : 1; return 1; }
+    for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
+    c->bytes += e - s;
+    return 0;
+}
+static int part_evb_write(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_evb_write, ctx); }
+static int part_readonly(u64 s, u64 e, vma *v, void *ctx)
+{
+    (void)v; (void)ctx;
+    DWORD p = PAGE_READONLY;   /* the kernel reads it for WriteFile; a guest write waits on g_lock */
+    each_region(s, e, op_protect, &p);
+    return 0;
+}
+typedef struct dc_ctx { u64 bytes; } dc_ctx;
+static int op_dc(u64 s, u64 e, DWORD state, void *ctx)
+{
+    if (state != MEM_COMMIT) return 0;
+    VirtualFree((void *)s, (SIZE_T)(e - s), MEM_DECOMMIT);
+    ((dc_ctx *)ctx)->bytes += e - s;
+    return 0;
+}
+static int part_decommit(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_dc, ctx); }
+
+/* Write out the probed, dirty spans v[0..n): per run, one read-only pass,
+ * one write per span (into its own slot), one decommit pass. */
+static u64 evict_batch(u32 *v, int n)
+{
+    if (!n || swap_open()) return 0;
+    u64 t0 = qpc();
+    qsort(v, (size_t)n, sizeof *v, cmp_span_base);
+    u64 freed = 0;
+    for (int i = 0; i < n;) {
+        int k = span_run(v, i, n);
+        u64 a = g_sp[v[i]].base, b = a + (u64)k * SPAN;
+        range_parts(a, b, part_readonly, NULL);
+        u32 slots[64], masks[64];
+        int bad = 0;
+        for (int q = 0; q < k && !bad; q++) {
+            evb_ctx c = { g_sp[v[i + q]].base, slot_alloc(), 0, 0, 0 };
+            span_parts(c.base, part_evb_write, &c);
+            slots[q] = c.slot; masks[q] = c.mask;
+            if (c.err) {
+                static volatile LONG once;
+                if (!InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): spans kept in memory", c.err);
+                for (int z = 0; z <= q; z++) slot_free(slots[z]);
+                range_parts(a, b, part_unprobe, NULL);
+                for (int z = 0; z < k; z++) g_sp[v[i + z]].state = SP_HOT;
+                bad = 1;
+            }
+        }
+        if (!bad) {
+            dc_ctx d = { 0 };
+            range_parts(a, b, part_decommit, &d);
+            InterlockedAdd64(&g_committed, -(LONG64)d.bytes);
+            InterlockedAdd64(&g_swap_out, (LONG64)d.bytes);
+            InterlockedAdd64(&g_swap_now, (LONG64)d.bytes);
+            freed += d.bytes;
+            for (int q = 0; q < k; q++) {
+                u32 idx = v[i + q];
+                if (!masks[q]) { slot_free(slots[q]); sp_drop(idx); g_clk_empty++; continue; }
+                span *p = &g_sp[idx];
+                p->state = SP_OUT; p->slot = slots[q]; p->mask = (u16)masks[q]; p->clean = 0;
+                g_clk_evicts++;
+            }
+        }
+        i += k;
+    }
+    g_ev_t += qpc() - t0;
+    return freed;
+}
+
 static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
 {
-    u64 freed = 0;
-    for (u64 n = 0; n < steps && g_nsp && (!evict_ok || freed < want); n++) {
+    u64 freed = 0, pending = 0;
+    u32 pv[CLK_BATCH], ev[CLK_BATCH];
+    int np = 0, ne = 0;
+    for (u64 n = 0; n < steps && g_nsp && (!evict_ok || freed + pending < want); n++) {
         if (g_hand >= g_nsp) g_hand = 0;
         u32 idx = g_hand++;
         span *p = &g_sp[idx];
-        if (p->state == SP_FREE || p->state == SP_OUT || p->pinned) continue;
+        /* QUEUED: the hand can lap within one pass; queuing a span twice made the
+         * second copy find nothing committed and drop the record of the first */
+        if (p->state == SP_FREE || p->state == SP_OUT || p->state == SP_QUEUED || p->pinned) continue;
         if (xe && p->base < xe && p->base + SPAN > xs) continue;
         if (g_swap_excl_e && p->base < g_swap_excl_e && p->base + SPAN > g_swap_excl_s) continue;
         g_clk_steps++;
-        if (p->state == SP_HOT) { span_parts(p->base, part_probe, NULL); p->state = SP_PROBE; g_clk_probes++; continue; }
-        if (evict_ok) { u64 f = evict(idx); freed += f; if (f) g_clk_evicts++; else g_clk_empty++; }
+        if (p->state == SP_HOT) {
+            p->state = SP_PROBE;
+            g_clk_probes++;
+            pv[np++] = idx;
+            if (np == CLK_BATCH) { probe_batch(pv, np); np = 0; }
+            continue;
+        }
+        if (!evict_ok) continue;
+        if (p->clean) {   /* re-evicting a clean span needs no write: at once */
+            u64 f = evict(idx);
+            freed += f;
+            if (f) g_clk_evicts++; else g_clk_empty++;
+            continue;
+        }
+        if (g_swap_nobatch) {
+            span_parts(p->base, part_probe, NULL);   /* may still be pending in pv */
+            u64 f = evict(idx);
+            freed += f;
+            if (f) g_clk_evicts++; else g_clk_empty++;
+            continue;
+        }
+        p->state = SP_QUEUED;
+        ev[ne++] = idx;
+        pending += SPAN;
+        if (ne == CLK_BATCH) { freed += evict_batch(ev, ne); ne = 0; pending = 0; }
     }
+    probe_batch(pv, np);
+    freed += evict_batch(ev, ne);
     return freed;
 }
 
 /* Before committing `len` more bytes: probe ahead above 80% of the budget,
  * evict when the commit would come within 16 MiB of it. */
 static void swap_disable(void) { g_swap = 0; }
+static void swap_knobs(void)
+{
+    char v[4];
+    g_swap_nobatch = GetEnvironmentVariableA("XRL_SWAP_NOBATCH", v, sizeof v) && v[0] == '1';
+    g_swap_nora = GetEnvironmentVariableA("XRL_SWAP_NORA", v, sizeof v) && v[0] == '1';
+}
 void xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in) { *now = (u64)g_swap_now; *out = (u64)g_swap_out; *in = (u64)g_swap_in; }
 u64 xrl_mem_swap_clean(void) { return (u64)g_swap_clean; }
 void xrl_mem_clock_stats(char *b, size_t n)
 {
-    snprintf(b, n, "clock: %lld eviction runs, %lld steps, %lld probes, %lld evictions, %lld empty; %u spans, %u free slots, %u slots",
+    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+    double us = 1e6 / (double)f.QuadPart;
+    snprintf(b, n, "clock: %lld eviction runs, %lld steps, %lld probes, %lld evictions (%.0f us each), %lld empty; "
+             "writes %lld (%.0f us avg), reads %lld (%.0f us avg), %lld spans read ahead; %u spans, %u slots",
              (long long)g_clk_runs, (long long)g_clk_steps, (long long)g_clk_probes, (long long)g_clk_evicts,
-             (long long)g_clk_empty, g_nsp - g_nspfree, g_nslotfree, g_nslots);
+             g_clk_evicts ? (double)g_ev_t * us / (double)g_clk_evicts : 0.0, (long long)g_clk_empty,
+             (long long)g_io_w, g_io_w ? (double)g_io_wt * us / (double)g_io_w : 0.0,
+             (long long)g_io_r, g_io_r ? (double)g_io_rt * us / (double)g_io_r : 0.0, (long long)g_ra_spans,
+             g_nsp - g_nspfree, g_nslots);
 }
 
 static void swap_room(u64 len, u64 xs, u64 xe)
@@ -1375,7 +1606,7 @@ static int lazy_fault_locked_entry(u64 addr, int access)
         if (!(v->prot & need)) ok = 0;
         else if (si >= 0 && g_sp[si].state == SP_OUT) {   /* swapped out: read it back */
             t_commit_src = access == 1 ? CS_WRITE_FAULT : access == 8 ? CS_EXEC_FAULT : CS_READ_FAULT;
-            ok = swapin((u32)si, need != LX_PROT_WRITE) == 0;
+            ok = swapin_ahead((u32)si, need != LX_PROT_WRITE) == 0;
             t_commit_src = CS_IO;
             if (!ok) LOGE("mem: cannot swap in %llx (%llu MiB committed, budget %llu MiB)", addr, (u64)g_committed >> 20, g_budget >> 20);
         } else if (VirtualQuery((void *)addr, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT) {
