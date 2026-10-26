@@ -1,0 +1,31 @@
+diff --git a/src/ldso/x86_64/tlsdesc.s b/src/ldso/x86_64/tlsdesc.s
+index e08f1d7..d5860c0 100644
+--- a/src/ldso/x86_64/tlsdesc.s
++++ b/src/ldso/x86_64/tlsdesc.s
+@@ -6,18 +6,24 @@ __tlsdesc_static:
+ 	mov 8(%rax),%rax
+ 	ret
+ 
++# xbox-rl: the thread pointer is only ever read as `mov %fs:0,%reg`, which
++# tools/xrl-tpfix.py rewrites to the host TEB slot (the console has no
++# FSGSBASE). So no direct %fs:8 / %fs:0 memory operands here: load the thread
++# pointer, then use plain offsets (self at 0, dtv at 8 in struct pthread).
+ .global __tlsdesc_dynamic
+ .hidden __tlsdesc_dynamic
+ .type __tlsdesc_dynamic,@function
+ __tlsdesc_dynamic:
+ 	mov 8(%rax),%rax
+ 	push %rdx
+-	mov %fs:8,%rdx
++	mov %fs:0,%rdx
++	mov 8(%rdx),%rdx
+ 	push %rcx
+ 	mov (%rax),%rcx
+ 	mov 8(%rax),%rax
+ 	add (%rdx,%rcx,8),%rax
+ 	pop %rcx
+-	sub %fs:0,%rax
++	mov %fs:0,%rdx
++	sub %rdx,%rax
+ 	pop %rdx
+ 	ret
