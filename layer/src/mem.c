@@ -315,9 +315,12 @@ static void vma_flush_shared(const vma *v, u64 s, u64 e)
 }
 
 /* Remove [s,e) from the list, decommitting and updating accounting. */
+static void swap_forget(u64 s, u64 e);
+
 static slong vma_unmap_range(u64 s, u64 e, int release_granules)
 {
     if (vma_split(s) || vma_split(e)) return -LX_ENOMEM;
+    swap_forget(s, e);
     size_t i = vma_lower(s);
     size_t j = i;
     while (j < g_n && g_v[j].start < e) {
@@ -383,6 +386,8 @@ static void vma_name(vma *v, const char *n)
 }
 
 /* --------------------------------------------------------------- init */
+static void swap_disable(void);
+
 int xrl_mem_init(u64 budget)
 {
     SYSTEM_INFO si;
@@ -393,6 +398,7 @@ int xrl_mem_init(u64 budget)
     if (GetEnvironmentVariableA("XRL_NO_LAZY", lz, sizeof lz)) g_lazy = lz[0] == '1' ? 0 : lz[0] == '2' ? 2 : lz[0] == '3' ? 3 : 1;
     char lm[24];
     if (GetEnvironmentVariableA("XRL_LAZY_MIN_KB", lm, sizeof lm)) LAZY_MIN = strtoull(lm, NULL, 10) << 10;
+    if (GetEnvironmentVariableA("XRL_NO_SWAP", lm, sizeof lm) && lm[0] == '1') swap_disable();
     if (GetEnvironmentVariableA("XRL_LAZY_CHUNK_KB", lm, sizeof lm)) {
         u64 c = strtoull(lm, NULL, 10) << 10;
         if (c >= LX_PAGE && !(c & (c - 1))) g_lazy_chunk = c;   /* power of two, >= one page */
@@ -420,9 +426,14 @@ u64 xrl_mem_arena_base(void) { return g_arena_base; }
 u64 xrl_mem_arena_size(void) { return g_arena_size; }
 
 /* ---------------------------------------------------------------- mmap */
-static slong commit_account(u64 len)
+static void swap_room(u64 len, u64 xs, u64 xe);
+
+/* Charge `len` bytes to the budget (g_lock held). With swap, cold memory
+ * outside [xs,xe) is evicted first to make room. */
+static slong commit_account_ex(u64 len, u64 xs, u64 xe)
 {
     static volatile LONG64 high_mark, refusals;
+    swap_room(len, xs, xe);
     LONG64 now = InterlockedAdd64(&g_committed, (LONG64)len);
     if ((u64)now > g_budget) {
         InterlockedAdd64(&g_committed, -(LONG64)len);
@@ -437,6 +448,7 @@ static slong commit_account(u64 len)
         LOGI("mem: committed %llu MiB (high-water)", (u64)now >> 20);
     return 0;
 }
+static slong commit_account(u64 len) { return commit_account_ex(len, 0, 0); }
 
 /* Who commits lazy memory (the out-of-memory breakdown): the thread sets
  * t_commit_src around the call. */
@@ -447,9 +459,450 @@ static volatile LONG64 g_cs_bytes[CS_N];
 static __declspec(thread) int t_commit_src = CS_IO;   /* the default: vfs.c's populate calls */
 static slong populate_from(u64 addr, u64 len, int src);
 
-/* Commit the reserved parts of [s,e) with `prot`, charging the budget. Lock held. */
+/* ------------------------------------------------------------------ swap
+ * Linux swap for lazy anonymous memory, so a guest can touch more than the
+ * commit budget (Rocket League writes 6.4 GiB while loading; the console's
+ * commit wall is ~4.5 GiB). The unit is a 64 KiB span. When a commit would
+ * pass the budget, cold spans are written to a swap file in TEMP and
+ * decommitted; the next touch faults and reads them back (xrl_mem_lazy_fault),
+ * and so does any layer path that hands guest memory to the kernel
+ * (commit_lazy_locked, through xrl_mem_populate).
+ * Coldness is a clock over the spans that hold committed lazy pages: the hand
+ * first probes a span (PAGE_NOACCESS, contents kept); a touch faults and makes
+ * it hot again; a span still probed when the hand comes round is evicted.
+ * Probing starts at 80% of the budget, eviction 16 MiB below it.
+ * A span read back on a read fault keeps its copy in the file and stays
+ * read-only ("clean"): evicting it again costs no write unless it was written.
+ * Pinned spans are never probed or evicted: memory committed by MADV_POPULATE*
+ * and new-thread stacks, where the kernel itself pushes exception frames.
+ * All of it runs under g_lock (exclusive). XRL_NO_SWAP=1 turns it off. */
+#define SPAN 0x10000ull
+enum { SP_FREE, SP_HOT, SP_PROBE, SP_OUT };
+/* mask: pages whose copy in `slot` is valid: all of them when OUT; when HOT/PROBE
+ * and `clean`, a span read back and not written since (its pages stay read-only,
+ * so the first write faults and drops the copy) */
+typedef struct span { u64 base; u32 slot; u16 mask; u8 state, pinned, clean; } span;
+static span *g_sp;
+static u32 g_nsp, g_capsp, g_hand;
+static u32 *g_spfree, g_nspfree, g_capspfree;
+static u32 *g_sph, g_sph_cap, g_sph_used;   /* open addressing: span index + 1; SPH_TOMB = deleted */
+#define SPH_TOMB 0xffffffffu
+static HANDLE g_swapf = INVALID_HANDLE_VALUE;
+static u32 *g_slotfree, g_nslotfree, g_capslotfree, g_nslots;
+static int g_swap = 1;
+static u64 g_swap_excl_s, g_swap_excl_e;     /* never probe/evict here (mremap's source while copying) */
+static volatile LONG64 g_swap_out, g_swap_in, g_swap_now;   /* bytes written, read back, in the file now */
+static volatile LONG64 g_swap_clean;                         /* evicted again without a write (clean) */
+static volatile LONG64 g_clk_steps, g_clk_probes, g_clk_evicts, g_clk_empty, g_clk_runs;   /* clock work */
+
+static u32 sph_home(u64 base) { return (u32)(((base >> 16) * 0x9E3779B97F4A7C15ull) >> 40) & (g_sph_cap - 1); }
+
+static int sp_find(u64 base)
+{
+    if (!g_sph_cap) return -1;
+    for (u32 h = sph_home(base), n = 0; n < g_sph_cap; h = (h + 1) & (g_sph_cap - 1), n++) {
+        u32 v = g_sph[h];
+        if (!v) return -1;
+        if (v != SPH_TOMB && g_sp[v - 1].base == base) return (int)(v - 1);
+    }
+    return -1;
+}
+
+static void sph_put(u32 idx)
+{
+    u32 h = sph_home(g_sp[idx].base);
+    while (g_sph[h] && g_sph[h] != SPH_TOMB) h = (h + 1) & (g_sph_cap - 1);
+    if (!g_sph[h]) g_sph_used++;
+    g_sph[h] = idx + 1;
+}
+
+static int sph_room(void)
+{
+    if (g_sph_cap && (u64)(g_sph_used + 1) * 10 < (u64)g_sph_cap * 7) return 0;
+    u32 live = g_nsp - g_nspfree, cap = g_sph_cap ? g_sph_cap : 4096;
+    while ((u64)(live + 1) * 10 >= (u64)cap * 5) cap *= 2;
+    u32 *n = (u32 *)calloc(cap, sizeof(u32));
+    if (!n) return -1;
+    free(g_sph);
+    g_sph = n; g_sph_cap = cap; g_sph_used = 0;
+    for (u32 i = 0; i < g_nsp; i++) if (g_sp[i].state != SP_FREE) sph_put(i);
+    return 0;
+}
+
+static int sp_get(u64 base)
+{
+    int i = sp_find(base);
+    if (i >= 0) return i;
+    if (sph_room()) return -1;
+    u32 idx;
+    if (g_nspfree) idx = g_spfree[--g_nspfree];
+    else {
+        if (g_nsp == g_capsp) {
+            u32 c = g_capsp ? g_capsp * 2 : 4096;
+            span *n = (span *)realloc(g_sp, (size_t)c * sizeof(span));
+            if (!n) return -1;
+            g_sp = n; g_capsp = c;
+        }
+        idx = g_nsp++;
+    }
+    g_sp[idx].base = base; g_sp[idx].slot = 0; g_sp[idx].mask = 0; g_sp[idx].state = SP_HOT; g_sp[idx].pinned = 0; g_sp[idx].clean = 0;
+    sph_put(idx);
+    return (int)idx;
+}
+
+static void slot_free(u32 s)
+{
+    if (g_nslotfree == g_capslotfree) {
+        u32 c = g_capslotfree ? g_capslotfree * 2 : 1024;
+        u32 *n = (u32 *)realloc(g_slotfree, (size_t)c * sizeof(u32));
+        if (!n) return;   /* leak the slot */
+        g_slotfree = n; g_capslotfree = c;
+    }
+    g_slotfree[g_nslotfree++] = s;
+}
+static u32 slot_alloc(void) { return g_nslotfree ? g_slotfree[--g_nslotfree] : g_nslots++; }
+
+static u32 popcnt16(u32 m) { u32 n = 0; for (; m; m &= m - 1) n++; return n; }
+
+static void sp_drop(u32 idx)
+{
+    span *p = &g_sp[idx];
+    if (p->state == SP_OUT) {
+        slot_free(p->slot);
+        InterlockedAdd64(&g_swap_now, -(LONG64)popcnt16(p->mask) * (LONG64)LX_PAGE);
+    } else if (p->clean) slot_free(p->slot);
+    p->clean = 0;
+    u32 h = sph_home(p->base);
+    for (u32 n = 0; n < g_sph_cap; h = (h + 1) & (g_sph_cap - 1), n++) {
+        if (!g_sph[h]) break;
+        if (g_sph[h] == idx + 1) { g_sph[h] = SPH_TOMB; break; }
+    }
+    p->state = SP_FREE;
+    if (g_nspfree == g_capspfree) {
+        u32 c = g_capspfree ? g_capspfree * 2 : 1024;
+        u32 *n = (u32 *)realloc(g_spfree, (size_t)c * sizeof(u32));
+        if (!n) return;
+        g_spfree = n; g_capspfree = c;
+    }
+    g_spfree[g_nspfree++] = idx;
+}
+
+static int swap_open(void)
+{
+    if (g_swapf != INVALID_HANDLE_VALUE) return 0;
+    WCHAR dir[MAX_PATH], path[MAX_PATH];
+    DWORD n = GetTempPathW(MAX_PATH, dir);
+    if (!n || n >= MAX_PATH - 40) { g_swap = 0; return -1; }
+    swprintf_s(path, MAX_PATH, L"%sxrl-swap-%lu.bin", dir, GetCurrentProcessId());
+    CREATEFILE2_EXTENDED_PARAMETERS p;
+    memset(&p, 0, sizeof p);
+    p.dwSize = sizeof p;
+    p.dwFileAttributes = FILE_ATTRIBUTE_TEMPORARY;
+    /* unbuffered: the pages go straight to the disk, not into file cache that
+     * would eat the memory we are trying to free */
+    p.dwFileFlags = FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_NO_BUFFERING;
+    g_swapf = CreateFile2(path, GENERIC_READ | GENERIC_WRITE, 0, CREATE_ALWAYS, &p);
+    if (g_swapf == INVALID_HANDLE_VALUE) {
+        LOGE("mem: cannot create the swap file %ls (%lu): swap off", path, GetLastError());
+        g_swap = 0;
+        return -1;
+    }
+    LOGI("mem: swap file %ls", path);
+    return 0;
+}
+
+/* Apply fn to the lazy anonymous parts of the span at b (a span can hold
+ * pieces of several mappings; only lazy ones are ever probed or evicted). */
+typedef int (*part_fn)(u64 s, u64 e, vma *v, void *ctx);
+static int span_parts(u64 b, part_fn fn, void *ctx)
+{
+    for (size_t i = vma_lower(b); i < g_n && g_v[i].start < b + SPAN; i++) {
+        vma *v = &g_v[i];
+        if (!v->lazy || v->file) continue;
+        u64 s = v->start > b ? v->start : b, e = v->end < b + SPAN ? v->end : b + SPAN;
+        int r = fn(s, e, v, ctx);
+        if (r) return r;
+    }
+    return 0;
+}
+
+static int part_probe(u64 s, u64 e, vma *v, void *ctx)
+{
+    (void)v; (void)ctx;
+    DWORD p = PAGE_NOACCESS;
+    each_region(s, e, op_protect, &p);
+    return 0;
+}
+/* ctx non-NULL: the span is clean, so writable mappings come back read-only */
+static int part_unprobe(u64 s, u64 e, vma *v, void *ctx)
+{
+    int prot = v->prot;
+    if (ctx) prot &= ~LX_PROT_WRITE;
+    DWORD p = prot ? winprot(prot, NULL) : PAGE_NOACCESS;
+    each_region(s, e, op_protect, &p);
+    return 0;
+}
+static void span_unprobe(u32 idx)
+{
+    span_parts(g_sp[idx].base, part_unprobe, g_sp[idx].clean ? (void *)1 : NULL);
+    g_sp[idx].state = SP_HOT;
+}
+/* written (or about to be, by the kernel): drop the clean copy, the mappings' own protection */
+static void span_dirty(u32 idx)
+{
+    span *p = &g_sp[idx];
+    if (!p->clean) return;
+    slot_free(p->slot);
+    p->clean = 0; p->mask = 0;
+    span_parts(p->base, part_unprobe, NULL);
+}
+
+typedef struct ev_ctx { u64 base; u32 slot; u32 mask; u64 bytes; DWORD err; } ev_ctx;
+static int op_ev_write(u64 s, u64 e, DWORD state, void *ctx)
+{
+    ev_ctx *c = (ev_ctx *)ctx;
+    if (state != MEM_COMMIT) return 0;
+    DWORD old;
+    w_protect((void *)s, e - s, PAGE_READONLY, &old);   /* the kernel reads it; a guest write waits on g_lock */
+    u64 off = (u64)c->slot * SPAN + (s - c->base);
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD w = 0;
+    if (!WriteFile(g_swapf, (void *)s, (DWORD)(e - s), &w, &ov) || w != e - s) { c->err = GetLastError() ? GetLastError() : 1; return 1; }
+    for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
+    c->bytes += e - s;
+    return 0;
+}
+static int part_evict(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_ev_write, ctx); }
+
+typedef struct cm_ctx { u64 base; u32 mask; } cm_ctx;
+static int op_cmask(u64 s, u64 e, DWORD state, void *ctx)
+{
+    cm_ctx *c = (cm_ctx *)ctx;
+    if (state == MEM_COMMIT) for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
+    return 0;
+}
+static int part_cmask(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_cmask, ctx); }
+
+static u64 evict(u32 idx)
+{
+    span *p = &g_sp[idx];
+    if (swap_open()) return 0;
+    if (p->clean) {
+        cm_ctx cm = { p->base, 0 };
+        span_parts(p->base, part_cmask, &cm);
+        if (cm.mask && !(cm.mask & ~(u32)p->mask)) {   /* nothing new since it was read back: no write */
+            u64 bytes = 0;
+            for (u32 a = 0; a < 16;) {
+                if (!((cm.mask >> a) & 1)) { a++; continue; }
+                u32 b = a;
+                while (b < 16 && ((cm.mask >> b) & 1)) b++;
+                VirtualFree((void *)(p->base + (u64)a * LX_PAGE), (SIZE_T)(b - a) * LX_PAGE, MEM_DECOMMIT);
+                bytes += (u64)(b - a) * LX_PAGE;
+                a = b;
+            }
+            InterlockedAdd64(&g_committed, -(LONG64)bytes);
+            InterlockedAdd64(&g_swap_now, (LONG64)bytes);
+            InterlockedAdd64(&g_swap_clean, (LONG64)bytes);
+            p->state = SP_OUT; p->mask = (u16)cm.mask; p->clean = 0;
+            return bytes;
+        }
+        span_dirty(idx);   /* new pages as well: write the whole span again */
+        span_parts(p->base, part_probe, NULL);
+    }
+    ev_ctx c = { p->base, slot_alloc(), 0, 0, 0 };
+    span_parts(p->base, part_evict, &c);
+    if (c.err) {
+        static volatile LONG once;
+        if (!InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): span kept in memory", c.err);
+        span_parts(p->base, part_unprobe, NULL);
+        slot_free(c.slot);
+        p->state = SP_HOT;
+        return 0;
+    }
+    if (!c.mask) { slot_free(c.slot); sp_drop(idx); return 0; }
+    for (u32 a = 0; a < 16;) {
+        if (!((c.mask >> a) & 1)) { a++; continue; }
+        u32 b = a;
+        while (b < 16 && ((c.mask >> b) & 1)) b++;
+        VirtualFree((void *)(p->base + (u64)a * LX_PAGE), (SIZE_T)(b - a) * LX_PAGE, MEM_DECOMMIT);
+        a = b;
+    }
+    InterlockedAdd64(&g_committed, -(LONG64)c.bytes);
+    InterlockedAdd64(&g_swap_out, (LONG64)c.bytes);
+    InterlockedAdd64(&g_swap_now, (LONG64)c.bytes);
+    p->state = SP_OUT; p->slot = c.slot; p->mask = (u16)c.mask;
+    return c.bytes;
+}
+
+static slong commit_account_ex(u64 len, u64 xs, u64 xe);
+
+/* Read an evicted span back (commit, fill, the mappings' protections). With
+ * `keep_clean` (a read fault) the copy in the file stays valid and writable
+ * mappings come back read-only. */
+static slong swapin(u32 idx, int keep_clean)
+{
+    span *p = &g_sp[idx];
+    u64 base = p->base;
+    u32 m = p->mask;
+    slong r = commit_account_ex((u64)popcnt16(m) * LX_PAGE, base, base + SPAN);   /* may evict others, never this one */
+    if (r) return r;
+    p = &g_sp[idx];
+    for (u32 a = 0; a < 16 && !r;) {
+        if (!((m >> a) & 1)) { a++; continue; }
+        u32 b = a;
+        while (b < 16 && ((m >> b) & 1)) b++;
+        u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;
+        if (!w_alloc((void *)s, e - s, MEM_COMMIT, PAGE_READWRITE)) { r = -LX_ENOMEM; break; }
+        u64 off = (u64)p->slot * SPAN + (u64)a * LX_PAGE;
+        OVERLAPPED ov;
+        memset(&ov, 0, sizeof ov);
+        ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+        DWORD got = 0;
+        if (!ReadFile(g_swapf, (void *)s, (DWORD)(e - s), &got, &ov) || got != e - s) {
+            LOGE("mem: swap read of %llx failed (%lu)", s, GetLastError());
+            r = -LX_EIO;
+            break;
+        }
+        for (size_t i = vma_lower(s); i < g_n && g_v[i].start < e; i++) {
+            int pr = g_v[i].prot;
+            if (keep_clean) pr &= ~LX_PROT_WRITE;
+            if (pr == (LX_PROT_READ | LX_PROT_WRITE)) continue;
+            u64 ps = g_v[i].start > s ? g_v[i].start : s, pe = g_v[i].end < e ? g_v[i].end : e;
+            DWORD old;
+            w_protect((void *)ps, pe - ps, pr ? winprot(pr, NULL) : PAGE_NOACCESS, &old);
+        }
+        a = b;
+    }
+    u64 bytes = (u64)popcnt16(m) * LX_PAGE;
+    if (r) { InterlockedAdd64(&g_committed, -(LONG64)bytes); return r; }   /* partly read: the span stays OUT */
+    InterlockedAdd64(&g_swap_in, (LONG64)bytes);
+    InterlockedAdd64(&g_swap_now, -(LONG64)bytes);
+    p->state = SP_HOT;
+    if (keep_clean) p->clean = 1;   /* slot and mask stay: the copy is still good */
+    else { slot_free(p->slot); p->mask = 0; p->clean = 0; }
+    return 0;
+}
+
+/* Visit the spans overlapping [s,e) (stepping by span, or over the table when
+ * the range is much larger than what is tracked). */
+typedef void (*span_visit)(u32 idx, u64 s, u64 e);
+static void spans_in(u64 s, u64 e, span_visit fn)
+{
+    if (!g_nsp || e <= s) return;
+    u64 b0 = ALIGN_DOWN(s, SPAN);
+    if ((e - b0) / SPAN <= (u64)g_nsp * 2 + 64) {
+        for (u64 b = b0; b < e; b += SPAN) { int i = sp_find(b); if (i >= 0) fn((u32)i, s, e); }
+    } else {
+        for (u32 i = 0; i < g_nsp; i++)
+            if (g_sp[i].state != SP_FREE && g_sp[i].base < e && g_sp[i].base + SPAN > s) fn(i, s, e);
+    }
+}
+
+static void visit_restore(u32 idx, u64 s, u64 e)
+{
+    (void)s; (void)e;
+    if (g_sp[idx].state == SP_OUT) swapin(idx, 0);
+    else { span_dirty(idx); if (g_sp[idx].state == SP_PROBE) span_unprobe(idx); }
+}
+/* [s,e) about to be used by the kernel or the layer: no evicted, probed or
+ * read-only (clean) pages, as it may be written */
+static void swap_restore(u64 s, u64 e) { if (g_nsp) spans_in(s, e, visit_restore); }
+
+static void visit_settle(u32 idx, u64 s, u64 e)
+{
+    (void)s; (void)e;
+    if (g_sp[idx].state == SP_OUT) return;   /* takes the new protection when read back */
+    span_dirty(idx);
+    if (g_sp[idx].state == SP_PROBE) span_unprobe(idx);
+}
+/* before mprotect: resident spans back to their mappings' protection */
+static void swap_settle(u64 s, u64 e) { if (g_nsp) spans_in(s, e, visit_settle); }
+
+static void visit_forget(u32 idx, u64 s, u64 e)
+{
+    span *p = &g_sp[idx];
+    if (p->state == SP_OUT) {
+        u32 m = p->mask;
+        for (u32 a = 0; a < 16; a++) {
+            u64 q = p->base + (u64)a * LX_PAGE;
+            if (((m >> a) & 1) && q >= s && q < e) {
+                m &= ~(1u << a);
+                InterlockedAdd64(&g_swap_now, -(LONG64)LX_PAGE);
+            }
+        }
+        if (!m) { p->mask = 0; slot_free(p->slot); p->state = SP_HOT; sp_drop(idx); }
+        else p->mask = (u16)m;
+    } else if (p->base >= s && p->base + SPAN <= e) sp_drop(idx);
+    else if (p->clean) span_dirty(idx);   /* part of it discarded: forget the copy */
+}
+/* [s,e) unmapped or discarded (MADV_DONTNEED): its swapped pages are gone */
+static void swap_forget(u64 s, u64 e) { if (g_nsp) spans_in(s, e, visit_forget); }
+
+/* A commit of [s,e) succeeded: track its spans (pinned for stacks/populate). */
+static void swap_note(u64 s, u64 e, int pin)
+{
+    if (!g_swap) return;
+    for (u64 b = ALIGN_DOWN(s, SPAN); b < e; b += SPAN) {
+        int i = sp_get(b);
+        if (i < 0) return;
+        if (g_sp[i].state == SP_PROBE) span_unprobe((u32)i);
+        g_sp[i].state = SP_HOT;
+        if (pin) g_sp[i].pinned = 1;
+    }
+}
+
+/* Advance the clock up to `steps` spans: hot -> probed; with `evict`, probed
+ * -> written out, until `want` bytes are freed. Skips [xs,xe). */
+static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
+{
+    u64 freed = 0;
+    for (u64 n = 0; n < steps && g_nsp && (!evict_ok || freed < want); n++) {
+        if (g_hand >= g_nsp) g_hand = 0;
+        u32 idx = g_hand++;
+        span *p = &g_sp[idx];
+        if (p->state == SP_FREE || p->state == SP_OUT || p->pinned) continue;
+        if (xe && p->base < xe && p->base + SPAN > xs) continue;
+        if (g_swap_excl_e && p->base < g_swap_excl_e && p->base + SPAN > g_swap_excl_s) continue;
+        g_clk_steps++;
+        if (p->state == SP_HOT) { span_parts(p->base, part_probe, NULL); p->state = SP_PROBE; g_clk_probes++; continue; }
+        if (evict_ok) { u64 f = evict(idx); freed += f; if (f) g_clk_evicts++; else g_clk_empty++; }
+    }
+    return freed;
+}
+
+/* Before committing `len` more bytes: probe ahead above 80% of the budget,
+ * evict when the commit would come within 16 MiB of it. */
+static void swap_disable(void) { g_swap = 0; }
+void xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in) { *now = (u64)g_swap_now; *out = (u64)g_swap_out; *in = (u64)g_swap_in; }
+u64 xrl_mem_swap_clean(void) { return (u64)g_swap_clean; }
+void xrl_mem_clock_stats(char *b, size_t n)
+{
+    snprintf(b, n, "clock: %lld eviction runs, %lld steps, %lld probes, %lld evictions, %lld empty; %u spans, %u free slots, %u slots",
+             (long long)g_clk_runs, (long long)g_clk_steps, (long long)g_clk_probes, (long long)g_clk_evicts,
+             (long long)g_clk_empty, g_nsp - g_nspfree, g_nslotfree, g_nslots);
+}
+
+static void swap_room(u64 len, u64 xs, u64 xe)
+{
+    if (!g_swap || !g_nsp) return;
+    u64 now = (u64)g_committed, b = g_budget;
+    u64 high = b > (64ull << 20) ? b - (16ull << 20) : b;
+    if (now + len <= b / 10 * 8) return;
+    if (now + len <= high) { clock_run(0, 2, 0, xs, xe); return; }
+    u64 want = now + len - high + (8ull << 20);   /* a little extra: fewer, larger passes */
+    g_clk_runs++;
+    clock_run(want, (u64)g_nsp * 3 + 16, 1, xs, xe);
+}
+
+/* Commit the reserved parts of [s,e) with `prot`, charging the budget; evicted
+ * or probed spans in the range are restored first. Lock held. */
 static slong commit_lazy_locked(u64 s, u64 e, int prot)
 {
+    u64 s0 = s, e0 = e;
+    int pin = t_commit_src == CS_STACK || t_commit_src == CS_MADVISE;
+    swap_restore(s, e);
     DWORD wp = winprot(prot, NULL);
     while (s < e) {
         MEMORY_BASIC_INFORMATION mbi;
@@ -458,13 +911,14 @@ static slong commit_lazy_locked(u64 s, u64 e, int prot)
         if (re > e) re = e;
         if (re <= s) return -LX_EFAULT;
         if (mbi.State != MEM_COMMIT) {
-            slong r = commit_account(re - s);
+            slong r = commit_account_ex(re - s, s0, e0);
             if (r) return r;
             if (!w_alloc((void *)s, re - s, MEM_COMMIT, wp)) {
                 InterlockedAdd64(&g_committed, -(LONG64)(re - s));
                 return -LX_ENOMEM;
             }
             InterlockedAdd64(&g_cs_bytes[t_commit_src], (LONG64)(re - s));
+            swap_note(s, re, pin);
         }
         s = re;
     }
@@ -639,6 +1093,7 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
         p = g_v[i].end;
     }
     if (vma_split(addr) || vma_split(end)) { r = -LX_ENOMEM; goto out; }
+    swap_settle(addr, end);   /* no probed or read-only (clean) swap pages under the new protection */
     for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < end; i++) {
         vma *v = &g_v[i];
         if (v->prot == prot) continue;
@@ -711,7 +1166,10 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
             /* copy only what is committed (the rest stays lazy); commit the
              * destination first, as no guest page may fault under g_lock */
             mremap_copy c = { target, old_addr, 0 };
+            swap_restore(old_addr, old_addr + cp);   /* the copy reads it under g_lock */
+            g_swap_excl_s = old_addr; g_swap_excl_e = old_addr + cp;
             each_region(old_addr, old_addr + cp, op_copy_committed, &c);
+            g_swap_excl_s = g_swap_excl_e = 0;
             if (c.err) { res = c.err; goto out; }
         }
         if (prot != (LX_PROT_READ | LX_PROT_WRITE) && prot != LX_PROT_NONE) {
@@ -756,6 +1214,7 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
     case LX_MADV_DONTNEED:
     case LX_MADV_FREE: {
         AcquireSRWLockExclusive(&g_lock);
+        swap_forget(addr, addr + len);
         /* anonymous pages: decommit (zero-filled on the next touch, which commits
          * lazily) and give the commit charge back */
         for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < addr + len; i++) {
@@ -827,6 +1286,9 @@ static void mem_breakdown_locked(void)
          lazy >> 20, nlazy, big_c >> 20, big_v, eager >> 20, file >> 20, stack >> 20);
     for (int k = 0; k < CS_N; k++)
         if (g_cs_bytes[k]) LOGE("mem:   lazy commits by %s: %llu MiB", cs_names[k], (u64)g_cs_bytes[k] >> 20);
+    LOGE("mem:   swap %s: %llu MiB in the file, %llu MiB written, %llu MiB read back, %llu MiB evicted again clean, %u spans tracked",
+         g_swap ? "on" : "off", (u64)g_swap_now >> 20, (u64)g_swap_out >> 20, (u64)g_swap_in >> 20, (u64)g_swap_clean >> 20,
+         g_nsp - g_nspfree);
     /* the biggest lazy mappings (ten passes over the list; this runs once) */
     u64 last = ~0ull;
     for (int n = 0; n < 10; n++) {
@@ -841,6 +1303,23 @@ static void mem_breakdown_locked(void)
              (g_v[bi].end - g_v[bi].start) >> 20, best >> 20, g_v[bi].prot, g_v[bi].mid);
         last = best;
     }
+}
+
+/* hangdump.c: the mapping holding `a` (1), none (0), the lock is held (-1) */
+int xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off)
+{
+    if (!TryAcquireSRWLockShared(&g_lock)) return -1;
+    size_t i = vma_lower(a);
+    int r = i < g_n && g_v[i].start <= a;
+    if (r) { strncpy_s(name, n, g_v[i].name, _TRUNCATE); *off = a - g_v[i].start + (u64)g_v[i].foff; }
+    ReleaseSRWLockShared(&g_lock);
+    return r;
+}
+int xrl_mem_lock_held(void)
+{
+    if (!TryAcquireSRWLockExclusive(&g_lock)) return 1;
+    ReleaseSRWLockExclusive(&g_lock);
+    return 0;
 }
 
 int xrl_mem_guest_ctx(u64 rip, u64 rsp)
@@ -892,9 +1371,25 @@ static int lazy_fault_locked_entry(u64 addr, int access)
         vma *v = &g_v[i];
         int need = access == 1 ? LX_PROT_WRITE : access == 8 ? LX_PROT_EXEC : LX_PROT_READ;
         MEMORY_BASIC_INFORMATION mbi;
+        int si = g_nsp ? sp_find(ALIGN_DOWN(addr, SPAN)) : -1;
         if (!(v->prot & need)) ok = 0;
-        else if (VirtualQuery((void *)addr, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT) ok = 1;   /* another thread won */
-        else {
+        else if (si >= 0 && g_sp[si].state == SP_OUT) {   /* swapped out: read it back */
+            t_commit_src = access == 1 ? CS_WRITE_FAULT : access == 8 ? CS_EXEC_FAULT : CS_READ_FAULT;
+            ok = swapin((u32)si, need != LX_PROT_WRITE) == 0;
+            t_commit_src = CS_IO;
+            if (!ok) LOGE("mem: cannot swap in %llx (%llu MiB committed, budget %llu MiB)", addr, (u64)g_committed >> 20, g_budget >> 20);
+        } else if (VirtualQuery((void *)addr, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT) {
+            /* probed by the swap clock (or left read-only by a failed eviction):
+             * back to the mapping's protection; otherwise another thread won */
+            if (mbi.Protect == PAGE_NOACCESS || (need == LX_PROT_WRITE && mbi.Protect == PAGE_READONLY)) {
+                if (si >= 0) {
+                    if (need == LX_PROT_WRITE) span_dirty((u32)si);   /* first write after a read-back */
+                    span_unprobe((u32)si);
+                }
+                else { DWORD old; w_protect((void *)ALIGN_DOWN(addr, LX_PAGE), LX_PAGE, winprot(v->prot, NULL), &old); }
+            }
+            ok = 1;
+        } else {
             u64 s = ALIGN_DOWN(addr, g_lazy_chunk), e = s + g_lazy_chunk;
             if (s < v->start) s = v->start;
             if (e > v->end) e = v->end;

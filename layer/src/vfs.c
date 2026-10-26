@@ -382,6 +382,7 @@ static slong dfile_read(xfile *f, void *buf, u64 n, s64 off)
     if (use_pos) { AcquireSRWLockExclusive(&f->lock); off = f->pos; }
     u64 total = 0;
     slong err = 0;
+    int retries = 0;
     while (total < n) {
         DWORD chunk = (DWORD)((n - total) > 0x40000000ull ? 0x40000000ull : (n - total));
         OVERLAPPED ov; memset(&ov, 0, sizeof ov);
@@ -390,6 +391,8 @@ static slong dfile_read(xfile *f, void *buf, u64 n, s64 off)
         if (!ReadFile(f->h, (char *)buf + total, chunk, &got, &ov)) {
             DWORD e = GetLastError();
             if (e == ERROR_HANDLE_EOF) break;
+            /* the swap clock probed the buffer after the populate: again */
+            if (e == ERROR_NOACCESS && retries++ < 4 && !xrl_mem_populate((u64)(uintptr_t)buf + total, chunk)) continue;
             err = -(slong)xrl_win_to_errno(e);
             break;
         }
@@ -415,12 +418,18 @@ static slong dfile_write(xfile *f, const void *buf, u64 n, s64 off)
     }
     u64 total = 0;
     slong err = 0;
+    int retries = 0;
     while (total < n) {
         DWORD chunk = (DWORD)((n - total) > 0x40000000ull ? 0x40000000ull : (n - total));
         OVERLAPPED ov; memset(&ov, 0, sizeof ov);
         ov.Offset = (DWORD)((u64)off + total); ov.OffsetHigh = (DWORD)(((u64)off + total) >> 32);
         DWORD got = 0;
-        if (!WriteFile(f->h, (const char *)buf + total, chunk, &got, &ov)) { err = -(slong)xrl_win_to_errno(GetLastError()); break; }
+        if (!WriteFile(f->h, (const char *)buf + total, chunk, &got, &ov)) {
+            DWORD e = GetLastError();
+            if (e == ERROR_NOACCESS && retries++ < 4 && !xrl_mem_populate((u64)(uintptr_t)buf + total, chunk)) continue;
+            err = -(slong)xrl_win_to_errno(e);
+            break;
+        }
         total += got;
         if (got < chunk) break;
     }

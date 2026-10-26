@@ -367,6 +367,11 @@ slong xrl_sig_kill_process(int sig);
 /* mem.c, for signal delivery: rip in executable and rsp in writable guest
  * memory (1), not (0), or the memory lock is held (-1, retry) */
 int   xrl_mem_guest_ctx(u64 rip, u64 rsp);
+void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
+int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
+int   xrl_mem_lock_held(void);
+void  xrl_mem_clock_stats(char *b, size_t n);
+void  xrl_hang_watch_start(void);   /* hangdump.c, XRL_HANG_DUMP */   /* bytes in the swap file, written, read */
 /* cpuinfo.c: the real CPU (CPUID) and topology */
 char *xrl_cpuinfo_text(size_t *len);
 int  xrl_cpu_core_id(int cpu);

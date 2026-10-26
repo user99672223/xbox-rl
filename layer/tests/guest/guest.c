@@ -14,6 +14,7 @@ static u64 xctx;
 #define AT_RANDOM 25
 static u64 at_random, at_base, at_phnum, at_hwcap2;
 static int fake_host;   /* argv has --fake-host: the desktop test host's fake op tables */
+static int no_swap;     /* argv has --no-swap: skip the (slow) swap test */
 
 #define sc(n, a, b, c, d, e, f) xsc((n), (long)(a), (long)(b), (long)(c), (long)(d), (long)(e), (long)(f))
 #define sc1(n, a) sc(n, a, 0, 0, 0, 0, 0)
@@ -457,6 +458,49 @@ static void test_signals(void)
     sc4(13, 12, &dfl, 0, 8);
 }
 
+/* ---- swap: touch more than the commit budget (the suite runs with 1 GiB) -- */
+static void test_swap(void)
+{
+    out("swap:\n");
+    const u64 len = 1280ull << 20, pages = len >> 12;
+    u8 *m = mmap_anon(len, 3);
+    CHECK((long)m > 0, "mmap 1.25 GiB (more than the 1 GiB budget)");
+    if ((long)m <= 0) return;
+    for (u64 i = 0; i < pages; i++) { *(u64 *)(m + (i << 12)) = i ^ 0x5157415055ull; *(u64 *)(m + (i << 12) + 4088) = ~i; }
+    CHECK(1, "every page written (evictions made room)");
+    u64 bad = 0;
+    for (u64 i = 0; i < pages; i++)
+        if (*(u64 *)(m + (i << 12)) != (i ^ 0x5157415055ull) || *(u64 *)(m + (i << 12) + 4088) != ~i) bad++;
+    CHECK(bad == 0, "every page reads back its own data (swapped in on touch)");
+    /* the kernel reads a buffer that was swapped out: write() it to a file */
+    long fd = sc4(257, -100, "/tmp/xrl_swap_test", 0102 | 01000, 0644);   /* O_RDWR|O_CREAT|O_TRUNC */
+    for (u64 i = 0; i < pages; i++) m[(i << 12) + 8] = (u8)i;   /* touch all again: the first MiB goes out */
+    long w = fd >= 0 ? sc3(1, fd, m, 1 << 20) : -1;
+    static u8 rb[1 << 20];
+    long rr = fd >= 0 ? sc4(17, fd, rb, sizeof rb, 0) : -1;
+    int same = rr == (1 << 20) && !memcmp(rb, m, 1 << 20);
+    CHECK(w == (1 << 20) && same, "write() from swapped-out memory writes the right bytes");
+    if (fd >= 0) { sc1(3, fd); sc1(87, "/tmp/xrl_swap_test"); }
+    /* read back (clean), written again (dirty), evicted again: nothing lost */
+    bad = 0;
+    for (u64 i = 0; i < pages; i++)
+        if (*(u64 *)(m + (i << 12)) != (i ^ 0x5157415055ull) || m[(i << 12) + 8] != (u8)i || *(u64 *)(m + (i << 12) + 4088) != ~i) bad++;
+    CHECK(bad == 0, "pages written after a read-back keep the new data through another eviction");
+    /* mprotect over partly swapped-out memory: read-only, then writable again */
+    long pr = sc3(10, m, len, 1);
+    bad = 0;
+    for (u64 i = 0; i < pages; i += 7) if (*(u64 *)(m + (i << 12) + 4088) != ~i) bad++;
+    long pw = sc3(10, m, len, 3);
+    for (u64 i = 0; i < pages; i += 7) m[(i << 12) + 9] = 0x5a;
+    for (u64 i = 0; i < pages; i += 7) if (m[(i << 12) + 9] != 0x5a || *(u64 *)(m + (i << 12)) != (i ^ 0x5157415055ull)) bad++;
+    CHECK(pr == 0 && pw == 0 && bad == 0, "mprotect read-only and back over swapped memory keeps the data");
+    /* unmapped while swapped out: a new mapping there is zero */
+    sc2(11, m, len);
+    u8 *m2 = (u8 *)sc(9, m, 1 << 20, 3, 0x22 | 0x100000 /*FIXED_NOREPLACE*/, -1, 0);
+    CHECK(m2 == m && *(u64 *)m2 == 0 && *(u64 *)(m2 + 4096) == 0, "after munmap the address range is fresh zero memory");
+    if ((long)m2 > 0) sc2(11, m2, 1 << 20);
+}
+
 /* /proc/cpuinfo must agree with what CPUID says about the CPU */
 static const char *find(const char *h, const char *n)
 {
@@ -784,9 +828,11 @@ void cstart(u64 *sp)
     }
     if (!xsc) { __asm__ volatile("ud2"); }
     for (long i = 1; i < argc; i++) {
-        const char *a = (const char *)sp[1 + i], *f = "--fake-host";
+        const char *a = (const char *)sp[1 + i], *f = "--fake-host", *g = "--no-swap";
         int k = 0; while (a[k] && a[k] == f[k]) k++;
         if (!a[k] && !f[k]) fake_host = 1;
+        k = 0; while (a[k] && a[k] == g[k]) k++;
+        if (!a[k] && !g[k]) no_swap = 1;
     }
     out("xrl guest test start\n");
     outn("argc", argc);
@@ -797,6 +843,7 @@ void cstart(u64 *sp)
     test_threads();
     test_ntsync();
     test_signals();
+    if (!no_swap) test_swap();
     test_v2();
     test_teb();
     outn("TOTAL FAILS", fails);

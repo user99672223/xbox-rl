@@ -11,6 +11,13 @@
 #include <intrin.h>
 #include <immintrin.h>
 
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
+/* kernel32 exports it; the app-family headers do not declare it. The host links
+ * kernel32.lib (see mem.c on VirtualAlloc). Whether the console's app container
+ * lets us use it on our own threads is a run-time question. */
+WINBASEAPI BOOL WINAPI SetThreadContext(HANDLE hThread, const CONTEXT *lpContext);
+#endif
+
 static lx_ksigaction g_act[LX_NSIG + 1];
 static SRWLOCK g_sig_lock = SRWLOCK_INIT;
 static PVOID g_veh;

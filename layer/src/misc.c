@@ -22,7 +22,13 @@ const char *xrl_hostname(void)
     static char name[65];
     if (!name[0]) {
         char b[256]; DWORD n = sizeof b;
+#if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
+        /* no GetComputerNameEx for apps; the environment carries the name */
+        n = GetEnvironmentVariableA("COMPUTERNAME", b, sizeof b);
+        if (n && n < sizeof name) {
+#else
         if (GetComputerNameExA(ComputerNameDnsHostname, b, &n) && n && n < sizeof name) {
+#endif
             for (DWORD i = 0; i < n; i++) b[i] = (char)tolower((unsigned char)b[i]);
             memcpy(name, b, n + 1);
         } else strcpy_s(name, sizeof name, "localhost");
