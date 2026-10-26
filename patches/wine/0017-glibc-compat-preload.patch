@@ -1,8 +1,8 @@
 diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
-index 707bea2..32586ba 100644
+index 707bea2..ad76817 100644
 --- a/dlls/ntdll/unix/virtual.c
 +++ b/dlls/ntdll/unix/virtual.c
-@@ -970,8 +970,26 @@ void *get_builtin_so_handle( void *module )
+@@ -970,6 +970,31 @@ void *get_builtin_so_handle( void *module )
      return ret;
  }
  
@@ -10,13 +10,21 @@ index 707bea2..32586ba 100644
 + * glibc-only libc symbols (__printf_chk, __isoc23_*, __ctype_b_loc, ...). musl's loader turns a
 + * DT_NEEDED libc.so.6 into itself, so the glibc-ABI shim (wine/glibc-compat, shipped as
 + * /lib/libgcompat.so.0) cannot be a dependency: load it RTLD_GLOBAL once, before the first unix
-+ * library. XRL_GLIBC_COMPAT overrides the path; set empty to disable. A missing file is fine. */
-+static void xrl_load_glibc_compat(void)
++ * library that is not Wine's own (those live next to ntdll.so and never need it).
++ * XRL_GLIBC_COMPAT overrides the path, set empty to disable. A missing file is fine. */
++static void xrl_load_glibc_compat( const char *unix_lib_path )
 +{
 +    static int done;
-+    const char *path;
++    const char *path, *slash;
++    Dl_info info;
++    size_t len;
 +
 +    if (done) return;
++    if (dladdr( xrl_load_glibc_compat, &info ) && info.dli_fname && (slash = strrchr( info.dli_fname, '/' )))
++    {
++        len = slash - info.dli_fname;
++        if (!strncmp( unix_lib_path, info.dli_fname, len ) && unix_lib_path[len] == '/') return;
++    }
 +    done = 1;
 +    if (!(path = getenv( "XRL_GLIBC_COMPAT" ))) path = "/lib/libgcompat.so.0";
 +    if (!*path || access( path, R_OK )) return;
@@ -25,7 +33,13 @@ index 707bea2..32586ba 100644
 +
  static void load_steam_overlay(const char *unix_lib_path)
  {
-+    xrl_load_glibc_compat();
      const char *preload, *p;
-     char path[PATH_MAX];
+@@ -977,6 +1002,8 @@ static void load_steam_overlay(const char *unix_lib_path)
      unsigned int len;
+     void *handle;
+ 
++    xrl_load_glibc_compat( unix_lib_path );
++
+     if (!strstr(unix_lib_path, "winex11.so")) return;
+     if (getenv("LD_PRELOAD") || !(preload = getenv("WINE_LD_PRELOAD"))) return;
+ 
