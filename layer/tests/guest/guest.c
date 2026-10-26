@@ -763,7 +763,14 @@ static void test_v2(void)
     CHECK(sc1(0x10001, 0) == (long)c->g && c->g, "pseudo-syscall GET_GFX_OPS == ctx gfx table");
     CHECK(sc1(0x10002, 0) == (long)c->a && sc1(0x10003, 0) == (long)c->i, "pseudo-syscalls GET_AUDIO/INPUT_OPS");
     CHECK(sc1(0x10004, 0) == (long)c->log && c->log, "pseudo-syscall GET_LOG_FN");
-    CHECK(sc1(0x10005, 0) == -38, "pseudo-syscall out of range -> -ENOSYS");
+    {   /* GET_VCLOCK: a vDSO-style clock_gettime called directly (no syscall) */
+        long f = sc1(0x10005, 0);
+        long ts[2] = { -1, -1 };
+        int r = f > 0 ? ((int (*)(int, long *))f)(1 /* CLOCK_MONOTONIC */, ts) : -1;
+        CHECK(f > 0 && r == 0 && ts[0] >= 0 && ts[1] >= 0 && ts[1] < 1000000000, "pseudo-syscall GET_VCLOCK: monotonic clock without a syscall");
+        CHECK(f > 0 && ((int (*)(int, long *))f)(2 /* CLOCK_PROCESS_CPUTIME_ID */, ts) == -38, "GET_VCLOCK leaves CPU-time clocks to the syscall (-ENOSYS)");
+    }
+    CHECK(sc1(0x10006, 0) == -38, "pseudo-syscall out of range -> -ENOSYS");
 
     /* thread pointer slot: SET_FS lands where patched `mov %fs:0` loads read */
     u64 mode = 0;
