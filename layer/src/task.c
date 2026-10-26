@@ -418,6 +418,16 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         free(a);
     }
     { wchar_t dv[40]; swprintf(dv, 40, L"XRL_SPAWN_DEPTH=%d", g_spawn_depth + 1); size_t l = wcslen(dv) + 1; memcpy(o, dv, l * sizeof(wchar_t)); o += l; }
+    {   /* the glibc-ABI shim (libgcompat) is part of this guest userland: a process started by exec gets it loaded
+         * before its first instruction unless the caller chose an LD_PRELOAD of its own, so that a glibc-built
+         * library put into it from outside (the EAC module's in-game part, via dlopen) finds its symbols */
+        int have = 0; lx_stat sst;
+        for (int i = 0; i < 256; i++) { u64 sp; char s1[64]; if (xrl_cfu(&sp, uenvp + 8ull * i, 8) || !sp || xrl_strfu(s1, sp, sizeof s1)) break; if (!strncmp(s1, "LD_PRELOAD=", 11)) have = 1; }
+        if (!have && !xrl_vfs_stat(LX_AT_FDCWD, "/lib/libgcompat.so.0", 0, &sst)) {
+            const wchar_t *kv = L"XRL_ENV_LD_PRELOAD=/lib/libgcompat.so.0"; size_t l = wcslen(kv) + 1;
+            memcpy(o, kv, l * sizeof(wchar_t)); o += l;
+        }
+    }
     {   char inh[3000]; if (xrl_fd_inherit_list(inh, sizeof inh)) { wchar_t *wi = widen(inh); size_t l = wcslen(wi); if ((size_t)(o - blk) + l + 32 < (1u << 19)) { memcpy(o, L"XRL_INHERIT_FDS=", 16 * sizeof(wchar_t)); o += 16; memcpy(o, wi, (l + 1) * sizeof(wchar_t)); o += l + 1; } free(wi); } }
     char pname[128] = "";
     HANDLE pipe = INVALID_HANDLE_VALUE;

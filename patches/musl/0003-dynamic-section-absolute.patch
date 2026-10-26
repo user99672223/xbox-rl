@@ -1,0 +1,25 @@
+diff --git a/ldso/dynlink.c b/ldso/dynlink.c
+index 715948f..23821ef 100644
+--- a/ldso/dynlink.c
++++ b/ldso/dynlink.c
+@@ -1411,6 +1411,20 @@ static void reloc_all(struct dso *p)
+ 	for (; p; p=p->next) {
+ 		if (p->relocated) continue;
+ 		decode_vec(p->dynv, dyn, DYN_CNT);
++		/* xbox-rl: as glibc's ld.so does, leave the hash, symbol, string and version-symbol entries of this
++		 * object's in-memory .dynamic as absolute addresses. Programs that find a library through
++		 * /proc/<pid>/maps and walk its symbol table themselves (Epic's EAC does, to reach dlopen in a process
++		 * it controls with ptrace) take them as pointers; musl never reads them again once the object is
++		 * decoded, and the relocations below do not use these tags. Entries already absolute are left alone. */
++		if (!DL_FDPIC) {
++			size_t *dv = p->dynv;
++			for (; dv[0]; dv += 2) {
++				switch (dv[0]) {
++				case DT_HASH: case DT_GNU_HASH: case DT_SYMTAB: case DT_STRTAB: case DT_VERSYM:
++					if (dv[1] < (size_t)p->base) dv[1] += (size_t)p->base;
++				}
++			}
++		}
+ 		if (NEED_MIPS_GOT_RELOCS)
+ 			do_mips_relocs(p, laddr(p, dyn[DT_PLTGOT]));
+ 		do_relocs(p, laddr(p, dyn[DT_JMPREL]), dyn[DT_PLTRELSZ],
