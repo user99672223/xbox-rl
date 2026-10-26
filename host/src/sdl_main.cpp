@@ -71,6 +71,10 @@ int sdl_main(int, char**) {
     // Audio is intentionally NOT initialised: the guest's XAudio2 calls go to native
     // XAudio2 via xrl_audio_ops, which owns the mastering voice (notes-A.md).
     SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // B on an Xbox controller is also the system's "back": unless the app marks the
+    // BackRequested event handled, the shell navigates away and suspends the app (a game
+    // closing its own settings menu with B left the app). The game gets B from the pad.
+    SDL_SetHint(SDL_HINT_WINRT_HANDLE_BACK_BUTTON, "1");
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS | SDL_INIT_GAMECONTROLLER) != 0) {
         XLOGE("sdl", "SDL_Init failed: %s", SDL_GetError());
         xrl::host_exit();
