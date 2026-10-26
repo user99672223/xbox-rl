@@ -342,10 +342,6 @@ int    xrl_proc_is_virtual(const char *guest_abs);
 /* ipc fds */
 slong xrl_pipe_create(int flags, int fds[2]);
 slong xrl_eventfd_create(u32 initval, int flags);
-slong xrl_socketpair_create(int type, int flags, int fds[2]);
-slong xrl_sendmsg(int fd, u64 msg, int flags);
-slong xrl_recvmsg(int fd, u64 msg, int flags);
-slong xrl_shutdown(int fd, int how);
 slong xrl_epoll_create(int flags);
 slong xrl_epoll_ctl(int epfd, int op, int fd, u64 ev);
 slong xrl_epoll_wait(int epfd, u64 events, int maxevents, int timeout_ms, int *intr);
@@ -373,6 +369,31 @@ slong xrl_net_sendmmsg(int fd, u64 vec, u32 vlen, int flags);
 slong xrl_net_recvmmsg(int fd, u64 vec, u32 vlen, int flags);
 slong xrl_net_setsockopt(int fd, int level, int opt, u64 val, u64 len);
 slong xrl_net_getsockopt(int fd, int level, int opt, u64 val, u64 lenp);
+
+/* unix.c: AF_UNIX sockets (stream, dgram, seqpacket) as in-memory objects. Same convention as
+ * net.c: XRL_NOT_NET when `fd` (or the domain) is not an AF_UNIX socket. */
+slong xrl_unix_socket(int domain, int type, int proto);
+slong xrl_unix_socketpair(int type, int flags, int fds[2]);
+slong xrl_unix_bind(int fd, u64 addr, u64 len);
+slong xrl_unix_listen(int fd, int backlog);
+slong xrl_unix_accept(int fd, u64 addr, u64 lenp, int flags);
+slong xrl_unix_connect(int fd, u64 addr, u64 len);
+slong xrl_unix_getsockname(int fd, u64 addr, u64 lenp);
+slong xrl_unix_getpeername(int fd, u64 addr, u64 lenp);
+slong xrl_unix_shutdown(int fd, int how);
+slong xrl_unix_sendto(int fd, u64 buf, u64 len, int flags, u64 addr, u64 addrlen);
+slong xrl_unix_recvfrom(int fd, u64 buf, u64 len, int flags, u64 addr, u64 lenp);
+slong xrl_unix_sendmsg(int fd, u64 msg, int flags);
+slong xrl_unix_recvmsg(int fd, u64 msg, int flags);
+slong xrl_unix_sendmmsg(int fd, u64 vec, u32 vlen, int flags);
+slong xrl_unix_recvmmsg(int fd, u64 vec, u32 vlen, int flags);
+slong xrl_unix_setsockopt(int fd, int level, int opt, u64 val, u64 len);
+slong xrl_unix_getsockopt(int fd, int level, int opt, u64 val, u64 lenp);
+slong xrl_unix_iov(int fd, u64 iov, u64 cnt, int is_write);   /* readv/writev: one message on a datagram socket */
+/* vfs.c: nodes that exist only in the layer's tables (no host file): the socket files bind() makes.
+ * `ref`/`unref` keep `obj` alive for as long as the node is listed. */
+slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *));
+slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj);   /* ENOENT, or 0 with type 0 for an ordinary file */
 
 /* -------------------------------------------------------------- signals */
 void xrl_sig_init(void);

@@ -68,6 +68,7 @@ SYS(pwrite64) { UNUSED6; if (a4 < 0) return -LX_EINVAL; return do_write((int)a1,
 static slong do_iov(int fd, u64 uiov, u64 cnt, s64 off, int is_write)
 {
     if (cnt > 1024) return -LX_EINVAL;
+    if (off < 0) { slong r = xrl_unix_iov(fd, uiov, cnt, is_write); if (r != XRL_NOT_NET) return r; }   /* one datagram, not one per iovec */
     lx_iovec iov[1024];
     if (xrl_cfu(iov, uiov, (size_t)(cnt * sizeof(lx_iovec)))) return -LX_EFAULT;
     slong total = 0;
@@ -91,6 +92,57 @@ SYS(pwritev) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
 #define LX_RWF_SUPPORTED (0x1 /*HIPRI*/ | 0x2 /*DSYNC*/ | 0x4 /*SYNC*/)
 SYS(preadv2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 0); }
 SYS(pwritev2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
+
+/* sendfile(out, in, *offset, count): copied through a bounce buffer (the ops read/write take any
+ * address, guest or host). A seekable `in` is read at explicit offsets so a short write to `out`
+ * leaves its position exactly after the bytes that were sent; a pipe/socket `in` (allowed since
+ * Linux 5.12) cannot be rewound, so bytes read but not accepted by `out` are lost there. */
+SYS(sendfile)
+{
+    UNUSED6;
+    u64 count = (u64)a4;
+    s64 off = -1;
+    if (a3) { if (xrl_cfu(&off, (u64)a3, 8)) return -LX_EFAULT; if (off < 0) return -LX_EINVAL; }
+    xfile *in = xrl_fd_get((int)a2);
+    if (!in) return -LX_EBADF;
+    xfile *out = xrl_fd_get((int)a1);
+    if (!out) { xfile_unref(in); return -LX_EBADF; }
+    slong ret = 0;
+    u8 *buf = NULL;
+    if (!in->ops->read || !out->ops->write || (in->flags & LX_O_ACCMODE) == LX_O_WRONLY || (out->flags & LX_O_ACCMODE) == LX_O_RDONLY) { ret = -LX_EBADF; goto done; }
+    if (count > 0x7ffff000ull) count = 0x7ffff000ull;
+    int seekable = in->ops->lseek && in->ops->lseek(in, 0, 1) >= 0;
+    if (a3 && !seekable) { ret = -LX_ESPIPE; goto done; }
+    s64 cur = off;
+    if (cur < 0 && seekable) cur = in->pos;
+    buf = (u8 *)malloc(65536);
+    if (!buf) { ret = -LX_ENOMEM; goto done; }
+    u64 sent = 0;
+    while (sent < count) {
+        u64 want = count - sent < 65536 ? count - sent : 65536;
+        slong r = in->ops->read(in, buf, want, seekable ? cur + (s64)sent : -1);
+        if (r < 0) { ret = sent ? (slong)sent : r; goto fin; }
+        if (r == 0) break;
+        u64 put = 0;
+        while (put < (u64)r) {
+            slong w = out->ops->write(out, buf + put, (u64)r - put, -1);
+            if (w < 0) { ret = (sent + put) ? (slong)(sent + put) : w; sent += put; goto fin; }
+            put += (u64)w;
+        }
+        sent += put;
+        if ((u64)r < want) break;
+    }
+    ret = (slong)sent;
+fin:
+    if (ret > 0) {
+        if (a3) { s64 no = off + ret; xrl_ctu((u64)a3, &no, 8); }
+        else if (seekable) in->pos = cur + ret;
+    }
+done:
+    free(buf);
+    xfile_unref(out); xfile_unref(in);
+    return ret;
+}
 
 SYS(lseek)
 {
@@ -385,86 +437,60 @@ SYS(eventfd2) { UNUSED6; return xrl_eventfd_create((u32)a1, (int)a2); }
 SYS(eventfd) { UNUSED6; return xrl_eventfd_create((u32)a1, 0); }
 SYS(memfd_create) { UNUSED6; char n[256]; slong r = xrl_strfu(n, (u64)a1, sizeof n); if (r) return r; return xrl_memfd_create(n, (unsigned)a2); }
 
-/* ---- sockets: only AF_UNIX socketpair is real ------------------------ */
+/* ---- sockets: AF_INET/AF_INET6 are net.c's (Winsock), AF_UNIX is unix.c's ----------------------- */
 SYS(socketpair)
 {
     UNUSED6;
-    if (a1 != LX_AF_UNIX) return -LX_EAFNOSUPPORT;
+    if (a1 != LX_AF_UNIX) return -LX_EOPNOTSUPP;   /* Linux: socketpair is AF_UNIX (and a few exotic families) only */
     int type = (int)a2 & 0xf;
-    if (type != LX_SOCK_STREAM && type != LX_SOCK_SEQPACKET && type != LX_SOCK_DGRAM) return -LX_EINVAL;
+    if ((int)a2 & ~(0xf | LX_SOCK_NONBLOCK | LX_SOCK_CLOEXEC)) return -LX_EINVAL;
+    if (type != LX_SOCK_STREAM && type != LX_SOCK_SEQPACKET && type != LX_SOCK_DGRAM) return -LX_ESOCKTNOSUPPORT;
+    if (a3) return -LX_EPROTONOSUPPORT;
     int fds[2];
-    slong r = xrl_socketpair_create(type, (int)a2 & (LX_SOCK_NONBLOCK | LX_SOCK_CLOEXEC), fds);
+    slong r = xrl_unix_socketpair(type, (int)a2 & (LX_SOCK_NONBLOCK | LX_SOCK_CLOEXEC), fds);
     if (r) return r;
     if (xrl_ctu((u64)a4, fds, 8)) { xrl_fd_close(fds[0]); xrl_fd_close(fds[1]); return -LX_EFAULT; }
     return 0;
 }
-/* AF_INET/AF_INET6 sockets are net.c's (Winsock); every other fd falls through to ipc.c's socketpair code. */
-#define NET_OR(r, other) do { slong r_ = (r); if (r_ != XRL_NOT_NET) return r_; return (other); } while (0)
-SYS(sendmsg) { UNUSED6; NET_OR(xrl_net_sendmsg((int)a1, (u64)a2, (int)a3), xrl_sendmsg((int)a1, (u64)a2, (int)a3)); }
-SYS(recvmsg) { UNUSED6; NET_OR(xrl_net_recvmsg((int)a1, (u64)a2, (int)a3), xrl_recvmsg((int)a1, (u64)a2, (int)a3)); }
-SYS(sendmmsg) { UNUSED6; NET_OR(xrl_net_sendmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), -LX_ENOTSOCK); }
-SYS(recvmmsg) { UNUSED6; NET_OR(xrl_net_recvmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), -LX_ENOTSOCK); }
-SYS(shutdown) { UNUSED6; NET_OR(xrl_net_shutdown((int)a1, (int)a2), xrl_shutdown((int)a1, (int)a2)); }
-SYS(sendto) { UNUSED6; NET_OR(xrl_net_sendto((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6), do_write((int)a1, (u64)a2, (u64)a3, -1)); }
+/* each call tries net.c (it answers XRL_NOT_NET for an fd that is not one of its), then unix.c, then `other` */
+#define SOCK_OR(rnet, runix, other) do { slong r_ = (rnet); if (r_ != XRL_NOT_NET) return r_; r_ = (runix); if (r_ != XRL_NOT_NET) return r_; return (other); } while (0)
+SYS(sendmsg) { UNUSED6; SOCK_OR(xrl_net_sendmsg((int)a1, (u64)a2, (int)a3), xrl_unix_sendmsg((int)a1, (u64)a2, (int)a3), -LX_ENOTSOCK); }
+SYS(recvmsg) { UNUSED6; SOCK_OR(xrl_net_recvmsg((int)a1, (u64)a2, (int)a3), xrl_unix_recvmsg((int)a1, (u64)a2, (int)a3), -LX_ENOTSOCK); }
+SYS(sendmmsg) { UNUSED6; SOCK_OR(xrl_net_sendmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), xrl_unix_sendmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), -LX_ENOTSOCK); }
+SYS(recvmmsg) { UNUSED6; SOCK_OR(xrl_net_recvmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), xrl_unix_recvmmsg((int)a1, (u64)a2, (u32)a3, (int)a4), -LX_ENOTSOCK); }
+SYS(shutdown) { UNUSED6; SOCK_OR(xrl_net_shutdown((int)a1, (int)a2), xrl_unix_shutdown((int)a1, (int)a2), -LX_ENOTSOCK); }
+SYS(sendto)
+{
+    UNUSED6;
+    SOCK_OR(xrl_net_sendto((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6),
+            xrl_unix_sendto((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6), -LX_ENOTSOCK);
+}
 SYS(recvfrom)
 {
     UNUSED6;
-    slong r = xrl_net_recvfrom((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6);
-    if (r != XRL_NOT_NET) return r;
-    r = do_read((int)a1, (u64)a2, (u64)a3, -1);
-    if (r >= 0 && a6) { u32 z = 0; xrl_ctu((u64)a6, &z, 4); }
-    return r;
+    SOCK_OR(xrl_net_recvfrom((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6),
+            xrl_unix_recvfrom((int)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5, (u64)a6), -LX_ENOTSOCK);
 }
 SYS(socket)
 {
     UNUSED6;
     slong r = xrl_net_socket((int)a1, (int)a2, (int)a3);
     if (r != XRL_NOT_NET) return r;
+    r = xrl_unix_socket((int)a1, (int)a2, (int)a3);
+    if (r != XRL_NOT_NET) return r;
     static volatile LONG once;
-    if (!InterlockedExchange(&once, 1)) LOGW("socket(domain=%lld type=%lld): only AF_INET/AF_INET6 TCP/UDP and socketpair exist (-EAFNOSUPPORT)", a1, a2);
+    if (!InterlockedExchange(&once, 1)) LOGW("socket(domain=%lld type=%lld): only AF_UNIX and AF_INET/AF_INET6 TCP/UDP exist (-EAFNOSUPPORT)", a1, a2);
     return -LX_EAFNOSUPPORT;
 }
-SYS(bind) { UNUSED6; NET_OR(xrl_net_bind((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
-SYS(listen) { UNUSED6; NET_OR(xrl_net_listen((int)a1, (int)a2), -LX_ENOTSOCK); }
-SYS(accept) { UNUSED6; NET_OR(xrl_net_accept((int)a1, (u64)a2, (u64)a3, 0), -LX_ENOTSOCK); }
-SYS(accept4) { UNUSED6; NET_OR(xrl_net_accept((int)a1, (u64)a2, (u64)a3, (int)a4), -LX_ENOTSOCK); }
-SYS(connect) { UNUSED6; NET_OR(xrl_net_connect((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
-SYS(getpeername) { UNUSED6; NET_OR(xrl_net_getpeername((int)a1, (u64)a2, (u64)a3), -LX_ENOTCONN); }
-SYS(getsockname)
-{
-    UNUSED6;
-    slong r = xrl_net_getsockname((int)a1, (u64)a2, (u64)a3);
-    if (r != XRL_NOT_NET) return r;
-    if (a3) { u32 z = 2; xrl_ctu((u64)a3, &z, 4); }
-    if (a2) { u16 fam = LX_AF_UNIX; xrl_ctu((u64)a2, &fam, 2); }
-    return 0;
-}
-SYS(setsockopt)
-{
-    UNUSED6;
-    slong r = xrl_net_setsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5);
-    if (r != XRL_NOT_NET) return r;
-    xfile *f = xrl_fd_get((int)a1);
-    if (!f) return -LX_EBADF;
-    xfile_unref(f);
-    return 0;
-}
-SYS(getsockopt)
-{
-    UNUSED6;
-    slong r = xrl_net_getsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5);
-    if (r != XRL_NOT_NET) return r;
-    xfile *f = xrl_fd_get((int)a1);
-    if (!f) return -LX_EBADF;
-    xfile_unref(f);
-    if (a2 == LX_SOL_SOCKET && a5) {
-        int v = 0, len = 4;
-        if (a3 == 3 /*SO_TYPE*/) v = LX_SOCK_STREAM;
-        else if (a3 == 7 || a3 == 8) v = 65536;
-        xrl_ctu((u64)a4, &v, 4); xrl_ctu((u64)a5, &len, 4);
-    }
-    return 0;
-}
+SYS(bind) { UNUSED6; SOCK_OR(xrl_net_bind((int)a1, (u64)a2, (u64)a3), xrl_unix_bind((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
+SYS(listen) { UNUSED6; SOCK_OR(xrl_net_listen((int)a1, (int)a2), xrl_unix_listen((int)a1, (int)a2), -LX_ENOTSOCK); }
+SYS(accept) { UNUSED6; SOCK_OR(xrl_net_accept((int)a1, (u64)a2, (u64)a3, 0), xrl_unix_accept((int)a1, (u64)a2, (u64)a3, 0), -LX_ENOTSOCK); }
+SYS(accept4) { UNUSED6; SOCK_OR(xrl_net_accept((int)a1, (u64)a2, (u64)a3, (int)a4), xrl_unix_accept((int)a1, (u64)a2, (u64)a3, (int)a4), -LX_ENOTSOCK); }
+SYS(connect) { UNUSED6; SOCK_OR(xrl_net_connect((int)a1, (u64)a2, (u64)a3), xrl_unix_connect((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
+SYS(getpeername) { UNUSED6; SOCK_OR(xrl_net_getpeername((int)a1, (u64)a2, (u64)a3), xrl_unix_getpeername((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
+SYS(getsockname) { UNUSED6; SOCK_OR(xrl_net_getsockname((int)a1, (u64)a2, (u64)a3), xrl_unix_getsockname((int)a1, (u64)a2, (u64)a3), -LX_ENOTSOCK); }
+SYS(setsockopt) { UNUSED6; SOCK_OR(xrl_net_setsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5), xrl_unix_setsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5), -LX_ENOTSOCK); }
+SYS(getsockopt) { UNUSED6; SOCK_OR(xrl_net_getsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5), xrl_unix_getsockopt((int)a1, (int)a2, (int)a3, (u64)a4, (u64)a5), -LX_ENOTSOCK); }
 
 /* ---- polling ---------------------------------------------------------- */
 SYS(poll) { UNUSED6; return xrl_poll((u64)a1, (u64)a2, (int)a3 < 0 ? -1 : (s64)(int)a3 * 1000000ll, 0); }
@@ -735,7 +761,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_madvise, madvise), T(NR_msync, msync), T(NR_mincore, mincore),
     T(NR_mlock, zero_ok), T(NR_munlock, zero_ok), T(NR_mlockall, zero_ok), T(NR_munlockall, zero_ok),
     /* files */
-    T(NR_read, read), T(NR_write, write), T(NR_pread64, pread64), T(NR_pwrite64, pwrite64),
+    T(NR_read, read), T(NR_write, write), T(NR_pread64, pread64), T(NR_pwrite64, pwrite64), T(NR_sendfile, sendfile),
     T(NR_readv, readv), T(NR_writev, writev), T(NR_preadv, preadv), T(NR_pwritev, pwritev), T(NR_preadv2, preadv2), T(NR_pwritev2, pwritev2),
     T(NR_getxattr, xattr_nodata), T(NR_lgetxattr, xattr_nodata), T(NR_fgetxattr, xattr_nodata),
     T(NR_removexattr, xattr_nodata), T(NR_lremovexattr, xattr_nodata), T(NR_fremovexattr, xattr_nodata),

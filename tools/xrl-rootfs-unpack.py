@@ -41,9 +41,12 @@ def main():
         sys.exit('refusing to unpack into a non-empty directory: ' + root)
     os.makedirs(root, exist_ok=True)
     syms, meta, seen, n_files, n_bytes, skipped = {}, {}, {}, 0, 0, []
-    with tarfile.open(tarpath, 'r:*') as tf:
-        members = tf.getmembers()
-        for m in members:
+    if tarpath == '-':
+        tf = tarfile.open(fileobj=sys.stdin.buffer, mode='r|*')
+    else:
+        tf = tarfile.open(tarpath, 'r:*')
+    with tf:
+        for m in tf:
             g = '/' + m.name.lstrip('./').strip('/')
             if g == '/':
                 continue

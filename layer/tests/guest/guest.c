@@ -1177,9 +1177,320 @@ static void test_net(void)
     /* what is not a network socket */
     int pf2[2]; sc2(293, pf2, 0);
     CHECK(sc3(S_bind, pf2[0], &a, 16) == -88, "bind on a pipe -> -ENOTSOCK");
-    CHECK(sc3(S_socket, 1, 1, 0) == -97, "socket(AF_UNIX) (not socketpair) -> -EAFNOSUPPORT");
+    CHECK(sc3(S_socket, 1, 7, 0) == -94 && sc3(S_socket, 1, 1, 5) == -93, "socket(AF_UNIX): bad type -> -ESOCKTNOSUPPORT, bad protocol -> -EPROTONOSUPPORT");
     CHECK(sc3(S_socket, 2, 3, 0) == -1, "socket(AF_INET, SOCK_RAW) -> -EPERM");
     sc1(3, ls);
+}
+
+/* ---- AF_UNIX sockets (layer/src/unix.c) ------------------------------------ */
+struct sun { u16 fam; char p[108]; };
+struct ucred_ { int pid; u32 uid, gid; };
+struct cm_fd { u64 len; int lvl, type; int fd; int pad; };
+struct cm_cred { u64 len; int lvl, type; struct ucred_ c; int pad; };
+
+/* a path address (len counts the NUL) or, with a leading '@', an abstract name */
+static u32 mkun(struct sun *a, const char *name)
+{
+    memset(a, 0, sizeof *a);
+    a->fam = 1;
+    u32 n = (u32)slen(name);
+    if (name[0] == '@') { memcpy(a->p + 1, name + 1, n - 1); return 2 + n; }
+    memcpy(a->p, name, n);
+    return 2 + n + 1;
+}
+
+static volatile int un_cdone;
+static struct sun un_addr; static u32 un_alen;
+
+static int un_client_thr(void *arg)   /* blocking connect, then a greeting and the answer */
+{
+    (void)arg;
+    nap_ms(60);
+    long c = sc3(S_socket, 1, 1, 0);
+    long r = sc3(S_connect, c, &un_addr, un_alen);
+    char b[16]; memset(b, 0, sizeof b);
+    if (r == 0) { sc3(1, c, "hello-unix", 10); r = sc3(0, c, b, 16) == 4 && !memcmp(b, "pong", 4) ? 0 : -1; }
+    sc1(3, c);
+    un_cdone = r == 0 ? 1 : -1;
+    return 0;
+}
+
+#define UN_TOTAL (2u << 20)
+static int un_sender_thr(void *arg)   /* UN_TOTAL bytes of a known pattern; the queue is far smaller, so this blocks */
+{
+    long fd = (long)arg;
+    static u8 buf[30000];
+    u32 sent = 0;
+    while (sent < UN_TOTAL) {
+        u32 n = UN_TOTAL - sent < sizeof buf ? UN_TOTAL - sent : (u32)sizeof buf;
+        for (u32 i = 0; i < n; i++) buf[i] = PAT(sent + i);
+        long r = sc3(1, fd, buf, n);
+        if (r <= 0) { un_cdone = -1; return 1; }
+        sent += (u32)r;
+    }
+    sc2(S_shutdown, fd, 1);
+    un_cdone = 1;
+    return 0;
+}
+
+static long sendm(long fd, struct msg_ *m, int fl) { return sc3(S_sendmsg, fd, m, fl); }
+static long recvm(long fd, struct msg_ *m, int fl) { return sc3(S_recvmsg, fd, m, fl); }
+
+static void test_unix(void)
+{
+    out("AF_UNIX sockets:\n");
+    char buf[256]; long r;
+    struct sun a, b; u32 al, bl;
+    int sp[2];
+    long me = sc(39, 0, 0, 0, 0, 0, 0);
+
+    /* stream socketpair */
+    CHECK(sc4(53, 1, 1, 0, sp) == 0, "socketpair(SOCK_STREAM)");
+    CHECK(sc3(1, sp[0], "abc", 3) == 3 && sc3(1, sp[0], "def", 3) == 3, "stream: two writes");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, sp[1], buf, 100) == 6 && !memcmp(buf, "abcdef", 6), "stream: one read returns both (bytes merge)");
+    struct ucred_ pc = { -1, 0, 0 }; u32 pl = 12;
+    CHECK(sc(S_getsockopt, sp[0], 1, 17 /*SO_PEERCRED*/, &pc, &pl, 0) == 0 && pl == 12 && pc.pid == me && pc.uid == 1000, "SO_PEERCRED: the creator (pid, uid)");
+    int ty = 0; pl = 4;
+    CHECK(sc(S_getsockopt, sp[0], 1, 3 /*SO_TYPE*/, &ty, &pl, 0) == 0 && ty == 1, "SO_TYPE == SOCK_STREAM");
+    struct pfd pp = { sp[1], 1 | 4, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 1 && pp.rev == 4, "poll: writable, nothing to read");
+    u64 st[18]; memset(st, 0, sizeof st);
+    CHECK(sc2(5, sp[0], st) == 0 && (st[3] & 0170000) == 0140000, "fstat: S_ISSOCK");
+    sc1(3, sp[0]);
+    pp.rev = 0;
+    CHECK(sc3(7, &pp, 1, 0) == 1 && (pp.rev & 0x11) == 0x11, "poll after the peer closed: POLLIN|POLLHUP");
+    CHECK(sc3(0, sp[1], buf, 10) == 0, "read after the peer closed: EOF");
+    CHECK(sc3(1, sp[1], "x", 1) == -32, "write after the peer closed: -EPIPE");
+    sc1(3, sp[1]);
+
+    /* shutdown(SHUT_WR) leaves the other direction open */
+    sc4(53, 1, 1, 0, sp);
+    sc3(1, sp[0], "last", 4);
+    CHECK(sc2(S_shutdown, sp[0], 1) == 0, "shutdown(SHUT_WR)");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, sp[1], buf, 10) == 4 && sc3(0, sp[1], buf, 10) == 0, "peer reads the data, then EOF");
+    CHECK(sc3(1, sp[1], "back", 4) == 4 && sc3(0, sp[0], buf, 10) == 4, "the other direction still works");
+    sc1(3, sp[0]); sc1(3, sp[1]);
+
+    /* datagram and seqpacket keep message boundaries */
+    sc4(53, 1, 2, 0, sp);
+    sc3(1, sp[0], "one", 3); sc3(1, sp[0], "second", 6);
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, sp[1], buf, 100) == 3 && !memcmp(buf, "one", 3), "dgram: a read returns one datagram");
+    struct iov_ siv[2] = { { (u64)"ab", 2 }, { (u64)"cde", 3 } };
+    sc3(0, sp[1], buf, 100);   /* drain "second" */
+    CHECK(sc3(20, sp[0], siv, 2) == 5, "dgram: writev of two iovecs");
+    struct iov_ riv[2] = { { (u64)buf, 2 }, { (u64)buf + 2, 8 } };
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(19, sp[1], riv, 2) == 5 && !memcmp(buf, "abcde", 5), "dgram: the writev was ONE datagram (readv gets all 5)");
+    sc3(1, sp[0], "0123456789", 10);
+    struct iov_ tiv = { (u64)buf, 4 };
+    struct msg_ tm = { 0, 0, 0, (u64)&tiv, 1, 0, 0, 0, 0 };
+    CHECK(recvm(sp[1], &tm, 0) == 4 && (tm.fl & 0x20), "dgram: a short buffer truncates and sets MSG_TRUNC");
+    CHECK(recvm(sp[1], &tm, 0x40) == -11, "dgram: the truncated rest is gone (-EAGAIN with MSG_DONTWAIT)");
+    sc3(1, sp[0], "keep", 4);
+    CHECK(sc(S_recvfrom, sp[1], buf, 100, 2 /*MSG_PEEK*/, 0, 0) == 4 && sc(S_recvfrom, sp[1], buf, 100, 0, 0, 0) == 4, "MSG_PEEK leaves the datagram queued");
+    CHECK(sc(S_recvfrom, sp[1], buf, 100, 0x40, 0, 0) == -11, "MSG_DONTWAIT on an empty queue -> -EAGAIN");
+    sc1(3, sp[0]); sc1(3, sp[1]);
+    CHECK(sc4(53, 1, 5, 0, sp) == 0, "socketpair(SOCK_SEQPACKET)");
+    sc3(1, sp[0], "rec1", 4); sc3(1, sp[0], "record-two", 10);
+    CHECK(sc3(0, sp[1], buf, 100) == 4 && sc3(0, sp[1], buf, 100) == 10, "seqpacket: records stay separate");
+    sc1(3, sp[0]);
+    CHECK(sc3(0, sp[1], buf, 100) == 0, "seqpacket: EOF after the peer closed");
+    sc1(3, sp[1]);
+
+    /* a named stream server: bind, listen, accept, with a client thread */
+    long ls = sc3(S_socket, 1, 1, 0);
+    al = mkun(&a, "/tmp/xrl_unix_test.sock");
+    sc1(87, "/tmp/xrl_unix_test.sock");
+    CHECK(sc3(S_bind, ls, &a, al) == 0, "bind(/tmp/xrl_unix_test.sock)");
+    memset(st, 0, sizeof st);
+    CHECK(sc2(4, "/tmp/xrl_unix_test.sock", st) == 0 && (st[3] & 0170000) == 0140000, "stat of the path: S_ISSOCK");
+    CHECK(sc3(2, "/tmp/xrl_unix_test.sock", 0, 0) == -6, "open() of a socket file -> -ENXIO");
+    long ls2 = sc3(S_socket, 1, 1, 0);
+    CHECK(sc3(S_bind, ls2, &a, al) == -98, "bind to a taken path -> -EADDRINUSE");
+    sc1(3, ls2);
+    CHECK(sc3(S_bind, ls, &a, al) == -22, "bind twice -> -EINVAL");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getsockname, ls, &b, &bl) == 0 && bl == al && !memcmp(&b, &a, al), "getsockname returns the bound path");
+    CHECK(sc2(S_listen, ls, 5) == 0, "listen");
+    {   /* readdir sees the socket */
+        long dfd = sc3(2, "/tmp", 0200000 /*O_DIRECTORY*/, 0);
+        static char db[8192]; int seen = 0;
+        long n;
+        while (dfd >= 0 && (n = sc3(217, dfd, db, sizeof db)) > 0)
+            for (long o = 0; o < n;) { u16 rl = *(u16 *)(db + o + 16); u8 t = *(u8 *)(db + o + 18); if (!memcmp(db + o + 19, "xrl_unix_test.sock", 19) && t == 12) seen = 1; o += rl; }
+        CHECK(seen, "getdents lists it as DT_SOCK");
+        if (dfd >= 0) sc1(3, dfd);
+    }
+    un_addr = a; un_alen = al; un_cdone = 0;
+    volatile int ct1; spawn_thread(un_client_thr, 0, &ct1);
+    pp = (struct pfd){ (int)ls, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 3000) == 1 && (pp.rev & 1), "poll(POLLIN) on the listener wakes when a client connects");
+    memset(&b, 0, sizeof b); bl = 110;
+    long cs = sc3(S_accept, ls, &b, &bl);
+    CHECK(cs >= 3 && bl == 2 && b.fam == 1, "accept: the client is unnamed (address length 2)");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, cs, buf, 16) == 10 && !memcmp(buf, "hello-unix", 10), "blocking read gets what the client thread wrote");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getsockname, cs, &b, &bl) == 0 && bl == al && !memcmp(&b, &a, al), "accepted socket's name is the listener's path");
+    pc = (struct ucred_){ -1, 0, 0 }; pl = 12;
+    CHECK(sc(S_getsockopt, cs, 1, 17, &pc, &pl, 0) == 0 && pc.pid == me && pc.uid == 1000 && pc.gid == 1000, "SO_PEERCRED on the accepted socket: the connector");
+    CHECK(sc3(1, cs, "pong", 4) == 4, "write back");
+    for (int i = 0; i < 100 && !un_cdone; i++) nap_ms(10);
+    CHECK(un_cdone == 1, "the client thread read 'pong'");
+    sc1(3, cs);
+    long lsn = sc3(S_socket, 1, 1 | SOCK_NB, 0);
+    struct sun a2; u32 al2 = mkun(&a2, "/tmp/xrl_unix_test2.sock");
+    sc1(87, "/tmp/xrl_unix_test2.sock");
+    sc3(S_bind, lsn, &a2, al2); sc2(S_listen, lsn, 0);
+    CHECK(sc3(S_accept, lsn, 0, 0) == -11, "accept on a non-blocking listener with nothing pending -> -EAGAIN");
+    long c1 = sc3(S_socket, 1, 1 | SOCK_NB, 0);
+    CHECK(sc3(S_connect, c1, &a2, al2) == 0, "non-blocking connect to a listener completes at once");
+    long c2 = sc3(S_socket, 1, 1 | SOCK_NB, 0);
+    CHECK(sc3(S_connect, c2, &a2, al2) == -11, "backlog 0 queues one connection; a second one is refused for now (-EAGAIN)");
+    CHECK(sc3(S_connect, c1, &a2, al2) == -106, "connect on a connected socket -> -EISCONN");
+    long ac = sc3(S_accept, lsn, 0, 0);
+    CHECK(ac >= 3, "accept the first");
+    CHECK(sc3(S_connect, c2, &a2, al2) == 0, "now the second connects");
+    long c3 = c2;
+    sc1(3, ac); sc1(3, c1); sc1(3, c2); sc1(3, c3);
+    sc1(3, lsn);
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &a2, al2) == -111, "connect to a socket file nobody listens on -> -ECONNREFUSED");
+    CHECK(sc1(87, "/tmp/xrl_unix_test2.sock") == 0 && sc2(4, "/tmp/xrl_unix_test2.sock", st) == -2, "unlink removes the socket file");
+    struct sun nx; u32 nxl = mkun(&nx, "/tmp/xrl_no_such.sock");
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &nx, nxl) == -2, "connect to a missing path -> -ENOENT");
+    long rf = sc3(2, "/tmp/xrl_un_plain", 0102, 0644); sc1(3, rf);
+    struct sun pf_; u32 pfl = mkun(&pf_, "/tmp/xrl_un_plain");
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &pf_, pfl) == -111, "connect to a regular file -> -ECONNREFUSED");
+    CHECK(sc3(S_bind, sc3(S_socket, 1, 1, 0), &pf_, pfl) == -98, "bind onto a regular file -> -EADDRINUSE");
+    sc1(87, "/tmp/xrl_un_plain");
+    struct sun nd; u32 ndl = mkun(&nd, "/tmp/xrl_no_dir/x.sock");
+    CHECK(sc3(S_bind, sc3(S_socket, 1, 1, 0), &nd, ndl) == -2, "bind in a missing directory -> -ENOENT");
+    sc1(3, ls);
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &a, al) == -111, "connect after the listener closed -> -ECONNREFUSED (node still there)");
+    sc1(87, "/tmp/xrl_unix_test.sock");
+
+    /* abstract names, per socket type; autobind */
+    long as_ = sc3(S_socket, 1, 1, 0);
+    struct sun ab; u32 abl = mkun(&ab, "@xrl-abs-test");
+    CHECK(sc3(S_bind, as_, &ab, abl) == 0 && sc2(S_listen, as_, 4) == 0, "bind+listen on an abstract name");
+    long ad = sc3(S_socket, 1, 2, 0);
+    CHECK(sc3(S_bind, ad, &ab, abl) == 0, "the same abstract name for a datagram socket is a different socket");
+    long as2 = sc3(S_socket, 1, 1, 0);
+    CHECK(sc3(S_bind, as2, &ab, abl) == -98, "same name, same type -> -EADDRINUSE");
+    sc1(3, as2);
+    long ac1 = sc3(S_socket, 1, 1, 0);
+    CHECK(sc3(S_connect, ac1, &ab, abl) == 0, "connect to the abstract name");
+    long acs = sc3(S_accept, as_, 0, 0);
+    CHECK(acs >= 3 && sc3(1, ac1, "abs", 3) == 3 && sc3(0, acs, buf, 8) == 3, "data through an abstract socket");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getpeername, ac1, &b, &bl) == 0 && bl == abl && !memcmp(&b, &ab, abl), "getpeername of the connector shows the abstract name");
+    sc1(3, ac1); sc1(3, acs); sc1(3, as_);
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &ab, abl) == -111, "the name is gone once its socket closed");
+    sc1(3, ad);
+    long au = sc3(S_socket, 1, 2, 0);
+    struct sun ua; memset(&ua, 0, sizeof ua); ua.fam = 1;
+    CHECK(sc3(S_bind, au, &ua, 2) == 0, "bind with just the family autobinds");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getsockname, au, &b, &bl) == 0 && bl == 8 && b.fam == 1 && b.p[0] == 0, "autobound name: abstract, 5 hex digits");
+
+    /* datagrams to an address; the receiver learns the sender's name */
+    long dr = sc3(S_socket, 1, 2, 0);
+    struct sun da; u32 dal = mkun(&da, "/tmp/xrl_unix_dg.sock");
+    sc1(87, "/tmp/xrl_unix_dg.sock");
+    sc3(S_bind, dr, &da, dal);
+    CHECK(sc(S_sendto, au, "dgram-to", 8, 0, &da, dal) == 8, "sendto(path) from an autobound datagram socket");
+    memset(&b, 0, sizeof b); bl = 110; memset(buf, 0, sizeof buf);
+    CHECK(sc(S_recvfrom, dr, buf, 64, 0, &b, &bl) == 8 && !memcmp(buf, "dgram-to", 8) && bl == 8, "recvfrom reports the sender's (autobound) address");
+    long dc = sc3(S_socket, 1, 2, 0);
+    CHECK(sc(S_sendto, dc, "x", 1, 0, 0, 0) == -107, "send without a destination -> -ENOTCONN");
+    CHECK(sc3(S_connect, dc, &da, dal) == 0 && sc3(1, dc, "conn", 4) == 4, "connect() sets the default destination; write works");
+    bl = 110;
+    CHECK(sc(S_recvfrom, dr, buf, 64, 0, &b, &bl) == 4 && bl == 0, "an unbound sender has no address");
+    struct sun un_ = { 0, {0} };
+    CHECK(sc3(S_connect, dc, &un_, 110) == 0, "connect(AF_UNSPEC) dissolves the destination");
+    CHECK(sc3(1, dc, "x", 1) == -107, "...so a write fails with -ENOTCONN again");
+    sc1(3, dc); sc1(3, dr); sc1(3, au);
+    sc1(87, "/tmp/xrl_unix_dg.sock");
+
+    /* fds and credentials in ancillary data */
+    int pf[2]; sc2(293, pf, 0);
+    sc4(53, 1, 1, 0, sp);
+    struct iov_ iv1 = { (u64)"F", 1 };
+    struct cm_fd cm = { 20, 1, 1, pf[1], 0 };
+    struct msg_ m1 = { 0, 0, 0, (u64)&iv1, 1, (u64)&cm, 24, 0, 0 };
+    CHECK(sendm(sp[0], &m1, 0) == 1, "sendmsg(SCM_RIGHTS)");
+    sc1(3, pf[1]);   /* the fd in flight keeps the pipe's write end alive */
+    char rb[8]; struct iov_ riv1 = { (u64)rb, 4 };
+    struct cm_fd rcm; memset(&rcm, 0, sizeof rcm);
+    struct msg_ rm = { 0, 0, 0, (u64)&riv1, 1, (u64)&rcm, 24, 0, 0 };
+    r = recvm(sp[1], &rm, 0);
+    CHECK(r == 1 && rcm.type == 1 && rcm.fd >= 3 && rm.ctllen == 24, "recvmsg: the fd arrives");
+    CHECK(sc3(1, rcm.fd, "via-unix", 8) == 8 && sc3(0, pf[0], buf, 16) == 8 && !memcmp(buf, "via-unix", 8), "the received fd is the pipe's write end");
+    /* two sends carrying fds are never merged into one read */
+    int pf2[2]; sc2(293, pf2, 0);
+    struct cm_fd cmb = { 20, 1, 1, pf2[1], 0 };
+    struct iov_ iv2 = { (u64)"G", 1 };
+    struct msg_ m2 = { 0, 0, 0, (u64)&iv2, 1, (u64)&cm, 24, 0, 0 };
+    cm.fd = pf2[0];
+    sendm(sp[0], &m2, 0);
+    m2.ctl = (u64)&cmb; sendm(sp[0], &m2, 0);
+    struct iov_ riv2 = { (u64)rb, 8 };
+    struct msg_ rm2 = { 0, 0, 0, (u64)&riv2, 1, (u64)&rcm, 24, 0, 0 };
+    CHECK(recvm(sp[1], &rm2, 0) == 1 && recvm(sp[1], &rm2, 0) == 1, "a stream read stops at each chunk that carries fds");
+    /* control buffer too small: MSG_CTRUNC and the fd is closed */
+    struct msg_ m3 = { 0, 0, 0, (u64)&iv2, 1, (u64)&cm, 24, 0, 0 };
+    sendm(sp[0], &m3, 0);
+    struct msg_ rm3 = { 0, 0, 0, (u64)&riv2, 1, (u64)&rcm, 8, 0, 0 };
+    CHECK(recvm(sp[1], &rm3, 0) == 1 && (rm3.fl & 8) && rm3.ctllen == 0, "no room for the control message: MSG_CTRUNC");
+    struct cm_fd bad = { 20, 1, 1, 999, 0 };
+    struct msg_ m4 = { 0, 0, 0, (u64)&iv2, 1, (u64)&bad, 24, 0, 0 };
+    CHECK(sendm(sp[0], &m4, 0) == -9, "SCM_RIGHTS with a bad fd -> -EBADF");
+    /* credentials */
+    int one_ = 1;
+    CHECK(sc(S_setsockopt, sp[1], 1, 16 /*SO_PASSCRED*/, &one_, 4, 0) == 0, "setsockopt(SO_PASSCRED)");
+    sc3(1, sp[0], "c", 1);
+    struct cm_cred ccm; memset(&ccm, 0, sizeof ccm);
+    struct msg_ crm = { 0, 0, 0, (u64)&riv2, 1, (u64)&ccm, 32, 0, 0 };
+    CHECK(recvm(sp[1], &crm, 0) == 1 && ccm.type == 2 && ccm.c.pid == me && ccm.c.uid == 1000, "SCM_CREDENTIALS: the sender's pid/uid/gid");
+    struct cm_cred scm = { 28, 1, 2, { (int)me, 1000, 1000 }, 0 };
+    struct msg_ m5 = { 0, 0, 0, (u64)&iv2, 1, (u64)&scm, 32, 0, 0 };
+    CHECK(sendm(sp[0], &m5, 0) == 1, "sendmsg with our own credentials");
+    scm.c.uid = 0;
+    CHECK(sendm(sp[0], &m5, 0) == -1, "...but not somebody else's -> -EPERM");
+    sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf2[0]); sc1(3, pf2[1]);
+
+    /* epoll on sockets; FIONREAD; flow control between two threads */
+    sc4(53, 1, 1, 0, sp);
+    long ep = sc1(291, 0);
+    struct { u32 e; u64 d; } __attribute__((packed)) ev1 = { 1, 0xabc }, evo;
+    sc4(233, ep, 1, sp[1], &ev1);
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "epoll: nothing readable yet");
+    sc3(1, sp[0], "12345", 5);
+    CHECK(sc4(232, ep, &evo, 1, 1000) == 1 && evo.d == 0xabc && (evo.e & 1), "epoll: EPOLLIN once data is queued");
+    int nread = 0;
+    CHECK(sc3(16, sp[1], 0x541B, &nread) == 0 && nread == 5, "ioctl(FIONREAD)");
+    sc3(0, sp[1], buf, 16);
+    un_cdone = 0;
+    volatile int ct2; spawn_thread(un_sender_thr, (void *)(long)sp[0], &ct2);
+    u32 got_ = 0, bad_ = 0;
+    static u8 rbuf[50000];
+    for (;;) {
+        long n = sc3(0, sp[1], rbuf, sizeof rbuf);
+        if (n <= 0) break;
+        for (long i = 0; i < n; i++) if (rbuf[i] != PAT(got_ + (u32)i)) bad_++;
+        got_ += (u32)n;
+    }
+    CHECK(got_ == UN_TOTAL && bad_ == 0, "2 MiB streamed between two threads (the sender blocks on a full queue), every byte intact");
+    for (int i = 0; i < 100 && !un_cdone; i++) nap_ms(10);
+    CHECK(un_cdone == 1, "...and shutdown(SHUT_WR) gave the reader its EOF");
+    sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, ep);
+
+    /* what is not a socket */
+    int pf3[2]; sc2(293, pf3, 0);
+    CHECK(sc3(S_connect, pf3[0], &a, al) == -88 && sc2(S_listen, pf3[0], 1) == -88, "connect/listen on a pipe -> -ENOTSOCK");
 }
 
 void cstart(u64 *sp)
@@ -1212,6 +1523,7 @@ void cstart(u64 *sp)
     test_cpuinfo();
     test_threads();
     test_net();
+    test_unix();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

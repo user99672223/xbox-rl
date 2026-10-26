@@ -410,6 +410,118 @@ static slong fstat_handle(HANDLE h, const char *gpath, lx_stat *st)
     return 0;
 }
 
+/* ================================================================ vnodes
+ * Nodes that exist only in the layer: the socket files bind(2) makes (unix.c). They are not host files:
+ * stat says S_IFSOCK, getdents lists them as DT_SOCK, unlink/rename move them, open fails with ENXIO,
+ * and connect looks them up here. Each holds a reference on its object (ref/unref callbacks). */
+typedef struct vnode { char *path; u32 type, mode; void *obj; void (*ref)(void *); void (*unref)(void *); } vnode;
+static vnode *g_vn;
+static size_t g_nvn, g_capvn;
+static SRWLOCK g_vn_lock = SRWLOCK_INIT;
+
+static int vn_find(const char *path)   /* caller holds lock */
+{
+    for (size_t i = 0; i < g_nvn; i++) if (!strcmp(g_vn[i].path, path)) return (int)i;
+    return -1;
+}
+
+static int vn_exists(const char *path)
+{
+    AcquireSRWLockShared(&g_vn_lock);
+    int r = vn_find(path) >= 0;
+    ReleaseSRWLockShared(&g_vn_lock);
+    return r;
+}
+
+static int vn_stat(const char *path, lx_stat *st)
+{
+    int r = 0;
+    AcquireSRWLockShared(&g_vn_lock);
+    int i = vn_find(path);
+    if (i >= 0) { xrl_stat_synth(st, g_vn[i].type | g_vn[i].mode, hash_str(path), 0); r = 1; }
+    ReleaseSRWLockShared(&g_vn_lock);
+    return r;
+}
+
+static int vn_remove(const char *path)
+{
+    void (*unref)(void *) = NULL; void *obj = NULL;
+    int r = -LX_ENOENT;
+    AcquireSRWLockExclusive(&g_vn_lock);
+    int i = vn_find(path);
+    if (i >= 0) { unref = g_vn[i].unref; obj = g_vn[i].obj; free(g_vn[i].path); g_vn[i] = g_vn[--g_nvn]; r = 0; }
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    if (unref) unref(obj);
+    return r;
+}
+
+static int vn_rename(const char *from, const char *to)
+{
+    char *np = _strdup(to);
+    int r = -LX_ENOENT;
+    void (*unref)(void *) = NULL; void *obj = NULL;
+    AcquireSRWLockExclusive(&g_vn_lock);
+    int i = vn_find(from);
+    if (i >= 0) {
+        int j = vn_find(to);
+        if (j >= 0 && j != i) { unref = g_vn[j].unref; obj = g_vn[j].obj; free(g_vn[j].path); g_vn[j] = g_vn[--g_nvn]; if (i == (int)g_nvn) i = j; }
+        free(g_vn[i].path); g_vn[i].path = np; np = NULL; r = 0;
+    }
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    free(np);
+    if (unref) unref(obj);
+    return r;
+}
+
+slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *))
+{
+    char gabs[PATHBUF], par[PATHBUF];
+    slong r = xrl_vfs_resolve(dirfd, path, 0, gabs, sizeof gabs);
+    if (r) return r;
+    lx_stat st;
+    r = xrl_vfs_stat(LX_AT_FDCWD, gabs, LX_AT_SYMLINK_NOFOLLOW, &st);
+    if (r == 0) return -LX_EEXIST;
+    if (r != -LX_ENOENT) return r;
+    strcpy_s(par, sizeof par, gabs);
+    char *sl = strrchr(par, '/');
+    if (!sl || !sl[1]) return -LX_EINVAL;
+    if (sl == par) par[1] = 0; else *sl = 0;
+    r = xrl_vfs_stat(LX_AT_FDCWD, par, 0, &st);
+    if (r) return r;
+    if ((st.st_mode & LX_S_IFMT) != LX_S_IFDIR) return -LX_ENOTDIR;
+    AcquireSRWLockExclusive(&g_vn_lock);
+    if (vn_find(gabs) >= 0) r = -LX_EEXIST;
+    else {
+        if (g_nvn == g_capvn) {
+            size_t nc = g_capvn ? g_capvn * 2 : 16;
+            vnode *n = (vnode *)realloc(g_vn, nc * sizeof(vnode));
+            if (!n) { ReleaseSRWLockExclusive(&g_vn_lock); return -LX_ENOMEM; }
+            g_vn = n; g_capvn = nc;
+        }
+        g_vn[g_nvn] = (vnode){ _strdup(gabs), type, mode, obj, ref, unref };
+        g_nvn++;
+        ref(obj);
+        r = 0;
+    }
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    return r;
+}
+
+slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj)
+{
+    char gabs[PATHBUF];
+    slong r = xrl_vfs_resolve(dirfd, path, 1, gabs, sizeof gabs);
+    if (r) return r;
+    *type = 0; *obj = NULL;
+    AcquireSRWLockShared(&g_vn_lock);
+    int i = vn_find(gabs);
+    if (i >= 0) { *type = g_vn[i].type; *obj = g_vn[i].obj; g_vn[i].ref(*obj); }
+    ReleaseSRWLockShared(&g_vn_lock);
+    if (i >= 0) return 0;
+    lx_stat st;
+    return xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);   /* an ordinary file: type 0 */
+}
+
 /* ============================================================ disk files */
 typedef struct dirstate {
     HANDLE find;
@@ -640,7 +752,26 @@ static slong dir_getdents(xfile *f, void *ubuf, u64 cap)
             ReleaseSRWLockShared(&g_sym_lock);
             (void)emitted;
             if (stop) break;
-            d->phase = 4;
+            d->phase = 4; d->vidx = 0;
+        }
+        if (d->phase == 4) {
+            /* ... and the layer's socket nodes */
+            int stop = 0;
+            AcquireSRWLockShared(&g_vn_lock);
+            for (; d->vidx < g_nvn; d->vidx++) {
+                const char *sp = g_vn[d->vidx].path;
+                const char *sl = strrchr(sp, '/');
+                if (!sl) continue;
+                size_t plen = (size_t)(sl - sp);
+                const char *me = f->gpath;
+                size_t ml = strcmp(me, "/") ? strlen(me) : 0;
+                if (plen != ml || strncmp(sp, me, ml)) continue;
+                if (!put_dirent(kbuf, cap, &used, hash_str(sp), d->cookie + 1, LX_DT_SOCK, sl + 1)) { stop = 1; break; }
+                d->cookie++;
+            }
+            ReleaseSRWLockShared(&g_vn_lock);
+            if (stop) break;
+            d->phase = 5;
         }
         break;
     }
@@ -722,6 +853,7 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
         if (n > 0 && follow) { tgt[n] = 0; r = xrl_vfs_resolve(LX_AT_FDCWD, tgt, 1, gabs, sizeof gabs); if (r) return r; }
     }
 
+    if (vn_exists(gabs)) return -LX_ENXIO;   /* a socket file cannot be opened */
     int handled;
     r = open_special(gabs, flags, &handled);
     if (handled) return r;
@@ -857,6 +989,7 @@ slong xrl_vfs_stat(int dirfd, const char *path, int atflags, lx_stat *st)
             return 0;
         }
     }
+    if (vn_stat(gabs, st)) return 0;
     if (xrl_proc_stat(gabs, st)) return st->st_nlink ? 0 : -LX_ENOENT;
     if (!strcmp(gabs, "/dev/null")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 3, 0); st->st_rdev = (1u << 8) | 3; return 0; }
     if (!strcmp(gabs, "/dev/zero")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 5, 0); st->st_rdev = (1u << 8) | 5; return 0; }
@@ -921,6 +1054,7 @@ slong xrl_vfs_unlink(int dirfd, const char *path, int flags)
     slong r = xrl_vfs_resolve(dirfd, path, 0, gabs, sizeof gabs);
     if (r) return r;
     if (!(flags & LX_AT_REMOVEDIR) && sym_remove(gabs) == 0) return 0;
+    if (vn_exists(gabs)) return (flags & LX_AT_REMOVEDIR) ? -LX_ENOTDIR : vn_remove(gabs);
     r = xrl_vfs_host_path(gabs, hp, ARRAY_LEN(hp));
     if (r) return r;
     DWORD a = GetFileAttributesW(hp);
@@ -945,6 +1079,7 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
     if (t) { /* renaming a symlink entry */
         sym_remove(go); sym_add(gn, t, 1); free(t); return 0;
     }
+    if (vn_exists(go)) return (flags & 1) && vn_exists(gn) ? -LX_EEXIST : vn_rename(go, gn);
     if ((r = xrl_vfs_host_path(go, ho, ARRAY_LEN(ho))) || (r = xrl_vfs_host_path(gn, hn, ARRAY_LEN(hn)))) return r;
     DWORD an = GetFileAttributesW(hn);
     if ((flags & 1 /*RENAME_NOREPLACE*/) && an != INVALID_FILE_ATTRIBUTES) return -LX_EEXIST;

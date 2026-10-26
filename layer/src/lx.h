@@ -269,6 +269,16 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define LX_ELOOP 40
 #define LX_EOVERFLOW 75
 #define LX_ENOTSOCK 88
+#define LX_EDESTADDRREQ 89
+#define LX_EMSGSIZE 90
+#define LX_EPROTOTYPE 91
+#define LX_ENOPROTOOPT 92
+#define LX_EPROTONOSUPPORT 93
+#define LX_ESOCKTNOSUPPORT 94
+#define LX_EADDRINUSE 98
+#define LX_ECONNRESET 104
+#define LX_ENOBUFS 105
+#define LX_EISCONN 106
 #define LX_EOPNOTSUPP 95
 #define LX_ENODATA 61
 #define LX_ENOTSUP LX_EOPNOTSUPP
@@ -607,6 +617,8 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_SOCK_CLOEXEC 02000000
 #define LX_SOL_SOCKET 1
 #define LX_SCM_RIGHTS 1
+#define LX_SCM_CREDENTIALS 2
+#define LX_AF_UNSPEC 0
 #define LX_MSG_PEEK 2
 #define LX_MSG_DONTWAIT 0x40
 #define LX_MSG_NOSIGNAL 0x4000
