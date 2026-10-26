@@ -144,6 +144,45 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — The Proton EAC bridge runs on the layer (verified with a
+  stand-in client module).** What the runtime really is: `v2/lib64/` holds a
+  Wine builtin PE (`easyanticheat_x64.dll`, exports the whole EAC client API:
+  `CreateGameClient`, `GameClient_*`, `ClientAuth_*`, `NetProtectClient_*`) and
+  an 18 KB glibc-built unix half (`easyanticheat_x64.so`, NEEDED ntdll.so /
+  libc.so.6 / libdl / libpthread, no `syscall`, no `%fs`, exports
+  `__wine_unix_call_funcs`). The PE half's DllMain asks Wine for the bridge
+  unix lib, then passes the unix path of its own module to `eac_init_library`,
+  which replaces the file name with `easyanticheat_x64.so` and `dlopen`s it:
+  **the real EAC client module is a second `easyanticheat_x64.so` that must sit
+  next to the game's own Windows `easyanticheat_x64.dll`** (Wine only picks the
+  bridge when that `.so` exists there; `get_load_order`). It is not in the
+  runtime and not in the laptop's Rocket League folder (only
+  `EasyAntiCheat_EOS_Setup.exe`, certificates and `Settings.json`), so the real
+  module could not be run. `layer/tests/glibc/run-eac-bridge.sh` runs the same
+  chain with `standin_eac.c` as that module: LoadLibrary of the DLL ->
+  bridge PE -> bridge unix half -> dlopen of a glibc module with rewriting and
+  the shim -> `CreateGameClient` -> a client object. Found and fixed on the way:
+  - **`membarrier` (324) was ENOSYS** and musl's `dlopen` of any library with a
+    TLS segment in a multi-threaded process calls it (PRIVATE_EXPEDITED), falling
+    back to signalling every thread, which the layer cannot deliver: the process
+    hung. Now answered with Windows' `FlushProcessWriteBuffers`. This hits every
+    TLS-bearing `dlopen` under Wine (the real client is C++), not only EAC.
+  - **The shim was never loaded** on that path in the first build: my Wine tree's
+    Makefiles still pointed at the other agent's sources (a copied build tree
+    records absolute paths) so patch 0017 was not compiled in. `build-wine.sh
+    configure` in the copy fixes it (about a minute, nothing rebuilds).
+  - **`/proc/self/maps` lied**: private file maps showed offset 0, inode 0 and
+    only the basename. A module that locates and checksums its own code (the
+    stand-in does, as an anti-cheat would) read the wrong bytes. Maps now carry
+    the full guest path, the file offset and the inode (mem.c: three fields on
+    `vma`). With that, the stand-in measures honestly that the mapped copy of
+    its code differs from the file in 69 of 8192 bytes: the rewriter's patches.
+    **A module that hashes its own `.text` against the file will see exactly
+    this; nothing here hides it.**
+  - `XRL_TRACE=1` now also logs every path the guest opens (vfs.c).
+  Also found: `stage-rootfs.sh` died on a first-time stage (a `tr | head`
+  pipeline under `pipefail`).
+
 - **2026-10-26 — Real network sockets (layer/src/net.c): AF_INET/AF_INET6
   TCP and UDP over Winsock.** The layer had only pipes and socketpairs; EAC's
   module talks to Epic's servers and any Linux program needs sockets. Shape:

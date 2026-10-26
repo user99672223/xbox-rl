@@ -4,7 +4,10 @@
  * xbox-rl. Wine's musl process dlopen()s it. It does what an anti-cheat module does that
  * matters here: raw `syscall` instructions, %fs (TLS, canary), threads, libc calls through
  * glibc-only names (__printf_chk, __isoc23_sscanf, __ctype_b_loc, ...), reads its own
- * mapping and checksums its own code. Exported entry: standin_run() -> failures.
+ * mapping and checksums its own code. Exported entries: standin_run() -> failures, and the two
+ * factory functions of the real EAC client library (CreateGameClient, CreateClientAuth), which
+ * is what Proton's bridge (easyanticheat_x64.so) dlsym()s: they run the checks, then return a
+ * dummy object, so the whole PE bridge -> unix bridge -> dlopen -> module chain can be tried.
  */
 #define _GNU_SOURCE
 #include <ctype.h>
@@ -114,7 +117,7 @@ __attribute__((visibility("default"))) int standin_run(void)
 
     Dl_info di;
     int have = dladdr((void *)standin_run, &di);
-    CHECK(have && di.dli_fname && strstr(di.dli_fname, "standin"), "dladdr finds this module");
+    CHECK(have && di.dli_fname && strstr(di.dli_fname, ".so"), "dladdr finds this module");
     void *self = dlopen(di.dli_fname, RTLD_NOW | RTLD_NOLOAD);
     CHECK(self != NULL, "dlopen(self, RTLD_NOLOAD)");
 
@@ -143,4 +146,27 @@ __attribute__((visibility("default"))) int standin_run(void)
     }
     printf("standin_eac: %d failure(s)\n", fails);
     return fails;
+}
+
+/* ---- what the EAC bridge looks up (names from the Proton runtime's easyanticheat_x64.so) ---- */
+static long fake_method(void) { return 0; }       /* every slot of the dummy object: do nothing, return 0 */
+static void *fake_vtable[32] = {
+    (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method,
+    (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method,
+    (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method,
+    (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method, (void *)fake_method };
+static struct { void **vtable; } fake_object = { fake_vtable };
+static int g_checked, g_failed;
+
+__attribute__((visibility("default"))) void *CreateGameClient(const char *interface_version)
+{
+    printf("standin_eac: CreateGameClient(\"%s\") called through the bridge\n", interface_version ? interface_version : "(null)");
+    if (!g_checked) { g_failed = standin_run(); g_checked = 1; }
+    return g_failed ? NULL : &fake_object;
+}
+
+__attribute__((visibility("default"))) void *CreateClientAuth(const char *interface_version)
+{
+    printf("standin_eac: CreateClientAuth(\"%s\")\n", interface_version ? interface_version : "(null)");
+    return &fake_object;
 }

@@ -39,7 +39,8 @@ nameserver 8.8.8.8
 [ -s "$dest/etc/hosts" ] || printf '127.0.0.1 localhost
 ::1 localhost ip6-localhost
 ' > "$dest/etc/hosts"
-[ -s "$dest/etc/machine-id" ] || { tr -dc 'a-f0-9' < /dev/urandom | head -c 32; echo; } > "$dest/etc/machine-id"
+# (not `tr < /dev/urandom | head`: under pipefail the SIGPIPE to tr aborted a first-time stage)
+[ -s "$dest/etc/machine-id" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$dest/etc/machine-id"
 
 bad=$(find "$rootfs" "$prefix" -type f -name '*[:*?"<>|\\]*' | head -5)
 [ -z "$bad" ] || die "file names NTFS cannot store (need the layer's U+F000 escaping): $bad"

@@ -46,8 +46,10 @@ typedef struct vma {
     int lazy;               /* pages commit on first touch; any mix of states */
     int shared;             /* MAP_SHARED */
     xfile *file;            /* write-back target for shared writable file maps */
-    s64 foff;
-    char name[40];
+    s64 foff;               /* write-back offset (shared writable file maps) */
+    s64 moff;               /* file offset shown in /proc/self/maps (any file map) */
+    u64 ino;                /* inode shown in /proc/self/maps */
+    char name[160];         /* guest path of a file map, or "[stack]" */
 } vma;
 
 static SRWLOCK g_lock = SRWLOCK_INIT;
@@ -273,7 +275,8 @@ static int vma_insert_at(size_t i, const vma *v)
 static int vma_mergeable(const vma *a, const vma *b)
 {
     return a->end == b->start && a->prot == b->prot && a->committed == b->committed && a->lazy == b->lazy &&
-           a->shared == b->shared && !a->file && !b->file && !strcmp(a->name, b->name);
+           a->shared == b->shared && !a->file && !b->file && !strcmp(a->name, b->name) &&
+           (!a->name[0] || a->moff + (s64)(a->end - a->start) == b->moff);
 }
 
 static void vma_try_merge(size_t i)
@@ -298,6 +301,7 @@ static int vma_split(u64 addr)
     vma right = g_v[i];
     right.start = addr;
     if (right.file) { xfile_ref(right.file); right.foff += (s64)(addr - g_v[i].start); }
+    if (right.name[0]) right.moff += (s64)(addr - g_v[i].start);
     g_v[i].end = addr;
     return vma_insert_at(i + 1, &right);
 }
@@ -519,6 +523,11 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
         vma v; memset(&v, 0, sizeof v);
         v.start = addr; v.end = end; v.prot = prot; v.committed = committed; v.lazy = lazy; v.shared = shared;
         vma_name(&v, name);
+        if (file) {
+            lx_stat fst;
+            v.moff = off;
+            if (file->ops->fstat && !file->ops->fstat(file, &fst)) v.ino = fst.st_ino;
+        }
         if (file && shared && (prot & LX_PROT_WRITE)) { v.file = file; xfile_ref(file); v.foff = off; }
         size_t i = vma_lower(addr);
         if (vma_insert_at(i, &v)) { r = -LX_ENOMEM; goto fail_commit; }
@@ -558,7 +567,7 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
         if (!f) return -LX_EBADF;
         if (!f->ops->read) { xfile_unref(f); return -LX_ENODEV; }
         if ((flags & LX_MAP_SHARED) && (prot & LX_PROT_WRITE) && !(f->flags & LX_O_RDWR)) { xfile_unref(f); return -LX_EACCES; }
-        if (f->gpath) { const char *b = strrchr(f->gpath, '/'); name = b ? b + 1 : f->gpath; }
+        if (f->gpath) name = f->gpath;      /* the full guest path, as /proc/self/maps shows it */
     } else if (flags & LX_MAP_STACK) name = "[stack]";
 
     slong res;
@@ -658,7 +667,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
     size_t i = vma_lower(old_addr);
     if (i >= g_n || g_v[i].start > old_addr || g_v[i].end < old_addr + old_len) { res = -LX_EFAULT; goto out; }
     int prot = g_v[i].prot, shared = g_v[i].shared;
-    char name[40]; memcpy(name, g_v[i].name, sizeof name);
+    char name[sizeof g_v[i].name]; memcpy(name, g_v[i].name, sizeof name);
 
     if (!(flags & LX_MREMAP_FIXED) && new_len == old_len) { res = (slong)old_addr; goto out; }
     if (!(flags & LX_MREMAP_FIXED) && new_len < old_len) {
@@ -911,13 +920,13 @@ size_t xrl_mem_format_maps(char *buf, size_t cap)
 {
     size_t n = 0;
     AcquireSRWLockShared(&g_lock);
-    for (size_t i = 0; i < g_n && n + 160 < cap; i++) {
+    for (size_t i = 0; i < g_n && n + 300 < cap; i++) {
         vma *v = &g_v[i];
-        int w = snprintf(buf + n, cap - n, "%08llx-%08llx %c%c%c%c %08llx 00:00 0 %s%s\n",
+        int w = snprintf(buf + n, cap - n, "%08llx-%08llx %c%c%c%c %08llx 00:00 %llu %s%s\n",
                          v->start, v->end,
                          v->prot & LX_PROT_READ ? 'r' : '-', v->prot & LX_PROT_WRITE ? 'w' : '-',
                          v->prot & LX_PROT_EXEC ? 'x' : '-', v->shared ? 's' : 'p',
-                         (u64)(v->file ? v->foff : 0), v->name[0] ? "                       " : "", v->name);
+                         (u64)(v->name[0] && v->name[0] != '[' ? v->moff : 0), v->ino, v->name[0] ? "                       " : "", v->name);
         if (w < 0) break;
         n += (size_t)w;
     }

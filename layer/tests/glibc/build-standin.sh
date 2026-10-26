@@ -16,5 +16,12 @@ python3 ../../../tools/xrl-tpfix.py out/standin/lib/ld-musl-x86_64.so.1 out/stan
 python3 ../../../tools/xrl-tpfix.py --check --stamp out/standin/lib/ld-musl-x86_64.so.1 out/standin/bin/dlopen_host
 # the module: plain gcc against glibc with the distro's default hardening
 gcc -O2 -fPIC -shared -o out/standin/lib/libstandin_eac.so standin_eac.c -ldl -lpthread
+# the Wine-side test: the module under the name the EAC bridge dlopen()s, next to a PE test program
+rm -rf out/eactest; mkdir -p out/eactest
+cp out/standin/lib/libstandin_eac.so out/eactest/easyanticheat_x64.so
+x86_64-w64-mingw32-gcc -O1 -o out/eactest/eac_bridge_test.exe eac_bridge_test.c || echo "no mingw: eac_bridge_test.exe not built"
+# a stand-in for the game's own Windows easyanticheat_x64.dll: any valid PE (Wine only looks at its name and the .so next to it)
+echo 'int xrl_standin_pe;' > out/eactest/placeholder.c
+x86_64-w64-mingw32-gcc -shared -o out/eactest/easyanticheat_x64.dll out/eactest/placeholder.c && rm out/eactest/placeholder.c
 readelf -d out/standin/lib/libstandin_eac.so | grep NEEDED
 echo built out/standin
