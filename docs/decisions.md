@@ -144,6 +144,69 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Guest processes: many Linux processes inside the one Windows process (branch `claude/linux-procs`).**
+  The layer was one guest process (threads only; `fork`/`vfork` returned `-ENOSYS`). The console app is UWP and cannot
+  create Windows processes, so every guest process must live in our one OS process and one address space. Design:
+  - **Objects (`layer/src/proc.c`).** `xrl_proc`: pid, ppid, pgid, sid, state (running / stopped / zombie), wait status,
+    its threads (`xrl_thread.proc`; the thread list stays global), children (a parent pointer + the global process table,
+    walked under one lock), its **fd table** (`xrl_files`, refcounted: `CLONE_FILES` shares it, fork copies the entries,
+    sharing the `xfile` objects, which is what makes inherited pipe ends keep a pipe open), cwd, umask, credentials,
+    **signal dispositions** (`act[]`; per-thread masks and pending sets stay in `xrl_thread`), rlimits, argv/envp/exec path,
+    the controlling-tty stub, and an **mm**. `fd.c`, `vfs.c` (cwd), `signal.c` (`g_act`), `syscall.c` (umask, ids) and
+    `procfs.c` act on the *calling thread's* process, so the API the other modules use does not change (the userland
+    agent's AF_UNIX/SysV code keeps calling `xrl_fd_install` etc. and gets per-process tables for free). The process
+    that boot starts keeps the Windows process id as its pid (Wine takes it as its own; unchanged) and is the "init":
+    orphans are reparented to it, and its exit ends the layer exactly as before (so Rocket League's path is the old one).
+    Every other pid is the Windows thread id of the process's first thread (unique, never reused: handles stay open).
+  - **Address space.** One arena, one VMA list, so processes cannot overlap by construction when they use `mmap(NULL)` (top
+    down `find_gap`). Every VMA carries an owner (`mm` id): `mm` is the Linux object (`proc->mm`, shared by a `vfork`
+    child and its parent, by `CLONE_VM`). `/proc/<pid>/maps` shows the owner's VMAs; exec/exit unmap the owner's VMAs when
+    the last user of the mm leaves; `MAP_FIXED` over another mm's mapping fails with `-ENOMEM` and a log line (a program
+    that hard-codes addresses cannot stomp a neighbour). PIE and ld-musl (Alpine's binaries) load at a free base, one base
+    per process. A non-PIE `ET_EXEC` image whose fixed range another live process uses fails exec with `-ENOMEM` and
+    logs which range and which pid. `brk`: the boot process keeps the arena's brk window; every other mm gets a lazily
+    reserved window of its own (musl's malloc falls back to mmap when brk fails anyway).
+  - **`fork` and friends.** A child is a new guest thread (a new Windows thread) that "returns from the syscall" with
+    `rax = 0` using the same mechanism as a thread clone (`xrl_do_clone`'s no-resume-pc path), with a new `xrl_proc`.
+    1. `vfork` / `clone(CLONE_VM|CLONE_VFORK)` (posix_spawn): the child runs on the parent's memory and the parent is
+       suspended until the child calls `execve` or exits. Exact vfork semantics; shared memory stays shared (posix_spawn
+       reports exec errors through it). The thunk frame the parent will return through lies on the guest stack below the
+       child's initial rsp, so the layer saves and restores those 64 bytes.
+    2. `fork` / `clone(SIGCHLD)` (no `CLONE_VM`): the same schedule (child first, parent suspended until the child
+       execs or exits) **plus a snapshot**: at fork the layer copies the committed pages of every writable private
+       mapping of the parent's mm (stack, data, heap, malloc arenas, TLS) and remembers the VMA list; when the child
+       execs or exits it puts them back (unmaps what the child mapped, recreates anonymous mappings it unmapped, copies the
+       contents back). The parent therefore sees what a real fork would show it: a shell's `(x=2)` or `$(cmd)` leaves its
+       variables, heap and `rootshell` alone. This covers fork+exec, fork+builtin+exit (every shell stage), `system()`,
+       `popen()`. Measured cost is in REPORT.md. A mm whose writable footprint exceeds `XRL_FORK_SNAPSHOT_MB` (256)
+       falls back to plain vfork semantics with a warning (Firefox-sized parents: see below).
+       Not supported, logged when detected: a forked child that blocks waiting for its parent (the parent cannot run until
+       the child execs/exits: a pipe whose reader is the parent and that the child fills past 64 KiB, a child that waits
+       for a signal only the parent sends). The parent's other threads are suspended with it.
+    3. `clone(CLONE_VM)` without `CLONE_THREAD`/`CLONE_VFORK`: a new process on the shared mm, running concurrently.
+  - **A real copy-on-write fork (not built).** Options for fork-without-exec that must run concurrently with its parent
+    (Firefox's fork server, Chromium's zygote, daemons): (a) *snapshot-and-swap*: processes whose mms overlap run one at a
+    time and the layer swaps the writable private mappings (the snapshot machinery above) at blocking syscalls, so each
+    process sees its own memory at the same addresses; cheap for small processes, hopeless for 500 MB ones; (b) section
+    objects: back private memory with pagefile sections and give the child a copy-on-write view, which Windows can only
+    map at *different* addresses, so it needs (c) address translation (Blink-style or the `XRL_DBT` code cache) with a
+    per-process offset; (d) on the laptop only, a second Windows process. (a) is the incremental step from this entry.
+  - **`execve`** (extends exec.c): the old image goes (in place if the mm has one user, else the process takes a fresh mm
+    and drops its reference), `FD_CLOEXEC` descriptors close in this process's table, handlers reset (SIG_IGN stays),
+    other threads of *this* process stop, the new image starts on a new main thread. The Wine hand-over prctls are
+    unchanged.
+  - **Exit, wait, signals.** Exit (last thread, `exit_group`, fatal signal) stops the process's threads, closes its fd table
+    (so pipe readers see EOF), releases the mm, reparents children to init, becomes a zombie holding the wait status, sends
+    SIGCHLD to the parent (the zombie is reaped at once when the parent ignores SIGCHLD or sets `SA_NOCLDWAIT`) and wakes
+    waiters. `wait4`/`waitid` (pid, -1, 0, -pgid; `WNOHANG`, `WUNTRACED`, `WCONTINUED`, `__WALL`) block in the layer, are
+    interruptible and restart like any other. `kill(pid | 0 | -pgid | -1)`, `tgkill`/`tkill` check the thread's process.
+    A default-action fatal signal terminates the *target* process (it used to end the layer). SIGSTOP/SIGTSTP/SIGCONT stop
+    and continue a process: the state and the parent's wait report are exact; the threads freeze at their next syscall
+    boundary (a thread in a long blocking call stops when it returns). `setpgid`, `getpgid`, `getpgrp`, `setsid`, `getsid`;
+    `ioctl(TIOCGPGRP/TIOCSPGRP/TIOCSCTTY/TIOCGSID)` on the tty stand-in give shells a foreground pgrp.
+  - **Not done on purpose:** real preemptive concurrency of a forked-but-not-exec'd child, ptrace, `CLONE_NEWPID`
+    namespaces, per-process resource accounting beyond what `getrusage` already fakes.
+
 - **2026-10-26 — `XRL_D3D11=native`: the game's D3D11 can run on a native D3D11 device instead of D3D11On12;
   measured on the laptop at RL's title menu it halves the render thread's CPU and cuts Present ~4x. Opt-in; the
   default (D3D11On12) is unchanged.** Branch `claude/d3d11-native` (gfx commit da923fc).
