@@ -51,9 +51,11 @@ public:
 
     HRESULT Init() {
         Log(LOG_TRACE, "d3d11 swapchain: Init");
-        // A D3D11On12 device has ID3D11On12Device; a native one does not (the queue the guest passed is then
-        // the stand-in of stub12.cpp and unused).
-        native_ = FAILED(dev_.As(&on12_));
+        // Native D3D11 mode: the queue the guest passed is the stand-in of stub12.cpp and unused. Decided by
+        // the mode, not by asking the device for ID3D11On12Device: the console's native D3D11 devices answer
+        // that QueryInterface too (laptop ones do not), and the stand-in queue then reached DXGI.
+        native_ = NativeD3D11();
+        if (!native_ && FAILED(dev_.As(&on12_))) return E_FAIL;
         Log(LOG_TRACE, "d3d11 swapchain: %s device, on12 %p", native_ ? "native" : "D3D11On12", (void*)on12_.Get());
         dev_->GetImmediateContext(&ctx_);
         Log(LOG_TRACE, "d3d11 swapchain: ctx %p", (void*)ctx_.Get());
