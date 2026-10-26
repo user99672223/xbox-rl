@@ -290,6 +290,28 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     the point where the work stops being about the system interface the module asks for, so Part 1/2 end here. Exactly
     what is not done: that crash, `ptrace` single-step and syscall stops across processes, signals between processes,
     pipes/sockets across processes, a console probe, any run on the console.
+  - **The 0xc000000d crash: a layer bug, fixed (commit 3f46d9f).** The CONTEXT logged at each resume (run25: flags
+    0x10005f incl. CONTEXT_XSTATE, cs 33, ss 2b, eflags 202, MxCsr 1f80/1f80, committed rip/rsp pages) was the same for
+    the two resumes that worked and the one that failed. What differed was the memory below the stopped rsp: the
+    layer served the stop inside its VEH, on the stopped thread's own stack, where Windows had just put the
+    exception's CONTEXT, CONTEXT_EX, XSAVE area and the dispatcher's frames (0x700+ bytes below the faulting rsp).
+    The third injected call's argument block (0x328 bytes POKEd right below rsp: legal on Linux, where a stopped
+    tracee keeps its registers in the kernel) overwrote the CONTEXT_EX/XSAVE header NtContinue then loaded, and it
+    refused it with STATUS_INVALID_PARAMETER. Reproduced in `test_inject_call` (a 0x328-byte block below rsp: the
+    tracee ended with exit code 0xc000000d, like the EAC run). Fix: `xrl_tracee_stop` copies the CONTEXT (with XSTATE)
+    out, leaves the exception dispatch at once into `tr_park_main` on the thread's host stack, serves the tracer
+    there and resumes from the copy with NtContinue; nothing of the layer stays below the stopped rsp (also checked
+    with a 16 KiB block). Also as Linux: SETREGS keeps only FLAG_MASK bits of eflags (CF PF AF ZF SF TF DF OF NT RF AC),
+    refuses bad selectors and fs/gs_base >= TASK_SIZE_MAX with -EIO, field by field; SETFPREGS refuses an MXCSR outside
+    the CPU's mask with -EINVAL; CONTEXT.MxCsr follows FltSave.MxCsr. Not checked: whether Windows' exception
+    record also lands in the 128-byte red zone right below a faulting rsp (Linux leaves it alone at a stop).
+    The WSL2 side-by-side run of the same request sequence was not done in this round.
+    EAC after the fix (run26): the third call runs and comes back as a SIGSEGV stop at the fake return address
+    (no 0xc000000d); about a thousand more stop/resume rounds follow, the tracee makes ordinary system calls
+    (mmap, munmap, mprotect, memfd_create/ftruncate/close, a read of /proc/self/maps), then the tracer kills it,
+    and the bootstrapper still logs `210, 'Unexpected error. (#2) (0)'`. Not followed further: the next question
+    is what the module decides from those answers, which is outside what this work looks at. A next layer-side
+    step would be to log the mmap flags in systrace and compare those answers (EEXIST for address hints) with Linux.
 
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
