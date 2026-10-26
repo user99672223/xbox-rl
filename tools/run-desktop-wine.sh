@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # run-desktop-wine.sh [wine args...]   (Git Bash on the laptop)
 #
 # Run the console build of Wine on the laptop through the real layer (the
@@ -18,13 +18,19 @@ host=layer/build/desktop/xrl_test_host.exe
 export XRL_NO_FSGSBASE=1 XRL_TEST_BUDGET_MB="${XRL_TEST_BUDGET_MB:-3584}"
 export XRL_ENV_WINEPREFIX=/prefix XRL_ENV_WINEARCH=win64 XRL_ENV_USER=steamuser \
        XRL_ENV_XRL_HOST_USD=1 XRL_ENV_XRL_NO_SPAWN=1 XRL_ENV_XRL_SKIP_WINEBOOT=1 \
-       XRL_ENV_WINEDEBUG="${WINEDEBUG:-err+all}" XRL_ENV_WINEDLLOVERRIDES=winemenubuilder.exe=d
+       XRL_ENV_WINEDEBUG="${WINEDEBUG:-err+all}" XRL_ENV_WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-winemenubuilder.exe=d}"
 mkdir -p results
 # XRL_CATCH=1: run under layer/tests/catch.c to see faults the VEH never gets
 catch=; [ "${XRL_CATCH:-0}" = 1 ] && { catch=layer/build/desktop/xrl_catch.exe; host=$(cygpath -w "$host"); }
-MSYS_NO_PATHCONV=1 timeout "${XRL_TIMEOUT:-120}" $catch "$host" "$root" /usr/lib/wine/x86_64-unix/wine64 "$@" \
-    > results/desktop-wine-latest.txt 2>&1
-rc=$?
+# The log never fills the disk: XRL_LOG_TAIL=N keeps only the last N lines (held in memory,
+# for high-volume WINEDEBUG channels); otherwise it stops at XRL_LOG_MAX_MB (default 1024).
+set -o pipefail
+if [ -n "${XRL_LOG_TAIL:-}" ]; then sink() { tail -n "$XRL_LOG_TAIL"; }
+else sink() { head -c "$(( ${XRL_LOG_MAX_MB:-1024} * 1048576 ))"; }
+fi
+MSYS_NO_PATHCONV=1 timeout "${XRL_TIMEOUT:-120}" $catch "$host" "$root" /usr/lib/wine/x86_64-unix/wine64 "$@" 2>&1 \
+    | sink > results/desktop-wine-latest.txt
+rc=${PIPESTATUS[0]}
 cat results/desktop-wine-latest.txt
 echo "[run-desktop-wine] exit $rc"
 exit $rc
