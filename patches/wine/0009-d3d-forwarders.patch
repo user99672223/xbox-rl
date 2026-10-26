@@ -1,0 +1,1103 @@
+diff --git a/dlls/d3d11/Makefile.in b/dlls/d3d11/Makefile.in
+index 27db1f6..3458f3b 100644
+--- a/dlls/d3d11/Makefile.in
++++ b/dlls/d3d11/Makefile.in
+@@ -1,18 +1,9 @@
+ MODULE    = d3d11.dll
+ IMPORTLIB = d3d11
+-IMPORTS   = dxguid uuid dxgi wined3d
+-EXTRAINCL = $(VKD3D_PE_CFLAGS)
++IMPORTS   = dxguid uuid xrlhost
+ 
++# xbox-rl: the wined3d-based implementation (async.c buffer.c decoder.c device.c inputlayout.c
++# shader.c state.c texture.c utils.c view.c) is not built; d3d11_main.c forwards to the host.
+ SOURCES = \
+-	async.c \
+-	buffer.c \
+ 	d3d11_main.c \
+-	decoder.c \
+-	device.c \
+-	inputlayout.c \
+-	shader.c \
+-	state.c \
+-	texture.c \
+-	utils.c \
+-	version.rc \
+-	view.c
++	version.rc
+diff --git a/dlls/d3d11/d3d11_main.c b/dlls/d3d11/d3d11_main.c
+index 7598631..253a425 100644
+--- a/dlls/d3d11/d3d11_main.c
++++ b/dlls/d3d11/d3d11_main.c
+@@ -1,8 +1,21 @@
+ /*
+- * Direct3D 11
++ * d3d11.dll -- xbox-rl forwarding edition.
+  *
+- * Copyright 2008 Henri Verbeet for CodeWeavers
+- * Copyright 2013 Austin English
++ * Upstream Wine's d3d11 implements ID3D11Device & co. on top of wined3d (OpenGL/Vulkan).
++ * The console has neither, but it has D3D11On12.  So D3D11CreateDevice* now:
++ *
++ *   1. asks the host for a native D3D12 device on the Xbox adapter,
++ *   2. asks the host to wrap it with D3D11On12 (xrl_gfx_ops.d3d11on12_create),
++ *   3. returns the resulting ID3D11Device / immediate context to the game.
++ *
++ * The 600 or so ID3D11* methods are then executed by the native D3D11On12 layer; none of them
++ * pass through Wine.  CONTRACT (wine/ABI-CHANGE-REQUESTS.md #2): the returned xrl_handles are
++ * COM objects the guest may call directly -- the host/layer makes that safe (GS/TEB and stack
++ * switching).  If the host leaves d3d11on12_create NULL, device creation fails with
++ * DXGI_ERROR_UNSUPPORTED (the DXVK->Dozen fallback of docs/decisions.md is not built here).
++ *
++ * Copyright 2008-2013 Henri Verbeet for CodeWeavers
++ * Copyright 2026 xbox-rl contributors
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -17,378 +30,248 @@
+  * You should have received a copy of the GNU Lesser General Public
+  * License along with this library; if not, write to the Free Software
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+- *
+  */
+ 
+-#define D3D11_INIT_GUID
+-#include "d3d11_private.h"
++#define COBJMACROS
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "d3d11_4.h"
++#include "d3d12.h"
++#include "dxgi.h"
++#include "wine/debug.h"
++
++#include "../xrlhost/xrlhost.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(d3d11);
+ 
+-static const char *debug_d3d_driver_type(D3D_DRIVER_TYPE driver_type)
+-{
+-    switch (driver_type)
+-    {
+-#define D3D11_TO_STR(x) case x: return #x
+-        D3D11_TO_STR(D3D_DRIVER_TYPE_UNKNOWN);
+-        D3D11_TO_STR(D3D_DRIVER_TYPE_HARDWARE);
+-        D3D11_TO_STR(D3D_DRIVER_TYPE_REFERENCE);
+-        D3D11_TO_STR(D3D_DRIVER_TYPE_NULL);
+-        D3D11_TO_STR(D3D_DRIVER_TYPE_SOFTWARE);
+-        D3D11_TO_STR(D3D_DRIVER_TYPE_WARP);
+-#undef D3D11_TO_STR
+-        default:
+-            return wine_dbg_sprintf("Unrecognized D3D_DRIVER_TYPE %#x\n", driver_type);
+-    }
+-}
++/* docs/decisions.md cat I: the AppContainer view caps at FL 11_0 even though the GPU is higher */
++#define XRL_MAX_D3D11_FL D3D_FEATURE_LEVEL_11_0
+ 
+-static HRESULT WINAPI layer_init(enum dxgi_device_layer_id id, DWORD *count, DWORD *values)
++static const D3D_FEATURE_LEVEL default_levels[] =
+ {
+-    TRACE("id %#x, count %p, values %p\n", id, count, values);
++    D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
++    D3D_FEATURE_LEVEL_9_3, D3D_FEATURE_LEVEL_9_2, D3D_FEATURE_LEVEL_9_1,
++};
+ 
+-    if (id != DXGI_DEVICE_LAYER_D3D10_DEVICE)
++static HRESULT xrl_status_to_hr( NTSTATUS nt, INT status )
++{
++    if (nt) return E_FAIL;
++    switch (status)
+     {
+-        WARN("Unknown layer id %#x\n", id);
+-        return E_NOTIMPL;
++    case XRL_STATUS_OK:          return S_OK;
++    case XRL_STATUS_NOTAVAIL:    return DXGI_ERROR_UNSUPPORTED;
++    case XRL_STATUS_DEVICELOST:  return DXGI_ERROR_DEVICE_REMOVED;
++    default:                     return E_FAIL;
+     }
+-
+-    return S_OK;
+ }
+ 
+-static UINT WINAPI layer_get_size(enum dxgi_device_layer_id id, struct layer_get_size_args *args, DWORD unknown0)
++/* highest requested level the console can do; returns FALSE if none */
++static BOOL pick_feature_level( const D3D_FEATURE_LEVEL *levels, UINT count, D3D_FEATURE_LEVEL *out )
+ {
+-    TRACE("id %#x, args %p, unknown0 %#lx.\n", id, args, unknown0);
++    UINT i;
+ 
+-    if (id != DXGI_DEVICE_LAYER_D3D10_DEVICE)
++    if (!levels) { levels = default_levels; count = ARRAY_SIZE(default_levels); }
++    for (i = 0; i < count; i++)
+     {
+-        WARN("Unknown layer id %#x\n", id);
+-        return 0;
++        if (levels[i] <= XRL_MAX_D3D11_FL) { *out = levels[i]; return TRUE; }
+     }
+-
+-    return sizeof(struct d3d_device);
++    return FALSE;
+ }
+ 
+-static HRESULT WINAPI layer_create(enum dxgi_device_layer_id id, void **layer_base, DWORD unknown0,
+-        void *device_object, REFIID riid, void **device_layer)
++static void host_release( UINT64 h )
+ {
+-    struct d3d_device *object;
+-
+-    TRACE("id %#x, layer_base %p, unknown0 %#lx, device_object %p, riid %s, device_layer %p.\n",
+-            id, layer_base, unknown0, device_object, debugstr_guid(riid), device_layer);
+-
+-    if (id != DXGI_DEVICE_LAYER_D3D10_DEVICE)
+-    {
+-        WARN("Unknown layer id %#x\n", id);
+-        *device_layer = NULL;
+-        return E_NOTIMPL;
+-    }
+-
+-    object = *layer_base;
+-    d3d_device_init(object, device_object);
+-    *device_layer = &object->IUnknown_inner;
++    struct xrl_call_handle call = { h };
++    INT status;
+ 
+-    TRACE("Created d3d10 device at %p\n", object);
+-
+-    return S_OK;
++    if (h) XrlCall( XRL_CALL_GFX_RELEASE, &call, &status );
+ }
+ 
+-HRESULT WINAPI D3D11CoreRegisterLayers(void)
++/* d3d12 device (+ host-owned direct queue when queue == 0) wrapped with D3D11On12 */
++static HRESULT create_on12( UINT64 dev12, UINT64 queue12, UINT64 *dev11, UINT64 *ctx11 )
+ {
+-    static const struct dxgi_device_layer layers[] =
+-    {
+-        {DXGI_DEVICE_LAYER_D3D10_DEVICE, layer_init, layer_get_size, layer_create},
+-    };
+-
+-    DXGID3D10RegisterLayers(layers, ARRAY_SIZE(layers));
+-
++    struct xrl_call_gfx_d3d11on12 call = { .d3d12_device = dev12, .d3d12_queue = queue12 };
++    INT status = XRL_STATUS_GENERIC;
++    NTSTATUS nt = XrlCall( XRL_CALL_GFX_D3D11ON12_CREATE, &call, &status );
++    HRESULT hr = xrl_status_to_hr( nt, status );
++
++    if (SUCCEEDED(hr) && !call.out_device) hr = E_FAIL;
++    if (FAILED(hr)) { WARN( "D3D11On12 creation failed: %#lx (xrl_status %d)\n", hr, status ); return hr; }
++    *dev11 = call.out_device;
++    *ctx11 = call.out_context;
+     return S_OK;
+ }
+ 
+-HRESULT WINAPI D3D11CoreCreateDevice(IDXGIFactory *factory, IDXGIAdapter *adapter, UINT flags,
+-        const D3D_FEATURE_LEVEL *feature_levels, UINT levels, ID3D11Device **device)
++static HRESULT create_device( UINT flags, const D3D_FEATURE_LEVEL *levels, UINT level_count,
++        UINT64 *dev11, UINT64 *ctx11, D3D_FEATURE_LEVEL *level_out )
+ {
+-    struct d3d_device *d3d_device;
+-    IUnknown *dxgi_device;
+-    HMODULE d3d11;
++    struct xrl_call_gfx_device c12 = {0};
++    INT status = XRL_STATUS_GENERIC;
++    D3D_FEATURE_LEVEL fl;
++    NTSTATUS nt;
+     HRESULT hr;
+ 
+-    TRACE("factory %p, adapter %p, flags %#x, feature_levels %p, levels %u, device %p.\n",
+-            factory, adapter, flags, feature_levels, levels, device);
+-
+-    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+-            | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (const WCHAR *)D3D11CoreCreateDevice, &d3d11);
+-    hr = DXGID3D10CreateDevice(d3d11, factory, adapter, flags, feature_levels, levels, (void **)&dxgi_device);
+-    if (FAILED(hr))
++    if (!pick_feature_level( levels, level_count, &fl ))
+     {
+-        WARN("Failed to create device, returning %#lx.\n", hr);
+-        return hr;
++        WARN( "no requested feature level is supported (console max is %#x)\n", XRL_MAX_D3D11_FL );
++        return E_INVALIDARG;
+     }
+ 
+-    hr = IUnknown_QueryInterface(dxgi_device, &IID_ID3D11Device, (void **)device);
+-    IUnknown_Release(dxgi_device);
+-    if (FAILED(hr))
++    nt = XrlCall( XRL_CALL_GFX_D3D12_CREATE_DEVICE, &c12, &status );
++    if (FAILED(hr = xrl_status_to_hr( nt, status )) || !c12.out_device)
+     {
+-        ERR("Failed to query ID3D11Device interface, returning E_FAIL.\n");
+-        return E_FAIL;
++        WARN( "host D3D12 device creation failed: %#lx (xrl_status %d)\n", hr, status );
++        return FAILED(hr) ? hr : E_FAIL;
+     }
+-
+-    if (!(d3d_device = impl_from_ID3D11Device(*device)))
+     {
+-        ERR("Failed to retrieve device impl, returning E_FAIL.\n");
+-        return E_FAIL;
++        /* gfx/ creates no queue and requires one (and the SAME one for d3d11on12_create and the
++         * swapchain), so make it here: a direct COM call on the native device handle.  This relies on
++         * the contract "handles are directly callable native COM objects" (ABI-CHANGE-REQUESTS #2). */
++        D3D12_COMMAND_QUEUE_DESC qd = { D3D12_COMMAND_LIST_TYPE_DIRECT, 0, D3D12_COMMAND_QUEUE_FLAG_NONE, 0 };
++        ID3D12Device *d12 = (ID3D12Device *)(ULONG_PTR)c12.out_device;
++        ID3D12CommandQueue *queue = NULL;
++
++        if (FAILED(hr = ID3D12Device_CreateCommandQueue( d12, &qd, &IID_ID3D12CommandQueue, (void **)&queue )) || !queue)
++        {
++            WARN( "CreateCommandQueue on the host device failed: %#lx\n", hr );
++            host_release( c12.out_device );
++            return FAILED(hr) ? hr : E_FAIL;
++        }
++        hr = create_on12( c12.out_device, (UINT64)(ULONG_PTR)queue, dev11, ctx11 );
++        if (FAILED(hr)) { host_release( (UINT64)(ULONG_PTR)queue ); host_release( c12.out_device ); return hr; }
++        /* device and queue stay referenced for the life of the 11 device; dxgi needs them back */
++        XrlTrackDevice( (const void *)(ULONG_PTR)*dev11, c12.out_device, (UINT64)(ULONG_PTR)queue );
+     }
+-    d3d_device->d3d11_only = TRUE;
++    if (level_out) *level_out = fl;
++    return S_OK;
++}
+ 
++HRESULT WINAPI D3D11CoreRegisterLayers(void)
++{
+     return S_OK;
+ }
+ 
+-static HRESULT d3d11_create_device(IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver_type, HMODULE swrast, UINT flags,
+-        const D3D_FEATURE_LEVEL *feature_levels, UINT levels, UINT sdk_version, ID3D11Device **device_out,
+-        D3D_FEATURE_LEVEL *obtained_feature_level, ID3D11DeviceContext **immediate_context)
++HRESULT WINAPI D3D11CoreCreateDevice(IDXGIFactory *factory, IDXGIAdapter *adapter, UINT flags,
++        const D3D_FEATURE_LEVEL *feature_levels, UINT levels, ID3D11Device **device)
+ {
+-    static const D3D_FEATURE_LEVEL default_feature_levels[] =
+-    {
+-        D3D_FEATURE_LEVEL_11_0,
+-        D3D_FEATURE_LEVEL_10_1,
+-        D3D_FEATURE_LEVEL_10_0,
+-        D3D_FEATURE_LEVEL_9_3,
+-        D3D_FEATURE_LEVEL_9_2,
+-        D3D_FEATURE_LEVEL_9_1,
+-    };
+-    IDXGIFactory *factory;
+-    ID3D11Device *device;
++    UINT64 dev, ctx;
+     HRESULT hr;
+ 
+-    TRACE("adapter %p, driver_type %s, swrast %p, flags %#x, feature_levels %p, levels %u, sdk_version %u, "
+-            "device %p, obtained_feature_level %p, immediate_context %p.\n",
+-            adapter, debug_d3d_driver_type(driver_type), swrast, flags, feature_levels, levels, sdk_version,
+-            device_out, obtained_feature_level, immediate_context);
++    TRACE( "factory %p, adapter %p, flags %#x, feature_levels %p, levels %u, device %p.\n",
++            factory, adapter, flags, feature_levels, levels, device );
+ 
+-    if (device_out)
+-        *device_out = NULL;
+-    if (obtained_feature_level)
+-        *obtained_feature_level = 0;
+-    if (immediate_context)
+-        *immediate_context = NULL;
+-
+-    if (adapter)
++    if (!device) return E_INVALIDARG;
++    if (SUCCEEDED(hr = create_device( flags, feature_levels, levels, &dev, &ctx, NULL )))
+     {
+-        IDXGIAdapter_AddRef(adapter);
+-        hr = IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory, (void **)&factory);
+-        if (FAILED(hr))
+-        {
+-            WARN("Failed to get dxgi factory, returning %#lx.\n", hr);
+-            return hr;
+-        }
++        host_release( ctx );
++        *device = (ID3D11Device *)(ULONG_PTR)dev;
+     }
+-    else
+-    {
+-        hr = CreateDXGIFactory1(&IID_IDXGIFactory, (void **)&factory);
+-        if (FAILED(hr))
+-        {
+-            WARN("Failed to create dxgi factory, returning %#lx.\n", hr);
+-            return hr;
+-        }
++    return hr;
++}
+ 
+-        switch(driver_type)
+-        {
+-            case D3D_DRIVER_TYPE_WARP:
+-                FIXME("WARP driver not implemented, falling back to hardware.\n");
+-            case D3D_DRIVER_TYPE_HARDWARE:
+-            {
+-                hr = IDXGIFactory_EnumAdapters(factory, 0, &adapter);
+-                if (FAILED(hr))
+-                {
+-                    WARN("No adapters found, returning %#lx.\n", hr);
+-                    IDXGIFactory_Release(factory);
+-                    return hr;
+-                }
+-                break;
+-            }
+-
+-            case D3D_DRIVER_TYPE_NULL:
+-                FIXME("NULL device not implemented, falling back to refrast.\n");
+-                /* fall through, for now */
+-            case D3D_DRIVER_TYPE_REFERENCE:
+-            {
+-                HMODULE refrast = LoadLibraryA("d3d11ref.dll");
+-                if (!refrast)
+-                {
+-                    WARN("Failed to load refrast, returning E_FAIL.\n");
+-                    IDXGIFactory_Release(factory);
+-                    return E_FAIL;
+-                }
+-                hr = IDXGIFactory_CreateSoftwareAdapter(factory, refrast, &adapter);
+-                FreeLibrary(refrast);
+-                if (FAILED(hr))
+-                {
+-                    WARN("Failed to create a software adapter, returning %#lx.\n", hr);
+-                    IDXGIFactory_Release(factory);
+-                    return hr;
+-                }
+-                break;
+-            }
+-
+-            case D3D_DRIVER_TYPE_SOFTWARE:
+-            {
+-                if (!swrast)
+-                {
+-                    WARN("Software device requested, but NULL swrast passed, returning E_FAIL.\n");
+-                    IDXGIFactory_Release(factory);
+-                    return E_FAIL;
+-                }
+-                hr = IDXGIFactory_CreateSoftwareAdapter(factory, swrast, &adapter);
+-                if (FAILED(hr))
+-                {
+-                    WARN("Failed to create a software adapter, returning %#lx.\n", hr);
+-                    IDXGIFactory_Release(factory);
+-                    return hr;
+-                }
+-                break;
+-            }
+-
+-            default:
+-                FIXME("Unhandled driver type %#x.\n", driver_type);
+-                IDXGIFactory_Release(factory);
+-                return E_FAIL;
+-        }
+-    }
++static HRESULT d3d11_create_device( IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver_type, HMODULE swrast,
++        UINT flags, const D3D_FEATURE_LEVEL *feature_levels, UINT levels, ID3D11Device **device_out,
++        D3D_FEATURE_LEVEL *obtained_fl, ID3D11DeviceContext **immediate_context )
++{
++    UINT64 dev, ctx;
++    HRESULT hr;
+ 
+-    if (!feature_levels)
+-    {
+-        feature_levels = default_feature_levels;
+-        levels = ARRAY_SIZE(default_feature_levels);
+-    }
+-    hr = D3D11CoreCreateDevice(factory, adapter, flags, feature_levels, levels, &device);
+-    IDXGIAdapter_Release(adapter);
+-    IDXGIFactory_Release(factory);
+-    if (FAILED(hr))
++    TRACE( "adapter %p, driver_type %#x, swrast %p, flags %#x, feature_levels %p, levels %u, "
++           "device_out %p, obtained_fl %p, immediate_context %p.\n", adapter, driver_type, swrast, flags,
++           feature_levels, levels, device_out, obtained_fl, immediate_context );
++
++    if (adapter && driver_type != D3D_DRIVER_TYPE_UNKNOWN) return E_INVALIDARG;
++    if (driver_type == D3D_DRIVER_TYPE_NULL || driver_type == D3D_DRIVER_TYPE_REFERENCE ||
++        driver_type == D3D_DRIVER_TYPE_SOFTWARE || driver_type == D3D_DRIVER_TYPE_WARP)
+     {
+-        WARN("Failed to create a device, returning %#lx.\n", hr);
+-        return hr;
++        FIXME( "driver type %#x is not supported on the console\n", driver_type );
++        return DXGI_ERROR_UNSUPPORTED;
+     }
+ 
+-    TRACE("Created ID3D11Device %p.\n", device);
+-
+-    if (obtained_feature_level)
+-        *obtained_feature_level = ID3D11Device_GetFeatureLevel(device);
++    if (FAILED(hr = create_device( flags, feature_levels, levels, &dev, &ctx, obtained_fl ))) return hr;
+ 
+-    if (immediate_context)
+-        ID3D11Device_GetImmediateContext(device, immediate_context);
+-
+-    if (device_out)
+-        *device_out = device;
+-    else
+-        ID3D11Device_Release(device);
+-
+-    return (device_out || immediate_context) ? S_OK : S_FALSE;
++    if (device_out) *device_out = (ID3D11Device *)(ULONG_PTR)dev;
++    else host_release( dev );
++    if (immediate_context) *immediate_context = (ID3D11DeviceContext *)(ULONG_PTR)ctx;
++    else host_release( ctx );
++    return S_OK;
+ }
+ 
+-HRESULT WINAPI D3D11CreateDevice(IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver_type, HMODULE swrast, UINT flags,
+-        const D3D_FEATURE_LEVEL *feature_levels, UINT levels, UINT sdk_version, ID3D11Device **device_out,
+-        D3D_FEATURE_LEVEL *obtained_feature_level, ID3D11DeviceContext **immediate_context)
++HRESULT WINAPI D3D11CreateDevice( IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver_type, HMODULE swrast,
++        UINT flags, const D3D_FEATURE_LEVEL *feature_levels, UINT levels, UINT sdk_version,
++        ID3D11Device **device, D3D_FEATURE_LEVEL *obtained_fl, ID3D11DeviceContext **immediate_context )
+ {
+-    return d3d11_create_device(adapter, driver_type, swrast, flags, feature_levels,
+-            levels, sdk_version, device_out, obtained_feature_level, immediate_context);
++    TRACE( "sdk_version %#x\n", sdk_version );
++    return d3d11_create_device( adapter, driver_type, swrast, flags, feature_levels, levels,
++                                device, obtained_fl, immediate_context );
+ }
+ 
+-HRESULT WINAPI D3D11CreateDeviceAndSwapChain(IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver_type,
+-        HMODULE swrast, UINT flags, const D3D_FEATURE_LEVEL *feature_levels, UINT levels,
+-        UINT sdk_version, const DXGI_SWAP_CHAIN_DESC *swapchain_desc, IDXGISwapChain **swapchain,
+-        ID3D11Device **device_out, D3D_FEATURE_LEVEL *obtained_feature_level, ID3D11DeviceContext **immediate_context)
++HRESULT WINAPI D3D11CreateDeviceAndSwapChain( IDXGIAdapter *adapter, D3D_DRIVER_TYPE driver_type,
++        HMODULE swrast, UINT flags, const D3D_FEATURE_LEVEL *feature_levels, UINT levels, UINT sdk_version,
++        const DXGI_SWAP_CHAIN_DESC *swapchain_desc, IDXGISwapChain **swapchain, ID3D11Device **device_out,
++        D3D_FEATURE_LEVEL *obtained_fl, ID3D11DeviceContext **immediate_context )
+ {
+-    DXGI_SWAP_CHAIN_DESC desc;
+-    IDXGIDevice *dxgi_device;
+-    IDXGIFactory *factory;
+-    ID3D11Device *device;
++    ID3D11Device *device = NULL;
+     HRESULT hr;
+ 
+-    TRACE("adapter %p, driver_type %s, swrast %p, flags %#x, feature_levels %p, levels %u, sdk_version %u, "
+-            "swapchain_desc %p, swapchain %p, device %p, obtained_feature_level %p, immediate_context %p.\n",
+-            adapter, debug_d3d_driver_type(driver_type), swrast, flags, feature_levels, levels, sdk_version,
+-            swapchain_desc, swapchain, device_out, obtained_feature_level, immediate_context);
++    TRACE( "swapchain_desc %p, swapchain %p, sdk_version %#x\n", swapchain_desc, swapchain, sdk_version );
+ 
+-    if (swapchain)
+-        *swapchain = NULL;
+-    if (device_out)
+-        *device_out = NULL;
++    if (swapchain_desc && !swapchain) return E_INVALIDARG;
++    if (swapchain) *swapchain = NULL;
+ 
+-    /* Avoid forwarding to D3D11CreateDevice(), since it breaks applications
+-     * hooking these entry-points. */
+-    if (FAILED(hr = d3d11_create_device(adapter, driver_type, swrast, flags, feature_levels,
+-            levels, sdk_version, &device, obtained_feature_level, immediate_context)))
+-    {
+-        WARN("Failed to create a device, returning %#lx.\n", hr);
+-        return hr;
+-    }
++    if (FAILED(hr = d3d11_create_device( adapter, driver_type, swrast, flags, feature_levels, levels,
++                                         &device, obtained_fl, immediate_context ))) return hr;
+ 
+-    if (swapchain)
++    if (swapchain_desc && swapchain)
+     {
+-        if (FAILED(hr = ID3D11Device_QueryInterface(device, &IID_IDXGIDevice, (void **)&dxgi_device)))
+-        {
+-            ERR("Failed to get a dxgi device from the d3d11 device, returning %#lx.\n", hr);
+-            goto cleanup;
+-        }
+-
+-        hr = IDXGIDevice_GetAdapter(dxgi_device, &adapter);
+-        IDXGIDevice_Release(dxgi_device);
+-        if (FAILED(hr))
+-        {
+-            ERR("Failed to get the device adapter, returning %#lx.\n", hr);
+-            goto cleanup;
+-        }
++        struct xrl_call_gfx_swapchain call = { .width = swapchain_desc->BufferDesc.Width,
++            .height = swapchain_desc->BufferDesc.Height, .buffer_count = swapchain_desc->BufferCount,
++            .dxgi_format = swapchain_desc->BufferDesc.Format };
++        INT status = XRL_STATUS_GENERIC;
++        NTSTATUS nt;
+ 
+-        hr = IDXGIAdapter_GetParent(adapter, &IID_IDXGIFactory, (void **)&factory);
+-        IDXGIAdapter_Release(adapter);
+-        if (FAILED(hr))
+-        {
+-            ERR("Failed to get the adapter factory, returning %#lx.\n", hr);
+-            goto cleanup;
+-        }
++        if (!XrlLookupDevice( device, &call.device, &call.queue )) { host_release( (UINT64)(ULONG_PTR)device ); return E_FAIL; }
++        nt = XrlCall( XRL_CALL_GFX_CREATE_SWAPCHAIN, &call, &status );
+ 
+-        desc = *swapchain_desc;
+-        hr = IDXGIFactory_CreateSwapChain(factory, (IUnknown *)device, &desc, swapchain);
+-        IDXGIFactory_Release(factory);
+-        if (FAILED(hr))
++        if (FAILED(hr = xrl_status_to_hr( nt, status )) || !call.out_swapchain)
+         {
+-            WARN("Failed to create a swapchain, returning %#lx.\n", hr);
+-            goto cleanup;
++            WARN( "host swapchain creation failed: %#lx\n", hr );
++            host_release( (UINT64)(ULONG_PTR)device );
++            if (immediate_context && *immediate_context) host_release( (UINT64)(ULONG_PTR)*immediate_context );
++            if (immediate_context) *immediate_context = NULL;
++            return FAILED(hr) ? hr : E_FAIL;
+         }
+-
+-        TRACE("Created IDXGISwapChain %p.\n", *swapchain);
++        *swapchain = (IDXGISwapChain *)(ULONG_PTR)call.out_swapchain;
+     }
+ 
+-    if (device_out)
+-        *device_out = device;
+-    else
+-        ID3D11Device_Release(device);
++    if (device_out) *device_out = device;
++    else host_release( (UINT64)(ULONG_PTR)device );
++    return S_OK;
++}
+ 
+-    return (swapchain || device_out || immediate_context) ? S_OK : S_FALSE;
++HRESULT WINAPI D3D11On12CreateDevice( IUnknown *device, UINT flags, const D3D_FEATURE_LEVEL *feature_levels,
++        UINT levels, IUnknown * const *queues, UINT queue_count, UINT node_mask, ID3D11Device **d3d11_device,
++        ID3D11DeviceContext **immediate_context, D3D_FEATURE_LEVEL *chosen_fl )
++{
++    D3D_FEATURE_LEVEL fl;
++    UINT64 dev, ctx;
++    HRESULT hr;
++
++    TRACE( "device %p, flags %#x, queues %p, queue_count %u, node_mask %#x.\n",
++           device, flags, queues, queue_count, node_mask );
+ 
+-cleanup:
+-    ID3D11Device_Release(device);
+-    if (obtained_feature_level)
+-        *obtained_feature_level = 0;
+-    if (immediate_context)
++    if (!device || !queues || !queue_count) return E_INVALIDARG;
++    if (!XrlIsNativeObject( device ))
+     {
+-        ID3D11DeviceContext_Release(*immediate_context);
+-        *immediate_context = NULL;
++        WARN( "device %p is not a host D3D12 device\n", device );
++        return E_INVALIDARG;
+     }
++    if (!pick_feature_level( feature_levels, levels, &fl )) return E_INVALIDARG;
+ 
+-    return hr;
+-}
+-
+-HRESULT WINAPI D3D11On12CreateDevice(IUnknown *device, UINT flags,
+-        const D3D_FEATURE_LEVEL *feature_levels, UINT feature_level_count,
+-        IUnknown * const *queues, UINT queue_count, UINT node_mask,
+-        ID3D11Device **d3d11_device, ID3D11DeviceContext **d3d11_immediate_context,
+-        D3D_FEATURE_LEVEL *obtained_feature_level)
+-{
+-    FIXME("device %p, flags %#x, feature_levels %p, feature_level_count %u, "
+-            "queues %p, queue_count %u, node_mask 0x%08x, "
+-            "d3d11_device %p, d3d11_immediate_context %p, obtained_feature_level %p stub!\n",
+-            device, flags, feature_levels, feature_level_count, queues, queue_count,
+-            node_mask, d3d11_device, d3d11_immediate_context, obtained_feature_level);
+-
+-    return E_NOTIMPL;
++    if (FAILED(hr = create_on12( (UINT64)(ULONG_PTR)device, (UINT64)(ULONG_PTR)queues[0], &dev, &ctx ))) return hr;
++    XrlTrackDevice( (const void *)(ULONG_PTR)dev, (UINT64)(ULONG_PTR)device, (UINT64)(ULONG_PTR)queues[0] );
++    if (d3d11_device) *d3d11_device = (ID3D11Device *)(ULONG_PTR)dev; else host_release( dev );
++    if (immediate_context) *immediate_context = (ID3D11DeviceContext *)(ULONG_PTR)ctx; else host_release( ctx );
++    if (chosen_fl) *chosen_fl = fl;
++    return S_OK;
+ }
+diff --git a/dlls/d3d12/Makefile.in b/dlls/d3d12/Makefile.in
+index 84b1cbe..25acc2e 100644
+--- a/dlls/d3d12/Makefile.in
++++ b/dlls/d3d12/Makefile.in
+@@ -1,6 +1,6 @@
+ MODULE    = d3d12.dll
+ IMPORTLIB = d3d12
+-IMPORTS   = dxgi dxguid wined3d gdi32 user32 uuid win32u
++IMPORTS   = $(VKD3D_PE_LIBS) xrlhost dxguid uuid
+ EXTRAINCL = $(VKD3D_PE_CFLAGS)
+ 
+ SOURCES = \
+diff --git a/dlls/d3d12/d3d12_main.c b/dlls/d3d12/d3d12_main.c
+index 3ba7db8..0f701d0 100644
+--- a/dlls/d3d12/d3d12_main.c
++++ b/dlls/d3d12/d3d12_main.c
+@@ -1,5 +1,19 @@
+ /*
+- * Copyright 2018 Józef Kucia for CodeWeavers
++ * d3d12.dll -- xbox-rl forwarding edition.
++ *
++ * Upstream Wine implements D3D12 with vkd3d on top of Vulkan.  The console has no Vulkan
++ * (and a native D3D12), so D3D12CreateDevice() now asks the host for a device bound to the
++ * Xbox adapter (xrl_gfx_ops.d3d12_create_device, through xrlhost.dll) and hands the
++ * resulting object back to the game.  CPU-only entry points (root signature
++ * (de)serialisation) still use Wine's in-tree vkd3d, because they need no GPU.
++ *
++ * CONTRACT (wine/ABI-CHANGE-REQUESTS.md #2): the xrl_handle returned by the host is an
++ * ID3D12Device whose methods the guest may call directly; the host/layer makes native COM
++ * objects callable from guest context.  Wine never dereferences the handle; it only passes
++ * it to the game as the interface pointer.
++ *
++ * Copyright 2018 Jozef Kucia for CodeWeavers
++ * Copyright 2026 xbox-rl contributors
+  *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+@@ -21,7 +35,10 @@
+ #define VKD3D_NO_VULKAN_H
+ #define VKD3D_NO_WIN32_TYPES
+ 
++#include <stdarg.h>
++
+ #include "windef.h"
++#include "winbase.h"
+ #include "dxgi1_6.h"
+ #include "d3d12.h"
+ #include "wine/vulkan.h"
+@@ -29,34 +46,11 @@
+ #include <vkd3d.h>
+ 
+ #include "initguid.h"
+-#include "dxcore.h"
+-#include "wine/wined3d.h"
+-#include "wine/winedxgi.h"
+ #include "wine/debug.h"
+ 
+-WINE_DEFAULT_DEBUG_CHANNEL(d3d12);
+-WINE_DECLARE_DEBUG_CHANNEL(winediag);
+-
+-static HMODULE vulkan_module;
+-
+-/* FIXME: We should unload vulkan-1.dll. */
+-static BOOL WINAPI load_vulkan_dll_once(INIT_ONCE *once, void *param, void **context)
+-{
+-    vulkan_module = LoadLibraryA("vulkan-1.dll");
+-    return TRUE;
+-}
+-
+-static PFN_vkGetInstanceProcAddr load_vulkan(void)
+-{
+-    static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+-
+-    InitOnceExecuteOnce(&init_once, load_vulkan_dll_once, NULL, NULL);
++#include "../xrlhost/xrlhost.h"
+ 
+-    if (vulkan_module)
+-        return (void *)GetProcAddress(vulkan_module, "vkGetInstanceProcAddr");
+-
+-    return NULL;
+-}
++WINE_DEFAULT_DEBUG_CHANNEL(d3d12);
+ 
+ HRESULT WINAPI D3D12GetDebugInterface(REFIID iid, void **debug)
+ {
+@@ -75,301 +69,43 @@ HRESULT WINAPI D3D12EnableExperimentalFeatures(UINT feature_count,
+     return E_NOINTERFACE;
+ }
+ 
+-static HRESULT d3d12_signal_event(HANDLE event)
+-{
+-    return SetEvent(event) ? S_OK : E_FAIL;
+-}
+-
+-static HRESULT d3d12_get_dxgi_adapter_for_dxcore_adapter(IDXCoreAdapter *adapter,
+-        IDXGIAdapter **dxgi_adapter)
+-{
+-    IDXGIFactory4 *factory;
+-    HRESULT hr;
+-    LUID luid;
+-
+-    if (FAILED(hr = IDXCoreAdapter_GetProperty(adapter, InstanceLuid, sizeof(luid), &luid)))
+-    {
+-        WARN("Failed to get LUID for dxcore adapter, hr %#lx.\n", hr);
+-        return hr;
+-    }
+-
+-    if (FAILED(hr = CreateDXGIFactory2(0, &IID_IDXGIFactory4, (void **)&factory)))
+-    {
+-        WARN("Failed to create DXGI factory, hr %#lx.\n", hr);
+-        return hr;
+-    }
+-
+-    if (FAILED(hr = IDXGIFactory4_EnumAdapterByLuid(factory, luid, &IID_IDXGIAdapter,
+-            (void **)dxgi_adapter)))
+-    {
+-        WARN("Failed to enumerate adapter by LUID, hr %#lx.\n", hr);
+-    }
+-
+-    IDXGIFactory4_Release(factory);
+-
+-    return hr;
+-}
+-
+-static HRESULT d3d12_get_adapter(IWineDXGIAdapter **wine_adapter, IUnknown *adapter)
+-{
+-    IDXGIAdapter *dxgi_adapter = NULL;
+-    IDXGIFactory4 *factory = NULL;
+-    IDXCoreAdapter *dxcore_adapter;
+-    HRESULT hr;
+-
+-    if (!adapter)
+-    {
+-        if (FAILED(hr = CreateDXGIFactory2(0, &IID_IDXGIFactory4, (void **)&factory)))
+-        {
+-            WARN("Failed to create DXGI factory, hr %#lx.\n", hr);
+-            goto done;
+-        }
+-
+-        if (FAILED(hr = IDXGIFactory4_EnumAdapters(factory, 0, &dxgi_adapter)))
+-        {
+-            WARN("Failed to enumerate primary adapter, hr %#lx.\n", hr);
+-            goto done;
+-        }
+-
+-        adapter = (IUnknown *)dxgi_adapter;
+-    }
+-    else if (SUCCEEDED(IUnknown_QueryInterface(adapter, &IID_IDXCoreAdapter, (void **)&dxcore_adapter)))
+-    {
+-        if (FAILED(hr = d3d12_get_dxgi_adapter_for_dxcore_adapter(dxcore_adapter, &dxgi_adapter)))
+-        {
+-            WARN("Failed to create DXGI adapter for DXCore adapter, hr %#lx.\n", hr);
+-            goto done;
+-        }
+-        IDXCoreAdapter_Release(dxcore_adapter);
+-
+-        adapter = (IUnknown *)dxgi_adapter;
+-    }
+-
+-    if (FAILED(hr = IUnknown_QueryInterface(adapter, &IID_IWineDXGIAdapter, (void **)wine_adapter)))
+-        WARN("Invalid adapter %p, hr %#lx.\n", adapter, hr);
+-
+-done:
+-    if (dxgi_adapter)
+-        IDXGIAdapter_Release(dxgi_adapter);
+-    if (factory)
+-        IDXGIFactory4_Release(factory);
+-
+-    return hr;
+-}
+-
+-static BOOL check_vk_instance_extension(VkInstance vk_instance,
+-        PFN_vkGetInstanceProcAddr pfn_vkGetInstanceProcAddr, const char *name)
+-{
+-    PFN_vkEnumerateInstanceExtensionProperties pfn_vkEnumerateInstanceExtensionProperties;
+-    VkExtensionProperties *properties;
+-    BOOL ret = FALSE;
+-    unsigned int i;
+-    uint32_t count;
+-
+-    pfn_vkEnumerateInstanceExtensionProperties
+-            = (void *)pfn_vkGetInstanceProcAddr(vk_instance, "vkEnumerateInstanceExtensionProperties");
+-
+-    if (pfn_vkEnumerateInstanceExtensionProperties(NULL, &count, NULL) < 0)
+-        return FALSE;
+-
+-    if (!(properties = calloc(count, sizeof(*properties))))
+-        return FALSE;
+-
+-    if (pfn_vkEnumerateInstanceExtensionProperties(NULL, &count, properties) >= 0)
+-    {
+-        for (i = 0; i < count; ++i)
+-        {
+-            if (!strcmp(properties[i].extensionName, name))
+-            {
+-                ret = TRUE;
+-                break;
+-            }
+-        }
+-    }
+-
+-    free(properties);
+-    return ret;
+-}
+-
+-static VkPhysicalDevice d3d12_get_vk_physical_device(struct vkd3d_instance *instance,
+-        PFN_vkGetInstanceProcAddr pfn_vkGetInstanceProcAddr, const struct wine_dxgi_adapter_info *adapter_info)
+-{
+-    PFN_vkGetPhysicalDeviceProperties2 pfn_vkGetPhysicalDeviceProperties2 = NULL;
+-    PFN_vkGetPhysicalDeviceProperties pfn_vkGetPhysicalDeviceProperties;
+-    PFN_vkEnumeratePhysicalDevices pfn_vkEnumeratePhysicalDevices;
+-    VkPhysicalDevice vk_physical_device = VK_NULL_HANDLE;
+-    VkPhysicalDeviceIDProperties id_properties;
+-    VkPhysicalDeviceProperties2 properties2;
+-    VkPhysicalDeviceProperties properties;
+-    VkPhysicalDevice *vk_physical_devices;
+-    VkInstance vk_instance;
+-    unsigned int i;
+-    uint32_t count;
+-    VkResult vr;
+-
+-    vk_instance = vkd3d_instance_get_vk_instance(instance);
+-
+-    pfn_vkEnumeratePhysicalDevices = (void *)pfn_vkGetInstanceProcAddr(vk_instance, "vkEnumeratePhysicalDevices");
+-
+-    pfn_vkGetPhysicalDeviceProperties = (void *)pfn_vkGetInstanceProcAddr(vk_instance, "vkGetPhysicalDeviceProperties");
+-    if (check_vk_instance_extension(vk_instance, pfn_vkGetInstanceProcAddr, VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME))
+-        pfn_vkGetPhysicalDeviceProperties2 = (void *)pfn_vkGetInstanceProcAddr(vk_instance, "vkGetPhysicalDeviceProperties2KHR");
+-
+-    if ((vr = pfn_vkEnumeratePhysicalDevices(vk_instance, &count, NULL)) < 0)
+-    {
+-        WARN("Failed to get device count, vr %d.\n", vr);
+-        return VK_NULL_HANDLE;
+-    }
+-    if (!count)
+-    {
+-        WARN("No physical device available.\n");
+-        return VK_NULL_HANDLE;
+-    }
+-
+-    if (!(vk_physical_devices = calloc(count, sizeof(*vk_physical_devices))))
+-        return VK_NULL_HANDLE;
+-
+-    if ((vr = pfn_vkEnumeratePhysicalDevices(vk_instance, &count, vk_physical_devices)) < 0)
+-        goto done;
+-
+-    if (!IsEqualGUID(&adapter_info->driver_uuid, &GUID_NULL) && pfn_vkGetPhysicalDeviceProperties2
+-            && check_vk_instance_extension(vk_instance, pfn_vkGetInstanceProcAddr,
+-                    VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME))
+-    {
+-        TRACE("Matching adapters by UUIDs.\n");
+-
+-        for (i = 0; i < count; ++i)
+-        {
+-            memset(&id_properties, 0, sizeof(id_properties));
+-            id_properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+-
+-            properties2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+-            properties2.pNext = &id_properties;
+-
+-            pfn_vkGetPhysicalDeviceProperties2(vk_physical_devices[i], &properties2);
+-
+-            if (!memcmp(id_properties.driverUUID, &adapter_info->driver_uuid, VK_UUID_SIZE)
+-                    && !memcmp(id_properties.deviceUUID, &adapter_info->device_uuid, VK_UUID_SIZE))
+-            {
+-                vk_physical_device = vk_physical_devices[i];
+-                break;
+-            }
+-        }
+-    }
+-
+-    if (!vk_physical_device)
+-    {
+-        WARN("Matching adapters by PCI IDs.\n");
+-
+-        for (i = 0; i < count; ++i)
+-        {
+-            pfn_vkGetPhysicalDeviceProperties(vk_physical_devices[i], &properties);
+-
+-            if (properties.vendorID == adapter_info->vendor_id && properties.deviceID == adapter_info->device_id)
+-            {
+-                vk_physical_device = vk_physical_devices[i];
+-                break;
+-            }
+-        }
+-    }
+-
+-    if (!vk_physical_device)
+-        FIXME("Could not find Vulkan physical device for DXGI adapter.\n");
+-
+-done:
+-    free(vk_physical_devices);
+-    return vk_physical_device;
+-}
++/* The console reports FL 11_0 max (docs/decisions.md, cat I); the host knows the truth.
++ * We only reject requests above what the host adapter is known to give. */
++#define XRL_MAX_FEATURE_LEVEL D3D_FEATURE_LEVEL_12_0
+ 
+ HRESULT WINAPI D3D12CreateDevice(IUnknown *adapter, D3D_FEATURE_LEVEL minimum_feature_level,
+         REFIID iid, void **device)
+ {
+-    struct vkd3d_optional_instance_extensions_info optional_extensions_info;
+-    struct vkd3d_instance_create_info instance_create_info;
+-    PFN_vkGetInstanceProcAddr pfn_vkGetInstanceProcAddr;
+-    struct vkd3d_device_create_info device_create_info;
+-    struct wine_dxgi_adapter_info adapter_info;
+-    struct vkd3d_instance *instance;
+-    IWineDXGIAdapter *wine_adapter;
+-    HRESULT hr;
+-
+-    static const char * const instance_extensions[] =
+-    {
+-        VK_KHR_SURFACE_EXTENSION_NAME,
+-        VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+-    };
+-    static const char * const optional_instance_extensions[] =
+-    {
+-        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME,
+-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+-    };
+-    static const char * const device_extensions[] =
+-    {
+-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+-    };
+-    static const struct vkd3d_application_info application_info =
+-    {
+-        .type = VKD3D_STRUCTURE_TYPE_APPLICATION_INFO,
+-        .api_version = VKD3D_API_VERSION_1_2,
+-    };
++    struct xrl_call_gfx_device call = {0};
++    INT status = XRL_STATUS_GENERIC;
++    NTSTATUS nt;
+ 
+     TRACE("adapter %p, minimum_feature_level %#x, iid %s, device %p.\n",
+             adapter, minimum_feature_level, debugstr_guid(iid), device);
+ 
+-    if (!(pfn_vkGetInstanceProcAddr = load_vulkan()))
+-    {
+-        ERR_(winediag)("Failed to load Vulkan library.\n");
+-        return E_FAIL;
+-    }
+-
+-    if (FAILED(hr = d3d12_get_adapter(&wine_adapter, adapter)))
+-        return hr;
++    if (minimum_feature_level > XRL_MAX_FEATURE_LEVEL) return E_INVALIDARG;
++    /* `adapter` is one of our dxgi.dll adapter objects (or NULL); there is only one GPU. */
+ 
+-    if (FAILED(hr = IWineDXGIAdapter_get_adapter_info(wine_adapter, &adapter_info)))
++    nt = XrlCall(XRL_CALL_GFX_D3D12_CREATE_DEVICE, &call, &status);
++    if (nt || status != XRL_STATUS_OK || !call.out_device)
+     {
+-        WARN("Failed to get adapter info, hr %#lx.\n", hr);
+-        goto done;
++        WARN("host refused to create a D3D12 device: nt %#lx, xrl_status %d.\n", nt, status);
++        return status == XRL_STATUS_DEVICELOST ? DXGI_ERROR_DEVICE_REMOVED : E_FAIL;
+     }
+ 
+-    optional_extensions_info.type = VKD3D_STRUCTURE_TYPE_OPTIONAL_INSTANCE_EXTENSIONS_INFO;
+-    optional_extensions_info.next = &application_info;
+-    optional_extensions_info.extensions = optional_instance_extensions;
+-    optional_extensions_info.extension_count = ARRAY_SIZE(optional_instance_extensions);
+-
+-    instance_create_info.type = VKD3D_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
+-    instance_create_info.next = &optional_extensions_info;
+-    instance_create_info.pfn_signal_event = d3d12_signal_event;
+-    instance_create_info.pfn_create_thread = NULL;
+-    instance_create_info.pfn_join_thread = NULL;
+-    instance_create_info.wchar_size = sizeof(WCHAR);
+-    instance_create_info.pfn_vkGetInstanceProcAddr = pfn_vkGetInstanceProcAddr;
+-    instance_create_info.instance_extensions = instance_extensions;
+-    instance_create_info.instance_extension_count = ARRAY_SIZE(instance_extensions);
+-
+-    if (FAILED(hr = vkd3d_create_instance(&instance_create_info, &instance)))
++    if (!device)
+     {
+-        WARN("Failed to create vkd3d instance, hr %#lx.\n", hr);
+-        goto done;
++        /* caller only asked whether a device could be created */
++        struct xrl_call_handle rel = { call.out_device };
++        XrlCall(XRL_CALL_GFX_RELEASE, &rel, &status);
++        return S_FALSE;
+     }
+ 
+-    device_create_info.type = VKD3D_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+-    device_create_info.next = NULL;
+-    device_create_info.minimum_feature_level = minimum_feature_level;
+-    device_create_info.instance = instance;
+-    device_create_info.instance_create_info = NULL;
+-    device_create_info.vk_physical_device = d3d12_get_vk_physical_device(instance, pfn_vkGetInstanceProcAddr, &adapter_info);
+-    device_create_info.device_extensions = device_extensions;
+-    device_create_info.device_extension_count = ARRAY_SIZE(device_extensions);
+-    device_create_info.parent = (IUnknown *)wine_adapter;
+-    device_create_info.adapter_luid = adapter_info.luid;
+-
+-    hr = vkd3d_create_device(&device_create_info, iid, device);
+-
+-    vkd3d_instance_decref(instance);
+-
+-done:
+-    IWineDXGIAdapter_Release(wine_adapter);
+-    return hr;
++    /* The host created the device as ID3D12Device; later interfaces are the game's own QI. */
++    FIXME_(d3d12)("riid %s: returning the host device handle %#I64x without QueryInterface\n",
++            debugstr_guid(iid), call.out_device);
++    *device = (void *)(ULONG_PTR)call.out_device;
++    return S_OK;
+ }
+ 
+ HRESULT WINAPI D3D12CreateRootSignatureDeserializer(const void *data, SIZE_T data_size,
+diff --git a/dlls/dxgi/Makefile.in b/dlls/dxgi/Makefile.in
+index d859e59..bba0c1d 100644
+--- a/dlls/dxgi/Makefile.in
++++ b/dlls/dxgi/Makefile.in
+@@ -1,6 +1,6 @@
+ MODULE    = dxgi.dll
+ IMPORTLIB = dxgi
+-IMPORTS   = gdi32 dxguid uuid wined3d user32 win32u
++IMPORTS   = gdi32 dxguid uuid wined3d user32 win32u xrlhost
+ EXTRAINCL = $(VKD3D_PE_CFLAGS)
+ 
+ SOURCES = \
+diff --git a/dlls/dxgi/factory.c b/dlls/dxgi/factory.c
+index ebdb42a..dcbbacd 100644
+--- a/dlls/dxgi/factory.c
++++ b/dlls/dxgi/factory.c
+@@ -18,9 +18,48 @@
+  */
+ 
+ #include "dxgi_private.h"
++#include "../xrlhost/xrlhost.h"
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dxgi);
+ 
++/* xbox-rl: `device` is a native D3D11-on-12 device (made by our d3d11.dll, so its D3D12 device and
++ * queue are in xrlhost's table) or the game's own native ID3D12CommandQueue.  Wine must not
++ * QueryInterface it for Wine interfaces; the swapchain is created on the host's CoreWindow.
++ * KNOWN GAP: the returned object is the host's raw IDXGISwapChain3.  A D3D11 game's
++ * GetBuffer(IID_ID3D11Texture2D) needs a Wine-side wrapper doing CreateWrappedResource +
++ * Acquire/ReleaseWrappedResources around Present (gfx/ABI-CHANGE-REQUESTS.md R4).  Not written. */
++static HRESULT xrl_create_native_swapchain(IUnknown *device, const DXGI_SWAP_CHAIN_DESC1 *desc,
++        IDXGISwapChain1 **swapchain)
++{
++    struct xrl_call_gfx_swapchain call = { .width = desc->Width, .height = desc->Height,
++        .buffer_count = desc->BufferCount, .dxgi_format = desc->Format };
++    INT status = XRL_STATUS_GENERIC;
++    NTSTATUS nt;
++
++    if (!XrlLookupDevice(device, &call.device, &call.queue))
++    {
++        /* Not a device d3d11.dll made: the game passed its own ID3D12CommandQueue (D3D12 path).  The
++         * owning device comes from a native call on the queue. */
++        ID3D12CommandQueue *q = (ID3D12CommandQueue *)device;
++        ID3D12Device *d12 = NULL;
++        HRESULT hr = ID3D12CommandQueue_GetDevice(q, &IID_ID3D12Device, (void **)&d12);
++
++        if (FAILED(hr) || !d12) { WARN("cannot get the device of queue %p: %#lx.\n", device, hr); return DXGI_ERROR_UNSUPPORTED; }
++        call.device = (UINT64)(ULONG_PTR)d12;
++        call.queue  = (UINT64)(ULONG_PTR)q;
++        ID3D12Device_Release(d12);   /* the queue keeps it alive; we only needed the pointer value */
++    }
++    nt = XrlCall(XRL_CALL_GFX_CREATE_SWAPCHAIN, &call, &status);
++
++    if (nt || status != XRL_STATUS_OK || !call.out_swapchain)
++    {
++        WARN("host swapchain creation failed: nt %#lx, xrl_status %d.\n", nt, status);
++        return status == XRL_STATUS_DEVICELOST ? DXGI_ERROR_DEVICE_REMOVED : DXGI_ERROR_UNSUPPORTED;
++    }
++    *swapchain = (IDXGISwapChain1 *)(ULONG_PTR)call.out_swapchain;
++    return S_OK;
++}
++
+ static inline struct dxgi_factory *impl_from_IWineDXGIFactory(IWineDXGIFactory *iface)
+ {
+     return CONTAINING_RECORD(iface, struct dxgi_factory, IWineDXGIFactory_iface);
+@@ -297,6 +336,9 @@ static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForHwnd(IWineDXGIFa
+     if (output)
+         FIXME("Ignoring output %p.\n", output);
+ 
++    if (XrlIsNativeObject(device))
++        return xrl_create_native_swapchain(device, desc, swapchain);
++
+     if (SUCCEEDED(IUnknown_QueryInterface(device, &IID_IWineDXGISwapChainFactory, (void **)&swapchain_factory)))
+     {
+         hr = IWineDXGISwapChainFactory_create_swapchain(swapchain_factory,
+@@ -320,9 +362,13 @@ static HRESULT STDMETHODCALLTYPE dxgi_factory_CreateSwapChainForCoreWindow(IWine
+         IUnknown *device, IUnknown *window, const DXGI_SWAP_CHAIN_DESC1 *desc,
+         IDXGIOutput *output, IDXGISwapChain1 **swapchain)
+ {
+-    FIXME("iface %p, device %p, window %p, desc %p, output %p, swapchain %p stub!\n",
++    TRACE("iface %p, device %p, window %p, desc %p, output %p, swapchain %p.\n",
+             iface, device, window, desc, output, swapchain);
+ 
++    if (!device || !desc || !swapchain) return DXGI_ERROR_INVALID_CALL;
++    if (XrlIsNativeObject(device)) return xrl_create_native_swapchain(device, desc, swapchain);
++
++    FIXME("CoreWindow swapchain for a non-native device is not supported.\n");
+     return E_NOTIMPL;
+ }
+ 

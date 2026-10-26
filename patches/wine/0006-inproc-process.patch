@@ -1,0 +1,116 @@
+diff --git a/dlls/ntdll/unix/process.c b/dlls/ntdll/unix/process.c
+index ef1ab96..09fbf08 100644
+--- a/dlls/ntdll/unix/process.c
++++ b/dlls/ntdll/unix/process.c
+@@ -398,6 +398,58 @@ static BOOL is_unix_console_handle( HANDLE handle )
+ }
+ 
+ 
++/***********************************************************************
++ *           xrl_spawn_inproc
++ *
++ * xbox-rl: "exec" of a helper process without a second OS process.  The process and
++ * its main thread already exist as server objects (new_process / new_thread).  For the
++ * Wine system helpers that nothing in the game depends on at runtime we report a clean
++ * start and an immediate exit(0).  For everything else: STATUS_NOT_SUPPORTED, because a
++ * second PE image needs its own PEB/ntdll state, which an in-process "exec" cannot give it.
++ */
++static const char * const xrl_stub_images[] =
++{
++    "wineboot.exe", "services.exe", "explorer.exe", "winedevice.exe", "plugplay.exe",
++    "rpcss.exe", "svchost.exe", "conhost.exe", "tabtip.exe", "dllhost.exe", "msiexec.exe",
++    "winemenubuilder.exe", "start.exe", NULL
++};
++
++static NTSTATUS xrl_spawn_inproc( const UNICODE_STRING *nt_path, const UNICODE_STRING *image, HANDLE process )
++{
++    const UNICODE_STRING *name = (image && image->Length) ? image : nt_path;
++    char base[64];
++    unsigned int i, n = 0, len = name->Length / sizeof(WCHAR);
++    const WCHAR *p = name->Buffer;
++    int stubbed = 0;
++    NTSTATUS status;
++
++    /* basename, lower-cased, ASCII only */
++    for (i = 0; i < len; i++) if (p[i] == '\\' || p[i] == '/') n = i + 1;
++    for (i = 0; n + i < len && i < sizeof(base) - 1; i++)
++    {
++        WCHAR c = p[n + i];
++        base[i] = (c >= 'A' && c <= 'Z') ? c + 32 : (c < 128 ? c : '?');
++    }
++    base[i] = 0;
++    for (i = 0; xrl_stub_images[i]; i++) if (!strcmp( base, xrl_stub_images[i] )) stubbed = 1;
++
++    if (!stubbed)
++    {
++        ERR( "in-process exec of %s is not supported (XRL_NO_SPAWN)\n", debugstr_a( base ));
++        return STATUS_NOT_SUPPORTED;
++    }
++    TRACE( "emulating %s in-process (exit 0)\n", base );
++    SERVER_START_REQ( xrl_stub_process )
++    {
++        req->handle    = wine_server_obj_handle( process );
++        req->exit_code = 0;
++        status = wine_server_call( req );
++    }
++    SERVER_END_REQ;
++    return status;
++}
++
++
+ /***********************************************************************
+  *           spawn_process
+  */
+@@ -884,7 +936,14 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
+ 
+     /* create the child process */
+ 
+-    if ((status = spawn_process( params, socketfd[0], unixdir, winedebug, &pe_info ))) goto done;
++    if (xrl_no_spawn)
++    {
++        /* xbox-rl: there is one OS process on the console.  Helper processes Wine would normally
++         * launch (wineboot, services, explorer, ...) are completed in-process; anything else
++         * cannot run and fails here with a clear log line. */
++        if ((status = xrl_spawn_inproc( &path, &params->ImagePathName, process_handle ))) goto done;
++    }
++    else if ((status = spawn_process( params, socketfd[0], unixdir, winedebug, &pe_info ))) goto done;
+ 
+     close( socketfd[0] );
+     socketfd[0] = -1;
+diff --git a/server/process.c b/server/process.c
+index 287718a..c314f85 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -2127,3 +2131,15 @@ DECL_HANDLER(list_processes)
+         }
+     }
+ }
++
++
++/* xbox-rl: finish a process that is emulated in-process (XRL_NO_SPAWN). */
++DECL_HANDLER(xrl_stub_process)
++{
++    struct process *process = get_process_from_handle( req->handle, PROCESS_TERMINATE );
++
++    if (!process) return;
++    set_process_startup_state( process, STARTUP_DONE );
++    terminate_process( process, NULL, req->exit_code );
++    release_object( process );
++}
+diff --git a/server/protocol.def b/server/protocol.def
+index 66968eb..fcfbd5f 100644
+--- a/server/protocol.def
++++ b/server/protocol.def
+@@ -4360,3 +4360,12 @@ enum fsync_type
+     unsigned int shm_idx;
+ @REPLY
+ @END
++
++
++/* xbox-rl: complete a child process that is emulated in-process instead of exec'd.
++ * The process/startup_info objects were created by new_process; mark startup as done
++ * (so NtCreateUserProcess reports success) and end the process with exit_code. */
++@REQ(xrl_stub_process)
++    obj_handle_t handle;                /* process handle returned by new_process */
++    int          exit_code;             /* exit code the stub reports */
++@END

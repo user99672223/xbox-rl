@@ -1,0 +1,137 @@
+diff --git a/dlls/ntdll/Makefile.in b/dlls/ntdll/Makefile.in
+index 1469e3a..0f58903 100644
+--- a/dlls/ntdll/Makefile.in
++++ b/dlls/ntdll/Makefile.in
+@@ -69,6 +69,7 @@ SOURCES = \
+ 	unix/tape.c \
+ 	unix/thread.c \
+ 	unix/virtual.c \
++	unix/xrl.c \
+ 	unwind.c \
+ 	version.c \
+ 	version.rc \
+diff --git a/dlls/ntdll/unix/env.c b/dlls/ntdll/unix/env.c
+index 3145868..559cc7b 100644
+--- a/dlls/ntdll/unix/env.c
++++ b/dlls/ntdll/unix/env.c
+@@ -1593,6 +1593,8 @@ static void run_wineboot( WCHAR *env, SIZE_T size )
+     unsigned int status;
+     int count = 1;
+ 
++    if (xrl_skip_wineboot) return;  /* xbox-rl: prefix is pre-baked; wineboot is never run */
++
+     init_unicode_string( &nameW, eventW );
+     InitializeObjectAttributes( &attr, &nameW, OBJ_OPENIF, 0, NULL );
+     status = NtCreateEvent( &handles[0], EVENT_ALL_ACCESS, &attr, NotificationEvent, 0 );
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2cc53c3..9ee2a72 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2411,6 +2459,7 @@ static void start_main_thread(void)
+ 
+     signal_init_threading();
+     dbg_init();
++    xrl_init_flags();
+     startup_info_size = server_init_process();
+     hacks_init();
+     virtual_map_user_shared_data();
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 3efac71..8f9f8ab 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4742,6 +4742,17 @@ void virtual_map_user_shared_data(void)
+     HANDLE section;
+     int res, fd, needs_close;
+ 
++    if (xrl_host_usd)
++    {
++        /* xbox-rl: the console's own KUSER_SHARED_DATA is already mapped read-only at
++         * 0x7ffe0000 (it cannot be replaced), and it has the same layout and live time
++         * fields.  Use it; the server's copy of the section is never mapped here. */
++        if (!user_shared_data->NtMajorVersion || !user_shared_data->TickCountMultiplier)
++            WARN( "host KUSER_SHARED_DATA looks uninitialised (NtMajorVersion=%u)\n",
++                  (unsigned int)user_shared_data->NtMajorVersion );
++        return;
++    }
++
+     if ((status = NtOpenSection( &section, SECTION_ALL_ACCESS, &attr )))
+     {
+         ERR( "failed to open the USD section: %08x\n", status );
+@@ -4773,6 +4784,8 @@ void virtual_init_user_shared_data(void)
+     HANDLE section;
+     int res, fd, needs_close;
+ 
++    if (xrl_host_usd) return;  /* xbox-rl: host owns KUSER_SHARED_DATA, nothing to initialise */
++
+     if ((status = NtOpenSection( &section, SECTION_ALL_ACCESS, &attr )))
+     {
+         ERR( "failed to open the USD section: %08x\n", status );
+diff --git a/dlls/ntdll/unix/xrl.c b/dlls/ntdll/unix/xrl.c
+new file mode 100644
+index 0000000..11bb89a
+--- /dev/null
++++ b/dlls/ntdll/unix/xrl.c
+@@ -0,0 +1,63 @@
++/*
++ * xbox-rl: runtime mode flags and host-seam helpers for the unix side of ntdll.
++ *
++ * Every behaviour change that is specific to running inside the xbox-rl layer
++ * is gated by one of these flags, read once from the environment at startup.
++ * The layer sets them through xrl_boot_context.envp (see wine/notes-B.md).  With
++ * none of them set, this Wine behaves like upstream Proton Wine -- that is what
++ * lets the whole musl build be exercised on a Linux laptop (wine/tests/).
++ *
++ *   (always on)          wineserver runs as a thread of this process (server/main.c)
++ *   XRL_HOST_USD=1      KUSER_SHARED_DATA at 0x7ffe0000 is owned by the host OS
++ *   XRL_NO_SPAWN=1       never fork/exec; CreateProcess is served in-process
++ *   XRL_SKIP_WINEBOOT=1  the prefix is pre-baked; do not run wineboot --init
++ *
++ * Copyright 2026 xbox-rl contributors.  LGPL-2.1-or-later, like Wine.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdlib.h>
++#include <string.h>
++#include <pthread.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winternl.h"
++#include "unix_private.h"
++#include "wine/debug.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(xrl);
++
++BOOL xrl_inproc_server;
++BOOL xrl_host_usd;
++BOOL xrl_no_spawn;
++BOOL xrl_skip_wineboot;
++
++static BOOL env_flag( const char *name )
++{
++    const char *v = getenv( name );
++    return v && v[0] && strcmp( v, "0" );
++}
++
++void xrl_init_flags(void)
++{
++    xrl_inproc_server = TRUE;   /* always: there is no wineserver binary any more */
++    xrl_host_usd      = env_flag( "XRL_HOST_USD" );
++    xrl_no_spawn      = env_flag( "XRL_NO_SPAWN" );
++    xrl_skip_wineboot = env_flag( "XRL_SKIP_WINEBOOT" );
++
++    /* Valve/Proton's esync/fsync/ntsync paths need futex_waitv, /dev/ntsync or
++     * /dev/shm.  None exist on the console; force the plain server-side sync. */
++    setenv( "WINEFSYNC", "0", 1 );
++    setenv( "WINEESYNC", "0", 1 );
++    setenv( "PROTON_NO_NTSYNC", "1", 1 );
++
++    TRACE( "inproc_server=%d host_usd=%d no_spawn=%d skip_wineboot=%d\n",
++           xrl_inproc_server, xrl_host_usd, xrl_no_spawn, xrl_skip_wineboot );
++}

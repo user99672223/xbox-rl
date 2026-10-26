@@ -1,0 +1,509 @@
+diff --git a/configure.ac b/configure.ac
+index 5376e11..5b97797 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3569,6 +3569,7 @@ WINE_CONFIG_MAKEFILE(dlls/xmllite)
+ WINE_CONFIG_MAKEFILE(dlls/xmllite/tests)
+ WINE_CONFIG_MAKEFILE(dlls/xolehlp)
+ WINE_CONFIG_MAKEFILE(dlls/xpsprint)
++WINE_CONFIG_MAKEFILE(dlls/xrlhost)
+ WINE_CONFIG_MAKEFILE(dlls/xpssvcs)
+ WINE_CONFIG_MAKEFILE(dlls/xtajit64)
+ WINE_CONFIG_MAKEFILE(fonts)
+diff --git a/dlls/xrlhost/Makefile.in b/dlls/xrlhost/Makefile.in
+new file mode 100644
+index 0000000..4b23e4e
+--- /dev/null
++++ b/dlls/xrlhost/Makefile.in
+@@ -0,0 +1,9 @@
++MODULE    = xrlhost.dll
++UNIXLIB   = xrlhost.so
++IMPORTLIB = xrlhost
++
++SOURCES = \
++	main.c \
++	unixlib.c \
++	unixlib.h \
++	xrlhost.h
+diff --git a/dlls/xrlhost/main.c b/dlls/xrlhost/main.c
+new file mode 100644
+index 0000000..f36d6bd
+--- /dev/null
++++ b/dlls/xrlhost/main.c
+@@ -0,0 +1,109 @@
++/*
++ * xbox-rl: xrlhost.dll -- PE side of the host seam.  See xrlhost.h.
++ *
++ * Copyright 2026 xbox-rl contributors.  LGPL-2.1-or-later, like Wine.
++ */
++
++#include <stdarg.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "wine/unixlib.h"
++#include "wine/debug.h"
++#include "wine/exception.h"
++
++#include "xrlhost.h"
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(xrlhost);
++
++static BOOL unix_ok;
++
++BOOL WINAPI DllMain( HINSTANCE inst, DWORD reason, void *reserved )
++{
++    switch (reason)
++    {
++    case DLL_PROCESS_ATTACH:
++        DisableThreadLibraryCalls( inst );
++        unix_ok = !__wine_init_unix_call();
++        if (!unix_ok) ERR( "cannot load xrlhost.so, host forwarding is unavailable\n" );
++        break;
++    }
++    return TRUE;
++}
++
++/***********************************************************************
++ *           XrlCall   (xrlhost.@)
++ */
++NTSTATUS WINAPI XrlCall( ULONG code, void *params, INT *status )
++{
++    struct xrlhost_call call = { .code = code, .params = params, .xrl_status = XRL_STATUS_GENERIC };
++    NTSTATUS ret;
++
++    if (!unix_ok) return STATUS_DLL_NOT_FOUND;
++    ret = WINE_UNIX_CALL( unix_xrl_call, &call );
++    if (status) *status = call.xrl_status;
++    return ret;
++}
++
++/***********************************************************************
++ *           XrlIsNativeObject   (xrlhost.@)
++ */
++BOOL WINAPI XrlIsNativeObject( const void *obj )
++{
++    const void *vtbl;
++    void *base;
++
++    if (!obj) return FALSE;
++    __TRY { vtbl = *(const void * const *)obj; }
++    __EXCEPT_PAGE_FAULT { return FALSE; }
++    __ENDTRY
++    if (!vtbl) return FALSE;
++    return RtlPcToFileHeader( (void *)vtbl, &base ) == NULL;
++}
++
++/***********************************************************************
++ *           device association table
++ */
++#define MAX_TRACKED 16
++static struct { const void *dev11; UINT64 dev12, queue; } tracked[MAX_TRACKED];
++static CRITICAL_SECTION track_cs;
++static CRITICAL_SECTION_DEBUG track_cs_debug =
++{
++    0, 0, &track_cs,
++    { &track_cs_debug.ProcessLocksList, &track_cs_debug.ProcessLocksList },
++      0, 0, { (DWORD_PTR)(__FILE__ ": track_cs") }
++};
++static CRITICAL_SECTION track_cs = { &track_cs_debug, -1, 0, 0, 0, 0 };
++
++/***********************************************************************
++ *           XrlTrackDevice   (xrlhost.@)
++ */
++void WINAPI XrlTrackDevice( const void *dev11, UINT64 dev12, UINT64 queue )
++{
++    unsigned int i;
++
++    EnterCriticalSection( &track_cs );
++    for (i = 0; i < MAX_TRACKED; i++) if (!tracked[i].dev11) break;
++    if (i == MAX_TRACKED) { ERR( "too many tracked devices\n" ); i = MAX_TRACKED - 1; }
++    tracked[i].dev11 = dev11; tracked[i].dev12 = dev12; tracked[i].queue = queue;
++    LeaveCriticalSection( &track_cs );
++}
++
++/***********************************************************************
++ *           XrlLookupDevice   (xrlhost.@)
++ */
++BOOL WINAPI XrlLookupDevice( const void *dev11, UINT64 *dev12, UINT64 *queue )
++{
++    BOOL ret = FALSE;
++    unsigned int i;
++
++    EnterCriticalSection( &track_cs );
++    for (i = 0; i < MAX_TRACKED; i++)
++        if (tracked[i].dev11 == dev11) { *dev12 = tracked[i].dev12; *queue = tracked[i].queue; ret = TRUE; break; }
++    LeaveCriticalSection( &track_cs );
++    return ret;
++}
+diff --git a/dlls/xrlhost/unixlib.c b/dlls/xrlhost/unixlib.c
+new file mode 100644
+index 0000000..766edb0
+--- /dev/null
++++ b/dlls/xrlhost/unixlib.c
+@@ -0,0 +1,206 @@
++/*
++ * xbox-rl: xrlhost.so -- the unix side of the host seam.
++ *
++ * This is the only Wine code that touches the frozen ABI header.  It obtains the host's
++ * op-tables from the layer (pseudo-syscalls, see wine/ABI-CHANGE-REQUESTS.md #1) and calls
++ * them with opaque handles.  Handles are never dereferenced here.
++ *
++ * Copyright 2026 xbox-rl contributors.  LGPL-2.1-or-later, like Wine.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdint.h>
++#include <string.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winternl.h"
++#include "wine/debug.h"
++
++#include "xrl_abi.h"          /* include/xrl_abi.h, the frozen ABI (-I from CPPFLAGS) */
++#include "xrlhost.h"
++#include "unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(xrlhost);
++
++/* Proposed pseudo-syscalls (ABI-CHANGE-REQUESTS.md #1): the layer answers these in the
++ * xrl_syscall gateway with a pointer to a guest-callable copy of the op-table, or
++ * -ENOSYS if the host did not install one.  Numbers are outside the Linux range. */
++#define XRL_SYS_GET_GFX_OPS    0x10001
++#define XRL_SYS_GET_AUDIO_OPS  0x10002
++#define XRL_SYS_GET_INPUT_OPS  0x10003
++
++C_ASSERT( sizeof(struct xrl_pad) == sizeof(xrl_pad_state) );
++C_ASSERT( offsetof(struct xrl_pad, thumb_lx) == offsetof(xrl_pad_state, thumb_lx) );
++C_ASSERT( offsetof(struct xrl_pad, connected) == offsetof(xrl_pad_state, connected) );
++
++static const void *get_ops( long nr, uint32_t min_size )
++{
++    long ret = xrl_syscall( nr, 0, 0, 0, 0, 0, 0 );
++    const uint32_t *p;
++
++    if (ret >= -4095 && ret < 0) return NULL;       /* -errno */
++    if (!(p = (const void *)ret)) return NULL;
++    if (*p < min_size) { ERR( "op-table %lx: struct_size %u < expected %u\n", nr, *p, min_size ); return NULL; }
++    return p;
++}
++
++#define OPS_GETTER(type, nr, name) \
++    static const type *name(void) \
++    { \
++        static const type *ops; static int tried; \
++        if (!tried) { ops = get_ops( nr, sizeof(uint32_t) ); tried = 1; TRACE( #name " = %p\n", ops ); } \
++        return ops; \
++    }
++OPS_GETTER( xrl_gfx_ops,   XRL_SYS_GET_GFX_OPS,   gfx )
++OPS_GETTER( xrl_audio_ops, XRL_SYS_GET_AUDIO_OPS, audio )
++OPS_GETTER( xrl_input_ops, XRL_SYS_GET_INPUT_OPS, input )
++
++#define NEED(ops, member) \
++    if (!(ops) || !(ops)->member) { c->xrl_status = XRL_ERR_NOTAVAIL; return STATUS_NOT_SUPPORTED; }
++
++static NTSTATUS xrl_call( void *args )
++{
++    struct xrlhost_call *c = args;
++    void *p = c->params;
++    const xrl_gfx_ops *g = NULL;
++    const xrl_audio_ops *a = NULL;
++    const xrl_input_ops *in = NULL;
++
++    c->xrl_status = XRL_OK;
++    switch (c->code)
++    {
++    case XRL_CALL_ABI_VERSION:
++    {
++        struct xrl_call_version *v = p;
++        v->abi_version = XRL_ABI_VERSION;
++        g = gfx(); a = audio(); in = input();
++        v->have_gfx = g != NULL;  v->have_audio = a != NULL;  v->have_input = in != NULL;
++        v->have_d3d11on12 = g && g->d3d11on12_create;
++        return STATUS_SUCCESS;
++    }
++
++    case XRL_CALL_INPUT_GET_PAD:
++    {
++        struct xrl_call_pad *x = p;
++        in = input(); NEED( in, get_pad_state );
++        c->xrl_status = in->get_pad_state( x->slot, (xrl_pad_state *)&x->out );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_INPUT_VIBRATE:
++    {
++        struct xrl_call_vibrate *x = p;
++        in = input(); NEED( in, set_pad_vibration );
++        c->xrl_status = in->set_pad_vibration( x->slot, x->left, x->right );
++        return STATUS_SUCCESS;
++    }
++
++    case XRL_CALL_AUDIO_CREATE:
++    {
++        struct xrl_call_audio_create *x = p;
++        a = audio(); NEED( a, xaudio2_create );
++        c->xrl_status = a->xaudio2_create( &x->out_xaudio2 );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_AUDIO_MASTERING_VOICE:
++    {
++        struct xrl_call_audio_voice *x = p;
++        a = audio(); NEED( a, create_mastering_voice );
++        c->xrl_status = a->create_mastering_voice( x->xaudio2, x->channels, x->sample_rate, &x->out_voice );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_AUDIO_SOURCE_VOICE:
++    {
++        struct xrl_call_audio_voice *x = p;
++        a = audio(); NEED( a, create_source_voice );
++        c->xrl_status = a->create_source_voice( x->xaudio2, x->channels, x->sample_rate,
++                                                x->bits_per_sample, &x->out_voice );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_AUDIO_SUBMIT:
++    {
++        struct xrl_call_audio_submit *x = p;
++        a = audio(); NEED( a, voice_submit_buffer );
++        c->xrl_status = a->voice_submit_buffer( x->voice, x->data, x->bytes, x->flags );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_AUDIO_START:
++    {
++        struct xrl_call_handle *x = p;
++        a = audio(); NEED( a, voice_start );
++        c->xrl_status = a->voice_start( x->h );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_AUDIO_STOP:
++    {
++        struct xrl_call_handle *x = p;
++        a = audio(); NEED( a, voice_stop );
++        c->xrl_status = a->voice_stop( x->h );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_AUDIO_RELEASE:
++    {
++        struct xrl_call_handle *x = p;
++        a = audio(); NEED( a, release );
++        a->release( x->h );
++        return STATUS_SUCCESS;
++    }
++
++    case XRL_CALL_GFX_D3D12_CREATE_DEVICE:
++    {
++        struct xrl_call_gfx_device *x = p;
++        g = gfx(); NEED( g, d3d12_create_device );
++        c->xrl_status = g->d3d12_create_device( &x->out_device );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_GFX_CREATE_SWAPCHAIN:
++    {
++        struct xrl_call_gfx_swapchain *x = p;
++        g = gfx(); NEED( g, create_swapchain_for_corewindow );
++        c->xrl_status = g->create_swapchain_for_corewindow( x->device, x->queue, x->width, x->height,
++                                                            x->buffer_count, x->dxgi_format, &x->out_swapchain );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_GFX_SWAPCHAIN_GET_BUFFER:
++    {
++        struct xrl_call_gfx_buffer *x = p;
++        g = gfx(); NEED( g, swapchain_get_buffer );
++        c->xrl_status = g->swapchain_get_buffer( x->swapchain, x->index, &x->out_resource );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_GFX_SWAPCHAIN_PRESENT:
++    {
++        struct xrl_call_gfx_present *x = p;
++        g = gfx(); NEED( g, swapchain_present );
++        c->xrl_status = g->swapchain_present( x->swapchain, x->sync_interval, x->flags );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_GFX_D3D11ON12_CREATE:
++    {
++        struct xrl_call_gfx_d3d11on12 *x = p;
++        g = gfx(); NEED( g, d3d11on12_create );
++        c->xrl_status = g->d3d11on12_create( x->d3d12_device, x->d3d12_queue, &x->out_device, &x->out_context );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_GFX_RELEASE:
++    {
++        struct xrl_call_handle *x = p;
++        g = gfx(); NEED( g, release );
++        g->release( x->h );
++        return STATUS_SUCCESS;
++    }
++    }
++    WARN( "unknown xrl call %u\n", c->code );
++    return STATUS_INVALID_PARAMETER;
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    xrl_call,
++};
+diff --git a/dlls/xrlhost/unixlib.h b/dlls/xrlhost/unixlib.h
+new file mode 100644
+index 0000000..f9d17d6
+--- /dev/null
++++ b/dlls/xrlhost/unixlib.h
+@@ -0,0 +1,24 @@
++/*
++ * xbox-rl: xrlhost.dll <-> xrlhost.so unix-call interface.
++ *
++ * Copyright 2026 xbox-rl contributors.  LGPL-2.1-or-later, like Wine.
++ */
++
++#ifndef __WINE_XRLHOST_UNIXLIB_H
++#define __WINE_XRLHOST_UNIXLIB_H
++
++#include "wine/unixlib.h"
++
++enum xrlhost_unix_funcs
++{
++    unix_xrl_call,
++};
++
++struct xrlhost_call
++{
++    UINT32 code;          /* enum xrl_call */
++    INT32  xrl_status;    /* out: xrl_status returned by the host op */
++    void  *params;        /* in/out: struct xrl_call_* */
++};
++
++#endif
+diff --git a/dlls/xrlhost/xrlhost.h b/dlls/xrlhost/xrlhost.h
+new file mode 100644
+index 0000000..0b277c9
+--- /dev/null
++++ b/dlls/xrlhost/xrlhost.h
+@@ -0,0 +1,97 @@
++/*
++ * xbox-rl: xrlhost.dll -- the one place where Wine's PE side crosses to the xbox-rl host.
++ *
++ * Wine's forwarding builtins (xinput, d3d11, dxgi, d3d12, the audio driver) never talk
++ * to the host themselves.  They call XrlCall(code, params) in this DLL, which does a normal
++ * Wine unix call into xrlhost.so, which calls the host op-tables of include/xrl_abi.h
++ * (xrl_gfx_ops / xrl_audio_ops / xrl_input_ops) through opaque 64-bit handles.
++ * No Windows or WinRT type crosses this boundary in either direction.
++ *
++ * This header is shared by the PE side (clients + xrlhost.dll) and by xrlhost.so, so it
++ * deliberately mirrors the ABI structs instead of including xrl_abi.h (which is a unix-side
++ * header that pulls in <stdint.h>).
++ *
++ * Copyright 2026 xbox-rl contributors.  LGPL-2.1-or-later, like Wine.
++ */
++
++#ifndef __WINE_XRLHOST_H
++#define __WINE_XRLHOST_H
++
++#include <stdarg.h>
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++
++typedef UINT64 xrl_handle_t;               /* == xrl_handle in xrl_abi.h */
++
++enum xrl_call
++{
++    XRL_CALL_ABI_VERSION,                  /* params: struct xrl_call_version */
++    /* input */
++    XRL_CALL_INPUT_GET_PAD,                /* struct xrl_call_pad */
++    XRL_CALL_INPUT_VIBRATE,                /* struct xrl_call_vibrate */
++    /* audio (ops: xrl_audio_ops) */
++    XRL_CALL_AUDIO_CREATE,                 /* struct xrl_call_audio_create */
++    XRL_CALL_AUDIO_MASTERING_VOICE,        /* struct xrl_call_audio_voice */
++    XRL_CALL_AUDIO_SOURCE_VOICE,           /* struct xrl_call_audio_voice */
++    XRL_CALL_AUDIO_SUBMIT,                 /* struct xrl_call_audio_submit */
++    XRL_CALL_AUDIO_START,                  /* struct xrl_call_handle */
++    XRL_CALL_AUDIO_STOP,                   /* struct xrl_call_handle */
++    XRL_CALL_AUDIO_RELEASE,                /* struct xrl_call_handle */
++    /* graphics (ops: xrl_gfx_ops) */
++    XRL_CALL_GFX_D3D12_CREATE_DEVICE,      /* struct xrl_call_gfx_device */
++    XRL_CALL_GFX_CREATE_SWAPCHAIN,         /* struct xrl_call_gfx_swapchain */
++    XRL_CALL_GFX_SWAPCHAIN_GET_BUFFER,     /* struct xrl_call_gfx_buffer */
++    XRL_CALL_GFX_SWAPCHAIN_PRESENT,        /* struct xrl_call_gfx_present */
++    XRL_CALL_GFX_D3D11ON12_CREATE,         /* struct xrl_call_gfx_d3d11on12 */
++    XRL_CALL_GFX_RELEASE,                  /* struct xrl_call_handle */
++    XRL_CALL_COUNT
++};
++
++/* xrl_status values as seen by the PE side (mirror of xrl_abi.h) */
++#define XRL_STATUS_OK           0
++#define XRL_STATUS_GENERIC     (-1)
++#define XRL_STATUS_NOTAVAIL    (-2)
++#define XRL_STATUS_DEVICELOST  (-3)
++
++struct xrl_call_version { UINT32 abi_version; UINT32 have_gfx, have_audio, have_input; UINT32 have_d3d11on12; };
++
++/* identical layout to xrl_pad_state */
++struct xrl_pad
++{
++    UINT32 buttons;
++    UINT8  left_trigger, right_trigger;
++    INT16  thumb_lx, thumb_ly, thumb_rx, thumb_ry;
++    UINT8  connected;
++    UINT8  _pad[3];
++};
++struct xrl_call_pad     { UINT32 slot; struct xrl_pad out; };
++struct xrl_call_vibrate { UINT32 slot; UINT16 left, right; };
++
++struct xrl_call_handle        { xrl_handle_t h; };
++struct xrl_call_audio_create  { xrl_handle_t out_xaudio2; };
++struct xrl_call_audio_voice   { xrl_handle_t xaudio2; UINT32 channels, sample_rate, bits_per_sample; xrl_handle_t out_voice; };
++struct xrl_call_audio_submit  { xrl_handle_t voice; const void *data; UINT32 bytes, flags; };
++
++struct xrl_call_gfx_device    { xrl_handle_t out_device; };
++struct xrl_call_gfx_swapchain { xrl_handle_t device, queue; UINT32 width, height, buffer_count, dxgi_format; xrl_handle_t out_swapchain; };
++struct xrl_call_gfx_buffer    { xrl_handle_t swapchain; UINT32 index; xrl_handle_t out_resource; };
++struct xrl_call_gfx_present   { xrl_handle_t swapchain; UINT32 sync_interval, flags; };
++struct xrl_call_gfx_d3d11on12 { xrl_handle_t d3d12_device, d3d12_queue; xrl_handle_t out_device, out_context; };
++
++/* returns an NTSTATUS for transport errors; the per-call xrl_status is in *status */
++NTSTATUS WINAPI XrlCall( ULONG code, void *params, INT *status );
++
++/* TRUE if `obj` is a COM object NOT created by a Wine module, i.e. a native host object. The test
++ * looks at where the object's vtable lives: Wine's loader knows every Wine module image, and the
++ * host's own modules (d3d12.dll, d3d11on12, ...) are invisible to it.  Reads memory only. */
++BOOL WINAPI XrlIsNativeObject( const void *obj );
++
++/* The D3D11-on-12 device the game holds is not enough for the host to build a swapchain: it needs
++ * the D3D12 device and the (single) direct queue that were used to create it (gfx/ requires a
++ * non-NULL queue and the SAME queue for d3d11on12_create and the swapchain).  d3d11.dll records the
++ * association when it creates a device; dxgi.dll looks it up when the game creates a swapchain. */
++void WINAPI XrlTrackDevice( const void *dev11, UINT64 dev12, UINT64 queue );
++BOOL WINAPI XrlLookupDevice( const void *dev11, UINT64 *dev12, UINT64 *queue );
++
++#endif /* __WINE_XRLHOST_H */
+diff --git a/dlls/xrlhost/xrlhost.spec b/dlls/xrlhost/xrlhost.spec
+new file mode 100644
+index 0000000..43c95a9
+--- /dev/null
++++ b/dlls/xrlhost/xrlhost.spec
+@@ -0,0 +1,4 @@
++@ stdcall XrlCall(long ptr ptr)
++@ stdcall XrlIsNativeObject(ptr)
++@ stdcall XrlTrackDevice(ptr int64 int64)
++@ stdcall XrlLookupDevice(ptr ptr ptr)
+diff --git a/include/Makefile.in b/include/Makefile.in
+index 4351581..b1725e2 100644
+--- a/include/Makefile.in
++++ b/include/Makefile.in
+@@ -1102,6 +1102,7 @@ SOURCES = \
+ 	xmllite.idl \
+ 	xpsobjectmodel.idl \
+ 	xpsobjectmodel_1.idl \
++	xrl_abi.h \
+ 	zmouse.h
+ 
+ INSTALL_LIB = \

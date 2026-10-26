@@ -1,0 +1,1638 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2cc53c3..9ee2a72 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -621,6 +631,41 @@ static int exec_wineserver( pid_t *pid, char **argv )
+ }
+ 
+ 
++/***********************************************************************
++ *           xrl_start_wineserver
++ *
++ * xbox-rl: load wineserver.so, start the server thread, return the client end of
++ * the connection socket (or -1).  See server/main.c: xrl_wineserver_start().
++ */
++int xrl_start_wineserver(void)
++{
++    int (*start)(const char *);
++    char *path;
++    void *handle;
++    int ret;
++
++    if (build_dir) path = build_path( build_dir, "server/wineserver.so" );
++    else path = build_path( ntdll_dir, "wineserver.so" );
++    handle = dlopen( path, RTLD_NOW | RTLD_LOCAL );
++    if (!handle)
++    {
++        fprintf( stderr, "wine: cannot load %s: %s\n", path, dlerror() );
++        free( path );
++        return -1;
++    }
++    free( path );
++    if (!(start = dlsym( handle, "xrl_wineserver_start" )))
++    {
++        fprintf( stderr, "wine: xrl_wineserver_start not found in wineserver.so\n" );
++        return -1;
++    }
++    path = build_dir ? build_path( build_dir, "nls" ) : build_path( data_dir, "nls" );
++    ret = start( path );
++    free( path );
++    return ret;
++}
++
++
+ /***********************************************************************
+  *           start_server
+  *
+diff --git a/dlls/ntdll/unix/server.c b/dlls/ntdll/unix/server.c
+index 18b4c2e..f88470b 100644
+--- a/dlls/ntdll/unix/server.c
++++ b/dlls/ntdll/unix/server.c
+@@ -1412,71 +1412,16 @@ static void server_connect_error( const char *serverdir )
+  */
+ static int server_connect(void)
+ {
+-    struct sockaddr_un addr;
+-    struct stat st;
+-    int s, slen, retry;
++    int s;
+ 
++    /* xbox-rl: no unix socket, no lock file, no fork/exec of a wineserver binary.  The
++     * server is a thread of this process (server/main.c, loaded from wineserver.so);
++     * we get one end of a socketpair back and speak the unchanged wire protocol on it. */
+     initial_cwd = setup_config_dir();
+-
+-    /* chdir to the server directory */
+-    if (chdir( server_dir ) == -1)
+-    {
+-        if (errno != ENOENT) fatal_perror( "chdir to %s", server_dir );
+-        start_server( TRACE_ON(server) );
+-        if (chdir( server_dir ) == -1) fatal_perror( "chdir to %s", server_dir );
+-    }
+-
+-    /* make sure we are at the right place */
+-    if (stat( ".", &st ) == -1) fatal_perror( "stat %s", server_dir );
+-    if (st.st_uid != getuid()) fatal_error( "'%s' is not owned by you\n", server_dir );
+-    if (st.st_mode & 077) fatal_error( "'%s' must not be accessible by other users\n", server_dir );
+-
+-    for (retry = 0; retry < 6; retry++)
+-    {
+-        /* if not the first try, wait a bit to leave the previous server time to exit */
+-        if (retry)
+-        {
+-            usleep( 100000 * retry * retry );
+-            start_server( TRACE_ON(server) );
+-            if (lstat( SOCKETNAME, &st ) == -1) continue;  /* still no socket, wait a bit more */
+-        }
+-        else if (lstat( SOCKETNAME, &st ) == -1) /* check for an already existing socket */
+-        {
+-            if (errno != ENOENT) fatal_perror( "lstat %s/%s", server_dir, SOCKETNAME );
+-            start_server( TRACE_ON(server) );
+-            if (lstat( SOCKETNAME, &st ) == -1) continue;  /* still no socket, wait a bit more */
+-        }
+-
+-        /* make sure the socket is sane (ISFIFO needed for Solaris) */
+-        if (!S_ISSOCK(st.st_mode) && !S_ISFIFO(st.st_mode))
+-            fatal_error( "'%s/%s' is not a socket\n", server_dir, SOCKETNAME );
+-        if (st.st_uid != getuid())
+-            fatal_error( "'%s/%s' is not owned by you\n", server_dir, SOCKETNAME );
+-
+-        /* try to connect to it */
+-        addr.sun_family = AF_UNIX;
+-        strcpy( addr.sun_path, SOCKETNAME );
+-        slen = sizeof(addr) - sizeof(addr.sun_path) + strlen(addr.sun_path) + 1;
+-#ifdef HAVE_STRUCT_SOCKADDR_UN_SUN_LEN
+-        addr.sun_len = slen;
+-#endif
+-        if ((s = socket( AF_UNIX, SOCK_STREAM, 0 )) == -1) fatal_perror( "socket" );
+-#ifdef SO_PASSCRED
+-        else
+-        {
+-            int enable = 1;
+-            setsockopt( s, SOL_SOCKET, SO_PASSCRED, &enable, sizeof(enable) );
+-        }
+-#endif
+-        if (connect( s, (struct sockaddr *)&addr, slen ) != -1)
+-        {
+-            fchdir( initial_cwd );  /* switch back to the starting directory */
+-            fcntl( s, F_SETFD, FD_CLOEXEC );
+-            return s;
+-        }
+-        close( s );
+-    }
+-    server_connect_error( server_dir );
++    if ((s = xrl_start_wineserver()) == -1) fatal_error( "could not start the in-process wineserver\n" );
++    fchdir( initial_cwd );  /* switch back to the starting directory */
++    fcntl( s, F_SETFD, FD_CLOEXEC );
++    return s;
+ }
+ 
+ 
+diff --git a/server/Makefile.in b/server/Makefile.in
+index d9ac607..59ac41f 100644
+--- a/server/Makefile.in
++++ b/server/Makefile.in
+@@ -1,4 +1,6 @@
+-PROGRAMS = wineserver
++# xbox-rl: wineserver is a thread, built as a unix library (wineserver.so) that
++# ntdll.so dlopen()s, instead of a separate program.
++UNIXLIB = wineserver.so
+ 
+ SOURCES = \
+ 	async.c \
+@@ -46,12 +48,9 @@ SOURCES = \
+ 	unicode.c \
+ 	user.c \
+ 	window.c \
+-	wineserver.de.UTF-8.man.in \
+-	wineserver.fr.UTF-8.man.in \
+-	wineserver.man.in \
+ 	winstation.c
+ 
+ UNIX_CFLAGS = $(INOTIFY_CFLAGS)
+-UNIX_LIBS   = $(LDEXECFLAGS) $(RT_LIBS) $(INOTIFY_LIBS) $(PROCSTAT_LIBS)
++UNIX_LIBS   = $(RT_LIBS) $(INOTIFY_LIBS) $(PROCSTAT_LIBS)
+ 
+ unicode_EXTRADEFS = -DBINDIR="\"${bindir}\"" -DDATADIR="\"${datadir}\""
+diff --git a/server/async.c b/server/async.c
+index 907d5f5..7f1909f 100644
+--- a/server/async.c
++++ b/server/async.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side async I/O support
+  *
+diff --git a/server/atom.c b/server/atom.c
+index 3076341..ea91b48 100644
+--- a/server/atom.c
++++ b/server/atom.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side atom management
+  *
+diff --git a/server/change.c b/server/change.c
+index be3251a..e2b44e7 100644
+--- a/server/change.c
++++ b/server/change.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side change notification management
+  *
+diff --git a/server/class.c b/server/class.c
+index 64c789f..89e79ff 100644
+--- a/server/class.c
++++ b/server/class.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side window class management
+  *
+diff --git a/server/clipboard.c b/server/clipboard.c
+index 59a5035..dd6c07f 100644
+--- a/server/clipboard.c
++++ b/server/clipboard.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side clipboard management
+  *
+diff --git a/server/completion.c b/server/completion.c
+index dbcf4e2..1492eb6 100644
+--- a/server/completion.c
++++ b/server/completion.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side IO completion ports implementation
+  *
+diff --git a/server/console.c b/server/console.c
+index eb849b7..61ded7d 100644
+--- a/server/console.c
++++ b/server/console.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side console management
+  *
+diff --git a/server/d3dkmt.c b/server/d3dkmt.c
+index 800afb4..848518c 100644
+--- a/server/d3dkmt.c
++++ b/server/d3dkmt.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side D3DKMT resource management
+  *
+diff --git a/server/debugger.c b/server/debugger.c
+index c709e34..a5b61f2 100644
+--- a/server/debugger.c
++++ b/server/debugger.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side debugger functions
+  *
+diff --git a/server/device.c b/server/device.c
+index 3eed743..370d102 100644
+--- a/server/device.c
++++ b/server/device.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side device support
+  *
+diff --git a/server/directory.c b/server/directory.c
+index c56c216..e4e3e89 100644
+--- a/server/directory.c
++++ b/server/directory.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side directory object management
+  *
+diff --git a/server/event.c b/server/event.c
+index b70e9e0..7b9fef3 100644
+--- a/server/event.c
++++ b/server/event.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side event management
+  *
+diff --git a/server/fd.c b/server/fd.c
+index aa71e6d..97507ae 100644
+--- a/server/fd.c
++++ b/server/fd.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side file descriptor management
+  *
+@@ -1957,19 +1961,15 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+ 
+     if (root)
+     {
++        /* xbox-rl: was fchdir(root_fd) + relative open() + fchdir back; the server is now a
++         * thread sharing its cwd with the client, so use *at() calls on root_fd instead. */
+         if ((root_fd = get_unix_fd( root )) == -1) goto error;
+-        if (fchdir( root_fd ) == -1)
+-        {
+-            file_set_error();
+-            root_fd = -1;
+-            goto error;
+-        }
+     }
+ 
+     /* create the directory if needed */
+     if ((options & FILE_DIRECTORY_FILE) && (flags & O_CREAT))
+     {
+-        if (mkdir( name, *mode ) == -1)
++        if (mkdirat( root_fd != -1 ? root_fd : AT_FDCWD, name, *mode ) == -1)
+         {
+             if (errno != EEXIST || (flags & O_EXCL))
+             {
+@@ -1987,13 +1987,13 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+     }
+     else rw_mode = O_RDONLY;
+ 
+-    if ((fd->unix_fd = open( name, rw_mode | (flags & ~O_TRUNC), *mode )) == -1)
++    if ((fd->unix_fd = openat( root_fd != -1 ? root_fd : AT_FDCWD, name, rw_mode | (flags & ~O_TRUNC), *mode )) == -1)
+     {
+         /* if we tried to open a directory for write access, retry read-only */
+         if (errno == EISDIR)
+         {
+             if ((access & FILE_UNIX_WRITE_ACCESS) || (flags & O_CREAT))
+-                fd->unix_fd = open( name, O_RDONLY | (flags & ~(O_TRUNC | O_CREAT | O_EXCL)), *mode );
++                fd->unix_fd = openat( root_fd != -1 ? root_fd : AT_FDCWD, name, O_RDONLY | (flags & ~(O_TRUNC | O_CREAT | O_EXCL)), *mode );
+         }
+ 
+         if (fd->unix_fd == -1)
+@@ -2101,13 +2101,11 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
+     }
+ #endif
+ 
+-    if (root_fd != -1) fchdir( server_dir_fd ); /* go back to the server dir */
+     return fd;
+ 
+ error:
+     release_object( fd );
+     free( closed_fd );
+-    if (root_fd != -1) fchdir( server_dir_fd ); /* go back to the server dir */
+     return NULL;
+ }
+ 
+diff --git a/server/file.c b/server/file.c
+index 55f304e..aa2a14f 100644
+--- a/server/file.c
++++ b/server/file.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side file management
+  *
+diff --git a/server/fsync.c b/server/fsync.c
+index 7d3ec64..2e3eb93 100644
+--- a/server/fsync.c
++++ b/server/fsync.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * futex-based synchronization objects
+  *
+diff --git a/server/handle.c b/server/handle.c
+index a88f94a..09f116b 100644
+--- a/server/handle.c
++++ b/server/handle.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side handle management
+  *
+diff --git a/server/hook.c b/server/hook.c
+index fe3c045..4772ca9 100644
+--- a/server/hook.c
++++ b/server/hook.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side window hooks support
+  *
+diff --git a/server/inproc_sync.c b/server/inproc_sync.c
+index a7020ef..ed37aec 100644
+--- a/server/inproc_sync.c
++++ b/server/inproc_sync.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * In-process synchronization primitives
+  *
+diff --git a/server/mach.c b/server/mach.c
+index 0f75d89..33224c0 100644
+--- a/server/mach.c
++++ b/server/mach.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side debugger support using Mach primitives
+  *
+diff --git a/server/mailslot.c b/server/mailslot.c
+index 430566d..30a62ba 100644
+--- a/server/mailslot.c
++++ b/server/mailslot.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side mailslot management
+  *
+diff --git a/server/main.c b/server/main.c
+index 7f6912b..4cc75d7 100644
+--- a/server/main.c
++++ b/server/main.c
+@@ -3,6 +3,11 @@
+  *
+  * Copyright (C) 1998 Alexandre Julliard
+  *
++ * xbox-rl: this file used to be the wineserver program's main().  The console
++ * allows exactly one process, so wineserver is now a *thread* of the process that
++ * runs Wine's unix side.  It is built as a shared object (wineserver.so) that
++ * ntdll.so dlopen()s; xrl_wineserver_start() is its only entry point.
++ *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+  * License as published by the Free Software Foundation; either
+@@ -18,261 +23,150 @@
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+  */
+ 
++#if 0
++#pragma makedep unix
++#endif
++
+ #include "config.h"
+ 
+ #include <assert.h>
+ #include <ctype.h>
++#include <errno.h>
+ #include <fcntl.h>
++#include <pthread.h>
+ #include <signal.h>
+ #include <stdio.h>
+ #include <stdlib.h>
++#include <string.h>
++#include <sys/socket.h>
+ #include <sys/time.h>
+ #include <unistd.h>
+-#ifdef HAVE_SYS_RESOURCE_H
+-# include <sys/resource.h>
+-#endif
+-#ifdef HAVE_SYS_SYSCTL_H
+-# include <sys/sysctl.h>
+-#endif
+ 
+ #include "object.h"
+ #include "file.h"
+ #include "thread.h"
++#include "process.h"
+ #include "request.h"
+ #include "unicode.h"
+ #include "security.h"
+ 
+ #include "fsync.h"
+ 
+-/* command-line options */
++/* command-line options (kept as globals because other server files read them) */
+ int debug_level = 0;
+-int foreground = 0;
+-timeout_t master_socket_timeout = 0; /* master socket timeout, default is 3 seconds */
+-const char *server_argv0;
++int foreground = 1;
++timeout_t master_socket_timeout = 0;
++const char *server_argv0 = "wineserver";
+ 
+-/* parse-line args */
++/* handshake with the creating thread: it must not return to the client until the
++ * server has finished initialising, because server init chdir()s around the
++ * prefix and the client does too. */
++static pthread_mutex_t start_lock = PTHREAD_MUTEX_INITIALIZER;
++static pthread_cond_t  start_cond = PTHREAD_COND_INITIALIZER;
++static int start_state;                      /* 0 = running init, 1 = ready, -1 = failed */
+ 
+-static void usage( FILE *fh )
+-{
+-    fprintf(fh, "Usage: %s [options]\n\n", server_argv0);
+-    fprintf(fh, "Options:\n");
+-    fprintf(fh, "   -d[n], --debug[=n]       set debug level to n or +1 if n not specified\n");
+-    fprintf(fh, "   -f,    --foreground      remain in the foreground for debugging\n");
+-    fprintf(fh, "   -h,    --help            display this help message\n");
+-    fprintf(fh, "   -k[n], --kill[=n]        kill the current wineserver, optionally with signal n\n");
+-    fprintf(fh, "   -p[n], --persistent[=n]  make server persistent, optionally for n seconds\n");
+-    fprintf(fh, "   -v,    --version         display version information and exit\n");
+-    fprintf(fh, "   -w,    --wait            wait until the current wineserver terminates\n");
+-    fprintf(fh, "\n");
+-}
++struct start_args { int server_fd; };
+ 
+-static void option_callback( int optc, char *optarg )
++static void signal_start( int state )
+ {
+-    int ret;
+-
+-    switch (optc)
+-    {
+-    case 'd':
+-        if (optarg && isdigit(*optarg))
+-            debug_level = atoi( optarg );
+-        else
+-            debug_level++;
+-        break;
+-    case 'f':
+-        foreground = 1;
+-        break;
+-    case 'h':
+-        usage(stdout);
+-        exit(0);
+-        break;
+-    case 'k':
+-        if (optarg && isdigit(*optarg))
+-            ret = kill_lock_owner( atoi( optarg ) );
+-        else
+-            ret = kill_lock_owner(-1);
+-        exit( !ret );
+-    case 'p':
+-        if (optarg && isdigit(*optarg))
+-            master_socket_timeout = (timeout_t)atoi( optarg ) * -TICKS_PER_SEC;
+-        else
+-            master_socket_timeout = TIMEOUT_INFINITE;
+-        break;
+-    case 'v':
+-        fprintf( stderr, "%s\n", PACKAGE_STRING );
+-        exit(0);
+-    case 'w':
+-        wait_for_lock();
+-        exit(0);
+-    }
++    pthread_mutex_lock( &start_lock );
++    start_state = state;
++    pthread_cond_broadcast( &start_cond );
++    pthread_mutex_unlock( &start_lock );
+ }
+ 
+-/* command-line option parsing */
+-/* partly based on the GLibc getopt() implementation */
+-
+-static struct long_option
+-{
+-    const char *name;
+-    int has_arg;
+-    int val;
+-} long_options[] =
++/* The stock server flushes the registry when it exits.  It no longer exits (it is a thread), so
++ * flush when the *process* exits. */
++static void flush_registry_at_exit(void)
+ {
+-    {"debug",       2, 'd'},
+-    {"foreground",  0, 'f'},
+-    {"help",        0, 'h'},
+-    {"kill",        2, 'k'},
+-    {"persistent",  2, 'p'},
+-    {"version",     0, 'v'},
+-    {"wait",        0, 'w'},
+-    { NULL }
+-};
++    flush_registry();
++}
+ 
+-static void parse_options( int argc, char **argv, const char *short_opts,
+-                           const struct long_option *long_opts, void (*callback)( int, char* ) )
++static void *wineserver_thread( void *arg )
+ {
+-    const char *flag;
+-    char *start, *end;
+-    int i;
+-
+-    for (i = 1; i < argc; i++)
+-    {
+-        if (argv[i][0] != '-' || !argv[i][1])  /* not an option */
+-            continue;
+-        if (!strcmp( argv[i], "--" ))
+-            break;
+-        start = argv[i] + 1 + (argv[i][1] == '-');
++    struct start_args *args = arg;
++    int server_fd = args->server_fd;
++    struct process *process;
++    sigset_t all;
++    const char *dbg = getenv( "XRL_SERVER_DEBUG" );
+ 
+-        if (argv[i][1] == '-')
+-        {
+-            /* handle long option */
+-            const struct long_option *opt, *found = NULL;
+-            int count = 0;
++    /* the server thread never takes signals: those are for the client threads */
++    sigfillset( &all );
++    pthread_sigmask( SIG_BLOCK, &all, NULL );
+ 
+-            if (!(end = strchr( start, '=' ))) end = start + strlen(start);
+-            for (opt = long_opts; opt && opt->name; opt++)
+-            {
+-                if (strncmp( opt->name, start, end - start )) continue;
+-                if (!opt->name[end - start])  /* exact match */
+-                {
+-                    found = opt;
+-                    count = 1;
+-                    break;
+-                }
+-                if (!found)
+-                {
+-                    found = opt;
+-                    count++;
+-                }
+-                else if (found->has_arg != opt->has_arg || found->val != opt->val)
+-                {
+-                    count++;
+-                }
+-            }
++    if (dbg) debug_level = atoi( dbg );
++    master_socket_timeout = TIMEOUT_INFINITE;   /* never shut down just because the last client left */
+ 
+-            if (count > 1) goto error;
+-
+-            if (found)
+-            {
+-                if (*end)
+-                {
+-                    if (!found->has_arg) goto error;
+-                    end++;  /* skip '=' */
+-                }
+-                else if (found->has_arg == 1)
+-                {
+-                    if (i == argc - 1) goto error;
+-                    end = argv[++i];
+-                }
+-                else end = NULL;
++    sock_init();
++    open_master_socket();                       /* xbox-rl: only opens the prefix / server dirs now */
+ 
+-                callback( found->val, end );
+-                continue;
+-            }
+-            goto error;
+-        }
++    if (debug_level) fprintf( stderr, "wineserver: starting as a thread (in-process)\n" );
++    set_current_time();
++    init_signals();                             /* xbox-rl: no-op, see signal.c */
++    init_memory();
++    init_user_sid();
++    init_directories( load_intl_file() );
++    init_threading();
++    init_registry();
+ 
+-        /* handle short option */
+-        for ( ; *start; start++)
+-        {
+-            if (!(flag = strchr( short_opts, *start ))) goto error;
+-            if (flag[1] == ':')
+-            {
+-                end = start + 1;
+-                if (!*end) end = NULL;
+-                if (flag[2] != ':' && !end)
+-                {
+-                    if (i == argc - 1) goto error;
+-                    end = argv[++i];
+-                }
+-                callback( *start, end );
+-                break;
+-            }
+-            callback( *start, NULL );
+-        }
++    /* adopt the client's end of the socket pair exactly as accepting a connection would */
++    fcntl( server_fd, F_SETFL, O_NONBLOCK );
++    if (!(process = create_process( server_fd, NULL, 0, NULL, NULL, NULL, 0, NULL )))
++    {
++        fprintf( stderr, "wineserver: cannot create the first process\n" );
++        signal_start( -1 );
++        return NULL;
+     }
+-    return;
++    create_thread( -1, process, NULL );
++    release_object( process );
+ 
+-error:
+-    usage( stderr );
+-    exit(1);
++    signal_start( 1 );
++    main_loop();
++    if (debug_level) fprintf( stderr, "wineserver: thread exiting\n" );
++    return NULL;
+ }
+ 
+-static void sigterm_handler( int signum )
+-{
+-    exit(1);  /* make sure atexit functions get called */
+-}
++/* Called by ntdll.so (unix/server.c) instead of connecting to /tmp/.wine-*\/socket.
++ * Returns the client end of a socketpair whose other end is owned by the new
++ * server thread, or -1.  The rest of the protocol (fd passing with SCM_RIGHTS,
++ * per-thread request/reply/wait pipes) is unchanged. */
++/* the client (ntdll.so) knows where the NLS tables are; the server cannot ask /proc/self/exe
++ * (inside the layer that is the loader, not a path in the Wine tree) */
++const char *xrl_nls_dir;
+ 
+-static void init_limits(void)
++__attribute__((visibility("default")))
++int xrl_wineserver_start( const char *nls_dir )
+ {
+-#ifdef RLIMIT_NOFILE
+-    struct rlimit rlimit;
+-
+-    if (!getrlimit( RLIMIT_NOFILE, &rlimit ))
++    static struct start_args args;
++    pthread_attr_t attr;
++    pthread_t tid;
++    int fds[2];
++
++    xrl_nls_dir = nls_dir ? strdup( nls_dir ) : NULL;
++    atexit( flush_registry_at_exit );
++    if (socketpair( AF_UNIX, SOCK_STREAM, 0, fds ) == -1) return -1;
++    fcntl( fds[0], F_SETFD, FD_CLOEXEC );
++    fcntl( fds[1], F_SETFD, FD_CLOEXEC );
++    args.server_fd = fds[1];
++
++    pthread_attr_init( &attr );
++    pthread_attr_setstacksize( &attr, 2 * 1024 * 1024 );   /* musl's default is 128 KiB */
++    pthread_attr_setdetachstate( &attr, PTHREAD_CREATE_DETACHED );
++    if (pthread_create( &tid, &attr, wineserver_thread, &args ))
+     {
+-        rlimit.rlim_cur = rlimit.rlim_max;
+-        if (!setrlimit( RLIMIT_NOFILE, &rlimit )) return;
+-#ifdef __APPLE__
+-        {
+-            /* macOS before Big Sur fails if rlim_max is larger than maxfilesperproc */
+-            unsigned int nlimit = 0;
+-            size_t size = sizeof(nlimit);
+-            sysctlbyname("kern.maxfilesperproc", &nlimit, &size, NULL, 0);
+-            rlimit.rlim_cur = max( nlimit, OPEN_MAX );
+-            setrlimit( RLIMIT_NOFILE, &rlimit );
+-        }
+-#endif
++        close( fds[0] );
++        close( fds[1] );
++        return -1;
+     }
+-#endif
+-}
+-
+-int main( int argc, char *argv[] )
+-{
+-    setvbuf( stderr, NULL, _IOLBF, 0 );
+-    server_argv0 = argv[0];
+-    parse_options( argc, argv, "d::fhk::p::vw", long_options, option_callback );
+-
+-    /* setup temporary handlers before the real signal initialization is done */
+-    signal( SIGPIPE, SIG_IGN );
+-    signal( SIGHUP, sigterm_handler );
+-    signal( SIGINT, sigterm_handler );
+-    signal( SIGQUIT, sigterm_handler );
+-    signal( SIGTERM, sigterm_handler );
+-    signal( SIGABRT, sigterm_handler );
+-    init_limits();
++    pthread_attr_destroy( &attr );
+ 
+-    sock_init();
+-    open_master_socket();
+-
+-    if (do_fsync())
+-        fsync_init();
+-
+-    if (debug_level) fprintf( stderr, "wineserver: starting (pid=%ld)\n", (long) getpid() );
+-    set_current_time();
+-    init_signals();
+-    init_memory();
+-    init_user_sid();
+-    init_directories( load_intl_file() );
+-    init_threading();
+-    init_registry();
+-    main_loop();
+-    return 0;
++    pthread_mutex_lock( &start_lock );
++    while (!start_state) pthread_cond_wait( &start_cond, &start_lock );
++    pthread_mutex_unlock( &start_lock );
++    if (start_state < 0)
++    {
++        close( fds[0] );
++        return -1;
++    }
++    return fds[0];
+ }
+diff --git a/server/mapping.c b/server/mapping.c
+index b9b1b63..ba25b2a 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side file mapping management
+  *
+@@ -360,7 +364,7 @@ static int make_temp_file( char name[16] )
+     for (i = 0; i < 0x8000 && fd < 0; i++, value += 7777)
+     {
+         snprintf( name, 16, "tmpmap-%08x", value );
+-        fd = open( name, O_RDWR | O_CREAT | O_EXCL, 0600 );
++        fd = openat( server_dir_fd, name, O_RDWR | O_CREAT | O_EXCL, 0600 );  /* xbox-rl: no cwd dependence */
+     }
+     return fd;
+ }
+@@ -380,14 +384,13 @@ static int check_current_dir_for_exec(void)
+         if (ret != MAP_FAILED) munmap( ret, get_page_size() );
+     }
+     close( fd );
+-    unlink( tmpfn );
++    unlinkat( server_dir_fd, tmpfn, 0 );
+     return (ret != MAP_FAILED);
+ }
+ 
+ /* create a temp file for anonymous mappings */
+ static int create_temp_file( file_pos_t size )
+ {
+-    static int temp_dir_fd = -1;
+     char tmpfn[16];
+     int fd;
+ 
+@@ -398,21 +401,10 @@ static int create_temp_file( file_pos_t size )
+         close( fd );
+     }
+ #endif
+-    if (temp_dir_fd == -1)
+-    {
+-        temp_dir_fd = server_dir_fd;
+-        if (!check_current_dir_for_exec())
+-        {
+-            /* the server dir is noexec, try the config dir instead */
+-            fchdir( config_dir_fd );
+-            if (check_current_dir_for_exec())
+-                temp_dir_fd = config_dir_fd;
+-            else  /* neither works, fall back to server dir */
+-                fchdir( server_dir_fd );
+-        }
+-    }
+-    else if (temp_dir_fd != server_dir_fd) fchdir( temp_dir_fd );
+-
++    /* xbox-rl: the server is a thread of a process whose cwd is shared with the client,
++     * so it must never fchdir().  Temp files go to server_dir_fd via openat(), and the
++     * "is it noexec?" probe-and-fall-back-to-the-prefix dance is gone (the console VFS
++     * serves PROT_EXEC file mappings itself). */
+     fd = make_temp_file( tmpfn );
+     if (fd != -1)
+     {
+@@ -421,11 +413,10 @@ static int create_temp_file( file_pos_t size )
+             close( fd );
+             fd = -1;
+         }
+-        unlink( tmpfn );
++        unlinkat( server_dir_fd, tmpfn, 0 );
+     }
+     else file_set_error();
+ 
+-    if (temp_dir_fd != server_dir_fd) fchdir( server_dir_fd );
+     return fd;
+ }
+ 
+diff --git a/server/mutex.c b/server/mutex.c
+index a168453..a53a157 100644
+--- a/server/mutex.c
++++ b/server/mutex.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side mutex management
+  *
+diff --git a/server/named_pipe.c b/server/named_pipe.c
+index c88dc8b..ff56f38 100644
+--- a/server/named_pipe.c
++++ b/server/named_pipe.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side pipe management
+  *
+diff --git a/server/object.c b/server/object.c
+index 103a208..5998e37 100644
+--- a/server/object.c
++++ b/server/object.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side objects
+  *
+diff --git a/server/process.c b/server/process.c
+index 287718a..c314f85 100644
+--- a/server/process.c
++++ b/server/process.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side process management
+  *
+diff --git a/server/procfs.c b/server/procfs.c
+index 4fb3136..0dfbc77 100644
+--- a/server/procfs.c
++++ b/server/procfs.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side /proc support for Solaris
+  *
+diff --git a/server/ptrace.c b/server/ptrace.c
+index 6016e21..9f27053 100644
+--- a/server/ptrace.c
++++ b/server/ptrace.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side ptrace support
+  *
+diff --git a/server/queue.c b/server/queue.c
+index 391c473..b351286 100644
+--- a/server/queue.c
++++ b/server/queue.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side message queues
+  *
+diff --git a/server/region.c b/server/region.c
+index a9054df..db2514e 100644
+--- a/server/region.c
++++ b/server/region.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side region objects. Based on the X11 implementation.
+  *
+diff --git a/server/registry.c b/server/registry.c
+index bf42c8e..659b13e 100644
+--- a/server/registry.c
++++ b/server/registry.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side registry management
+  *
+@@ -2226,9 +2230,12 @@ done:
+ /* save the modified registry branches to disk */
+ void flush_registry(void)
+ {
+-    int i;
++    int i, old_cwd;
+ 
+-    if (fchdir( config_dir_fd ) == -1) return;
++    /* xbox-rl: the server is a thread of the client process, so the cwd is shared.  Keep the
++     * window short and put the cwd back where we found it instead of leaving it in server_dir. */
++    old_cwd = open( ".", O_RDONLY );
++    if (fchdir( config_dir_fd ) == -1) { if (old_cwd != -1) close( old_cwd ); return; }
+     for (i = 0; i < save_branch_count; i++)
+     {
+         if (!save_branch( save_branch_info[i].key, save_branch_info[i].filename ))
+@@ -2238,7 +2245,8 @@ void flush_registry(void)
+             perror( " " );
+         }
+     }
+-    if (fchdir( server_dir_fd ) == -1) fatal_error( "chdir to server dir: %s\n", strerror( errno ));
++    if (old_cwd != -1) { fchdir( old_cwd ); close( old_cwd ); }
++    else if (fchdir( server_dir_fd ) == -1) fatal_error( "chdir to server dir: %s\n", strerror( errno ));
+ }
+ 
+ /* find all the branches inside the specified key or the branch containing the key */
+diff --git a/server/request.c b/server/request.c
+index 7e22a05..563b8cd 100644
+--- a/server/request.c
++++ b/server/request.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side request handling
+  *
+@@ -26,6 +30,7 @@
+ #ifdef HAVE_PWD_H
+ #include <pwd.h>
+ #endif
++#include <pthread.h>
+ #include <signal.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -597,38 +602,30 @@ static void master_socket_poll_event( struct fd *fd, int event )
+     }
+ }
+ 
+-/* remove the socket upon exit */
+-static void socket_cleanup(void)
+-{
+-    static int do_it_once;
+-    if (!do_it_once++) unlink( server_socket_name );
+-}
++/* xbox-rl: there is no unix master socket, lock file or daemonizing any more.
++ * wineserver is a thread of the client process (main.c); the first client is
++ * attached directly with a socketpair, later ones via new_process requests that
++ * pass a socketpair end over the existing connection, exactly as before. */
+ 
+-/* create a directory and check its permissions */
+-static void create_dir( const char *name, struct stat *st )
++/* create a directory (and nothing else: no owner / mode policing, the console's
++ * VFS has a single "user") */
++static void xrl_make_dir( const char *name )
+ {
+-    if (lstat( name, st ) == -1)
+-    {
+-        if (errno != ENOENT)
+-            fatal_error( "lstat %s: %s\n", name, strerror( errno ));
+-        if (mkdir( name, 0700 ) == -1 && errno != EEXIST)
+-            fatal_error( "mkdir %s: %s\n", name, strerror( errno ));
+-        if (lstat( name, st ) == -1)
+-            fatal_error( "lstat %s: %s\n", name, strerror( errno ));
+-    }
+-    if (!S_ISDIR(st->st_mode)) fatal_error( "%s is not a directory\n", name );
+-    if (st->st_uid != getuid()) fatal_error( "%s is not owned by you\n", name );
+-    if (st->st_mode & 077) fatal_error( "%s must not be accessible by other users\n", name );
++    struct stat st;
++
++    if (mkdir( name, 0700 ) == -1 && errno != EEXIST)
++        fatal_error( "mkdir %s: %s\n", name, strerror( errno ));
++    if (stat( name, &st ) == -1)
++        fatal_error( "stat %s: %s\n", name, strerror( errno ));
++    if (!S_ISDIR(st.st_mode)) fatal_error( "%s is not a directory\n", name );
+ }
+ 
+-/* create the server directory and chdir to it */
+-static char *create_server_dir( int force )
++/* open the prefix ("config dir") and a private scratch directory inside it; sets
++ * config_dir_fd, server_dir, server_dir_fd and leaves the cwd in server_dir */
++static char *xrl_create_server_dir( void )
+ {
+     const char *prefix = getenv( "WINEPREFIX" );
+     char *p, *config_dir, *base_dir;
+-    struct stat st, st2;
+-
+-    /* open the configuration directory */
+ 
+     if (prefix)
+     {
+@@ -641,13 +638,7 @@ static char *create_server_dir( int force )
+     else
+     {
+         const char *home = getenv( "HOME" );
+-        if (!home)
+-        {
+-            struct passwd *pwd = getpwuid( getuid() );
+-            if (pwd) home = pwd->pw_dir;
+-        }
+-        if (!home) fatal_error( "could not determine your home directory\n" );
+-        if (home[0] != '/') fatal_error( "your home directory %s is not an absolute path\n", home );
++        if (!home) home = "/";
+         if (!(config_dir = malloc( strlen(home) + sizeof("/.wine") ))) fatal_error( "out of memory\n" );
+         strcpy( config_dir, home );
+         for (p = config_dir + strlen(config_dir); p > config_dir; p--) if (p[-1] != '/') break;
+@@ -655,292 +646,54 @@ static char *create_server_dir( int force )
+     }
+ 
+     if (chdir( config_dir ) == -1)
+-    {
+-        if (errno != ENOENT || force) fatal_error( "chdir to %s: %s\n", config_dir, strerror( errno ));
+-        return NULL;
+-    }
++        fatal_error( "chdir to %s: %s\n", config_dir, strerror( errno ));
+     if ((config_dir_fd = open( ".", O_RDONLY )) == -1)
+         fatal_error( "open %s: %s\n", config_dir, strerror( errno ));
+-    if (fstat( config_dir_fd, &st ) == -1)
+-        fatal_error( "stat %s: %s\n", config_dir, strerror( errno ));
+-    if (st.st_uid != getuid())
+-        fatal_error( "%s is not owned by you\n", config_dir );
+-
+-    /* create the base directory if needed */
+-
+-#ifdef __ANDROID__  /* there's no /tmp dir on Android */
+-    if (asprintf( &base_dir, "%s/.wineserver", config_dir ) == -1)
+-        fatal_error( "out of memory\n" );
+-#else
+-    if (asprintf( &base_dir, "/tmp/.wine-%u", getuid() ) == -1)
+-        fatal_error( "out of memory\n" );
+-#endif
+-    create_dir( base_dir, &st2 );
+ 
+-    /* now create the server directory */
+-
+-    if (asprintf( &server_dir, "%s/server-%llx-%llx", base_dir,
+-                  (unsigned long long)st.st_dev, (unsigned long long)st.st_ino ) == -1)
+-        fatal_error( "out of memory\n" );
+-
+-    create_dir( server_dir, &st );
++    /* <prefix>/.wineserver/server : scratch dir for temp mappings.  It lives in the
++     * prefix (not /tmp) so that it is inside the layer's writable LocalState VFS. */
++    if (asprintf( &base_dir, "%s/.wineserver", config_dir ) == -1) fatal_error( "out of memory\n" );
++    xrl_make_dir( base_dir );
++    if (asprintf( &server_dir, "%s/server", base_dir ) == -1) fatal_error( "out of memory\n" );
++    xrl_make_dir( server_dir );
+ 
+     if (chdir( server_dir ) == -1)
+         fatal_error( "chdir %s: %s\n", server_dir, strerror( errno ));
+     if ((server_dir_fd = open( ".", O_RDONLY )) == -1)
+         fatal_error( "open %s: %s\n", server_dir, strerror( errno ));
+-    if (fstat( server_dir_fd, &st2 ) == -1)
+-        fatal_error( "stat %s: %s\n", server_dir, strerror( errno ));
+-    if (st.st_dev != st2.st_dev || st.st_ino != st2.st_ino)
+-        fatal_error( "chdir did not end up in %s\n", server_dir );
+ 
+     free( base_dir );
+     free( config_dir );
+     return server_dir;
+ }
+ 
+-/* create the lock file and return its file descriptor */
+-static int create_server_lock(void)
+-{
+-    struct stat st;
+-    int fd;
+-
+-    if (lstat( server_lock_name, &st ) == -1)
+-    {
+-        if (errno != ENOENT)
+-            fatal_error( "lstat %s/%s: %s\n", server_dir, server_lock_name, strerror( errno ));
+-    }
+-    else
+-    {
+-        if (!S_ISREG(st.st_mode))
+-            fatal_error( "%s/%s is not a regular file\n", server_dir, server_lock_name );
+-    }
+-
+-    if ((fd = open( server_lock_name, O_CREAT|O_TRUNC|O_WRONLY, 0600 )) == -1)
+-        fatal_error( "error creating %s/%s: %s\n", server_dir, server_lock_name, strerror( errno ));
+-    return fd;
+-}
+-
+-/* wait for the server lock */
+-int wait_for_lock(void)
+-{
+-    int fd, r;
+-    struct flock fl;
+-
+-    server_dir = create_server_dir( 0 );
+-    if (!server_dir) return 0;  /* no server dir, so no lock to wait on */
+-
+-    fd = create_server_lock();
+-
+-    fl.l_type   = F_WRLCK;
+-    fl.l_whence = SEEK_SET;
+-    fl.l_start  = 0;
+-    fl.l_len    = 1;
+-    r = fcntl( fd, F_SETLKW, &fl );
+-    close(fd);
+-
+-    return r;
+-}
+-
+-/* kill the wine server holding the lock */
+-int kill_lock_owner( int sig )
+-{
+-    int fd, i, ret = 0;
+-    pid_t pid = 0;
+-    struct flock fl;
+-
+-    server_dir = create_server_dir( 0 );
+-    if (!server_dir) return 0;  /* no server dir, nothing to do */
+-
+-    fd = create_server_lock();
+-
+-    for (i = 1; i <= 20; i++)
+-    {
+-        fl.l_type   = F_WRLCK;
+-        fl.l_whence = SEEK_SET;
+-        fl.l_start  = 0;
+-        fl.l_len    = 1;
+-        if (fcntl( fd, F_GETLK, &fl ) == -1) goto done;
+-        if (fl.l_type != F_WRLCK) goto done;  /* the file is not locked */
+-        if (!pid)  /* first time around */
+-        {
+-            if (!(pid = fl.l_pid)) goto done;  /* shouldn't happen */
+-            if (sig == -1)
+-            {
+-                if (kill( pid, SIGINT ) == -1) goto done;
+-                kill( pid, SIGCONT );
+-                ret = 1;
+-            }
+-            else  /* just send the specified signal and return */
+-            {
+-                ret = (kill( pid, sig ) != -1);
+-                goto done;
+-            }
+-        }
+-        else if (fl.l_pid != pid) goto done;  /* no longer the same process */
+-        usleep( 50000 * i );
+-    }
+-    /* waited long enough, now kill it */
+-    kill( pid, SIGKILL );
+-
+- done:
+-    close( fd );
+-    return ret;
+-}
+-
+-/* acquire the main server lock */
+-static void acquire_lock(void)
+-{
+-    struct sockaddr_un addr;
+-    struct stat st;
+-    struct flock fl;
+-    int fd, slen, got_lock = 0;
+-
+-    fd = create_server_lock();
+-
+-    fl.l_type   = F_WRLCK;
+-    fl.l_whence = SEEK_SET;
+-    fl.l_start  = 0;
+-    fl.l_len    = 1;
+-    if (fcntl( fd, F_SETLK, &fl ) != -1)
+-    {
+-        /* check for crashed server */
+-        if (stat( server_socket_name, &st ) != -1 &&   /* there is a leftover socket */
+-            stat( "core", &st ) != -1 && st.st_size)   /* and there is a non-empty core file */
+-        {
+-            fprintf( stderr,
+-                     "Warning: a previous instance of the wine server seems to have crashed.\n"
+-                     "Please run 'gdb %s %s/core',\n"
+-                     "type 'backtrace' at the gdb prompt and report the results. Thanks.\n\n",
+-                     server_argv0, server_dir );
+-        }
+-        unlink( server_socket_name ); /* we got the lock, we can safely remove the socket */
+-        got_lock = 1;
+-        /* in that case we reuse fd without closing it, this ensures
+-         * that we hold the lock until the process exits */
+-    }
+-    else
+-    {
+-        switch(errno)
+-        {
+-        case ENOLCK:
+-            break;
+-        case EACCES:
+-            /* check whether locks work at all on this file system */
+-            if (fcntl( fd, F_GETLK, &fl ) == -1) break;
+-            /* fall through */
+-        case EAGAIN:
+-            exit(2); /* we didn't get the lock, exit with special status */
+-        default:
+-            fatal_error( "fcntl %s/%s: %s\n", server_dir, server_lock_name, strerror( errno ));
+-        }
+-        /* it seems we can't use locks on this fs, so we will use the socket existence as lock */
+-        close( fd );
+-    }
+-
+-    if ((fd = socket( AF_UNIX, SOCK_STREAM, 0 )) == -1) fatal_error( "socket: %s\n", strerror( errno ));
+-    addr.sun_family = AF_UNIX;
+-    strcpy( addr.sun_path, server_socket_name );
+-    slen = sizeof(addr) - sizeof(addr.sun_path) + strlen(addr.sun_path) + 1;
+-#ifdef HAVE_STRUCT_SOCKADDR_UN_SUN_LEN
+-    addr.sun_len = slen;
+-#endif
+-    if (bind( fd, (struct sockaddr *)&addr, slen ) == -1)
+-    {
+-        if ((errno == EEXIST) || (errno == EADDRINUSE))
+-        {
+-            if (got_lock)
+-                fatal_error( "couldn't bind to the socket even though we hold the lock\n" );
+-            exit(2); /* we didn't get the lock, exit with special status */
+-        }
+-        fatal_error( "bind: %s\n", strerror( errno ));
+-    }
+-    atexit( socket_cleanup );
+-    chmod( server_socket_name, 0600 );  /* make sure no other user can connect */
+-    if (listen( fd, 5 ) == -1) fatal_error( "listen: %s\n", strerror( errno ));
+-
+-    if (!(master_socket = alloc_object( &master_socket_ops )) ||
+-        !(master_socket->fd = create_anonymous_fd( &master_socket_fd_ops, fd, &master_socket->obj, 0 )))
+-        fatal_error( "out of memory\n" );
+-    set_fd_events( master_socket->fd, POLLIN );
+-    make_object_permanent( &master_socket->obj );
+-}
+-
+-/* open the master server socket and start waiting for new clients */
++/* xbox-rl: replaces the master-socket setup; the name is kept for main.c / process.c */
+ void open_master_socket(void)
+ {
+-    int fd, pid, status, sync_pipe[2];
+-    char dummy;
+-
+     /* make sure no request is larger than the maximum size */
+     assert( sizeof(union generic_request) == sizeof(struct request_max_size) );
+     assert( sizeof(union generic_reply) == sizeof(struct request_max_size) );
+ 
+-    /* make sure the stdio fds are open */
+-    fd = open( "/dev/null", O_RDWR );
+-    while (fd >= 0 && fd <= 2) fd = dup( fd );
+-
+-    server_dir = create_server_dir( 1 );
+-
+-    if (!foreground)
+-    {
+-        if (pipe( sync_pipe ) == -1) fatal_error( "pipe: %s\n", strerror( errno ));
+-        pid = fork();
+-        switch( pid )
+-        {
+-        case 0:  /* child */
+-            setsid();
+-            close( sync_pipe[0] );
+-
+-            acquire_lock();
+-
+-            /* close stdin and stdout */
+-            dup2( fd, 0 );
+-            dup2( fd, 1 );
+-
+-            /* signal parent */
+-            dummy = 0;
+-            write( sync_pipe[1], &dummy, 1 );
+-            close( sync_pipe[1] );
+-            break;
+-
+-        case -1:
+-            fatal_error( "fork: %s\n", strerror( errno ));
+-            break;
+-
+-        default:  /* parent */
+-            close( sync_pipe[1] );
+-
+-            /* wait for child to signal us and then exit */
+-            if (read( sync_pipe[0], &dummy, 1 ) == 1) _exit(0);
+-
+-            /* child terminated, propagate exit status */
+-            waitpid( pid, &status, 0 );
+-            if (WIFEXITED(status)) _exit( WEXITSTATUS(status) );
+-            _exit(1);
+-        }
+-    }
+-    else  /* remain in the foreground */
+-    {
+-        acquire_lock();
+-    }
++    server_dir = xrl_create_server_dir();
+ 
+     /* init the process tracing mechanism */
+     init_tracing_mechanism();
+-    close( fd );
+ }
+ 
++int wait_for_lock(void)  { return 0; }
++int kill_lock_owner( int sig )  { return 0; }
++
+ /* master socket timer expiration handler */
+ static void close_socket_timeout( void *arg )
+ {
+     master_timeout = NULL;
+     flush_registry();
+-    if (debug_level) fprintf( stderr, "wineserver: exiting (pid=%ld)\n", (long) getpid() );
++    if (debug_level) fprintf( stderr, "wineserver: last client gone, leaving the server thread\n" );
+ 
+-#ifdef DEBUG_OBJECTS
+-    close_objects();  /* shut down everything properly */
+-#endif
+-    exit( 0 );
++    /* xbox-rl: the original exit()s the whole server process here.  In-process that
++     * would take the game with it, so just end the server thread (main_loop() returns
++     * once its last fd is gone; nothing is left to serve). */
++    pthread_exit( NULL );
+ }
+ 
+ /* close the master socket and stop waiting for new clients */
+diff --git a/server/semaphore.c b/server/semaphore.c
+index 69e4cef..d28f271 100644
+--- a/server/semaphore.c
++++ b/server/semaphore.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side semaphore management
+  *
+diff --git a/server/serial.c b/server/serial.c
+index 66cb4aa..1ed9f2f 100644
+--- a/server/serial.c
++++ b/server/serial.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side serial port communications management
+  *
+diff --git a/server/signal.c b/server/signal.c
+index 078951a..26982af 100644
+--- a/server/signal.c
++++ b/server/signal.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server signal handling
+  *
+@@ -266,7 +270,14 @@ static int core_dump_disabled( void )
+     return r;
+ }
+ 
++/* xbox-rl: the server thread installs no signal handlers: SIGCHLD/SIGTERM/SIGINT/SIGALRM/SIGIO
++ * handling belongs to the client's ntdll.so, and there are no child processes to reap. */
+ void init_signals(void)
++{
++    return;
++}
++
++static void xrl_unused_init_signals(void)
+ {
+     struct sigaction action;
+     sigset_t blocked_sigset;
+diff --git a/server/sock.c b/server/sock.c
+index 0337d8d..dcedcac 100644
+--- a/server/sock.c
++++ b/server/sock.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side socket management
+  *
+diff --git a/server/symlink.c b/server/symlink.c
+index 238dcfa..54af35d 100644
+--- a/server/symlink.c
++++ b/server/symlink.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side symbolic link object management
+  *
+diff --git a/server/thread.c b/server/thread.c
+index 47e31f6..598dce7 100644
+--- a/server/thread.c
++++ b/server/thread.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side thread management
+  *
+diff --git a/server/timer.c b/server/timer.c
+index a4309d5..fc9512a 100644
+--- a/server/timer.c
++++ b/server/timer.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Waitable timers management
+  *
+diff --git a/server/token.c b/server/token.c
+index b75a589..e8fad28 100644
+--- a/server/token.c
++++ b/server/token.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Tokens
+  *
+diff --git a/server/trace.c b/server/trace.c
+index f5bb999..41d4efa 100644
+--- a/server/trace.c
++++ b/server/trace.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server request tracing
+  *
+diff --git a/server/unicode.c b/server/unicode.c
+index bb39b55..83ab8ad 100644
+--- a/server/unicode.c
++++ b/server/unicode.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Unicode routines for use inside the server
+  *
+@@ -275,10 +279,14 @@ static char *build_relative_path( const char *base, const char *from, const char
+     return ret;
+ }
+ 
++extern const char *xrl_nls_dir;  /* main.c */
++
+ static char *get_nls_dir(void)
+ {
+     char *p, *dir, *ret;
+ 
++    if (xrl_nls_dir) return strdup( xrl_nls_dir );  /* xbox-rl: given by the client */
++
+ #if defined(__linux__) || defined(__FreeBSD_kernel__) || defined(__NetBSD__)
+     dir = realpath( "/proc/self/exe", NULL );
+ #elif defined (__FreeBSD__) || defined(__DragonFly__)
+diff --git a/server/user.c b/server/user.c
+index a4a0645..f714daa 100644
+--- a/server/user.c
++++ b/server/user.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side USER handles
+  *
+diff --git a/server/window.c b/server/window.c
+index 28e7828..b83ddb0 100644
+--- a/server/window.c
++++ b/server/window.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side window handling
+  *
+diff --git a/server/winstation.c b/server/winstation.c
+index 2c8f6fc..a746c39 100644
+--- a/server/winstation.c
++++ b/server/winstation.c
+@@ -1,3 +1,7 @@
++#if 0
++#pragma makedep unix
++#endif
++
+ /*
+  * Server-side window stations and desktops handling
+  *
+diff --git a/tools/makedep.c b/tools/makedep.c
+index a4ed58b..46d59cb 100644
+--- a/tools/makedep.c
++++ b/tools/makedep.c
+@@ -4132,6 +4132,8 @@ static void output_sources( struct makefile *make )
+         for (arch = 0; arch < archs.count; arch++)
+             if (is_multiarch( arch )) output_test_module( make, arch );
+     }
++    else if (make->unixlib && !make->programs.count)
++        output_unix_lib( make );  /* xbox-rl: a directory that only builds a unix library (server/wineserver.so) */
+     else if (make->programs.count) output_programs( make );
+ 
+     STRARRAY_FOR_EACH( script, &make->scripts ) install_script( make, script );

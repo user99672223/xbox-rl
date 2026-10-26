@@ -1,0 +1,237 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2cc53c3..9ee2a72 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -24,6 +24,16 @@
+ 
+ #include "config.h"
+ 
++/* xbox-rl: no wine-preloader.  It is freestanding, issues raw `syscall`s, and exists only to
++ * reserve address space before libc loads; the layer's ELF loader reserves it instead.  Without
++ * this, reexec_loader() would exec ourselves through the preloader at every start. */
++#undef HAVE_WINE_PRELOADER
++
++/* xbox-rl: no wine-preloader.  It is freestanding, issues raw `syscall`s, and exists only to
++ * reserve address space before libc loads; the layer's ELF loader reserves it instead.  Without
++ * this, reexec_loader() would exec ourselves through the preloader at every start. */
++#undef HAVE_WINE_PRELOADER
++
+ #include <assert.h>
+ #include <errno.h>
+ #include <fcntl.h>
+@@ -1929,6 +1974,8 @@ static const void *get_module_data_dir( HMODULE module, ULONG dir, ULONG *size )
+     return get_rva( module, data->VirtualAddress );
+ }
+ 
++void **xrl_ntdll_dispatcher_slot;
++
+ /***********************************************************************
+  *           load_ntdll_functions
+  */
+@@ -1965,6 +2012,7 @@ static void load_ntdll_functions( HMODULE module )
+         GET_FUNC( KiUserEmulationDispatcher );
+     }
+     *p__wine_syscall_dispatcher = __wine_syscall_dispatcher;
++    xrl_ntdll_dispatcher_slot = p__wine_syscall_dispatcher;
+     *p__wine_unixlib_handle = (UINT_PTR)unix_call_funcs;
+     if (p__wine_unix_call_dispatcher_arm64ec)
+     {
+diff --git a/dlls/ntdll/unix/signal_x86_64.c b/dlls/ntdll/unix/signal_x86_64.c
+index 751d955..256b809 100644
+--- a/dlls/ntdll/unix/signal_x86_64.c
++++ b/dlls/ntdll/unix/signal_x86_64.c
+@@ -107,30 +107,11 @@ static USHORT fs32_sel;  /* selector for %fs in 32-bit mode */
+ #include <asm/prctl.h>
+ static inline int arch_prctl( int func, void *ptr ) { return syscall( __NR_arch_prctl, func, ptr ); }
+ 
+-extern int alloc_fs_sel( int sel, void *base );
+-__ASM_GLOBAL_FUNC( alloc_fs_sel,
+-                   /* switch to 32-bit stack */
+-                   "pushq %rbx\n\t"
+-                   "pushq %r12\n\t"
+-                   "movq %rsp,%r12\n\t"
+-                   "movl 0x4(%rsi),%esp\n\t"  /* Tib.StackBase */
+-                   "subl $0x20,%esp\n\t"
+-                   /* setup modify_ldt struct on 32-bit stack */
+-                   "movl %edi,(%rsp)\n\t"     /* entry_number */
+-                   "movl %esi,4(%rsp)\n\t"    /* base */
+-                   "movl $~0,8(%rsp)\n\t"     /* limit */
+-                   "movl $0x41,12(%rsp)\n\t"  /* seg_32bit | usable */
+-                   /* invoke 32-bit syscall */
+-                   "movl %esp,%ebx\n\t"
+-                   "movl $0xf3,%eax\n\t"      /* SYS_set_thread_area */
+-                   "int $0x80\n\t"
+-                   /* restore stack */
+-                   "movl (%rsp),%eax\n\t"     /* entry_number */
+-                   "leal 0x3(,%eax,8),%eax\n\t"  /* make GDT selector */
+-                   "movq %r12,%rsp\n\t"
+-                   "popq %r12\n\t"
+-                   "popq %rbx\n\t"
+-                   "ret" );
++/* xbox-rl: alloc_fs_sel() and modify_ldt() drove the 32-bit `int $0x80` syscall gate to set up
++ * LDT/GDT selectors for WoW64 (32-bit PE) processes.  The console build is win64-only, the
++ * guest has no compat-mode segments, and `int $0x80` must not appear in the output, so they
++ * fail instead.  Callers only reach them when a WoW64 TEB exists. */
++static inline int alloc_fs_sel( int sel, void *base ) { return -1; }
+ 
+ struct modify_ldt_s
+ {
+@@ -146,28 +127,7 @@ struct modify_ldt_s
+     unsigned int  garbage : 25;
+ };
+ 
+-extern int modify_ldt( struct modify_ldt_s *ldt );
+-__ASM_GLOBAL_FUNC( modify_ldt,
+-                   /* switch to 32-bit stack */
+-                   "pushq %rbx\n\t"
+-                   "pushq %r12\n\t"
+-                   "movq %rsp,%r12\n\t"
+-                   "movq %gs:0x30,%rax\n\t"
+-                   "leal 0x2000(%eax),%esp\n\t"  /* teb32 */
+-                   /* copy modify_ldt struct to 32-bit stack */
+-                   "pushq 8(%rdi)\n\t"
+-                   "pushq 0(%rdi)\n\t"
+-                   /* invoke 32-bit syscall */
+-                   "movl $0x7b,%eax\n\t"  /* SYS_modify_ldt */
+-                   "movl $0x11,%ebx\n\t"  /* func */
+-                   "movl %esp,%ecx\n\t"   /* ldt_ptr */
+-                   "movl $0x10,%edx\n\t"  /* sizeof(*ldt_ptr) */
+-                   "int $0x80\n\t"
+-                   /* restore stack */
+-                   "movq %r12,%rsp\n\t"
+-                   "popq %r12\n\t"
+-                   "popq %rbx\n\t"
+-                   "ret" );
++static inline int modify_ldt( struct modify_ldt_s *ldt ) { return -1; }
+ 
+ #ifndef PR_SET_SYSCALL_USER_DISPATCH
+ #define PR_SET_SYSCALL_USER_DISPATCH 59
+@@ -538,7 +498,10 @@ static inline struct amd64_thread_data *amd64_thread_data(void)
+ static unsigned int frame_size;
+ static unsigned int xstate_size = sizeof(XSAVE_AREA_HEADER);
+ static UINT64 xstate_extended_features;
+-static LONG syscall_dispatch_enabled = TRUE;
++/* xbox-rl: Linux syscall user dispatch (prctl PR_SET_SYSCALL_USER_DISPATCH) is never
++ * used.  It existed to trap the `syscall` instruction in PE ntdll/win32u stubs;
++ * those stubs now call __wine_syscall_dispatcher directly (include/wine/asm.h). */
++static LONG syscall_dispatch_enabled = FALSE;
+ 
+ #if defined(__linux__) || defined(__APPLE__)
+ static inline TEB *get_current_teb(void)
+@@ -555,14 +518,16 @@ static pthread_mutex_t instrumentation_callback_mutex = PTHREAD_MUTEX_INITIALIZE
+ 
+ void set_process_instrumentation_callback( void *callback )
+ {
+-    void *ptr = (char *)user_shared_data + page_size;
++    /* xbox-rl: the dispatcher pointer no longer lives at 0x7ffe1000; patch ntdll.dll's own
++     * __wine_syscall_dispatcher variable instead (win32u.dll's copy is not instrumented). */
++    void **ptr = xrl_ntdll_dispatcher_slot;
+     sigset_t sigset;
+     void *old;
+ 
+     server_enter_uninterrupted_section( &instrumentation_callback_mutex, &sigset );
+     old = InterlockedExchangePointer( &instrumentation_callback, callback );
+-    if (!old && callback)      InterlockedExchangePointer( ptr, __wine_syscall_dispatcher_instrumentation );
+-    else if (old && !callback) InterlockedExchangePointer( ptr, __wine_syscall_dispatcher );
++    if (ptr && !old && callback)      InterlockedExchangePointer( ptr, __wine_syscall_dispatcher_instrumentation );
++    else if (ptr && old && !callback) InterlockedExchangePointer( ptr, __wine_syscall_dispatcher );
+     server_leave_uninterrupted_section( &instrumentation_callback_mutex, &sigset );
+ }
+ 
+@@ -3020,17 +2985,16 @@ void signal_init_process(void)
+     struct sigaction sig_act;
+     WOW_TEB *wow_teb = get_wow_teb( NtCurrentTeb() );
+     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
+-    void *ptr, *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
++    void *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
+ 
+     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
+     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
+ 
+     thread_data->syscall_frame = (struct syscall_frame *)(((ULONG_PTR)kernel_stack - frame_size) & ~(ULONG_PTR)63);
+ 
+-    /* sneak in a syscall dispatcher pointer at a fixed address (7ffe1000) */
+-    ptr = (char *)user_shared_data + page_size;
+-    anon_mmap_fixed( ptr, page_size, PROT_READ | PROT_WRITE, 0 );
+-    *(void **)ptr = __wine_syscall_dispatcher;
++    /* xbox-rl: the "sneak in a syscall dispatcher pointer at 7ffe1000" page is gone; on
++     * the console 0x7ffe1000 cannot be mapped.  PE syscall stubs call through the
++     * __wine_syscall_dispatcher variable of their own image instead. */
+ 
+     xstate_extended_features = user_shared_data->XState.EnabledFeatures & ~(UINT64)3;
+ 
+@@ -3246,6 +3210,36 @@ __ASM_GLOBAL_FUNC( signal_start_thread,
+                    "jmp " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") )
+ 
+ 
++/***********************************************************************
++ * xbox-rl: arch_prctl(ARCH_SET_FS, %rsi) through the host syscall gateway.
++ *
++ * Replaces the raw `syscall` instruction in the dispatchers' slow path (taken
++ * when user_shared_data says RDWRFSGSBASE is unavailable).  Calling the C ABI
++ * function xrl_syscall(nr, a1..a6) clobbers more registers than `syscall` did,
++ * so r8/r9/r10 (live syscall arguments) are saved on the stack below the frame,
++ * rsp is parked in %rbx (free on both paths: it is saved in the frame and only
++ * reloaded later) and realigned to 16 bytes for the call.
++ */
++#define XRL_SET_FS_FROM_RSI \
++    "movq %rsp,%rbx\n\t" \
++    "subq $0x30,%rsp\n\t" \
++    "andq $~15,%rsp\n\t" \
++    "movq %r8,0x08(%rsp)\n\t" \
++    "movq %r9,0x10(%rsp)\n\t" \
++    "movq %r10,0x18(%rsp)\n\t" \
++    "movq $0,(%rsp)\n\t"            /* a6 */ \
++    "movq %rsi,%rdx\n\t"            /* a2 = pthread_teb */ \
++    "movl $0x1002,%esi\n\t"         /* a1 = ARCH_SET_FS */ \
++    "movl $158,%edi\n\t"            /* nr = SYS_arch_prctl */ \
++    "xorl %ecx,%ecx\n\t" \
++    "xorl %r8d,%r8d\n\t" \
++    "xorl %r9d,%r9d\n\t" \
++    "call " __ASM_NAME("xrl_syscall") "@PLT\n\t" \
++    "movq 0x08(%rsp),%r8\n\t" \
++    "movq 0x10(%rsp),%r9\n\t" \
++    "movq 0x18(%rsp),%r10\n\t" \
++    "movq %rbx,%rsp\n\t"
++
+ /***********************************************************************
+  *           __wine_syscall_dispatcher
+  */
+@@ -3348,9 +3342,7 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
+                    "jz 1f\n\t"
+                    "wrfsbase %rsi\n\t"
+                    "jmp 2f\n"
+-                   "1:\tmov $0x1002,%edi\n\t"      /* ARCH_SET_FS */
+-                   "mov $158,%eax\n\t"             /* SYS_arch_prctl */
+-                   "syscall\n\t"
++                   "1:\t" XRL_SET_FS_FROM_RSI      /* xbox-rl: was `mov $158,%eax; syscall` */
+                    "leaq -0x98(%rbp),%rcx\n"
+                    "2:\n\t"
+ #elif defined __APPLE__
+@@ -3639,9 +3631,7 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
+                    "jz 1f\n\t"
+                    "wrfsbase %rsi\n\t"
+                    "jmp 2f\n"
+-                   "1:\tmov $0x1002,%edi\n\t"      /* ARCH_SET_FS */
+-                   "mov $158,%eax\n\t"             /* SYS_arch_prctl */
+-                   "syscall\n\t"
++                   "1:\t" XRL_SET_FS_FROM_RSI      /* xbox-rl: was `mov $158,%eax; syscall` */
+                    "2:\n\t"
+ #elif defined __APPLE__
+                    "movq 0x320(%r13),%rdi\n\t"     /* amd64_thread_data()->pthread_teb */
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index fe0c0cb..6bada23 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -355,6 +355,11 @@ extern void DECLSPEC_NORETURN signal_start_thread( PRTL_THREAD_START_ROUTINE ent
+                                                    BOOL suspend, TEB *teb );
+ extern SYSTEM_SERVICE_TABLE KeServiceDescriptorTable[4];
+ extern void __wine_syscall_dispatcher(void);
++extern void **xrl_ntdll_dispatcher_slot;  /* xbox-rl: &ntdll.dll's __wine_syscall_dispatcher variable */
++/* xbox-rl runtime mode flags (xrl.c) */
++extern BOOL xrl_inproc_server, xrl_host_usd, xrl_no_spawn, xrl_skip_wineboot;
++extern void xrl_init_flags(void);
++extern int xrl_start_wineserver(void);
+ extern void __wine_syscall_dispatcher_return(void);
+ extern void __wine_unix_call_dispatcher(void);
+ extern NTSTATUS signal_set_full_context( CONTEXT *context );

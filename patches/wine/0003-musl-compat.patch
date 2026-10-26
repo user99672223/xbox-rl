@@ -1,0 +1,54 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 2cc53c3..9ee2a72 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2421,7 +2470,9 @@ static void start_main_thread(void)
+     set_thread_teb( teb );
+ #endif
+ 
++#ifdef M_PERTURB  /* xbox-rl: glibc-only; musl has no mallopt() */
+     mallopt( M_PERTURB, 0xff );
++#endif
+     init_startup_info();
+     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
+     set_load_order_app_name( main_wargv[0] );
+@@ -2430,7 +2481,9 @@ static void start_main_thread(void)
+     load_ntdll();
+     load_wow64_ntdll( main_image_info.Machine );
+     load_apiset_dll();
++#ifdef M_PERTURB
+     mallopt( M_PERTURB, 0 );
++#endif
+     server_init_process_done();
+ }
+ 
+diff --git a/dlls/win32u/opengl.c b/dlls/win32u/opengl.c
+index c7aeea1..38724e6 100644
+--- a/dlls/win32u/opengl.c
++++ b/dlls/win32u/opengl.c
+@@ -23,6 +23,13 @@
+ 
+ #include "config.h"
+ 
++/* xbox-rl: the framebuffer-surface helpers further down are only declared inside the
++ * SONAME_LIBEGL block, yet used unconditionally.  There is no EGL on the console; pretend the
++ * soname exists (it is only dlopen()ed on demand, and that fails cleanly). */
++#ifndef SONAME_LIBEGL
++#define SONAME_LIBEGL "libEGL.so.1"
++#endif
++
+ #include <assert.h>
+ #include <pthread.h>
+ #include <dlfcn.h>
+diff --git a/dlls/winegstreamer/media-converter/media-converter.h b/dlls/winegstreamer/media-converter/media-converter.h
+index 3dd8864..e475c92 100644
+--- a/dlls/winegstreamer/media-converter/media-converter.h
++++ b/dlls/winegstreamer/media-converter/media-converter.h
+@@ -22,6 +22,7 @@
+ #define _FILE_OFFSET_BITS 64
+ 
+ #include <string.h>
++#include <pthread.h>  /* xbox-rl: musl does not pull this in transitively */
+ #include <utime.h>
+ #include <stdarg.h>
+ #include <stdbool.h>

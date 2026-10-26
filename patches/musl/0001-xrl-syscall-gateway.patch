@@ -1,0 +1,453 @@
+diff --git a/arch/x86_64/syscall_arch.h b/arch/x86_64/syscall_arch.h
+index 92d5c17..39bc1a1 100644
+--- a/arch/x86_64/syscall_arch.h
++++ b/arch/x86_64/syscall_arch.h
+@@ -1,70 +1,66 @@
++/*
++ * xbox-rl: musl's x86_64 syscall layer, replaced.
++ *
++ * Upstream emits the `syscall` instruction here.  On the Xbox host a `syscall`
++ * instruction would trap into the *real* Windows kernel with a Linux syscall
++ * number, so musl must never execute one.  Every raw syscall is instead a plain
++ * C-ABI call into the host layer's gateway:
++ *
++ *     long xrl_syscall(long nr, long a1, long a2, long a3, long a4, long a5, long a6);
++ *
++ * (include/xrl_abi.h, seam 1).  Return convention is the Linux kernel's
++ * (>= 0 or -errno), identical to what the `syscall` instruction returned, so
++ * __syscall_ret() and the rest of musl are untouched.
++ *
++ * __xrl_syscall is a hidden alias of the exported xrl_syscall defined in
++ * src/thread/x86_64/xrl_gateway.s; it jumps through the pointer __xrl_gateway
++ * that the layer's ELF loader fills in before the first instruction of libc
++ * runs.
++ */
++
+ #define __SYSCALL_LL_E(x) (x)
+ #define __SYSCALL_LL_O(x) (x)
+ 
++extern long __xrl_syscall(long, long, long, long, long, long, long)
++	__attribute__((__visibility__("hidden")));
++
+ static __inline long __syscall0(long n)
+ {
+-	unsigned long ret;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n) : "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, 0, 0, 0, 0, 0, 0);
+ }
+ 
+ static __inline long __syscall1(long n, long a1)
+ {
+-	unsigned long ret;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1) : "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, a1, 0, 0, 0, 0, 0);
+ }
+ 
+ static __inline long __syscall2(long n, long a1, long a2)
+ {
+-	unsigned long ret;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2)
+-						  : "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, a1, a2, 0, 0, 0, 0);
+ }
+ 
+ static __inline long __syscall3(long n, long a1, long a2, long a3)
+ {
+-	unsigned long ret;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
+-						  "d"(a3) : "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, a1, a2, a3, 0, 0, 0);
+ }
+ 
+ static __inline long __syscall4(long n, long a1, long a2, long a3, long a4)
+ {
+-	unsigned long ret;
+-	register long r10 __asm__("r10") = a4;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
+-						  "d"(a3), "r"(r10): "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, a1, a2, a3, a4, 0, 0);
+ }
+ 
+ static __inline long __syscall5(long n, long a1, long a2, long a3, long a4, long a5)
+ {
+-	unsigned long ret;
+-	register long r10 __asm__("r10") = a4;
+-	register long r8 __asm__("r8") = a5;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
+-						  "d"(a3), "r"(r10), "r"(r8) : "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, a1, a2, a3, a4, a5, 0);
+ }
+ 
+ static __inline long __syscall6(long n, long a1, long a2, long a3, long a4, long a5, long a6)
+ {
+-	unsigned long ret;
+-	register long r10 __asm__("r10") = a4;
+-	register long r8 __asm__("r8") = a5;
+-	register long r9 __asm__("r9") = a6;
+-	__asm__ __volatile__ ("syscall" : "=a"(ret) : "a"(n), "D"(a1), "S"(a2),
+-						  "d"(a3), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
+-	return ret;
++	return __xrl_syscall(n, a1, a2, a3, a4, a5, a6);
+ }
+ 
+-#define VDSO_USEFUL
+-#define VDSO_CGT_SYM "__vdso_clock_gettime"
+-#define VDSO_CGT_VER "LINUX_2.6"
+-#define VDSO_GETCPU_SYM "__vdso_getcpu"
+-#define VDSO_GETCPU_VER "LINUX_2.6"
++/* No vDSO: there is no kernel to map one, and VDSO_USEFUL would make
++ * clock_gettime()/getcpu() dereference an auxv entry that does not exist.
++ * They fall back to __syscall(SYS_clock_gettime) -> xrl_syscall. */
+ 
+ #define IPC_64 0
+diff --git a/src/misc/xrl_compat.c b/src/misc/xrl_compat.c
+new file mode 100644
+index 0000000..652fe25
+--- /dev/null
++++ b/src/misc/xrl_compat.c
+@@ -0,0 +1,11 @@
++/* xbox-rl: glibc-compat shims needed so that code built against glibc-flavoured
++ * toolchain pieces links against this musl. */
++
++/* The distro's libgcc_eh.a (built for glibc >= 2.35) calls _dl_find_object() first and
++ * falls back to dl_iterate_phdr() when it returns non-zero.  musl has neither the
++ * function nor a need for it: report "not found" so libgcc takes the portable path. */
++int _dl_find_object(void *pc, void *result)
++{
++	(void)pc; (void)result;
++	return -1;
++}
+diff --git a/src/process/x86_64/vfork.s b/src/process/x86_64/vfork.s
+index 9114439..31decf8 100644
+--- a/src/process/x86_64/vfork.s
++++ b/src/process/x86_64/vfork.s
+@@ -1,10 +1,21 @@
++/* xbox-rl: vfork via the gateway.  There is no second process on the console,
++ * so the layer answers SYS_vfork (58) with -ENOSYS; callers (posix_spawn users,
++ * system()) take their error path.  Wine's own process creation is patched not
++ * to fork (see patches/wine/0006-inproc-process.patch). */
+ .global vfork
+ .type vfork,@function
++.hidden __xrl_syscall
+ vfork:
+-	pop %rdx
+-	mov $58,%eax
+-	syscall
+-	push %rdx
++	mov $58,%edi
++	xor %esi,%esi
++	xor %edx,%edx
++	xor %ecx,%ecx
++	xor %r8d,%r8d
++	xor %r9d,%r9d
++	sub $8,%rsp		/* entry rsp 8 mod 16 -> 0 mod 16 */
++	movq $0,(%rsp)
++	call __xrl_syscall
++	add $8,%rsp
+ 	mov %rax,%rdi
+ 	.hidden __syscall_ret
+ 	jmp __syscall_ret
+diff --git a/src/signal/x86_64/restore.s b/src/signal/x86_64/restore.s
+index 27d6cf3..918b0ec 100644
+--- a/src/signal/x86_64/restore.s
++++ b/src/signal/x86_64/restore.s
+@@ -1,8 +1,27 @@
++/* xbox-rl: signal return trampoline via the gateway.
++ *
++ * Kernel semantics: on entry rsp points at the saved struct ucontext (the
++ * handler's `ret` has already popped the trampoline address).  We pass that
++ * address explicitly as a1 because a call would push a return address on top of
++ * it:
++ *
++ *   xrl_syscall(SYS_rt_sigreturn=15, ucontext_ptr)   -- never returns
++ */
+ 	nop
+ .global __restore_rt
+ .hidden __restore_rt
+ .type __restore_rt,@function
++.hidden __xrl_syscall
+ __restore_rt:
+-	mov $15, %rax
+-	syscall
++	mov %rsp,%rsi		/* a1 = &ucontext */
++	and $-16,%rsp
++	sub $16,%rsp
++	movq $0,(%rsp)
++	mov $15,%edi
++	xor %edx,%edx
++	xor %ecx,%ecx
++	xor %r8d,%r8d
++	xor %r9d,%r9d
++	call __xrl_syscall
++	hlt
+ .size __restore_rt,.-__restore_rt
+diff --git a/src/thread/x86_64/__set_thread_area.s b/src/thread/x86_64/__set_thread_area.s
+index 7347ff4..1253aae 100644
+--- a/src/thread/x86_64/__set_thread_area.s
++++ b/src/thread/x86_64/__set_thread_area.s
+@@ -1,11 +1,20 @@
+-/* Copyright 2011-2012 Nicholas J. Kain, licensed under standard MIT license */
++/* xbox-rl: __set_thread_area(p) == arch_prctl(ARCH_SET_FS, p), via the gateway.
++ * The layer must make this a real FS-base set (musl TLS depends on it);
++ * docs/syscall-abi.md "arch_prctl / TLS". */
+ .text
+ .global __set_thread_area
+ .hidden __set_thread_area
+ .type __set_thread_area,@function
++.hidden __xrl_syscall
+ __set_thread_area:
+-	mov %rdi,%rsi           /* shift for syscall */
+-	movl $0x1002,%edi       /* SET_FS register */
+-	movl $158,%eax          /* set fs segment to */
+-	syscall                 /* arch_prctl(SET_FS, arg)*/
++	mov %rdi,%rdx		/* a2 = pointer */
++	mov $0x1002,%esi	/* a1 = ARCH_SET_FS */
++	mov $158,%edi		/* SYS_arch_prctl */
++	xor %ecx,%ecx
++	xor %r8d,%r8d
++	xor %r9d,%r9d
++	sub $8,%rsp		/* entry rsp 8 mod 16 -> 0 mod 16 */
++	movq $0,(%rsp)
++	call __xrl_syscall
++	add $8,%rsp
+ 	ret
+diff --git a/src/thread/x86_64/__unmapself.s b/src/thread/x86_64/__unmapself.s
+index e2689e6..830ba27 100644
+--- a/src/thread/x86_64/__unmapself.s
++++ b/src/thread/x86_64/__unmapself.s
+@@ -1,10 +1,27 @@
+-/* Copyright 2011-2012 Nicholas J. Kain, licensed under standard MIT license */
++/* xbox-rl: __unmapself(base, size) -- unmap the caller's own stack and exit.
++ *
++ * Upstream issues munmap then exit with two back-to-back `syscall`s so that no
++ * stack is needed in between.  A gateway call needs a stack, so the two are
++ * fused into one extended exit:
++ *
++ *   xrl_syscall(SYS_exit=60, 0, base, size)
++ *
++ * a2/a3 are ignored by a plain Linux exit; the layer, which owns thread
++ * teardown, unmaps [base, base+size) after it has left the guest stack.  A
++ * layer that ignores a2/a3 merely leaks the stack of a detached thread.
++ */
+ .text
+ .global __unmapself
+ .type   __unmapself,@function
++.hidden __xrl_syscall
+ __unmapself:
+-	movl $11,%eax   /* SYS_munmap */
+-	syscall         /* munmap(arg2,arg3) */
+-	xor %rdi,%rdi   /* exit() args: always return success */
+-	movl $60,%eax   /* SYS_exit */
+-	syscall         /* exit(0) */
++	mov %rdi,%rdx		/* a2 = base */
++	mov %rsi,%rcx		/* a3 = size */
++	mov $60,%edi		/* SYS_exit */
++	xor %esi,%esi		/* a1 = status 0 */
++	xor %r8d,%r8d
++	xor %r9d,%r9d
++	sub $8,%rsp
++	movq $0,(%rsp)
++	call __xrl_syscall
++	hlt
+diff --git a/src/thread/x86_64/clone.s b/src/thread/x86_64/clone.s
+index 6e47bc0..e0d9397 100644
+--- a/src/thread/x86_64/clone.s
++++ b/src/thread/x86_64/clone.s
+@@ -1,28 +1,59 @@
++/* xbox-rl: __clone(fn, stack, flags, arg, ptid, tls, ctid) via the gateway.
++ *
++ * A `syscall` instruction can "return twice" (parent and child continue after
++ * it with different rsp).  A call into a host function cannot.  So the clone
++ * contract at the gateway is explicit (see wine/notes-B.md, "clone"):
++ *
++ *   xrl_syscall(SYS_clone=56, flags, child_stack, ptid, ctid, tls, resume_pc)
++ *
++ *   parent: returns the new tid, or -errno.
++ *   child:  a new thread is created whose first instruction is `resume_pc`,
++ *           with rsp = child_stack, rax = 0, FS base = tls (if CLONE_SETTLS),
++ *           and every other register undefined.  It never returns through
++ *           the gateway.
++ *
++ * resume_pc is __xrl_clone_child below.  fn and arg are parked on the child's
++ * stack (arg at 0(%rsp), fn at 8(%rsp)), exactly one 16-byte slot.
++ */
+ .text
+ .global __clone
+ .hidden __clone
+ .type   __clone,@function
++.hidden __xrl_syscall
+ __clone:
+-	xor %eax,%eax
+-	mov $56,%al
+-	mov %rdi,%r11
+-	mov %rdx,%rdi
+-	mov %r8,%rdx
+-	mov %r9,%r8
+-	mov 8(%rsp),%r10
+-	mov %r11,%r9
+-	and $-16,%rsi
+-	sub $8,%rsi
+-	mov %rcx,(%rsi)
+-	syscall
+-	test %eax,%eax
+-	jnz 1f
++	and $-16,%rsi		/* child stack, 16-aligned */
++	sub $16,%rsi
++	mov %rcx,(%rsi)		/* arg */
++	mov %rdi,8(%rsi)	/* fn  */
++	sub $24,%rsp		/* entry rsp 8 mod 16 -> 0 mod 16; slot 0 = 7th arg */
++	mov %rdx,%r11		/* flags */
++	mov %rsi,%rdx		/* a2 = child stack */
++	mov %r11,%rsi		/* a1 = flags */
++	mov %r8,%rcx		/* a3 = ptid */
++	mov 32(%rsp),%r8	/* a4 = ctid (7th C arg of __clone) */
++	/* a5 = tls: already in r9 */
++	lea __xrl_clone_child(%rip),%rax
++	mov %rax,(%rsp)		/* a6 = resume_pc */
++	mov $56,%edi
++	call __xrl_syscall
++	add $24,%rsp
++	ret
++
++.global __xrl_clone_child
++.hidden __xrl_clone_child
++.type   __xrl_clone_child,@function
++__xrl_clone_child:
+ 	xor %ebp,%ebp
+-	pop %rdi
++	pop %rdi		/* arg */
++	pop %r9			/* fn  (rsp is now 16-aligned again) */
+ 	call *%r9
+-	mov %eax,%edi
+-	xor %eax,%eax
+-	mov $60,%al
+-	syscall
++	mov %eax,%esi		/* exit status */
++	mov $60,%edi		/* SYS_exit */
++	xor %edx,%edx
++	xor %ecx,%ecx
++	xor %r8d,%r8d
++	xor %r9d,%r9d
++	sub $16,%rsp
++	movq $0,(%rsp)
++	call __xrl_syscall
+ 	hlt
+-1:	ret
+diff --git a/src/thread/x86_64/syscall_cp.s b/src/thread/x86_64/syscall_cp.s
+index 4f10171..bccc6a4 100644
+--- a/src/thread/x86_64/syscall_cp.s
++++ b/src/thread/x86_64/syscall_cp.s
+@@ -1,3 +1,14 @@
++/* xbox-rl: cancellable syscall, via the gateway instead of `syscall`.
++ *
++ * __syscall_cp_asm(&self->cancel, nr, a1, a2, a3, a4, a5, a6)
++ *   rdi=cancel ptr  rsi=nr  rdx=a1 rcx=a2 r8=a3 r9=a4  8(%rsp)=a5  16(%rsp)=a6
++ * becomes
++ * xrl_syscall(nr, a1, a2, a3, a4, a5, a6)
++ *   rdi=nr rsi=a1 rdx=a2 rcx=a3 r8=a4 r9=a5  0(%rsp)=a6
++ *
++ * __cp_end stays *after* the call so that a SIGCANCEL delivered while the
++ * layer is blocked returns -EINTR through here exactly as a kernel syscall would.
++ */
+ .text
+ .global __cp_begin
+ .hidden __cp_begin
+@@ -6,6 +17,7 @@
+ .global __cp_cancel
+ .hidden __cp_cancel
+ .hidden __cancel
++.hidden __xrl_syscall
+ .global __syscall_cp_asm
+ .hidden __syscall_cp_asm
+ .type   __syscall_cp_asm,@function
+@@ -15,17 +27,19 @@ __cp_begin:
+ 	mov (%rdi),%eax
+ 	test %eax,%eax
+ 	jnz __cp_cancel
+-	mov %rdi,%r11
+-	mov %rsi,%rax
+-	mov %rdx,%rdi
+-	mov %rcx,%rsi
+-	mov %r8,%rdx
+-	mov %r9,%r10
+-	mov 8(%rsp),%r8
+-	mov 16(%rsp),%r9
+-	mov %r11,8(%rsp)
+-	syscall
++	mov %rsi,%rax		/* nr */
++	mov %rdx,%rsi		/* a1 */
++	mov %rcx,%rdx		/* a2 */
++	mov %r8,%rcx		/* a3 */
++	mov %r9,%r8		/* a4 */
++	mov 8(%rsp),%r9		/* a5 */
++	mov 16(%rsp),%r10	/* a6 */
++	mov %rax,%rdi
++	sub $8,%rsp		/* entry rsp is 8 mod 16 -> 0 mod 16 at the call */
++	mov %r10,(%rsp)		/* 7th arg on the stack */
++	call __xrl_syscall
+ __cp_end:
++	add $8,%rsp
+ 	ret
+ __cp_cancel:
+ 	jmp __cancel
+diff --git a/src/thread/x86_64/xrl_gateway.s b/src/thread/x86_64/xrl_gateway.s
+new file mode 100644
+index 0000000..cbf78ce
+--- /dev/null
++++ b/src/thread/x86_64/xrl_gateway.s
+@@ -0,0 +1,29 @@
++/*
++ * xbox-rl: the syscall gateway trampoline.
++ *
++ *   xrl_syscall     exported; `jmp *__xrl_gateway`.  Wine's unix-side asm and
++ *                   builtin DLL glue call this by name.
++ *   __xrl_syscall   hidden alias used inside libc.
++ *
++ * __xrl_gateway (the 8-byte slot the layer's ELF loader fills with the address
++ * of its SysV-ABI xrl_syscall thunk) lives in its own object,
++ * xrl_gateway_slot.s, so that unit tests can supply their own statically
++ * initialised slot (wine/tests/musl-smoke).
++ *
++ * If the slot is still NULL we execute ud2 on purpose: a missing gateway is a
++ * loader bug and must be loud, not a silent ENOSYS.
++ */
++.text
++.global xrl_syscall
++.global __xrl_syscall
++.hidden __xrl_syscall
++.type xrl_syscall,@function
++.type __xrl_syscall,@function
++xrl_syscall:
++__xrl_syscall:
++	mov __xrl_gateway(%rip),%rax
++	test %rax,%rax
++	jz 1f
++	jmp *%rax
++1:	ud2
++.size xrl_syscall,.-xrl_syscall
+diff --git a/src/thread/x86_64/xrl_gateway_slot.s b/src/thread/x86_64/xrl_gateway_slot.s
+new file mode 100644
+index 0000000..313cbaf
+--- /dev/null
++++ b/src/thread/x86_64/xrl_gateway_slot.s
+@@ -0,0 +1,14 @@
++/*
++ * xbox-rl: the gateway pointer slot.  The layer's ELF loader looks this symbol
++ * up in libc.so's .dynsym (it is exported, default visibility) and stores the
++ * address of its SysV-ABI xrl_syscall thunk here BEFORE any guest instruction
++ * runs -- including the dynamic linker's own start-up, which already issues
++ * syscalls.  See wine/notes-B.md "gateway bootstrap".
++ */
++.data
++.align 8
++.global __xrl_gateway
++.type __xrl_gateway,@object
++.size __xrl_gateway,8
++__xrl_gateway:
++	.quad 0
