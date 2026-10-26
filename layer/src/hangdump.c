@@ -20,7 +20,7 @@
 
 #define HD_MAX 256
 #define HD_STK 192
-typedef struct hd_thread { DWORD tid; int guest, in_sys, live; u64 rip, rsp; u64 stk[HD_STK]; int nstk; } hd_thread;
+typedef struct hd_thread { DWORD tid; int guest, in_sys, live; u64 rip, rsp, pend, mask; u64 stk[HD_STK]; int nstk; } hd_thread;
 static hd_thread g_hd[HD_MAX];
 
 static void out(const char *fmt, ...)
@@ -129,7 +129,11 @@ static void dump_once(void)
                 d->rsp = c.Rsp;
                 /* the layer's view of the thread, read while it is stopped so it matches rip */
                 for (xrl_thread *t = G.threads; t; t = t->next)
-                    if (t->win_tid == d->tid) { d->guest = 1; d->in_sys = t->in_sys; d->live = t->teb_guest_live; break; }
+                    if (t->win_tid == d->tid) {
+                        d->guest = 1; d->in_sys = t->in_sys; d->live = t->teb_guest_live;
+                        d->pend = t->sigpending; d->mask = t->sigmask;
+                        break;
+                    }
                 __try { memcpy(d->stk, (void *)c.Rsp, sizeof d->stk); d->nstk = HD_STK; }
                 __except (EXCEPTION_EXECUTE_HANDLER) { d->nstk = 0; }
             }
@@ -147,10 +151,12 @@ static void dump_once(void)
     char b[300];
     xrl_mem_clock_stats(b, sizeof b);
     out("[hang] %s", b);
+    xrl_sig_stats(b, sizeof b);
+    out("[hang] %s", b);
     for (int i = 0; i < n; i++) {
         hd_thread *d = &g_hd[i];
-        out("[hang] tid %lu%s in_sys=%d guest_view=%d rip=%llx %s", d->tid, d->guest ? " (guest)" : "", d->in_sys, d->live,
-            d->rip, name_of(d->rip, b, sizeof b));
+        out("[hang] tid %lu%s in_sys=%d guest_view=%d sigpend=%llx sigmask=%llx rip=%llx %s", d->tid, d->guest ? " (guest)" : "",
+            d->in_sys, d->live, d->pend, d->mask, d->rip, name_of(d->rip, b, sizeof b));
         int shown = 0;
         for (int k = 0; k < d->nstk && shown < 12; k++) {
             name_of(d->stk[k], b, sizeof b);

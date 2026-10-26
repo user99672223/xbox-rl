@@ -96,6 +96,9 @@ slong xrl_sys_sigaltstack(u64 uss, u64 uoss)
         if (!(n.ss_flags & LX_SS_DISABLE) && n.ss_size < 2048) return -LX_EINVAL;
         t->altstack = n;
         if (n.ss_flags & LX_SS_DISABLE) memset(&t->altstack, 0, sizeof t->altstack);
+        /* handlers run there and the kernel pushes exception frames onto it:
+         * committed and never swapped, like a thread stack */
+        else xrl_mem_pin_stack(n.ss_sp, n.ss_size);
     }
     if (uoss && xrl_ctu(uoss, &old, sizeof old)) return -LX_EFAULT;
     return 0;
@@ -139,6 +142,14 @@ C_ASSERT(sizeof(lx_ucontext) == 304 && sizeof(lx_rt_sigframe) == 440);
 typedef struct sigpriv { u64 magic; s64 nr; s64 a[6]; u64 retaddr; u64 pad; } sigpriv;
 
 static u64 g_xmask;              /* XCR0 & (x87|SSE|AVX); 0 = no XSAVE, use fxsave */
+/* counters for the hang dump: signals queued, and how they were delivered */
+static volatile LONG64 g_sig_sent, g_sig_at_ret, g_sig_async, g_sig_async_retry, g_sig_fault_deliv;
+void xrl_sig_stats(char *b, size_t n)
+{
+    snprintf(b, n, "signals: %lld sent, delivered %lld at syscall return, %lld async, %lld for faults; %lld async retries",
+             (long long)g_sig_sent, (long long)g_sig_at_ret, (long long)g_sig_async, (long long)g_sig_fault_deliv,
+             (long long)g_sig_async_retry);
+}
 static u32 g_mxcsr_mask = 0xffbf;
 
 static void sig_cpu_init(void)
@@ -336,6 +347,7 @@ void xrl_sig_at_return(xrl_thread *t, slong nr, const slong *args, const u64 *gf
     }
     if (build_frame(t, sig, &a, &si, r, prs, 0)) frame_failed(t, sig);
     t->sig_jump = (u64)r;
+    g_sig_at_ret++;
 }
 
 slong xrl_syscall_redo(slong nr, const slong *a);   /* syscall.c */
@@ -448,6 +460,7 @@ static int try_async(xrl_thread *t)
             } else {
                 regs_to_context(c, &r, ymm, ylen);
                 c->ContextFlags = flags;
+                g_sig_async++;
                 if (!SetThreadContext(t->handle, c)) {
                     LOGE("signal %d: SetThreadContext(tid %d) failed (%lu)", sig, t->tid, GetLastError());
                     done = -1;
@@ -471,7 +484,7 @@ static DWORD WINAPI sig_pump(LPVOID p)
         busy = 0;
         AcquireSRWLockShared(&G.thread_lock);
         for (xrl_thread *t = G.threads; t; t = t->next)
-            if (t->tid && !t->in_sys && (t->sigpending & ~t->sigmask) && try_async(t) == 0) busy = 1;
+            if (t->tid && !t->in_sys && (t->sigpending & ~t->sigmask) && try_async(t) == 0) { busy = 1; g_sig_async_retry++; }
         ReleaseSRWLockShared(&G.thread_lock);
     }
 }
@@ -500,6 +513,7 @@ static slong send_signal(xrl_thread *t, int sig, int from_kill)
         LOGE("signal %d to tid %d with the default action: terminating process (128+%d)", sig, t->tid, sig);
         xrl_do_exit(128 + sig, 1);
     }
+    InterlockedIncrement64(&g_sig_sent);
     if (from_kill) InterlockedOr64((volatile LONG64 *)&t->sig_from_kill, (LONG64)SIGBIT(sig));
     InterlockedOr64((volatile LONG64 *)&t->sigpending, (LONG64)SIGBIT(sig));
     if (blocked) return 0;
@@ -575,6 +589,7 @@ static int deliver_fault(xrl_thread *t, PEXCEPTION_POINTERS ep, int sig, int cod
     u64 below = here < c->Rsp && c->Rsp - here < (1ull << 20) ? (here - 4096) & ~15ull : 0;
     if (build_frame(t, sig, &a, &si, &r, NULL, below)) return 0;
     regs_to_context(c, &r, ymm, ylen);
+    g_sig_fault_deliv++;
     return 1;
 }
 
@@ -781,10 +796,45 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+/* Last chance: an exception nobody handled in layer or host code ends the
+ * process without a word (the shell reports exit 139). Say where it was. */
+static LONG WINAPI xrl_last_chance(PEXCEPTION_POINTERS ep)
+{
+    const EXCEPTION_RECORD *r = ep->ExceptionRecord;
+    const CONTEXT *c = ep->ContextRecord;
+    xrl_thread *t = xrl_cur();
+    char mod[MAX_PATH] = "?";
+    HMODULE m = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)c->Rip, &m) && m)
+        GetModuleFileNameA(m, mod, sizeof mod);
+    const char *b = strrchr(mod, '\\');
+    LOGE("=== UNHANDLED HOST EXCEPTION %08lx at %016llx (%s+%llx) tid %d in_sys %d addr %016llx rsp %016llx ===",
+         r->ExceptionCode, c->Rip, b ? b + 1 : mod, m ? c->Rip - (u64)m : 0, t ? t->tid : -1, t ? t->in_sys : -1,
+         r->NumberParameters >= 2 ? (u64)r->ExceptionInformation[1] : 0, c->Rsp);
+    const u64 *sp = (const u64 *)c->Rsp;
+    int shown = 0;
+    for (int k = 0; k < 256 && shown < 12; k++) {
+        u64 a;
+        __try { a = sp[k]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        HMODULE am = NULL;
+        if (a > 0x10000 && GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                              (LPCSTR)a, &am) && am) {
+            char n[MAX_PATH];
+            GetModuleFileNameA(am, n, sizeof n);
+            const char *nb = strrchr(n, '\\');
+            LOGE("  [rsp+%03x] %s+%llx", k * 8, nb ? nb + 1 : n, a - (u64)am);
+            shown++;
+        }
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 void xrl_sig_install_veh(void)
 {
     char v[8];
     g_trace_faults = GetEnvironmentVariableA("XRL_TRACE_FAULTS", v, sizeof v) && v[0] == '1';
     g_veh = AddVectoredExceptionHandler(1, xrl_veh);
+    SetUnhandledExceptionFilter(xrl_last_chance);
     LOGI("signal: VEH %s", g_veh ? "installed" : "FAILED");
 }

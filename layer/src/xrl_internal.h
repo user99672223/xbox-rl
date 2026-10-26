@@ -175,6 +175,7 @@ void *xrl_exec_alloc(size_t n);
 int xrl_host_protect(void *p, size_t n, DWORD prot, DWORD *old);   /* VirtualProtect on host memory */
 slong xrl_mem_populate(u64 addr, u64 len);    /* commit lazy pages before Win32 I/O on guest memory */
 slong xrl_mem_populate_containing(u64 addr);  /* commit the whole lazy mapping holding addr */
+slong xrl_mem_pin_stack(u64 addr, u64 len);    /* commit and never swap (a sigaltstack) */
 int xrl_mem_lazy_fault(u64 addr, int access); /* VEH: 1 = committed, retry */
 int  xrl_fd_list(int *out, int cap);
 slong xrl_fd_close_range(unsigned first, unsigned last, unsigned flags);
@@ -402,6 +403,7 @@ void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
 int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
 int   xrl_mem_lock_held(void);
 void  xrl_mem_clock_stats(char *b, size_t n);
+void  xrl_sig_stats(char *b, size_t n);
 void  xrl_hang_watch_start(void);   /* hangdump.c, XRL_HANG_DUMP */   /* bytes in the swap file, written, read */
 /* cpuinfo.c: the real CPU (CPUID) and topology */
 char *xrl_cpuinfo_text(size_t *len);

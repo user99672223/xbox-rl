@@ -12,6 +12,12 @@
  *
  * First-chance access violations from xrl_cfu() probes are normal; the
  * interesting ones are the last few before "exit".
+ *
+ * XRL_CATCH_ATTACH=N: run the program normally and attach only after N
+ * seconds (lazy commit and swap make every early fault a debugger stop), then
+ * report second-chance exceptions and first-chance ones other than access
+ * violations (fail-fast, stack overruns, C++ throws). If the program exits
+ * before that, its exact exit status is printed.
  */
 #include <windows.h>
 #include <dbghelp.h>
@@ -102,9 +108,22 @@ int main(int argc, char **argv)
     }
     STARTUPINFOA si = { sizeof si };
     PROCESS_INFORMATION pi;
-    if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, DEBUG_ONLY_THIS_PROCESS, NULL, NULL, &si, &pi)) {
+    char av[16];
+    DWORD attach = GetEnvironmentVariableA("XRL_CATCH_ATTACH", av, sizeof av) ? strtoul(av, NULL, 10) : 0;
+    if (!CreateProcessA(NULL, cmd, NULL, NULL, TRUE, attach ? 0 : DEBUG_ONLY_THIS_PROCESS, NULL, NULL, &si, &pi)) {
         fprintf(stderr, "[catch] CreateProcess failed: %lu\n", GetLastError());
         return 2;
+    }
+    if (attach) {
+        if (WaitForSingleObject(pi.hProcess, attach * 1000) == WAIT_OBJECT_0) {
+            DWORD code = 0;
+            GetExitCodeProcess(pi.hProcess, &code);
+            fprintf(stderr, "[catch] exited before attaching: status %08lx\n", code);
+            return (int)code;
+        }
+        if (!DebugActiveProcess(pi.dwProcessId)) { fprintf(stderr, "[catch] attach failed: %lu\n", GetLastError()); return 2; }
+        fprintf(stderr, "[catch] attached after %lu s\n", attach);
+        fflush(stderr);
     }
     static HANDLE threads[4096];   /* by tid % 4096 */
     static HANDLE live[4096]; static DWORD live_tid[4096]; int nlive = 0;
@@ -147,6 +166,8 @@ int main(int argc, char **argv)
             if (r->ExceptionCode == EXCEPTION_BREAKPOINT && first_bp) { first_bp = 0; break; }   /* loader breakpoint */
             cont = DBG_EXCEPTION_NOT_HANDLED;
             if (r->ExceptionCode == 0x406D1388 /* thread name */ || r->ExceptionCode == 0x40010006 /* OutputDebugString */) break;
+            if (r->ExceptionCode == 0x4001000A /* OutputDebugStringW */) break;
+            if (attach && ev.u.Exception.dwFirstChance && r->ExceptionCode == EXCEPTION_ACCESS_VIOLATION) break;   /* lazy commit / swap */
             CONTEXT c; c.ContextFlags = CONTEXT_FULL;
             HANDLE th = threads[ev.dwThreadId % 4096];
             ULONG64 off;

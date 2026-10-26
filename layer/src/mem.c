@@ -1233,6 +1233,8 @@ static slong commit_lazy_locked(u64 s, u64 e, int prot)
         }
         s = re;
     }
+    /* a stack: pin its spans that were committed already, too */
+    if (pin) swap_note(ALIGN_DOWN(s0, LX_PAGE), e0, 1);
     return 0;
 }
 
@@ -1650,6 +1652,11 @@ int xrl_mem_guest_ctx(u64 rip, u64 rsp)
     ReleaseSRWLockShared(&g_lock);
     return ok;
 }
+
+/* Commit [addr, addr+len) and pin it like a stack: never probed or evicted
+ * (a sigaltstack: signal handlers run there and the kernel pushes exception
+ * frames onto it, which a no-access or evicted page turns into a fatal fault). */
+slong xrl_mem_pin_stack(u64 addr, u64 len) { return len ? populate_from(addr, len, CS_STACK) : 0; }
 
 /* Commit the whole lazy mapping containing `addr` (a new thread's stack). */
 slong xrl_mem_populate_containing(u64 addr)
