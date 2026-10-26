@@ -61,6 +61,7 @@ void xrl_logf(int level, const char *tag, const char *fmt, ...);
  * xrl_cur() (hash of the host TEB Self pointer) and from the asm thunks.
  */
 typedef struct xrl_thread xrl_thread;
+#define XRL_TEB_SWAP_QWORDS 84   /* teb.c k_swap total (docs/gs-teb.md) */
 struct xrl_thread {
     /* --- asm-visible block (offsets frozen, see thread.c static asserts) --- */
     u64 host_rsp;          /* 0x00 16-aligned top of host stack used by thunks   */
@@ -95,7 +96,18 @@ struct xrl_thread {
     int  is_main;
     u64 defer_unmap_addr, defer_unmap_len;
     u32 sig_in_handler;
+    /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
+    int teb_guest_live;
+    u64 teb_host[XRL_TEB_SWAP_QWORDS];
+    u64 teb_guest[XRL_TEB_SWAP_QWORDS];
 };
+
+/* teb.c: guest/host views of the shared TEB (docs/gs-teb.md) */
+void xrl_teb_init(void);
+void xrl_teb_thread_init(xrl_thread *t);
+int  xrl_teb_enter_host(xrl_thread *t);       /* returns 1 if the guest view was live */
+void xrl_teb_enter_guest(xrl_thread *t);
+void xrl_teb_restore(xrl_thread *t, int was_guest);
 
 /* Thread lookup: hash of the host TEB Self pointer (gs:[30h]) -> xrl_thread*.
  * Table is read lock-free by the asm thunks. See thunks.asm. */

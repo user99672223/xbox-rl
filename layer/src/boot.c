@@ -86,6 +86,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
 
     xrl_time_init();
     xrl_threads_init();
+    xrl_teb_init();
     xrl_futex_init();
     xrl_rng_init();
     if (xrl_mem_init(G.mem_budget)) return XRL_ERR_GENERIC;

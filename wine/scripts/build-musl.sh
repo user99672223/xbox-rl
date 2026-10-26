@@ -54,7 +54,7 @@ log "musl: configure"
 # interpreter), while files land inside $SYSROOT.
 "$src/configure" --prefix=/usr --syslibdir=/lib \
     --enable-shared --enable-static --disable-wrapper \
-    CFLAGS="-O2 -g1 -fno-stack-protector -fcf-protection=none"
+    CFLAGS="-O2 -g1 -fno-stack-protector -fcf-protection=none -mno-tls-direct-seg-refs"
 log "musl: make -j$JOBS"
 make -j"$JOBS" >/dev/null
 make install DESTDIR="$SYSROOT" >/dev/null

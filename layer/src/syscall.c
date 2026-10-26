@@ -678,12 +678,14 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     (void)frame;
     xrl_thread *t = xrl_cur();
     slong r;
+    int was_guest = xrl_teb_enter_host(t);
     if (t) t->in_sys++;
     if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
     else r = enosys(nr, a1, a2, a3);
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
     if (t) t->in_sys--;
+    xrl_teb_restore(t, was_guest);
     return r;
 }
 

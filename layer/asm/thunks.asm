@@ -28,6 +28,8 @@
 OPTION CASEMAP:NONE
 
 EXTERN xrl_syscall_dispatch:PROC
+EXTERN xrl_teb_enter_host:PROC
+EXTERN xrl_teb_restore:PROC
 EXTERN xrl_ttab:BYTE
 EXTERN xrl_asm_fsb_flag:QWORD
 
@@ -144,6 +146,7 @@ xrl_downcall_tramp PROC
     push    r13
     mov     rbx, r11                       ; target (callee-saved across FIND_THREAD)
     FIND_THREAD
+    mov     r12, rax                       ; xrl_thread* or 0 (callee-saved from here on)
     mov     r10, rsp
     test    rax, rax
     jz      short dc_havestack
@@ -152,7 +155,20 @@ xrl_downcall_tramp PROC
 dc_havestack:
     and     r10, -16
     mov     rsp, r10
-    sub     rsp, 40h
+    sub     rsp, 60h                       ; 20h shadow, 20h stack args, 20h saved SysV args
+    ; Host code runs below: swap the host TEB view in (docs/gs-teb.md). The Win64
+    ; helper may clobber rcx/rdx/r8/r9, which still hold SysV args 4/3/5/6.
+    mov     [rsp+40h], rcx
+    mov     [rsp+48h], rdx
+    mov     [rsp+50h], r8
+    mov     [rsp+58h], r9
+    mov     rcx, r12
+    call    xrl_teb_enter_host             ; eax = 1 if the guest view was live
+    mov     r13d, eax                      ; restore flag (callee-saved)
+    mov     rcx, [rsp+40h]
+    mov     rdx, [rsp+48h]
+    mov     r8,  [rsp+50h]
+    mov     r9,  [rsp+58h]
     mov     rax, [rbp+16]                  ; sysv arg7
     mov     r10, [rbp+24]                  ; sysv arg8
     mov     [rsp+30h], rax
@@ -164,6 +180,11 @@ dc_havestack:
     mov     rdx, rsi
     mov     rcx, rdi
     call    rbx
+    mov     [rsp+40h], rax                 ; native return value
+    mov     rcx, r12
+    mov     edx, r13d
+    call    xrl_teb_restore                ; guest view back if it was live
+    mov     rax, [rsp+40h]
     lea     rsp, [rbp-24]
     pop     r13
     pop     r12

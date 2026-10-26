@@ -205,6 +205,8 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     xrl_thread *t = xrl_cur();
     if (!t) return EXCEPTION_CONTINUE_SEARCH;
     if (t->in_sys > 0 || host_stack_fault(ep->ContextRecord)) return EXCEPTION_CONTINUE_SEARCH;   /* layer/host code: SEH handles it */
+    /* A guest fault: the guest TEB view is live; the handler below is host code. */
+    int was_guest = xrl_teb_enter_host(t);
 
     /* Windows zeroes the FS base on context switches; the first guest access
      * afterwards faults. Restore from the authoritative copy and retry. */
@@ -212,6 +214,7 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         if ((u64)_readfsbase_u64() != t->guest_tp) {
             _writefsbase_u64(t->guest_tp);
             InterlockedIncrement64(&xrl_fs_rearms);
+            xrl_teb_restore(t, was_guest);
             return EXCEPTION_CONTINUE_EXECUTION;
         }
     }

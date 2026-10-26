@@ -26,7 +26,7 @@
 # Disk: sources ~0.4 GB, build tree ~1.5-2.5 GB, rootfs ~0.5 GB.  The script prints free space
 # before/after the heavy stages and refuses to start `build` below XRL_MIN_FREE_GB (default 4).
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
-need gcc make git autoconf flex bison perl x86_64-w64-mingw32-gcc
+need gcc make git autoconf flex bison perl x86_64-w64-mingw32-gcc python3 file
 
 stages=("$@"); [ ${#stages[@]} -eq 0 ] && stages=(vendor musl patch tools configure build install check)
 want() { local s; for s in "${stages[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
@@ -81,7 +81,7 @@ if want configure; then
   # ac_cv_*: epoll off -> the in-process wineserver uses poll() (fewer syscalls to implement in the layer)
   CC="$SYS/bin/xrl-musl-gcc" CROSSCC=x86_64-w64-mingw32-gcc \
   CPPFLAGS="-I$ROOT/include" \
-  CFLAGS="-O1 -g0 -std=gnu17 -fcf-protection=none -fno-stack-protector" \
+  CFLAGS="-O1 -g0 -std=gnu17 -fcf-protection=none -fno-stack-protector -mno-tls-direct-seg-refs" \
   CROSSCFLAGS="-O1" \
   "$SRC/configure" --host=x86_64-linux-musl --build=x86_64-linux-gnu \
       ac_cv_func_epoll_create=no ac_cv_func_epoll_create1=no \
@@ -116,11 +116,29 @@ if want install; then
   install -m 755 "$BLD/server/wineserver.so" "$OUT/usr/lib/wine/x86_64-unix/wineserver.so"
   # the interpreter the layer's VFS serves at /lib/ld-musl-x86_64.so.1
   mkdir -p "$OUT/lib"; cp "$SYS/usr/lib/libc.so" "$OUT/lib/ld-musl-x86_64.so.1"
+  # Thread pointer: the console has no FSGSBASE, so every `mov %fs:0,%reg` becomes a load from
+  # the host TEB slot (XRL_TP_GS_OFFSET in include/xrl_abi.h). Console variant only: the hosttest
+  # rootfs runs on real Linux, where FS works and the TEB slot does not exist.
+  if [ $variant != hosttest ]; then
+    find "$OUT" -type f -print0 | while IFS= read -r -d '' f; do
+      case "$(file -b "$f")" in ELF*x86-64*) echo "$f" ;; esac
+    done | xargs -r python3 "$ROOT/tools/xrl-tpfix.py" >tpfix.log 2>&1 \
+      || { tail -20 tpfix.log; die "xrl-tpfix: unsupported %fs use (see $BLD/tpfix.log)"; }
+    log "wine: thread-pointer loads patched ($(grep -c 'load(s)' tpfix.log) ELF files)"
+  fi
   log "wine: installed into $OUT ($(du -sh "$OUT" | cut -f1))"
   [ "${XRL_KEEP_OBJS:-1}" = 0 ] && { find "$BLD" -name '*.o' -delete; log "build objects deleted"; }
 fi
 
 if want check; then
   if [ $variant = hosttest ]; then warn "hosttest rootfs contains the pass-through shim; skipping no-syscall check"
-  else "$WINE_DIR/scripts/check-no-syscall.sh" "$OUT"; fi
+  else
+    "$WINE_DIR/scripts/check-no-syscall.sh" "$OUT"
+    # and no %fs use left anywhere (the console cannot set an FS base)
+    find "$OUT" -type f -print0 | while IFS= read -r -d '' f; do
+      case "$(file -b "$f")" in ELF*x86-64*) echo "$f" ;; esac
+    done | xargs -r python3 "$ROOT/tools/xrl-tpfix.py" --check >"$BLD/tpcheck.log" 2>&1 \
+      || { grep -v 'OK, no' "$BLD/tpcheck.log" | head -20; die "check: %fs use remains"; }
+    log "check: no %fs use in $(wc -l <"$BLD/tpcheck.log") ELF files"
+  fi
 fi

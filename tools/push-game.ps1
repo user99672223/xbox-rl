@@ -86,17 +86,36 @@ function Save-State($st) {
     $j | ConvertTo-Json -Depth 4 | Set-Content $stateFile -Encoding utf8
 }
 
-# canary: smallest file first, into its real nested directory
+# 1. directories: the upload endpoint does not create them (verified on the console), so create
+#    every level once, parents first, before any upload.
+$dirs = [System.Collections.Generic.SortedSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($f in $todo) {
+    $d = '\LocalState\' + $Dest + $(if ($f.Rel.Contains('\')) { '\' + (Split-Path $f.Rel -Parent) } else { '' })
+    while ($d -and $d -ne '\LocalState') { [void]$dirs.Add($d); $d = Split-Path $d -Parent }
+}
+$made = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($d in ($dirs | Sort-Object { ($_ -split '\\').Count })) {
+    $parent = Split-Path $d -Parent; $name = Split-Path $d -Leaf
+    try { Invoke-Dp $xbox ((Get-DpFileUrl $full $parent '' 'folder') + "&newfoldername=$([uri]::EscapeDataString($name))") -Method POST | Out-Null }
+    catch {
+        $list = Invoke-Dp $xbox (Get-DpFileUrl $full $parent '' 'files')
+        if (-not ($list.Items | Where-Object { $_.Name -eq $name -and $_.Type -eq 16 })) { throw "cannot create $d : $($_.Exception.Message)" }
+    }
+    [void]$made.Add($d)
+}
+Write-Host "[push-game] $($made.Count) directories ready"
+
+# 2. canary: smallest file first, so a format/size surprise fails before the big files
 $canary = $todo | Sort-Object Size | Select-Object -First 1
 $canaryDir = '\LocalState\' + $Dest + $(if ($canary.Rel.Contains('\')) { '\' + (Split-Path $canary.Rel -Parent) } else { '' })
 Write-Host "[push-game] canary upload: $($canary.Rel) -> $canaryDir"
 try { Send-DpFile $xbox $full $canaryDir $canary.Full }
-catch { throw "Canary upload failed - Device Portal may not create missing directories, or the path form is wrong. Details: $($_.Exception.Message)" }
+catch { throw "Canary upload failed. Details: $($_.Exception.Message)" }
 $state[$canary.Rel] = $canary.Stamp
 Write-Host '[push-game] canary ok'
 
-$cred = $xbox.Cred; $base = $xbox.Base; $insecure = $xbox.Base.StartsWith('http://')
-$done = [System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
+$common = Join-Path $PSScriptRoot '_common.ps1'
+$done =[System.Collections.Concurrent.ConcurrentDictionary[string, string]]::new()
 $failed = [System.Collections.Concurrent.ConcurrentBag[string]]::new()
 $counter = [hashtable]::Synchronized(@{ n = 0; bytes = 0L; last = [datetime]::UtcNow; t0 = [datetime]::UtcNow })
 $total = $todo.Count; $totalBytes = $totalTodo
@@ -104,14 +123,14 @@ $total = $todo.Count; $totalBytes = $totalTodo
 try {
     $todo | Where-Object { $_.Rel -ne $canary.Rel } | ForEach-Object -ThrottleLimit $Throttle -Parallel {
         $f = $_
+        # each runspace gets its own Device Portal session (CSRF cookie) and the shared upload code
+        . $using:common
+        if (-not (Get-Variable -Name xbx -Scope Script -ErrorAction SilentlyContinue)) { $script:xbx = Get-XboxConfig }
         $dir = '\LocalState\' + $using:Dest + $(if ($f.Rel.Contains('\')) { '\' + (Split-Path $f.Rel -Parent) } else { '' })
-        $uri = "$($using:base)/api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=$([uri]::EscapeDataString($using:full))&path=$([uri]::EscapeDataString($dir))"
-        $extra = @{}; if ($using:insecure) { $extra['AllowUnencryptedAuthentication'] = $true }
         $ok = $false
         for ($try = 1; $try -le 3 -and -not $ok; $try++) {
             try {
-                Invoke-RestMethod -Uri $uri -Method POST -Credential $using:cred -Authentication Basic -SkipCertificateCheck @extra `
-                    -Form @{ ($f.Rel | Split-Path -Leaf) = (Get-Item -LiteralPath $f.Full) } -TimeoutSec 0 | Out-Null
+                Send-DpFile $script:xbx $using:full $dir $f.Full
                 $ok = $true
             } catch {
                 if ($try -eq 3) { ($using:failed).Add("$($f.Rel): $($_.Exception.Message)") } else { Start-Sleep -Seconds (2 * $try) }

@@ -381,6 +381,40 @@ static void test_v2(void)
     CHECK(sc3(27, t, 4096, vec) == 0, "unrelated mapping (child TLS) left intact");
 }
 
+/* ---- shared TEB: guest view vs host view (docs/gs-teb.md) ------------------ */
+static u64 gs_read(u64 off) { u64 v; __asm__ volatile("mov %%gs:(%1), %0" : "=r"(v) : "r"(off)); return v; }
+static void gs_write(u64 off, u64 v) { __asm__ volatile("mov %0, %%gs:(%1)" : : "r"(v), "r"(off) : "memory"); }
+
+static void test_teb(void)
+{
+    out("shared TEB (guest/host views):\n");
+    /* Garbage in fields host code depends on: TLS array, PEB, LastError, FlsData.
+     * Any host code (Win32, the CRT, the log path) that ran with these live would
+     * crash, so passing = every transition swapped the host view in. */
+    static const u64 offs[4] = { 0x58, 0x60, 0x68, 0x17c8 };
+    u64 saved[4];
+    for (int i = 0; i < 4; i++) saved[i] = gs_read(offs[i]);
+    for (int i = 0; i < 4; i++) gs_write(offs[i], 0x5ee70000ull + i);
+
+    long fd = sc4(257, -100, "/tmp/teb-test.txt", 0102, 0644);
+    long w = fd >= 0 ? sc3(1, fd, "teb", 3) : -1;
+    long l = fd >= 0 ? sc3(8, fd, 0, 0) : -1;
+    char b[4] = {0};
+    long rd = fd >= 0 ? sc3(0, fd, b, 3) : -1;
+    if (fd >= 0) sc1(3, fd);
+    CHECK(fd >= 0 && w == 3 && l == 0 && rd == 3 && !memcmp(b, "teb", 3), "file syscalls run host Win32 code under a foreign guest TEB");
+    void *m = mmap_anon(1 << 20, 3);
+    CHECK((long)m > 0, "mmap under a foreign guest TEB");
+    struct gctx3 { u32 sz, magic, abi, flags; u64 sysc, tlsoff; void (*log)(int, const char *, const char *); } *c = (void *)xctx;
+    c->log(1, "guest", "downcall (host CRT + logging) under a foreign guest TEB");
+    out("  ok   downcall through the op-table stub under a foreign guest TEB\n");
+
+    int same = 1;
+    for (int i = 0; i < 4; i++) if (gs_read(offs[i]) != 0x5ee70000ull + i) same = 0;
+    CHECK(same, "guest TEB values survive syscalls and downcalls");
+    for (int i = 0; i < 4; i++) gs_write(offs[i], saved[i]);
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -408,6 +442,7 @@ void cstart(u64 *sp)
     test_fs();
     test_threads();
     test_v2();
+    test_teb();
     outn("TOTAL FAILS", fails);
     sc1(231, fails);
     for (;;) {}

@@ -163,7 +163,9 @@ static DWORD WINAPI thread_main(LPVOID p)
     xrl_thread *t = (xrl_thread *)p;
     t->win_tid = GetCurrentThreadId();
     xrl_thread_bind(t);
-    tp_slot_set(t->guest_tp);
+    tp_slot_set(t->guest_tp);           /* slot 63 is outside the TEB swap set */
+    xrl_teb_thread_init(t);             /* pristine TEB: capture the host view  */
+    xrl_teb_enter_guest(t);
     if (t->is_main) xrl_enter_guest(t->resume[6], t->child_rsp, t);
     else xrl_clone_resume(t);
     return 0;
