@@ -50,9 +50,15 @@ $cfg = Join-Path $dir 'launch.cfg'
 $lines = [Collections.Generic.List[string]]::new()
 $lines.AddRange([string[]](Get-Content (Join-Path $PSScriptRoot 'configs\rl.cfg')))
 if (-not $NoLogin) {
-    $argsFile = Join-Path $HOME 'xrl-work\epic-launch\launch-args.json'
+    # the laptop's Rocket League runs (tools/run-rl.sh) capture through the launcher too: share their lock
+    $lock = Join-Path $HOME 'xrl-work\rl-run.lock'
+    while ((Test-Path $lock) -and ((Get-Date) - (Get-Item $lock).LastWriteTime).TotalMinutes -lt 20) {
+        Write-Host '[console-rl] a laptop Rocket League run holds the lock; waiting...'; Start-Sleep 15
+    }
+    "console-rl.ps1 $(Get-Date -Format s)" | Set-Content $lock
+    $argsFile = Join-Path $HOME 'xrl-work\console\launch-args.json'
     $global:LASTEXITCODE = 0
-    & "$PSScriptRoot\epic-capture.ps1" -Out $argsFile
+    try { & "$PSScriptRoot\epic-capture.ps1" -Out $argsFile } finally { Remove-Item $lock -ErrorAction SilentlyContinue }
     if ($LASTEXITCODE) { throw "Epic capture failed ($LASTEXITCODE)" }
     foreach ($a in (Get-Content -Raw $argsFile | ConvertFrom-Json).args) { $lines.Add("argv=$a") }
     Write-Host "[console-rl] $(@((Get-Content -Raw $argsFile | ConvertFrom-Json).args).Count) Epic arguments added (not shown)"
