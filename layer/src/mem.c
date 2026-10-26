@@ -1384,9 +1384,13 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
         }
         if (vma_unmap_range(target, target + len, 0)) { res = -LX_ENOMEM; goto out; }
     } else {
+        /* a hint is taken when the range is free, as Linux's get_unmapped_area does: outside the arena
+         * once the host reservation succeeds, inside it above the brk reserve (mmap's part of it) */
         if (addr && !(addr & (LX_PAGE - 1)) && addr >= 0x10000 && addr + len > addr && addr + len <= 0x7fffffff0000ull &&
-            range_free(addr, addr + len) && !(addr + len > g_arena_base && addr < g_arena_end)) {
-            if (!ensure_reserved(addr, addr + len)) target = addr;
+            range_free(addr, addr + len)) {
+            if (addr + len > g_arena_base && addr < g_arena_end) {
+                if (in_arena(addr, addr + len) && addr >= g_mmap_floor) target = addr;
+            } else if (!ensure_reserved(addr, addr + len)) target = addr;
         }
         if (!target) {
             target = find_gap(len, g_mmap_top);

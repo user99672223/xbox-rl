@@ -1105,6 +1105,20 @@ static void test_mmap_above_top(void)
     CHECK(m == (long)want, "MAP_FIXED_NOREPLACE 16 MiB above the highest mapping gets that address (free, as on Linux)");
     if (m == (long)want) { *(volatile u64 *)want = 5; sc2(11, want, 4096); }
     CHECK(sc(9, top - 4096, 4096, 3, 0x100022, -1, 0) == -17, "MAP_FIXED_NOREPLACE over the highest mapping -> -EEXIST");
+
+    /* a plain hint (no MAP_FIXED*): a free range is given as asked, a busy one moves elsewhere */
+    long a = sc(9, 0, 3 * 4096, 3, 0x22 /* PRIVATE|ANON */, -1, 0);
+    CHECK(a > 0, "hint test: a scratch mapping");
+    if (a > 0) {
+        u64 hole = (u64)a + 4096;
+        sc2(11, hole, 4096);   /* free its middle page */
+        long h = sc(9, hole, 4096, 3, 0x22, -1, 0);
+        CHECK(h == (long)hole, "mmap hint at a free page inside the mmap area gets that address (as on Linux)");
+        long b = sc(9, (u64)a, 4096, 3, 0x22, -1, 0);
+        CHECK(b > 0 && b != a, "mmap hint at a busy page gets another address, nothing replaced");
+        if (b > 0) sc2(11, b, 4096);
+        sc2(11, (u64)a, 3 * 4096);
+    }
 }
 
 static void test_mem(void)
