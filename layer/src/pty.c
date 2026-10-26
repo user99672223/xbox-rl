@@ -463,8 +463,8 @@ static slong common_ioctl(xfile *f, pty *p, u64 req, u64 arg, int master)
     case IOC_TIOCGSID: { int s; AcquireSRWLockShared(&p->lock); s = p->sid ? p->sid : 1; ReleaseSRWLockShared(&p->lock); return xrl_ctu(arg, &s, 4) ? -LX_EFAULT : 0; }
     case IOC_TIOCSCTTY: {   /* the caller's session takes this terminal: its foreground group is the caller's group (proc.c: the real ids) */
         AcquireSRWLockExclusive(&p->lock);
-        if (!p->pgrp) p->pgrp = G.pid;
-        if (!p->sid) p->sid = G.pid;
+        if (!p->pgrp) p->pgrp = xrl_cur_pid();
+        if (!p->sid) p->sid = xrl_cur_pid();
         ReleaseSRWLockExclusive(&p->lock);
         return 0;
     }

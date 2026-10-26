@@ -363,3 +363,6 @@ static u32 env_id(const char *name)
 }
 u32 xrl_cur_uid(void) { static u32 v = ~0u; if (v == ~0u) v = env_id("XRL_UID"); return v; }
 u32 xrl_cur_gid(void) { static u32 v = ~0u; if (v == ~0u) v = env_id("XRL_GID"); return v; }
+u32 xrl_cur_umask(void) { return G.umask; }
+int xrl_cur_pid(void) { return G.pid; }
+void xrl_signal_pid(int pid, int sig) { (void)pid; xrl_sig_kill_process(sig); }

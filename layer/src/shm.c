@@ -123,7 +123,7 @@ slong xrl_shmget(int key, u64 size, int flags)
                 g->size = ALIGN_UP(size, LX_PAGE); g->reqsize = size;
                 g->mode = (u32)flags & 0777;
                 g->uid = g->cuid = xrl_cur_uid(); g->gid = g->cgid = xrl_cur_gid();
-                g->cpid = G.pid; g->ctime = now_s();
+                g->cpid = xrl_cur_pid(); g->ctime = now_s();
                 g->next = g_segs; g_segs = g;
                 r = g->id;
             }
@@ -149,7 +149,7 @@ slong xrl_shmat(int id, u64 addr, int flags)
         }
         if (!g->addr) r = -LX_ENOMEM;
         else if (addr && addr != g->addr) r = -LX_EINVAL;   /* one address per segment: see the header comment */
-        else { g->nattch++; g->lpid = G.pid; g->atime = now_s(); r = (slong)g->addr; }
+        else { g->nattch++; g->lpid = xrl_cur_pid(); g->atime = now_s(); r = (slong)g->addr; }
     }
     ReleaseSRWLockExclusive(&g_shm_lock);
     return r;
@@ -158,7 +158,7 @@ slong xrl_shmat(int id, u64 addr, int flags)
 static void sysv_detach(shmseg *g)   /* lock held */
 {
     if (g->nattch > 0) g->nattch--;
-    g->dtime = now_s(); g->lpid = G.pid;
+    g->dtime = now_s(); g->lpid = xrl_cur_pid();
     if (g->removed && g->nattch == 0) { seg_unlink(g); seg_destroy(g); }
 }
 

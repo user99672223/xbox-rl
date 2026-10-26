@@ -329,6 +329,9 @@ slong xrl_vfs_chown(int dirfd, const char *path, u32 uid, u32 gid, int flags);  
 slong xrl_vfs_fchown(int fd, u32 uid, u32 gid);
 u32 xrl_cur_uid(void);   /* util.c: the caller's effective ids (XRL_UID/XRL_GID, default 1000) */
 u32 xrl_cur_gid(void);
+int xrl_cur_pid(void);   /* the calling process (G.pid until proc.c) */
+void xrl_signal_pid(int pid, int sig);   /* a signal for a process (a process that is gone: dropped) */
+u32 xrl_cur_umask(void);   /* the caller's umask (G.umask until proc.c holds one per process) */
 slong xrl_vfs_utimens(int dirfd, const char *path, const lx_timespec *ts, int flags);
 slong xrl_vfs_statfs(const char *path, lx_statfs *st);
 int  xrl_vfs_host_path(const char *guest_abs, wchar_t *out, size_t cap);   /* -> \\?\ wide */

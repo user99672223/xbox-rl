@@ -685,7 +685,7 @@ static void meta_apply(const char *gpath, lx_stat *st)
 static void meta_created(const char *gabs, int isdir, u32 mode)
 {
     if (!g_meta_on) return;
-    meta_put(gabs, mode & ~G.umask & 07777, xrl_cur_uid(), xrl_cur_gid(), isdir);
+    meta_put(gabs, mode & ~xrl_cur_umask() & 07777, xrl_cur_uid(), xrl_cur_gid(), isdir);
 }
 
 static void meta_load(const wchar_t *file_w)

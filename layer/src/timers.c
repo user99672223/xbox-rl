@@ -6,8 +6,8 @@
  * set changed". At an expiry it books the expirations into the timerfd (count += 1 + overruns), re-arms an
  * interval timer or disarms a one-shot, and bumps the layer's I/O epoch (ipc.c) so read()/poll()/epoll_wait()
  * sleepers look again - the same wake-up path pipes and sockets use, so a timerfd needs no change in poll/epoll.
- * ITIMER_REAL sends SIGALRM with xrl_sig_kill_process (the one process there is today; proc.c's per-process
- * itimers replace that call). ITIMER_VIRTUAL/ITIMER_PROF are accepted and never fire.
+ * ITIMER_REAL (and alarm) is per process: one entry per pid, kept across exec, not inherited by a fork, signalled with
+ * xrl_signal_pid (util.c; the pid comes from xrl_cur_pid()). ITIMER_VIRTUAL/ITIMER_PROF are accepted and never fire.
  *
  * inotify: a descriptor that never reports an event. inotify_add_watch validates the path and hands out watch
  * numbers; programs that watch files for changes (glib, Firefox) then simply see none. Not provided: signalfd.
@@ -33,8 +33,8 @@ typedef struct tfd {
 
 static SRWLOCK g_tm_lock = SRWLOCK_INIT;     /* guards every timer below */
 static tfd *g_tfds;
-static int g_itimer_armed;
-static u64 g_it_next, g_it_interval;
+typedef struct itimer { struct itimer *next; int pid; u64 next_ns, interval_ns; } itimer;
+static itimer *g_its;   /* ITIMER_REAL timers, one per process; next_ns ~0 = disarmed (the thread drops it) */
 static INIT_ONCE g_tm_once = INIT_ONCE_STATIC_INIT;
 static HANDLE g_tm_ev, g_tm_timer;
 
@@ -46,7 +46,7 @@ static DWORD WINAPI tm_thread(LPVOID unused)
     HANDLE h[2] = { g_tm_ev, g_tm_timer };
     for (;;) {
         u64 now = xrl_mono_ns(), earliest = ~0ull;
-        int notify = 0, alarm = 0;
+        int notify = 0;
         AcquireSRWLockExclusive(&g_tm_lock);
         for (tfd *t = g_tfds; t; t = t->next) {
             if (!t->armed) continue;
@@ -57,14 +57,18 @@ static DWORD WINAPI tm_thread(LPVOID unused)
             }
             if (t->armed && t->next_ns < earliest) earliest = t->next_ns;
         }
-        if (g_itimer_armed && g_it_next <= now) {
-            alarm = 1;
-            if (g_it_interval) { u64 k = 1 + (now - g_it_next) / g_it_interval; g_it_next += k * g_it_interval; } else g_itimer_armed = 0;
+        int fire[16], nfire = 0;
+        for (itimer *it = g_its; it; it = it->next) {
+            if (it->next_ns <= now) {
+                if (nfire < 16) fire[nfire++] = it->pid;
+                if (it->interval_ns) { u64 k = 1 + (now - it->next_ns) / it->interval_ns; it->next_ns += k * it->interval_ns; } else it->next_ns = ~0ull;
+            }
+            if (it->next_ns != ~0ull && it->next_ns < earliest) earliest = it->next_ns;
         }
-        if (g_itimer_armed && g_it_next < earliest) earliest = g_it_next;
+        for (itimer **pp = &g_its; *pp;) if ((*pp)->next_ns == ~0ull) { itimer *d = *pp; *pp = d->next; free(d); } else pp = &(*pp)->next;
         ReleaseSRWLockExclusive(&g_tm_lock);
         if (notify) xrl_io_notify();
-        if (alarm) xrl_sig_kill_process(LX_SIGALRM);
+        for (int i = 0; i < nfire; i++) xrl_signal_pid(fire[i], LX_SIGALRM);
         if (earliest == ~0ull) { CancelWaitableTimer(g_tm_timer); }
         else {
             now = xrl_mono_ns();
@@ -218,6 +222,14 @@ slong xrl_timerfd_gettime(int fd, u64 ucur)
 /* ============================================================== itimers */
 static void tv_us(u64 ns, lx_timeval *t) { t->tv_sec = (s64)(ns / 1000000000ull); t->tv_usec = (s64)(ns % 1000000000ull) / 1000; }
 
+static itimer *it_find(int pid) { for (itimer *it = g_its; it; it = it->next) if (it->pid == pid) return it; return NULL; }   /* lock held */
+static itimer *it_get(int pid)   /* lock held */
+{
+    itimer *it = it_find(pid);
+    if (!it) { it = (itimer *)calloc(1, sizeof *it); if (it) { it->pid = pid; it->next_ns = ~0ull; it->next = g_its; g_its = it; } }
+    return it;
+}
+
 slong xrl_setitimer(int which, u64 unew, u64 uold)
 {
     if (which < 0 || which > 2) return -LX_EINVAL;
@@ -227,15 +239,15 @@ slong xrl_setitimer(int which, u64 unew, u64 uold)
     if (!tm_up()) return -LX_ENOSYS;
     lx_timeval old[2]; memset(old, 0, sizeof old);
     if (which == 0) {
+        int pid = xrl_cur_pid();
         u64 now = xrl_mono_ns();
         AcquireSRWLockExclusive(&g_tm_lock);
-        tv_us(g_it_interval, &old[0]);
-        tv_us(g_itimer_armed && g_it_next > now ? g_it_next - now : 0, &old[1]);
+        itimer *it = it_find(pid);
+        if (it && it->next_ns != ~0ull) { tv_us(it->interval_ns, &old[0]); tv_us(it->next_ns > now ? it->next_ns - now : 0, &old[1]); }
         if (unew) {
             u64 val = (u64)nv[1].tv_sec * 1000000000ull + (u64)nv[1].tv_usec * 1000ull;
-            g_itimer_armed = val != 0;
-            g_it_next = now + val;
-            g_it_interval = (u64)nv[0].tv_sec * 1000000000ull + (u64)nv[0].tv_usec * 1000ull;
+            if (!val) { if (it) { it->interval_ns = 0; it->next_ns = ~0ull; } }
+            else if ((it = it_get(pid)) != NULL) { it->next_ns = now + val; it->interval_ns = (u64)nv[0].tv_sec * 1000000000ull + (u64)nv[0].tv_usec * 1000ull; }
         }
         ReleaseSRWLockExclusive(&g_tm_lock);
         if (unew) tm_wake();
@@ -250,8 +262,8 @@ slong xrl_getitimer(int which, u64 ucur)
     if (which == 0) {
         u64 now = xrl_mono_ns();
         AcquireSRWLockShared(&g_tm_lock);
-        tv_us(g_it_interval, &cur[0]);
-        tv_us(g_itimer_armed && g_it_next > now ? g_it_next - now : 0, &cur[1]);
+        itimer *it = it_find(xrl_cur_pid());
+        if (it && it->next_ns != ~0ull) { tv_us(it->interval_ns, &cur[0]); tv_us(it->next_ns > now ? it->next_ns - now : 0, &cur[1]); }
         ReleaseSRWLockShared(&g_tm_lock);
     }
     return xrl_ctu(ucur, cur, sizeof cur) ? -LX_EFAULT : 0;
@@ -260,10 +272,13 @@ slong xrl_getitimer(int which, u64 ucur)
 slong xrl_alarm(unsigned seconds)
 {
     if (!tm_up()) return -LX_ENOSYS;
+    int pid = xrl_cur_pid();
     u64 now = xrl_mono_ns();
     AcquireSRWLockExclusive(&g_tm_lock);
-    u64 left = g_itimer_armed && g_it_next > now ? g_it_next - now : 0;
-    g_itimer_armed = seconds != 0; g_it_next = now + (u64)seconds * 1000000000ull; g_it_interval = 0;
+    itimer *it = it_find(pid);
+    u64 left = it && it->next_ns != ~0ull && it->next_ns > now ? it->next_ns - now : 0;
+    if (!seconds) { if (it) { it->interval_ns = 0; it->next_ns = ~0ull; } }
+    else if ((it = it_get(pid)) != NULL) { it->next_ns = now + (u64)seconds * 1000000000ull; it->interval_ns = 0; }
     ReleaseSRWLockExclusive(&g_tm_lock);
     tm_wake();
     return (slong)((left + 999999999ull) / 1000000000ull);
