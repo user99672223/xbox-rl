@@ -144,6 +144,22 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-27 - The X11 desktop runs on the layer: Xvfb + twm + xterm as guest processes, a screenshot of it
+  (`results/userland-xvfb-twm-xterm.png`).** Needs both the procs branch (fork/exec) and this one (AF_UNIX, pty,
+  shm, modes/owners, timers). Checked on a scratch merge of `claude/linux-procs` and `claude/linux-userland`
+  (6 of 6 runs; `layer/tests/xsession-test.sh`, `tools/xwd2png.py`): xdpyinfo lists 22 extensions incl. MIT-SHM,
+  xwininfo shows twm's frames and xterm's window, xterm's shell prints `id` through the pty. Found by running it
+  and fixed in this branch: (1) **EPOLLET** lost a wake-up when a socket was drained and refilled between two
+  `epoll_wait`s (the old code compared ready masks; now a file with an edge counter reports when it moved, the
+  rest when the I/O epoch did) - xorg's `ospoll` uses it for every client; (2) **ITIMER_REAL/alarm are per process**
+  (Xvfb's SIGALRM killed the shell); (3) the load-time rewriter let a window run from `__restore_rt`'s `syscall`
+  into `__sigsetjmp`, so every `sigsetjmp()` crashed (xterm's child); (4) `setgroups`/`setfsuid`/`setfsgid` were
+  ENOSYS and xterm's pty child exits 28 on that. **To merge the two branches** (conflicts are all in
+  `syscall.c` identity code, `CMakeLists.txt`, `build.sh`, `decisions.md`): keep procs' `getuid..getresgid/umask/
+  getpid` bodies; make `xrl_cur_uid/gid/umask/pid` in util.c read `xrl_curproc()` (euid, egid, umask, pid),
+  `xrl_signal_pid` call `xrl_sys_kill`, give proc.c's first process `xrl_env_uid()/xrl_env_gid()` (XRL_UID/XRL_GID)
+  and define `xrl_tty_signal(pgrp, sig)` there as `xrl_sys_kill(-pgrp, sig)`. The exact script that does it,
+  with every conflict rule, is `xrl-work/linux-agents/userland/remerge.py`.
 - **2026-10-26 - Alpine 3.24 is the userland rootfs; packages come from `apk`.** `alpine-minirootfs` 3.24.3
   (x86_64, sha256 checked against the mirror's `.sha256`) is unpacked by `tools/xrl-rootfs-unpack.py` (tar
   stream or file -> NTFS tree + `.xrl-symlinks` + `.xrl-meta`; hard links become copies) into a tree outside
