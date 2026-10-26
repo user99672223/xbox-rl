@@ -144,6 +144,72 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Easy Anti-Cheat module byte-identical: chosen (b), translation
+  into a code cache next to the image (`layer/src/dbt.c`, `layer/asm/dbt.asm`),
+  selected with `XRL_DBT`. Rewriting in place stays the default for everything
+  else.** Why a change was needed: the rewriter patches the module's code, and an
+  anti-cheat checks its own code; the stand-in measured 69 of 8192 bytes changed.
+  On Linux an unmodified program simply has its vendor's bytes; so the aim here is
+  the same, not a way to hide anything. Why the code cannot run as it is: a raw
+  `syscall` executed on Windows enters the *Windows* kernel with a Linux number
+  (no exception, no way to intercept), and the console has no FSGSBASE, so `%fs` is
+  base 0 (a `%fs:0x28` canary read hits the null page). Compared:
+
+  | | (a) x86-64 interpreter for the module's threads | (b) translation into a code cache | (c) other: make only the two instructions fault |
+  |---|---|---|---|
+  | Image bytes | untouched | untouched (pages stay readable, r-xp in /proc/self/maps) | untouched |
+  | `syscall`, `%fs` | emulated | replaced by the rewriter's own sequences, in the cache | `%fs`: an AV in the null page per access, decoded and emulated by the exception handler (one exception, microseconds, each; one or two per stack-protected call; not measured); `syscall`: **cannot** be made to fault on Windows, so single-stepping every instruction (TF) is the only way: an interpreter that is slower than (a) |
+  | What has to be written | a whole x86-64 + SSE/AVX2 interpreter (Blink is not vendored; it is built around its own page tables, not our identity-mapped memory, so pointers Wine and the module exchange would need a translation layer) | a length decoder (we have it), an emitter for the few instruction classes that are not copied verbatim, three helpers (about 700 lines of C and 190 of asm) | an emulator for the `%fs` memory forms plus (a) for `syscall` |
+  | Calls between Wine (native) and the module | Wine calling a module function pointer must enter the interpreter; the module calling musl needs a native-call gateway for every import | none needed: translated code is native code; a call from the module to musl is a plain call; a call from Wine into the image enters by an instruction-fetch fault (once per target) | as (b) |
+  | Return addresses / stack walks | whatever the interpreter keeps | a call *inside the image* pushes the **original** return address (the unwinder, `backtrace()` and the module itself see original addresses; C++ exceptions through the module work, tested); a call to native code pushes the cache continuation | original |
+  | Speed (measured, `glibc/bench.c`, same process) | typically 10-50x slower than native (the usual figure for interpreters; not measured here) | straight-line code 1.0x (hash loop 59 ms vs 58 ms), 100k `getpid` syscalls 16 -> 19 ms, 400k-element `qsort` (7 M indirect calls through the lookup helper) 36 -> 106 ms (3x) | `%fs`-heavy code: very slow |
+  | Serves the general Linux layer | yes, but only as a slow fallback | yes: any prebuilt x86-64 program can run unmodified, with its code untouched | no |
+
+  How (b) works. The mapping of the module's code stays as the file has it but is
+  made non-executable for the host. A jump or call into it from outside (Wine got a
+  function pointer by `dlsym`, a thread start routine, a callback) faults on the
+  instruction fetch; the handler (`dbt_veh`, first in the chain) translates the code
+  at that address and, following direct jumps and calls, everything reachable from it
+  (a trace ends at an unconditional transfer), writes it into a cache that sits right
+  after the image (RIP-relative operands need it within 2 GiB; it is a visible
+  anonymous RWX mapping) and resumes there. Instructions are copied as they are,
+  except `syscall` and `%fs:` operands (`rewrite_core.c`'s sequences, now emitted at
+  any address), RIP-relative operands (displacement recomputed so they still reach
+  the same original address: `lea fn(%rip),%rax` still yields the original function
+  address) and control flow: `jmp`/`jcc`/`call` to image addresses become jumps in the
+  cache (a call pushes the original return address with `push imm32; movl $hi,4(%rsp)`:
+  no register, because gcc `-fipa-ra` keeps values in r10/r11 across calls to local
+  functions; found the hard way: the first version corrupted `__printf_fp`), a call
+  through a PLT stub becomes an indirect call through its GOT slot, and `ret`, `jmp *`,
+  `call *` look the original target up in a hash table (`dbt.asm`; a hit continues in
+  the cache; `jmp *` and `ret` preserve every register, since a jump table can sit in
+  the middle of a function; a miss on `jmp *` into the image asks the layer to translate
+  through the syscall path, not by faulting, because a fault's exception frame would
+  land on the red zone). Targets outside the image are plain jumps/calls (natives
+  return straight into the cache).
+  Verified (`layer/tests/dbt-test.sh`): the stand-in module's self-checksum sees **69
+  changed bytes with the rewriter and 0 translated**, its raw `syscall`, `%fs`
+  canary/TLS and 3-thread checks pass; an unmodified static glibc program (30
+  checks: threads, setjmp, IFUNC, stdio, qsort) and a C++ program (exceptions through 6
+  frames with destructors, virtual calls, `std::function`, `backtrace()`) pass with the
+  whole image translated; the Proton EAC bridge chain on Wine runs with **Valve's real
+  `easyanticheat_x64.so` bridge and the stand-in module both translated**.
+  Limits, stated: self-modifying code and generated code are not followed (executing
+  original pages faults, which the guest sees as SIGSEGV); `ret imm16`, far transfers,
+  and `%fs` operands inside branch instructions or with `%rsp` as base are not
+  translated (the site becomes `ud2` and is logged); a fault inside translated code
+  reports the cache address; frames of calls *into native code* show cache addresses to
+  an unwinder (an exception propagating out of native code into the module would
+  fail); entering the image from native code costs one exception per target (a
+  callback invoked 100 000 times from musl is slow; calls inside the image are not);
+  unmapping an image does not drop its translations; a guest `mprotect` of the
+  module's code makes it executable again untranslated; the table has four probe slots
+  per hash (crowding is logged, the target then takes the slow path); the cache is
+  8x the image, 1-64 MiB, committed up front. `XRL_DBT=1` translates every image the
+  rewriter would patch, `XRL_DBT=a,b` only paths containing `a` or `b`
+  (`XRL_DBT=easyanticheat_x64.so` for the EAC module); `XRL_DBT_DUMP=prefix` writes the
+  cache and the original->cache map for `objdump -D -b binary -mi386:x86-64`.
+
 - **2026-10-26 — Exec handover: the process a Windows program creates replaces it
   inside the same OS process (layer `execve` + Wine 0020).** Rocket League starts
   EAC only through `RocketLeague_EAC.exe`, the Epic "EOS bootstrapper"
