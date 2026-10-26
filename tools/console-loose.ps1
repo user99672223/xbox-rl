@@ -22,9 +22,10 @@
 .PARAMETER Name        Folder under LooseApps (default xbox-rl).
 .PARAMETER Uninstall   Remove the msix-installed package first (wipes its LocalState).
 .PARAMETER SkipGame    Do not (re)copy the game.
+.PARAMETER ViaPortal   Upload the app files through Device Portal (no SMB session needed); with -SkipGame.
 #>
 [CmdletBinding()]
-param([string]$Name = 'xbox-rl', [switch]$Uninstall, [switch]$SkipGame)
+param([string]$Name = 'xbox-rl', [switch]$Uninstall, [switch]$SkipGame, [switch]$ViaPortal)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\_common.ps1"
 $xbox = Get-XboxConfig
@@ -60,12 +61,23 @@ if ($Uninstall) {
     }
 }
 
-# 3. copy over SMB
-if (-not (Test-Path "\\$($xbox.Ip)\DevelopmentFiles")) {
-    throw "No SMB session to \\$($xbox.Ip)\DevelopmentFiles: open it in File Explorer once and log in, then re-run."
+# 3. copy over SMB (-ViaPortal: the app files through Device Portal's DevelopmentFiles folder instead)
+if ($ViaPortal) {
+    if (-not $SkipGame) { throw '-ViaPortal copies the app files only: add -SkipGame (the game goes over SMB)' }
+    foreach ($f in Get-ChildItem $stage -Recurse -File) {
+        $rel = [IO.Path]::GetDirectoryName($f.FullName.Substring($stage.Length).TrimStart('\'))
+        $dir = "\LooseApps\$Name" + $(if ($rel) { "\$rel" } else { '' })
+        New-DpDirectory $xbox '' $dir -KnownFolder DevelopmentFiles
+        Send-DpFile $xbox '' $dir $f.FullName -KnownFolder DevelopmentFiles
+    }
+    Write-Host "[loose] app files uploaded through Device Portal"
 }
-$rc = 0
-robocopy $stage $share /E /R:2 /W:2 /NP /NFL /NDL /XD game | Out-Host; if ($LASTEXITCODE -ge 8) { throw "app copy failed (robocopy $LASTEXITCODE)" }
+else {
+    if (-not (Test-Path "\\$($xbox.Ip)\DevelopmentFiles")) {
+        throw "No SMB session to \\$($xbox.Ip)\DevelopmentFiles: open it in File Explorer once and log in, then re-run (or use -ViaPortal -SkipGame)."
+    }
+    robocopy $stage $share /E /R:2 /W:2 /NP /NFL /NDL /XD game | Out-Host; if ($LASTEXITCODE -ge 8) { throw "app copy failed (robocopy $LASTEXITCODE)" }
+}
 if (-not $SkipGame) {
     $game = $env1['GAME_SRC']; if (-not $game) { throw 'GAME_SRC is not set in .env' }
     Write-Host "[loose] copying the game ($game) -> $share\game"

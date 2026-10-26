@@ -213,9 +213,11 @@ function Get-RequiredPackage {
     return $p
 }
 
-function Get-DpFileUrl([string]$FullName, [string]$RemoteDir, [string]$FileName, [string]$Endpoint = 'file') {
+function Get-DpFileUrl([string]$FullName, [string]$RemoteDir, [string]$FileName, [string]$Endpoint = 'file', [string]$KnownFolder = 'LocalAppData') {
     # RemoteDir like  \LocalState  or  \LocalState\rootfs\game\Binaries
-    $u = "/api/filesystem/apps/${Endpoint}?knownfolderid=LocalAppData&packagefullname=$([uri]::EscapeDataString($FullName))&path=$([uri]::EscapeDataString($RemoteDir))"
+    # KnownFolder DevelopmentFiles: RemoteDir like \LooseApps\xbox-rl (no package, FullName unused)
+    $pkg = if ($KnownFolder -eq 'LocalAppData') { "&packagefullname=$([uri]::EscapeDataString($FullName))" } else { '' }
+    $u = "/api/filesystem/apps/${Endpoint}?knownfolderid=$KnownFolder$pkg&path=$([uri]::EscapeDataString($RemoteDir))"
     if ($FileName) { $u += "&filename=$([uri]::EscapeDataString($FileName))" }
     return $u
 }
@@ -233,9 +235,9 @@ function Send-DpFile {
     # Streams from disk (game files are up to ~1 GB) with a multipart body shaped
     # like Invoke-DpMultipart's: the real console's filesystem endpoint returns 500
     # for PowerShell's -Form body (filename*= parameter / quoted boundary).
-    param($Xbox, [string]$FullName, [string]$RemoteDir, [string]$LocalFile)
+    param($Xbox, [string]$FullName, [string]$RemoteDir, [string]$LocalFile, [string]$KnownFolder = 'LocalAppData')
     Initialize-DpSession $Xbox
-    $path = Get-DpFileUrl $FullName $RemoteDir ''
+    $path = Get-DpFileUrl $FullName $RemoteDir '' -KnownFolder $KnownFolder
     $name = [IO.Path]::GetFileName($LocalFile)
     $handler = [System.Net.Http.HttpClientHandler]::new()
     $handler.CookieContainer = $script:DpSession.Cookies
@@ -274,18 +276,18 @@ function Send-DpFile {
 function New-DpDirectory {
     # Creates \LocalState\a\b\c one level at a time (the upload endpoint does not
     # create missing directories). Existing levels are fine.
-    param($Xbox, [string]$FullName, [string]$RemoteDir)
+    param($Xbox, [string]$FullName, [string]$RemoteDir, [string]$KnownFolder = 'LocalAppData')
     $parts = @($RemoteDir.Trim('\').Split('\') | Where-Object { $_ })
     if ($parts.Count -lt 2) { return }          # \LocalState itself always exists
     $parent = '\' + $parts[0]
     for ($i = 1; $i -lt $parts.Count; $i++) {
-        $u = Get-DpFileUrl $FullName $parent '' 'folder'
+        $u = Get-DpFileUrl $FullName $parent '' 'folder' $KnownFolder
         $u += "&newfoldername=$([uri]::EscapeDataString($parts[$i]))"
         try { Invoke-Dp $Xbox $u -Method POST | Out-Null }
         catch {
             # Already-exists is reported as an error by some builds; only fail if the
             # folder still is not there.
-            $list = Invoke-Dp $Xbox (Get-DpFileUrl $FullName $parent '' 'files')
+            $list = Invoke-Dp $Xbox (Get-DpFileUrl $FullName $parent '' 'files' $KnownFolder)
             if (-not ($list.Items | Where-Object { $_.Name -eq $parts[$i] -and $_.Type -eq 16 })) { throw }
         }
         $parent += '\' + $parts[$i]
