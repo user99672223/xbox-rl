@@ -206,7 +206,15 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   - **`execve`** (extends exec.c): the old image goes (in place if the mm has one user, else the process takes a fresh mm
     and drops its reference), `FD_CLOEXEC` descriptors close in this process's table, handlers reset (SIG_IGN stays),
     other threads of *this* process stop, the new image starts on a new main thread. The Wine hand-over prctls are
-    unchanged.
+    unchanged. `#!` scripts are run by execve itself (interpreter plus one argument, up to 4 levels), so `env`, make and
+    `execvp` callers work without relying on the shell's ENOEXEC fallback.
+  - **Measured (laptop, Alpine busybox ash, `layer/tests/alpine-procs.sh` and a 700-process loop).** fork snapshot of a
+    shell's writable memory 1.3-2.6 ms (median 1.5), the same again to put it back; a fork+exec+wait of
+    `/bin/true` from ash about 14 ms end to end (200 spawns, 100 two-stage pipelines and 200 `$(...)` in 9.9 s, the
+    process's mappings stayed at 20 lines and VmSize at 75 MB). Races found and fixed while testing: a parent that
+    `wait()`s returns as soon as its child is a zombie and can end and be reaped before the child has signalled it (the
+    child now holds a reference); a kill that lands while the victim is inside execve (a dying process gets no new
+    thread); both showed up as intermittent `STATUS_HEAP_CORRUPTION` at the end of a busybox script.
   - **Exit, wait, signals.** Exit (last thread, `exit_group`, fatal signal) stops the process's threads, closes its fd table
     (so pipe readers see EOF), releases the mm, reparents children to init, becomes a zombie holding the wait status, sends
     SIGCHLD to the parent (the zombie is reaped at once when the parent ignores SIGCHLD or sets `SA_NOCLDWAIT`) and wakes
