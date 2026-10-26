@@ -1,8 +1,12 @@
 # gfx/ — Workstream D (graphics)
 
-DXGI + CreateSwapChainForCoreWindow against the host CoreWindow; caps reporting
-(the probe already measured FL 11_0, binding tier 3, heap tier 2, D3D11On12
-present — see docs/decisions.md); D3D11On12 wiring over the shared d3d12 device/
-queue. Implements the D3D12 parts of xrl_gfx_ops with host/. DXVK -> Dozen
-branch ONLY if D3D11On12 fails on the console (no system Vulkan — would have to
-be shipped). Controller-first; present path must hit native flip-model.
+Native graphics backend for `xrl_gfx_ops`: D3D12 device + flip-model
+`CreateSwapChainForCoreWindow` swapchain + D3D11On12, all behind opaque
+`xrl_handle`s, with caps reporting and an on-console probe. DXVK -> Dozen is a
+decision point only (not built).
+
+- **`notes-D.md`** — design, seams (how the host passes the CoreWindow and
+  queue), what is verified vs needs the console, the fallback write-up. Start here.
+- **`ABI-CHANGE-REQUESTS.md`** — what the frozen ABI v1 cannot express.
+- `include/xrl_gfx.h` — the host-facing entry API (A links this).
+- `src/` — implementation. `harness/` — desktop test. `build.ps1` — build + test.
