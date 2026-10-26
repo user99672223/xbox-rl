@@ -1,0 +1,121 @@
+diff --git a/dlls/kernel32/sync.c b/dlls/kernel32/sync.c
+index 8ebc2bb..4b5d87b 100644
+--- a/dlls/kernel32/sync.c
++++ b/dlls/kernel32/sync.c
+@@ -84,16 +84,8 @@ static BOOL get_open_object_attributes( OBJECT_ATTRIBUTES *attr, UNICODE_STRING
+  */
+ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
+ {
+-    ULONG high, low;
+-
+-    do
+-    {
+-        high = user_shared_data->TickCount.High1Time;
+-        low = user_shared_data->TickCount.LowPart;
+-    }
+-    while (high != user_shared_data->TickCount.High2Time);
+-    /* note: we ignore TickCountMultiplier */
+-    return (ULONGLONG)high << 32 | low;
++    /* xbox-rl: TickCountQuad counts the host's clock ticks, see GetTickCount */
++    return (user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24;
+ }
+ 
+ /***********************************************************************
+@@ -101,8 +93,8 @@ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
+  */
+ DWORD WINAPI DECLSPEC_HOTPATCH GetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    /* xbox-rl: the host's KUSER_SHARED_DATA counts clock ticks (15.625 ms); Wine's own counts ms */
++    return (ULONG)((user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24);
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/kernelbase/sync.c b/dlls/kernelbase/sync.c
+index 86b4ed8..d0182c1 100644
+--- a/dlls/kernelbase/sync.c
++++ b/dlls/kernelbase/sync.c
+@@ -181,8 +181,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH GetSystemTimes( FILETIME *idle, FILETIME *kernel,
+  */
+ ULONG WINAPI DECLSPEC_HOTPATCH GetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    /* xbox-rl: the host's KUSER_SHARED_DATA counts clock ticks (15.625 ms); Wine's own counts ms */
++    return (ULONG)((user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24);
+ }
+ 
+ 
+@@ -191,16 +191,8 @@ ULONG WINAPI DECLSPEC_HOTPATCH GetTickCount(void)
+  */
+ ULONGLONG WINAPI DECLSPEC_HOTPATCH GetTickCount64(void)
+ {
+-    ULONG high, low;
+-
+-    do
+-    {
+-        high = user_shared_data->TickCount.High1Time;
+-        low = user_shared_data->TickCount.LowPart;
+-    }
+-    while (high != user_shared_data->TickCount.High2Time);
+-    /* note: we ignore TickCountMultiplier */
+-    return (ULONGLONG)high << 32 | low;
++    /* xbox-rl: TickCountQuad counts the host's clock ticks, see GetTickCount */
++    return (user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24;
+ }
+ 
+ 
+diff --git a/dlls/ntdll/time.c b/dlls/ntdll/time.c
+index 105a6cf..b5991a3 100644
+--- a/dlls/ntdll/time.c
++++ b/dlls/ntdll/time.c
+@@ -401,8 +401,8 @@ BOOL WINAPI DECLSPEC_HOTPATCH RtlQueryPerformanceFrequency( LARGE_INTEGER *frequ
+  */
+ ULONG WINAPI DECLSPEC_HOTPATCH NtGetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    /* xbox-rl: the host's KUSER_SHARED_DATA counts clock ticks (15.625 ms); Wine's own counts ms */
++    return (ULONG)((user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24);
+ }
+ 
+ /***********************************************************************
+diff --git a/dlls/ntdll/unix/sync.c b/dlls/ntdll/unix/sync.c
+index 67ab945..02db517 100644
+--- a/dlls/ntdll/unix/sync.c
++++ b/dlls/ntdll/unix/sync.c
+@@ -2624,8 +2624,8 @@ NTSTATUS WINAPI NtSetIntervalProfile( ULONG interval, KPROFILE_SOURCE source )
+  */
+ ULONG WINAPI NtGetTickCount(void)
+ {
+-    /* note: we ignore TickCountMultiplier */
+-    return user_shared_data->TickCount.LowPart;
++    /* xbox-rl: the host's KUSER_SHARED_DATA counts clock ticks (15.625 ms); Wine's own counts ms */
++    return (ULONG)((user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24);
+ }
+ 
+ 
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index d3ac05a..0359823 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -68,16 +68,8 @@ static ULONG atomic_load_ulong( const volatile ULONG *ptr )
+ 
+ static UINT64 get_tick_count(void)
+ {
+-    ULONG high, low;
+-
+-    do
+-    {
+-        high = atomic_load_long( &user_shared_data->TickCount.High1Time );
+-        low = atomic_load_ulong( &user_shared_data->TickCount.LowPart );
+-    }
+-    while (high != atomic_load_long( &user_shared_data->TickCount.High2Time ));
+-    /* note: we ignore TickCountMultiplier */
+-    return (UINT64)high << 32 | low;
++    /* xbox-rl: TickCountQuad counts the host's clock ticks (15.625 ms), Wine's own counts ms */
++    return (user_shared_data->TickCountQuad * user_shared_data->TickCountMultiplier) >> 24;
+ }
+ 
+ #define MAX_WINPROC_RECURSION  64

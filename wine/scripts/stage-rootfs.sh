@@ -26,7 +26,8 @@ rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
 
 # Wine's unix side reads a stable machine identity; keep one per staged tree.
 mkdir -p "$dest/etc"
-[ -s "$dest/etc/machine-id" ] || { tr -dc 'a-f0-9' < /dev/urandom | head -c 32; echo; } > "$dest/etc/machine-id"
+[ -s "$dest/etc/machine-id" ] || { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' 
+'; echo; } > "$dest/etc/machine-id"
 
 bad=$(find "$rootfs" "$prefix" -type f -name '*[:*?"<>|\\]*' | head -5)
 [ -z "$bad" ] || die "file names NTFS cannot store (need the layer's U+F000 escaping): $bad"

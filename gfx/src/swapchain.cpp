@@ -35,19 +35,13 @@ DXGI_FORMAT FlipFormat(DXGI_FORMAT f, bool* was_srgb) {
 
 }  // namespace
 
-xrl_status SwapchainCreateOp(xrl_handle device, xrl_handle queue, uint32_t w, uint32_t h, uint32_t buffer_count,
-                             uint32_t dxgi_format, xrl_handle* out) {
-    if (!out) return XRL_ERR_GENERIC;
-    *out = XRL_INVALID_HANDLE;
-    SetLastHr(S_OK);
-
-    if (!device || !queue) {
-        Log(LOG_ERROR, "create_swapchain: device/queue handle is NULL (queue is the guest's direct queue)");
-        return XRL_ERR_GENERIC;
-    }
-    // Own references across the (possibly abandoned) job.
-    ComPtr<ID3D12CommandQueue> q = FromHandle<ID3D12CommandQueue>(queue);
-    ComPtr<ID3D12Device> dev12 = FromHandle<ID3D12Device>(device);
+// Flip-model swapchain of the host window (CoreWindow on the console, the test HWND on the
+// desktop) for `q`, made on the gfx thread. `dxgi_format` is the guest's; the format actually
+// created (sRGB -> UNORM) is returned in *out_format. Shared by the D3D12 path below and by
+// the D3D11 swapchain object (d3d11_swapchain.cpp).
+xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h, uint32_t buffer_count,
+                               uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format) {
+    ComPtr<ID3D12CommandQueue> q = queue;   // own a reference across the (possibly abandoned) job
 
     void* core = GetCoreWindow();
     void* hwnd = GetTestHwnd();
@@ -134,8 +128,25 @@ xrl_status SwapchainCreateOp(xrl_handle device, xrl_handle queue, uint32_t w, ui
     }
     if (FAILED(hr)) return Fail(hr, core ? "CreateSwapChainForCoreWindow" : "CreateSwapChainForHwnd");
 
+    if (FAILED(res->sc.As(&out))) return Fail(E_NOINTERFACE, "swapchain QI IDXGISwapChain3");
+    if (out_format) *out_format = fmt;
+    return XRL_OK;
+}
+
+xrl_status SwapchainCreateOp(xrl_handle device, xrl_handle queue, uint32_t w, uint32_t h, uint32_t buffer_count,
+                             uint32_t dxgi_format, xrl_handle* out) {
+    if (!out) return XRL_ERR_GENERIC;
+    *out = XRL_INVALID_HANDLE;
+    SetLastHr(S_OK);
+
+    if (!device || !queue) {
+        Log(LOG_ERROR, "create_swapchain: device/queue handle is NULL (queue is the guest's direct queue)");
+        return XRL_ERR_GENERIC;
+    }
     ComPtr<IDXGISwapChain3> sc3;
-    if (FAILED(res->sc.As(&sc3))) return Fail(E_NOINTERFACE, "swapchain QI IDXGISwapChain3");
+    xrl_status st = HostSwapchainCreate(FromHandle<ID3D12CommandQueue>(queue), w, h, buffer_count, dxgi_format, sc3,
+                                        nullptr);
+    if (st != XRL_OK) return st;
     IDXGISwapChain3* raw = sc3.Get();
     *out = ToHandle(sc3);
     Log(LOG_INFO, "create_swapchain -> IDXGISwapChain3=%p", raw);

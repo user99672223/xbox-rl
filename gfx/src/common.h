@@ -41,8 +41,8 @@
 // Layout guards for the seams we mirror/consume (x64).
 static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_host_services) == 48,
               "xrl_gfx_host_services layout drifted from host/src/gfx_seam.h");
-// v2 appended four slots after release (56 -> 88); v1 members keep their offsets.
-static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_ops) == 88, "xrl_gfx_ops (ABI v2) layout changed");
+// v2 appended four slots after release (56 -> 88), then d3d11_create_swapchain (96); v1 members keep their offsets.
+static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_ops) == 96, "xrl_gfx_ops (ABI v2) layout changed");
 static_assert(sizeof(void*) != 8 || offsetof(xrl_gfx_ops, release) == 48, "xrl_gfx_ops v1 prefix moved");
 
 namespace xrl {
@@ -138,6 +138,13 @@ xrl_status SwapchainCreateOp(xrl_handle device, xrl_handle queue, uint32_t w, ui
                              uint32_t dxgi_format, xrl_handle* out);
 xrl_status SwapchainGetBufferOp(xrl_handle sc, uint32_t index, xrl_handle* out);
 xrl_status SwapchainPresentOp(xrl_handle sc, uint32_t sync, uint32_t flags);
+// The host-window flip swapchain both swapchain kinds are built on (see swapchain.cpp).
+xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h, uint32_t buffer_count,
+                               uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format);
+
+// ---------------------------------------------------------------- d3d11_swapchain.cpp
+xrl_status D3D11SwapchainCreateOp(xrl_handle d3d11_device, xrl_handle d3d12_queue, const xrl_swapchain_desc* desc,
+                                  xrl_handle* out);
 
 // ---------------------------------------------------------------- ops.cpp
 xrl_gfx_ops* MutableOps();

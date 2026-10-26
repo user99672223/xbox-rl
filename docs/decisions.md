@@ -144,6 +144,58 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — First frames on screen: a D3D11 program presents through the whole stack.**
+  `wine/tests/pe/xrl_present_test.c` (Windows x64, mingw) creates a window, a D3D11 device and
+  swapchains by every route a game uses (`IDXGIFactory::CreateSwapChain`,
+  `IDXGIFactory2::CreateSwapChainForHwnd`, `D3D11CreateDeviceAndSwapChain`; discard, flip-discard,
+  flip-sequential; R8G8B8A8 and B8G8R8A8; 1-3 buffers), clears to changing colours, presents, resizes
+  once, and reads a pixel back each frame. Under Wine on the layer with `XRL_REAL_GFX=1` all of them
+  work, and `tools/test-present.sh` screenshots the host window for each and finds the colour the
+  program last presented (51,153,255) in the centre (`results/present-N.png`,
+  `results/desktop-wine-present-1.txt`). What was missing and is now there:
+  - **A D3D11 swapchain object (`gfx/src/d3d11_swapchain.cpp`, ABI v2 append
+    `xrl_gfx_ops.d3d11_create_swapchain` + `xrl_swapchain_desc`).** Wine's dxgi used to return the host's
+    raw `IDXGISwapChain3`, whose `GetBuffer(IID_ID3D11Texture2D)` fails (`E_NOINTERFACE`), so no D3D11
+    program could even start rendering. The new object is an `IDXGISwapChain1` implemented in gfx/
+    (native vtable, handed to the guest like every other host COM object): `GetBuffer(0)` returns ONE
+    stable D3D11 texture on the game's own device; `Present` copies (or resolves, for MSAA) it into the
+    current buffer of the real flip-model swapchain through `ID3D11On12Device` wrapped resources
+    (acquire, copy, release to PRESENT, flush) and presents that. Chosen over exposing the rotating
+    buffers: D3D11 games take their render-target view once and keep it, flip model included, and a
+    copy per frame also makes discard/sequential semantics, sRGB views and MSAA trivially right. Cost:
+    one full-frame copy per Present (bandwidth only; to be measured on the console). Implemented in
+    gfx/ rather than as a Wine-side wrapper: real headers, no hand-written COM vtables in PE C, and the
+    layer already routes calls into host objects. Not IDXGISwapChain2+ on purpose (the
+    frame-latency waitable object is a native handle the guest cannot wait on), buffer index > 0 is
+    refused (D3D11 only exposes buffer 0), fullscreen/ResizeTarget are accepted and ignored (the host
+    owns the window), `GetContainingOutput` fails (Wine's dxgi owns the outputs the game enumerated).
+    The D3D12 path (game passes its own queue) still gets the raw host swapchain.
+  - **Wine 0020.** `xrlhost` call `XRL_CALL_GFX_D3D11_CREATE_SWAPCHAIN`; dxgi's native-swapchain helper
+    picks it for devices that `d3d11.dll` created, so does `D3D11CreateDeviceAndSwapChain`; the
+    device-to-queue lookup now compares the `ID3D11Device` identity (a game may pass `IDXGIDevice`) and
+    replaces a stale record when a freed device's address comes back. Appended ABI members are checked
+    against the host table's `struct_size` (`NEED_V`). (QueryInterface for `IID_IUnknown` on a D3D11On12
+    device from guest code crashed inside d3d11.dll, so the identity is taken with `IID_ID3D11Device`;
+    not investigated further.)
+  - **Wine 0021, tick counts.** The console's real `KUSER_SHARED_DATA` counts clock ticks (64 Hz,
+    `TickCountMultiplier` 0x0fa00000); Wine ignored the multiplier because its own copy counts
+    milliseconds, so `GetTickCount`, `GetTickCount64`, `NtGetTickCount` (both sides) and window-message
+    timestamps ran 15.6x slow. The first thing to notice was a test that waited on `GetTickCount` and
+    never finished. Every game timer that is not QPC (`timeGetTime`, `GetTickCount`) was affected.
+  - Test tooling: `wine/tests/build-pe-tests.sh`, `tools/capture-window.ps1` (screenshots the host
+    window of the right `xrl_test_host`, retries until the colour shows),
+    `tools/test-present.sh` (needs `XRL_ROOTFS`). `stage-rootfs.sh` died silently under `pipefail` when
+    generating `etc/machine-id` (`tr | head -c`), so a first staging produced no symlink table.
+  - Seen, not fixed (informational config 9 of the test): a game that takes its factory from the
+    D3D11On12 device (`IDXGIDevice::GetAdapter` -> `GetParent`) gets the host's own DXGI factory, and
+    `CreateSwapChain` on it with the game's (Wine) HWND succeeds without touching our code and
+    presents nowhere visible. Unreal-style code takes the factory from `CreateDXGIFactory`, which is
+    Wine's; if Rocket League does not, its device would have to be wrapped.
+  - Console path: `gfx\build.ps1 -Uwp` (CoreWindow swapchain, UWP link check) still builds, zero
+    warnings; the new object is created by the same `HostSwapchainCreate` that `create_swapchain` uses
+    (CoreWindow on the console, `cfg.test_hwnd` on the laptop), so `CreateSwapChainForCoreWindow`
+    remains the only window-specific call. Not run on the console.
+
 - **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
   ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
   where Rocket League hung after loading. Now real rt_sigframes (ucontext,
