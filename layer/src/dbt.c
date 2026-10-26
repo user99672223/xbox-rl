@@ -239,6 +239,11 @@ static int is_fs_unit(const x86i *in)
 /* one trace: from `pc` until an unconditional transfer */
 static int translate_trace(dimg *im, u64 pc)
 {
+    if (im->hi - im->lo <= 4096) {
+        const u8 *d = (const u8 *)pc;
+        LOGW("dbt: translate_trace(%s, %llx): first bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             im->name, pc, d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11], d[12], d[13], d[14], d[15]);
+    }
     cm_put(pc, cur(im));
     for (int count = 0;; count++) {
         if (im->used + 4096 > im->cap) { LOGE("dbt: %s: code cache full", im->name); return -1; }
@@ -372,6 +377,8 @@ static u64 translate_locked(u64 pc)
     if (r) return r;
     dimg *im = img_of(pc);
     if (!im) return 0;
+    if (!strncmp(im->name, "/memfd:", 7))
+        xrl_mem_sync_shared_page(pc & ~(u64)(LX_PAGE - 1), LX_PAGE);
     u64 used0 = im->used;
     g_npend = 0; g_nfix = 0; g_nwl = 0;
     enqueue(pc);

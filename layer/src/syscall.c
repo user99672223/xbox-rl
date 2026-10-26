@@ -55,6 +55,11 @@ static slong do_write(int fd, u64 buf, u64 n, s64 off)
     else {
         if (n > 0x7ffff000ull) n = 0x7ffff000ull;
         r = f->ops->write(f, (const void *)buf, n, off);
+        if (r > 0 && f->gpath && !strncmp(f->gpath, "/memfd:", 7)) {
+            const u8 *d = (const u8 *)buf;
+            LOGW("write memfd: fd=%d off=%lld n=%llu wrote=%lld first16: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                 fd, (long long)off, n, (long long)r, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],d[10],d[11],d[12],d[13],d[14],d[15]);
+        }
     }
     xfile_unref(f);
     return r;
@@ -185,7 +190,13 @@ SYS(ioctl)
 }
 
 SYS(fsync) { UNUSED6; xfile *f = xrl_fd_get((int)a1); if (!f) return -LX_EBADF; slong r = f->ops->fsync ? f->ops->fsync(f) : 0; xfile_unref(f); return r; }
-SYS(ftruncate) { UNUSED6; xfile *f = xrl_fd_get((int)a1); if (!f) return -LX_EBADF; slong r = f->ops->ftruncate ? f->ops->ftruncate(f, a2) : -LX_EINVAL; xfile_unref(f); return r; }
+SYS(ftruncate) {
+    UNUSED6; xfile *f = xrl_fd_get((int)a1); if (!f) return -LX_EBADF;
+    slong r = f->ops->ftruncate ? f->ops->ftruncate(f, a2) : -LX_EINVAL;
+    if (!r && f->gpath && !strncmp(f->gpath, "/memfd:", 7))
+        LOGW("ftruncate memfd: fd=%d size=%llu", (int)a1, (u64)a2);
+    xfile_unref(f); return r;
+}
 SYS(fallocate)
 {
     UNUSED6;
@@ -557,7 +568,18 @@ SYS(mmap)
     UNUSED6;
     slong r = xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6);
     if (r > 0 && (a4 & LX_MAP_FIXED)) xrl_dbt_unmapped((u64)r, (u64)a2);   /* dbt.c: generated code replaced */
-    if (r > 0 && (a3 & LX_PROT_EXEC) && !(a4 & LX_MAP_ANONYMOUS)) xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
+    if (r > 0 && !(a4 & LX_MAP_ANONYMOUS)) {
+        xfile *mf = xrl_fd_get((int)a5);
+        if (mf && mf->gpath && !strncmp(mf->gpath, "/memfd:", 7)) {
+            LARGE_INTEGER fsz; fsz.QuadPart = -1;
+            GetFileSizeEx(mf->h, &fsz);
+            LOGW("mmap memfd: fd=%d prot=%x flags=%x off=%lld addr=%llx len=%llu file_size=%lld shared=%d",
+                 (int)a5, (int)a3, (int)a4, (long long)a6, (u64)r, (u64)a2, (long long)fsz.QuadPart, (int)(a4 & 1));
+        }
+        if (mf) xfile_unref(mf);
+        if (a3 & LX_PROT_EXEC)
+            xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
+    }
     if (r > 0 && (a3 & LX_PROT_EXEC) && (a3 & LX_PROT_WRITE) && (a4 & LX_MAP_ANONYMOUS)) xrl_dbt_generated((u64)r, (u64)a2);   /* dbt.c */
     return r;
 }
@@ -580,6 +602,8 @@ SYS(munmap)
 SYS(mprotect)
 {
     UNUSED6;
+    if (a3 & LX_PROT_EXEC)
+        LOGW("mprotect: addr=%llx len=%llu prot=%x", (u64)a1, (u64)a2, (int)a3);
     slong r = xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3);
     if (!r && (a3 & LX_PROT_EXEC) && !xrl_dbt_exec_hint((u64)a1, (u64)a2) && (a3 & LX_PROT_WRITE))   /* dbt.c: Windows images loaded by Wine */
         xrl_dbt_generated((u64)a1, (u64)a2);                                                          /* ... else generated code (rwx) */

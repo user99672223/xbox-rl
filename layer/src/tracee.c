@@ -168,6 +168,15 @@ static void stop_and_serve(CONTEXT *c, xrl_thread *t, int sig)
         u64 rev = xrl_dbt_reverse(r[16]);
         if (rev) { LOGW("tracee: rip %llx reverse-translated to %llx", r[16], rev); r[16] = rev; }
     }
+    if (sig == 11 || sig == 7 || sig == 4) {
+        u8 code[32]; memset(code, 0, sizeof code);
+        xrl_cfu(code, r[16], 32);
+        LOGW("tracee: CRASH sig=%d at orig %llx  rax=%llx rcx=%llx rdx=%llx rbx=%llx rsp=%llx rbp=%llx rsi=%llx rdi=%llx r8=%llx r9=%llx r10=%llx r11=%llx",
+             sig, r[16], r[10], r[11], r[12], r[5], r[19], r[4], r[13], r[14], r[9], r[8], r[7], r[6]);
+        LOGW("tracee: code at %llx: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             r[16], code[0], code[1], code[2], code[3], code[4], code[5], code[6], code[7],
+             code[8], code[9], code[10], code[11], code[12], code[13], code[14], code[15]);
+    }
     u8 fp[512];
     memcpy(fp, &c->FltSave, sizeof fp);   /* XMM_SAVE_AREA32 is the FXSAVE layout, as Linux's user_fpregs_struct */
     xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);

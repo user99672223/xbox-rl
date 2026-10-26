@@ -269,6 +269,7 @@ int  xrl_mem_init(u64 budget);
 slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off);
 slong xrl_mem_munmap(u64 addr, u64 len);
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot);
+int   xrl_mem_sync_shared_page(u64 addr, u64 len);
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr);
 slong xrl_mem_brk(u64 addr);
 slong xrl_mem_madvise(u64 addr, u64 len, int advice);

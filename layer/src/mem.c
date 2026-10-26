@@ -322,6 +322,76 @@ static void vma_flush_shared(const vma *v, u64 s, u64 e)
     v->file->ops->write(v->file, (const void *)s, e - s, off);
 }
 
+static slong file_fill(xfile *f, u64 dst, u64 len, s64 off);
+
+/* MAP_SHARED on memfd: the layer uses VirtualAlloc+file_fill (copy) instead of
+ * true shared pages, so writes to one mapping are invisible to others. These
+ * two helpers close the gap: flush_memfd_writable writes every shared-writable
+ * mapping of `f` back to the host temp file; sync_memfd_readonly re-reads
+ * every shared read-only mapping of the same inode from the now-current file.
+ * Both require g_lock exclusive. */
+static void flush_memfd_writable(xfile *f)
+{
+    for (size_t i = 0; i < g_n; i++) {
+        vma *v = &g_v[i];
+        if (v->file == f && v->shared && (v->prot & LX_PROT_WRITE) && v->committed) {
+            LOGW("memfd-sync: flush [%llx,%llx) prot=%d foff=%lld to file", v->start, v->end, v->prot, (long long)v->foff);
+            vma_flush_shared(v, v->start, v->end);
+        }
+    }
+}
+static void sync_memfd_readonly(xfile *f, u64 ino)
+{
+    for (size_t i = 0; i < g_n; i++) {
+        vma *v = &g_v[i];
+        if (v->ino != ino || !v->shared || !v->committed) continue;
+        if (v->prot & LX_PROT_WRITE) continue;
+        u64 len = v->end - v->start;
+        LOGW("memfd-sync: refresh [%llx,%llx) prot=%d moff=%lld ino=%llu", v->start, v->end, v->prot, (long long)v->moff, v->ino);
+        DWORD old;
+        VirtualProtect((void *)v->start, (SIZE_T)len, PAGE_READWRITE, &old);
+        file_fill(f, v->start, len, v->moff);
+        VirtualProtect((void *)v->start, (SIZE_T)len, old, &old);
+    }
+}
+
+/* Called from dbt.c right before translating a memfd page: if the page belongs
+ * to a MAP_SHARED memfd that has a writable sibling mapping, copy the sibling's
+ * content here so the translation sees the actual code instead of stale zeros. */
+int xrl_mem_sync_shared_page(u64 addr, u64 len)
+{
+    int synced = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    size_t i = vma_lower(addr);
+    if (i >= g_n || g_v[i].start > addr) goto out;
+    vma *target = &g_v[i];
+    if (!target->shared || !target->committed || strncmp(target->name, "/memfd:", 7)) goto out;
+    for (size_t j = 0; j < g_n; j++) {
+        vma *src = &g_v[j];
+        if (src == target || src->ino != target->ino || !src->shared || !src->committed) continue;
+        if (!(src->prot & LX_PROT_WRITE)) continue;
+        s64 t_fstart = target->moff + (s64)(addr - target->start);
+        s64 t_fend = t_fstart + (s64)len;
+        s64 s_fstart = src->moff;
+        s64 s_fend = s_fstart + (s64)(src->end - src->start);
+        s64 ov_start = t_fstart > s_fstart ? t_fstart : s_fstart;
+        s64 ov_end = t_fend < s_fend ? t_fend : s_fend;
+        if (ov_start >= ov_end) continue;
+        u64 t_addr = addr + (u64)(ov_start - t_fstart);
+        u64 s_addr = src->start + (u64)(ov_start - s_fstart);
+        u64 copy_len = (u64)(ov_end - ov_start);
+        DWORD old;
+        VirtualProtect((void *)t_addr, (SIZE_T)copy_len, PAGE_READWRITE, &old);
+        memcpy((void *)t_addr, (const void *)s_addr, (size_t)copy_len);
+        VirtualProtect((void *)t_addr, (SIZE_T)copy_len, old, &old);
+        synced = 1;
+        LOGW("memfd-sync: copied %llu bytes from [%llx] to [%llx] (ino=%llu)", copy_len, s_addr, t_addr, target->ino);
+    }
+out:
+    ReleaseSRWLockExclusive(&g_lock);
+    return synced;
+}
+
 /* Remove [s,e) from the list, decommitting and updating accounting. */
 static void swap_forget(u64 s, u64 e);
 
@@ -1285,6 +1355,11 @@ static slong file_fill(xfile *f, u64 dst, u64 len, s64 off)
         done += (u64)n;
     }
     t_mem_locked = 0;
+    if (f->gpath && !strncmp(f->gpath, "/memfd:", 7)) {
+        const u8 *d = (const u8 *)dst;
+        LOGW("file_fill: %s off=%lld len=%llu read=%llu first16: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+             f->gpath, (long long)off, len, done, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],d[10],d[11],d[12],d[13],d[14],d[15]);
+    }
     return 0;   /* tail already zero (fresh commit) */
 }
 
@@ -1307,6 +1382,8 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
         if (r) { InterlockedAdd64(&g_committed, -(LONG64)len); goto fail_rel; }
         committed = 1;
         if (file) {
+            if (shared && file->gpath && !strncmp(file->gpath, "/memfd:", 7))
+                flush_memfd_writable(file);
             r = file_fill(file, addr, len, off);
             if (r) { win_decommit(addr, end); InterlockedAdd64(&g_committed, -(LONG64)len); goto fail_rel; }
             if (prot != (LX_PROT_READ | LX_PROT_WRITE)) {
@@ -1451,6 +1528,13 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
         } else {
             r = win_protect(v->start, v->end, prot);
             if (r) goto out;
+        }
+        if (v->file && v->shared && (v->prot & LX_PROT_WRITE) && !(prot & LX_PROT_WRITE) &&
+            v->file->gpath && !strncmp(v->file->gpath, "/memfd:", 7)) {
+            LOGW("memfd-sync: mprotect trigger [%llx,%llx) old_prot=%d new_prot=%d ino=%llu file=%s",
+                 v->start, v->end, v->prot, prot, v->ino, v->file->gpath);
+            vma_flush_shared(v, v->start, v->end);
+            sync_memfd_readonly(v->file, v->ino);
         }
         v->prot = prot;
     }
