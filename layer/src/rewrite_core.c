@@ -121,6 +121,27 @@ static int emit_fs(eb *e, const xrw *w, const uint8_t *ins, const x86i *in)
     return 0;
 }
 
+/* The same replacement sequences for the translator (dbt.c), written at any address.
+ * Both return the length written (at most 640 bytes); xrw_emit_fs returns -1 for an operand form it
+ * cannot rebuild (RIP-relative, VEX, stack or branch instructions with %fs). */
+int xrw_emit_syscall(uint8_t *out, uint64_t out_va, uint64_t slot)
+{
+    eb e; e.n = 0;
+    emit_syscall(&e, out_va, slot);
+    memcpy(out, e.b, (size_t)e.n);
+    return e.n;
+}
+
+int xrw_emit_fs(uint64_t tp_gs_off, uint8_t *out, const uint8_t *ins, const x86i *in)
+{
+    eb e; e.n = 0;
+    xrw w; memset(&w, 0, sizeof w);
+    w.tp_gs_off = tp_gs_off;
+    if (emit_fs(&e, &w, ins, in)) return -1;
+    memcpy(out, e.b, (size_t)e.n);
+    return e.n;
+}
+
 /* mov %fs:0x0,%r64 (64 REX.W 8b modrm 25 00000000), the form tools/xrl-tpfix.py patches */
 static int is_tp_load(const uint8_t *ins, int len)
 {

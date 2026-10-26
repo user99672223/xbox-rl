@@ -459,6 +459,15 @@ u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_stack_lo, u64 *out_st
 void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot);
 void xrl_rewrite_fd_mapped(int fd, u64 addr, u64 len, s64 off, int prot);
 
+/* -------------------------------------------------------------- dbt */
+/* dbt.c: run an image byte-identical (translation into a code cache), selected by XRL_DBT */
+#define XRL_SYS_DBT_ENTER 0x10010      /* layer-private: dbt.asm asks for the translation of rdi */
+int   xrl_dbt_wanted(const char *path);
+int   xrl_dbt_attach(const char *name, u64 addr, u64 len);
+u64   xrl_dbt_translate(u64 pc);
+slong xrl_dbt_enter_sys(u64 pc);
+void  xrl_dbt_stats(u64 *faults, u64 *translated);
+
 /* -------------------------------------------------------------- syscall */
 const char *xrl_sysname(slong nr);
 void xrl_syscall_table_init(void);

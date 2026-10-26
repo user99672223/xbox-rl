@@ -69,4 +69,11 @@ int xrw_rewrite_range(xrw *w, uint8_t *code, uint64_t vaddr, size_t size,
  * (and *n = 0) if the table is absent or in another encoding. */
 uint64_t *xrw_eh_starts(const uint8_t *hdr, size_t hdr_len, uint64_t hdr_vaddr, size_t *n);
 
+/* For the translator (dbt.c): the replacement sequences of a `syscall` and of an instruction with a %fs
+ * memory operand, written to `out` as if it were at out_va. Return the length, xrw_emit_fs -1 if the
+ * operand form cannot be rebuilt. Needs x86dec.h's x86i. */
+struct x86i;
+int xrw_emit_syscall(uint8_t *out, uint64_t out_va, uint64_t slot);
+int xrw_emit_fs(uint64_t tp_gs_off, uint8_t *out, const uint8_t *ins, const struct x86i *in);
+
 #endif

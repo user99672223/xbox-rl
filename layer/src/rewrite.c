@@ -124,6 +124,10 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
     if (memcmp(eh.ident, "\177ELF", 4) || eh.ident[4] != 2 || eh.ident[5] != 1 || eh.machine != 62) return;
     if (eh.flags == XRL_ELF_E_FLAGS_CLEAN) return;                 /* verified clean at build time */
     if (eh.phentsize != sizeof(RPhdr) || eh.phnum == 0 || eh.phnum > 128) return;
+    if (xrl_dbt_wanted(f->gpath)) {                                /* byte-identical: translated, not rewritten (dbt.c) */
+        xrl_dbt_attach(f->gpath ? f->gpath : "?", addr, len);
+        return;
+    }
 
     AcquireSRWLockExclusive(&g_rw_lock);
     const char *name = f->gpath ? f->gpath : "?";
