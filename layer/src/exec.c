@@ -195,8 +195,8 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
     }
     mt->guest_stack_lo = slo; mt->guest_stack_hi = shi;
     {   /* comm: the program's basename, as Linux sets it at exec */
-        const char *b = strrchr(gpath, '/');
-        strncpy_s(mt->name, sizeof mt->name, b ? b + 1 : gpath, _TRUNCATE);
+        const char *b = strrchr(path, '/');   /* the name execve was given (a symlink's), not its target's */
+        strncpy_s(mt->name, sizeof mt->name, b ? b + 1 : path, _TRUNCATE);
     }
     LOGI("exec: %s running, main thread tid %d entry %llx", gpath, mt->tid, img.entry);
     xrl_proc_exec_done(pr);   /* a vfork/fork parent waiting for this exec runs again */
