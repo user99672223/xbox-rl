@@ -184,7 +184,10 @@ static void mounts_load(void)
         while (hn > 2 && h[hn - 2] == L'\\') h[--hn - 1] = 0;
         size_t wl = (size_t)hn + 8;
         wchar_t *w = (wchar_t *)calloc(wl, sizeof(wchar_t));
-        if (wcsncmp(h, L"\\\\?\\", 4) == 0) wcscpy_s(w, wl, h); else { wcscpy_s(w, wl, L"\\\\?\\"); wcscat_s(w, wl, h); }
+        /* extended-length form: \\?\C:\dir, or \\?\UNC\server\share\dir for a network path */
+        if (wcsncmp(h, L"\\\\?\\", 4) == 0) wcscpy_s(w, wl, h);
+        else if (h[0] == L'\\' && h[1] == L'\\') { wcscpy_s(w, wl, L"\\\\?\\UNC\\"); wcscat_s(w, wl, h + 2); }
+        else { wcscpy_s(w, wl, L"\\\\?\\"); wcscat_s(w, wl, h); }
         DWORD a = GetFileAttributesW(w);
         g_mnt[g_nmnt].guest = _strdup(tok); g_mnt[g_nmnt].glen = gl; g_mnt[g_nmnt].host = w;
         g_nmnt++;
