@@ -81,9 +81,9 @@ int xrl_guest_ctx_build(void)
     g->struct_size = sizeof *g;
     g->magic = XRL_GUEST_CTX_MAGIC;
     g->abi_version = XRL_ABI_VERSION;
-    g->flags = (G.fsgsbase ? 1u : 0u);
+    g->flags = (G.fsgsbase ? 1u : 0u) | (G.tp_slot ? 2u : 0u);
     g->syscall = (u64)(uintptr_t)&xrl_syscall;
-    g->tls_slot_gs_off = 0;
+    g->tls_slot_gs_off = G.tp_slot ? XRL_TP_GS_OFFSET : 0;
     g->log = (xrl_log_fn)(uintptr_t)xrl_stub_for((void *)(uintptr_t)G.ctx.log);
     g->gfx = (const xrl_gfx_ops *)copy_ops(G.ctx.gfx, sizeof(xrl_gfx_ops), G.ctx.gfx->struct_size, &ns);
     g->audio = (const xrl_audio_ops *)copy_ops(G.ctx.audio, sizeof(xrl_audio_ops), G.ctx.audio->struct_size, &ns);

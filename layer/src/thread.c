@@ -126,12 +126,44 @@ xrl_thread *xrl_thread_by_tid(int tid)
 
 int xrl_thread_count(void) { return (int)G.nthreads; }
 
+/* -------------------------------------------------- thread pointer slot */
+/* The guest TP lives in TlsSlots[XRL_TP_TLS_INDEX] of each thread's own TEB
+ * (see xrl_abi.h): patched guest code reads it as gs:[XRL_TP_GS_OFFSET]. */
+static void tp_slot_set(u64 v)
+{
+    if (G.tp_slot) __writegsqword(XRL_TP_GS_OFFSET, v);
+}
+
+/* Claim exactly TLS index XRL_TP_TLS_INDEX (TlsAlloc hands out the lowest free
+ * index, so allocate up to it and give the others back), then check that the
+ * TEB layout matches: TlsSetValue(index) must land at gs:[XRL_TP_GS_OFFSET]. */
+static int claim_tp_slot(void)
+{
+    DWORD got[XRL_TP_TLS_INDEX + 1];
+    int n = 0, ok = 0;
+    for (;;) {
+        DWORD i = TlsAlloc();
+        if (i == TLS_OUT_OF_INDEXES) break;
+        if (i == XRL_TP_TLS_INDEX) { ok = 1; break; }
+        if (i > XRL_TP_TLS_INDEX || n == XRL_TP_TLS_INDEX + 1) { TlsFree(i); break; }
+        got[n++] = i;
+    }
+    while (n) TlsFree(got[--n]);
+    if (!ok) { LOGE("threads: TLS index %d is already taken in this process", XRL_TP_TLS_INDEX); return 0; }
+    TlsSetValue(XRL_TP_TLS_INDEX, (LPVOID)(uintptr_t)0x58524c54ull);
+    int layout = __readgsqword(XRL_TP_GS_OFFSET) == 0x58524c54ull;
+    TlsSetValue(XRL_TP_TLS_INDEX, NULL);
+    if (!layout) { LOGE("threads: TlsSlots[%d] is not at gs:[0x%x] on this OS", XRL_TP_TLS_INDEX, XRL_TP_GS_OFFSET); TlsFree(XRL_TP_TLS_INDEX); }
+    return layout;
+}
+
 /* ----------------------------------------------------------- thread start */
 static DWORD WINAPI thread_main(LPVOID p)
 {
     xrl_thread *t = (xrl_thread *)p;
     t->win_tid = GetCurrentThreadId();
     xrl_thread_bind(t);
+    tp_slot_set(t->guest_tp);
     if (t->is_main) xrl_enter_guest(t->resume[6], t->child_rsp, t);
     else xrl_clone_resume(t);
     return 0;
@@ -188,7 +220,7 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
         return -LX_ENOSYS;
     }
     if (flags & LX_CLONE_SETTLS) {
-        if (!G.fsgsbase) { LOGE("clone: CLONE_SETTLS but FSGSBASE unavailable"); return -LX_ENOSYS; }
+        if (!G.fsgsbase && !G.tp_slot) { LOGE("clone: CLONE_SETTLS but neither FSGSBASE nor the TP slot is available"); return -LX_ENOSYS; }
     }
     xrl_thread *t = xrl_thread_new();
     if (!t) return -LX_ENOMEM;
@@ -270,10 +302,11 @@ slong xrl_sys_arch_prctl(int code, u64 addr)
     if (!t) return -LX_ENOSYS;
     switch (code) {
     case LX_ARCH_SET_FS:
-        if (!G.fsgsbase) return -LX_ENOSYS;
+        if (!G.fsgsbase && !G.tp_slot) return -LX_ENOSYS;
         if (addr >= 0x800000000000ull) return -LX_EPERM;   /* non-canonical */
         t->guest_tp = addr;
-        _writefsbase_u64(addr);
+        tp_slot_set(addr);                          /* patched guests (the console path) */
+        if (G.fsgsbase) _writefsbase_u64(addr);     /* unpatched guests, desktop only */
         return 0;
     case LX_ARCH_GET_FS:
         return xrl_ctu(addr, &t->guest_tp, 8);
@@ -301,7 +334,8 @@ slong xrl_sys_arch_prctl(int code, u64 addr)
         return xrl_ctu(addr, &teb, 8);
     }
     case ARCH_XRL_GET_FS_MODE: {
-        u64 m = G.fsgsbase ? 1 : 0;   /* 1 = hardware FS base with fault re-arm */
+        /* bit0 = hardware FS base with fault re-arm, bit1 = TP slot gs:[XRL_TP_GS_OFFSET] */
+        u64 m = (G.fsgsbase ? 1u : 0u) | (G.tp_slot ? 2u : 0u);
         return xrl_ctu(addr, &m, 8);
     }
     case LX_ARCH_GET_CPUID: return 1;      /* cpuid not faulting-capable: report enabled */
@@ -318,6 +352,10 @@ void xrl_threads_init(void)
     int cpuid[4];
     __cpuidex(cpuid, 7, 0);
     int has = (cpuid[1] & 1) != 0;   /* EBX bit 0: FSGSBASE */
+    /* XRL_NO_FSGSBASE=1 (host env) behaves like the Xbox, which hides FSGSBASE:
+     * lets the desktop test suite cover the console path. */
+    char nofsb[4];
+    if (GetEnvironmentVariableA("XRL_NO_FSGSBASE", nofsb, sizeof nofsb) && nofsb[0] == '1') has = 0;
     G.fsgsbase = 0;
     if (has) {
         __try {
@@ -327,8 +365,11 @@ void xrl_threads_init(void)
         } __except (EXCEPTION_EXECUTE_HANDLER) { G.fsgsbase = 0; }
     }
     xrl_asm_fsb_flag = (u64)G.fsgsbase;
-    LOGI("threads: FSGSBASE %s (cpuid=%d) -> guest FS base via %s", G.fsgsbase ? "usable" : "NOT usable", has,
-         G.fsgsbase ? "wrfsbase + VEH re-arm" : "NOTHING (SET_FS will fail)");
+    G.tp_slot = claim_tp_slot();
+    LOGI("threads: FSGSBASE %s (cpuid=%d); TP slot gs:[0x%x] %s -> guest thread pointer via %s",
+         G.fsgsbase ? "usable" : "NOT usable", has, XRL_TP_GS_OFFSET, G.tp_slot ? "claimed" : "UNAVAILABLE",
+         G.tp_slot ? (G.fsgsbase ? "TP slot (patched guests) + wrfsbase (unpatched)" : "TP slot (guests must be patched)")
+                   : (G.fsgsbase ? "wrfsbase + VEH re-arm only" : "NOTHING (SET_FS will fail)"));
 }
 
 /* ----------------------------------------------------------------- prctl */

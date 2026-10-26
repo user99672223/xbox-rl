@@ -144,6 +144,26 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Console has NO FSGSBASE → guest thread pointer moves to a TEB
+  slot.** First layer run on the Series S (results/console-layer-test-1.txt):
+  68 checks passed (ELF load, mmap/budget, VFS under LocalState, /proc, /dev,
+  pipes, epoll, socketpair+SCM_RIGHTS, BCrypt RNG, and a real
+  gfx.get_adapter_info downcall from a guest thread: 0x1414, FL 11_0, 128 MiB).
+  But CPUID.7.EBX[0] = 0: the hypervisor hides FSGSBASE, so `wrfsbase` is
+  unavailable and CLONE_SETTLS / ARCH_SET_FS failed. Since Windows also never
+  preserves a user FS base, FS cannot carry the thread pointer at all.
+  Decision: the TP lives in TlsSlots[63] of each thread's host TEB, read as
+  gs:[0x1678] (XRL_TP_TLS_INDEX / XRL_TP_GS_OFFSET in xrl_abi.h). Guest ELFs
+  are built with -mno-tls-direct-seg-refs and no TLS stack-protector guard;
+  `tools/xrl-tpfix.py` rewrites every `mov %fs:0,%reg` to the same-length
+  `mov %gs:0x1678,%reg` (objdump-located, fails on any other %fs form). The
+  layer claims index 63 at boot, verifies TlsSetValue lands at gs:[0x1678],
+  and keeps the slot equal to SET_FS/CLONE_SETTLS. Cost: zero per access (one
+  gs-relative load, no faults). Wine's PE TlsAlloc must reserve index 63.
+  `XRL_NO_FSGSBASE=1` makes the desktop suite behave like the console.
+  Rejected: trap-and-emulate of %fs faults (µs per access, needs a decoder);
+  hash lookup via gs:[0x30] (slower, same rebuild cost).
+
 - **2026-10-26 — ABI v2 (append-only).** Folded the convergent requests of all
   four workstreams into `include/xrl_abi.h`: `xrl_syscall` takes `int64_t` (MSVC
   `long` is 32-bit — real v1 bug); op-table functions are native MS-x64 and the

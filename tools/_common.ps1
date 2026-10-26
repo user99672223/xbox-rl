@@ -229,9 +229,67 @@ function Receive-DpFile {
 }
 
 function Send-DpFile {
+    # Uploads one file into <RemoteDir> (which must exist; see New-DpDirectory).
+    # Streams from disk (game files are up to ~1 GB) with a multipart body shaped
+    # like Invoke-DpMultipart's: the real console's filesystem endpoint returns 500
+    # for PowerShell's -Form body (filename*= parameter / quoted boundary).
     param($Xbox, [string]$FullName, [string]$RemoteDir, [string]$LocalFile)
-    $form = @{ ([IO.Path]::GetFileName($LocalFile)) = (Get-Item -LiteralPath $LocalFile) }
-    Invoke-Dp $Xbox (Get-DpFileUrl $FullName $RemoteDir '') -Method POST -Form $form -TimeoutSec 0 | Out-Null
+    Initialize-DpSession $Xbox
+    $path = Get-DpFileUrl $FullName $RemoteDir ''
+    $name = [IO.Path]::GetFileName($LocalFile)
+    $handler = [System.Net.Http.HttpClientHandler]::new()
+    $handler.CookieContainer = $script:DpSession.Cookies
+    $handler.ServerCertificateCustomValidationCallback = [System.Net.Http.HttpClientHandler]::DangerousAcceptAnyServerCertificateValidator
+    $client = [System.Net.Http.HttpClient]::new($handler)
+    $client.Timeout = [TimeSpan]::FromHours(6)
+    $pw = $Xbox.Cred.GetNetworkCredential().Password
+    $client.DefaultRequestHeaders.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new(
+        'Basic', [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("$($Xbox.User):$pw")))
+    $csrf = Get-DpCsrf; if ($csrf) { $client.DefaultRequestHeaders.Add('X-CSRF-Token', $csrf) }
+    $fs = [IO.File]::OpenRead($LocalFile)
+    try {
+        $boundary = "----xrl$([guid]::NewGuid().ToString('N'))"
+        $mp = [System.Net.Http.MultipartFormDataContent]::new($boundary)
+        # .NET quotes the boundary parameter; send it bare like our working uploader.
+        ($mp.Headers.ContentType.Parameters | Where-Object Name -eq 'boundary').Value = $boundary
+        $part = [System.Net.Http.StreamContent]::new($fs, 1MB)
+        $part.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::new('application/octet-stream')
+        $cd = [System.Net.Http.Headers.ContentDispositionHeaderValue]::new('form-data')
+        $cd.Name = "`"$name`""
+        $cd.FileName = "`"$name`""          # plain filename only, no filename*=
+        $part.Headers.ContentDisposition = $cd
+        $mp.Add($part)
+        $resp = $client.PostAsync("$($Xbox.Base)$path", $mp).GetAwaiter().GetResult()
+        if (-not $resp.IsSuccessStatusCode) {
+            $body = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+            $err = [System.Exception]::new("Device Portal POST $path failed: HTTP $([int]$resp.StatusCode) $body")
+            $err.Data['Status'] = [int]$resp.StatusCode
+            throw $err
+        }
+    } finally {
+        $fs.Dispose(); $client.Dispose()
+    }
+}
+
+function New-DpDirectory {
+    # Creates \LocalState\a\b\c one level at a time (the upload endpoint does not
+    # create missing directories). Existing levels are fine.
+    param($Xbox, [string]$FullName, [string]$RemoteDir)
+    $parts = @($RemoteDir.Trim('\').Split('\') | Where-Object { $_ })
+    if ($parts.Count -lt 2) { return }          # \LocalState itself always exists
+    $parent = '\' + $parts[0]
+    for ($i = 1; $i -lt $parts.Count; $i++) {
+        $u = Get-DpFileUrl $FullName $parent '' 'folder'
+        $u += "&newfoldername=$([uri]::EscapeDataString($parts[$i]))"
+        try { Invoke-Dp $Xbox $u -Method POST | Out-Null }
+        catch {
+            # Already-exists is reported as an error by some builds; only fail if the
+            # folder still is not there.
+            $list = Invoke-Dp $Xbox (Get-DpFileUrl $FullName $parent '' 'files')
+            if (-not ($list.Items | Where-Object { $_.Name -eq $parts[$i] -and $_.Type -eq 16 })) { throw }
+        }
+        $parent += '\' + $parts[$i]
+    }
 }
 
 function Find-Msbuild {

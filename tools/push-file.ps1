@@ -24,5 +24,6 @@ $pkg = Get-RequiredPackage $xbox
 $dir = ('\LocalState\' + $Remote.Trim('\', '/').Replace('/', '\')).TrimEnd('\')
 if ($dir -eq '') { $dir = '\LocalState' }
 Write-Host "[push-file] $f -> $dir\$(Split-Path $f -Leaf)  ($([math]::Round((Get-Item $f).Length/1KB)) KiB)"
+New-DpDirectory $xbox $pkg.PackageFullName $dir
 Send-DpFile $xbox $pkg.PackageFullName $dir $f
 Write-Host '[push-file] done'

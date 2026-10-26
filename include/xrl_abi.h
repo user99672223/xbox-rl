@@ -90,6 +90,22 @@ int64_t xrl_syscall(int64_t nr, int64_t a1, int64_t a2, int64_t a3,
 #define XRL_SYS_GET_LOG_FN     0x10004
 
 /*
+ * Guest thread pointer slot (v2, added after the first console run).
+ * The Xbox hides FSGSBASE (CPUID.7.EBX[0] = 0), so the guest's thread pointer
+ * (what Linux keeps in the FS base) cannot live in FS. It lives in the host
+ * TEB's TlsSlots[XRL_TP_TLS_INDEX], i.e. at gs:[XRL_TP_GS_OFFSET], which
+ * Windows keeps per thread. Guest ELFs are compiled with
+ * -mno-tls-direct-seg-refs (and without a TLS stack-protector guard), so every
+ * %fs use is `mov %fs:0,%reg`; tools/xrl-tpfix.py rewrites each one to
+ * `mov %gs:XRL_TP_GS_OFFSET,%reg` (same length) and fails on anything else.
+ * The layer claims the slot at boot and keeps it equal to the thread's
+ * arch_prctl(ARCH_SET_FS) / CLONE_SETTLS value. Wine's PE TlsAlloc must never
+ * hand out this index.
+ */
+#define XRL_TP_TLS_INDEX  63
+#define XRL_TP_GS_OFFSET  0x1678   /* TEB.TlsSlots (0x1480) + 63 * 8 */
+
+/*
  * Linux errno values the layer returns (negated) across xrl_syscall.
  */
 enum {

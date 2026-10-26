@@ -147,6 +147,7 @@ typedef struct xrl_global {
     volatile LONG next_tid;
     int   pid;
     int   fsgsbase;                /* 1 if wrfsbase works on this host   */
+    int   tp_slot;                 /* 1 if TlsSlots[XRL_TP_TLS_INDEX] is ours (gs:[XRL_TP_GS_OFFSET]) */
     int   trace_syscalls;
     SRWLOCK thread_lock;
     xrl_thread *threads;

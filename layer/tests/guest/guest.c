@@ -86,10 +86,11 @@ static int thr(void *arg)
     __atomic_fetch_add(&started, 1, __ATOMIC_SEQ_CST);
     futex(&started, 1, 0x7fffffff, 0, 0, 0);
     while (!stop) {
-        struct tls *p; u64 m;
+        /* Only the thread-pointer load form is allowed (tools/xrl-tpfix.py turns
+         * it into a gs:[XRL_TP_GS_OFFSET] load); fields go through the pointer. */
+        struct tls *p;
         __asm__ volatile("mov %%fs:0, %0" : "=r"(p));
-        __asm__ volatile("mov %%fs:8, %0" : "=r"(m));
-        if (m != 0xfeed0000ull + idx || p->magic != m) bad++;
+        if (p->self != p || p->magic != 0xfeed0000ull + idx) bad++;
         n++;
         if ((n & 0x3ffff) == 0) sc(24, 0, 0, 0, 0, 0, 0);   /* sched_yield */
     }
@@ -134,7 +135,7 @@ static void test_threads(void)
     for (int i = 0; i < N; i++) {
         wait_eq(&ctid[i], 0);   /* join via CLEARTID wake */
         if (thread_bad[i]) outn("thread bad fs reads", thread_bad[i]);
-        CHECK(thread_bad[i] == 0, "thread TLS (%fs:0 / %fs:8) stable across preemption");
+        CHECK(thread_bad[i] == 0, "thread pointer (TP slot) stable across preemption");
         CHECK(tid_slot[i] > 0 && ctid[i] == 0, "PARENT_SETTID + CHILD_CLEARTID");
     }
     /* futex ping-pong main<->thread */
@@ -354,6 +355,15 @@ static void test_v2(void)
     CHECK(sc1(0x10004, 0) == (long)c->log && c->log, "pseudo-syscall GET_LOG_FN");
     CHECK(sc1(0x10005, 0) == -38, "pseudo-syscall out of range -> -ENOSYS");
 
+    /* thread pointer slot: SET_FS lands where patched `mov %fs:0` loads read */
+    u64 mode = 0;
+    CHECK(sc2(158, 0x5802, &mode) == 0 && (mode & 2), "TP slot active (arch_prctl XRL_GET_FS_MODE bit1)");
+    struct tls *mt = mmap_anon(4096, 3); mt->self = mt;
+    CHECK(sc2(158, 0x1002, mt) == 0, "arch_prctl(SET_FS) accepted");
+    struct tls *rd;
+    __asm__ volatile("mov %%fs:0, %0" : "=r"(rd));
+    CHECK(rd == mt, "main thread reads its thread pointer back after SET_FS");
+
     long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
     u64 mlen = 256 * 1024;
     u8 *stk = mmap_anon(mlen, 3);
@@ -363,6 +373,7 @@ static void test_v2(void)
     s[0] = (u64)rpc_thr; s[1] = (u64)&hit; s[2] = (u64)stk; s[3] = mlen;
     long tid = xclone_rpc(flags, s, (void *)&ptid, (void *)&ctid, t);
     CHECK(tid > 0 && ptid == tid, "clone with resume_pc starts the child (PARENT_SETTID)");
+    if (tid <= 0) { out("  skip  resume_pc child checks (clone failed)\n"); return; }
     wait_eq(&ctid, 0);
     CHECK(hit == 42, "child ran fn(arg) from resume_pc");
     u8 vec[1];
