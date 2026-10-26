@@ -67,7 +67,8 @@ struct evclient {
 enum { DEV_KBD, DEV_MOUSE, DEV_ABS, NDEV };
 static evdev_dev g_dev[NDEV];
 static SRWLOCK g_lock = SRWLOCK_INIT;
-static int g_inited, g_pump_started;
+static int g_inited;
+static volatile LONG g_pump_started;
 
 static void setbit(u8 *b, unsigned n) { b[n >> 3] |= (u8)(1u << (n & 7)); }
 static int  getbit(const u8 *b, unsigned n) { return (b[n >> 3] >> (n & 7)) & 1; }
@@ -168,10 +169,10 @@ static int pump_start(void)
 {
     if (g_pump_started) return 0;
     if (!HOST_HAS(read_events) || !HOST_HAS(wait_events)) return -LX_ENODEV;   /* an ABI v1/v2 host */
+    if (InterlockedCompareExchange(&g_pump_started, 1, 0)) return 0;          /* another opener won the race */
     HANDLE h = CreateThread(NULL, 0, pump_main, NULL, 0, NULL);
-    if (!h) return -LX_ENOMEM;
+    if (!h) { g_pump_started = 0; return -LX_ENOMEM; }
     CloseHandle(h);
-    g_pump_started = 1;
     LOGI("evdev: input pump started (host queue -> /dev/input/event0..2)");
     return 0;
 }

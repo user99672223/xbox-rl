@@ -129,6 +129,9 @@ static int snapshot(u8 *stage, const u8 *src, size_t bytes, int have)
     } __except (EXCEPTION_EXECUTE_HANDLER) { return -1; }
 }
 
+/* the live mapping is the screen only if it covers the whole virtual surface (a guest that mapped less keeps vram as the screen) */
+static int map_covers(void) { return fb.map_addr && fb.map_len >= VRAM_BYTES(fb); }
+
 /* ---- the presenter ------------------------------------------------------------------------ */
 static DWORD WINAPI presenter_main(void *arg)
 {
@@ -141,7 +144,7 @@ static DWORD WINAPI presenter_main(void *arg)
         AcquireSRWLockExclusive(&fb.lock);
         live = fb.nopen > 0 || fb.map_addr;
         if (live && fb.vram && !fb.blank) {
-            const u8 *src = (fb.map_addr ? (const u8 *)fb.map_addr : fb.vram) + (size_t)fb.yoff * LINE(fb);
+            const u8 *src = (map_covers() ? (const u8 *)fb.map_addr : fb.vram) + (size_t)fb.yoff * LINE(fb);
             size_t bytes = (size_t)LINE(fb) * fb.yres;
             if (fb.stage_cap < bytes) { free(fb.stage); fb.stage = (u8 *)malloc(bytes); fb.stage_cap = fb.stage ? bytes : 0; fb.have_stage = 0; }
             int c = fb.stage ? snapshot(fb.stage, src, bytes, fb.have_stage) : 0;
@@ -171,7 +174,7 @@ static void presenter_start(void)
 }
 
 /* ---- file operations ---------------------------------------------------------------------- */
-static u8 *src_locked(void) { return fb.map_addr ? (u8 *)fb.map_addr : fb.vram; }
+static u8 *src_locked(void) { return map_covers() ? (u8 *)fb.map_addr : fb.vram; }
 
 static slong fb_rw(xfile *f, void *buf, u64 n, s64 off, int is_write)
 {
@@ -179,7 +182,6 @@ static slong fb_rw(xfile *f, void *buf, u64 n, s64 off, int is_write)
     if (xrl_mem_populate((u64)buf, n)) return -LX_ENOMEM;   /* lazy user pages commit now, not under fb.lock */
     AcquireSRWLockExclusive(&fb.lock);
     u64 size = (u64)VRAM_BYTES(fb);
-    if (fb.map_addr && fb.map_len < size) size = fb.map_len;
     u64 pos = off >= 0 ? (u64)off : (u64)f->pos;
     slong r = 0;
     if (pos >= size) r = is_write && n ? -LX_ENOSPC : 0;
