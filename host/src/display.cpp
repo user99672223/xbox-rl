@@ -84,7 +84,9 @@ void display_select() {
                 XLOGI("display", "%u supported modes:", modes.Size());
                 for (const auto& m : modes) {
                     describe("  mode", m);
-                    if (m.StereoEnabled() || !m.IsSdrLuminanceSupported()) continue;
+                    // a mode that does not claim HDR is SDR: the console reports IsSdrLuminanceSupported() false
+                    // for both its modes (sdr 0), so that flag cannot filter; only BT.2020 and stereo do
+                    if (m.StereoEnabled()) continue;
                     if (m.ColorSpace() == winrt::HdmiDisplayColorSpace::BT2020) continue;
                     uint32_t mw = m.ResolutionWidthInRawPixels(), mh = m.ResolutionHeightInRawPixels();
                     if (exact ? (mw != ww || mh != wh) : (mh > 1440 || m.RefreshRate() > 120.5)) continue;
