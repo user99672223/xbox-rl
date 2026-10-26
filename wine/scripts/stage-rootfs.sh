@@ -54,6 +54,9 @@ nameserver 8.8.8.8
 ::1 localhost ip6-localhost
 ' > "$dest/etc/hosts"
 # (not `tr < /dev/urandom | head`: under pipefail the SIGPIPE to tr aborted a first-time stage)
+# Every Linux system describes itself in /etc/os-release (programs read it, the EAC module among them). This one is
+# what it is: the xbox-rl layer with a musl userland; staged once, then yours to edit.
+[ -s "$dest/etc/os-release" ] || printf 'NAME="xbox-rl"\nID=xbox-rl\nPRETTY_NAME="xbox-rl Linux compatibility layer (musl userland)"\nHOME_URL="https://github.com/willy1805/xbox-rl"\n' > "$dest/etc/os-release"
 [ -s "$dest/etc/machine-id" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$dest/etc/machine-id"
 # Root CAs: Wine's crypt32 fills the Windows root store from the Linux bundle (dlls/crypt32/unixlib.c), and
 # TLS clients verify servers against it (Rocket League's Epic SDK). The build machine's public Mozilla bundle.

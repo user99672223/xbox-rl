@@ -18,8 +18,9 @@
  * Calls from outside into the image (a callback, a function pointer Wine got from dlsym) fault once per
  * target and are fast after that only for returns: each such entry costs an exception.
  *
- * Limits, stated: self-modifying code and code the program generates are not followed (they would
- * be executed from original pages: a fault, and so a SIGSEGV for the guest); `ret imm16`, far
+ * Limits, stated: self-modifying code in a translated ELF image is not followed (it would
+ * be executed from original pages: a fault, and so a SIGSEGV for the guest; RWX pages a program of the policy
+ * generates itself are handled separately, see "generated code" below); `ret imm16`, far
  * transfers, and %fs operands in branch instructions are not translated (the site becomes ud2 and
  * is logged); the unwinder sees return addresses of the original image for calls inside the image but
  * cache addresses for frames that called native code; a fault inside translated code reports the cache
