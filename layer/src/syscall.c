@@ -766,8 +766,10 @@ static void prof_dump(void)
     for (int i = 0; i < XRL_NR_MAX; i++) if (g_prof_n[i]) idx[n++] = i;
     for (int i = 0; i < n; i++)   /* by count, descending */
         for (int j = i + 1; j < n; j++) if (g_prof_n[idx[j]] > g_prof_n[idx[i]]) { int x = idx[i]; idx[i] = idx[j]; idx[j] = x; }
-    extern volatile LONG64 xrl_com_calls;
-    LOGI("profile: %lld guest->host COM calls so far; top syscalls (count, total ms, us/call)", (long long)xrl_com_calls);
+    extern volatile LONG64 xrl_com_calls, xrl_lazy_faults, xrl_lazy_fault_ticks;
+    LOGI("profile: %lld guest->host COM calls; %lld lazy-commit faults (%.0f ms in the handler, excl. dispatch); "
+         "top syscalls (count, total ms, us/call)", (long long)xrl_com_calls, (long long)xrl_lazy_faults,
+         (double)xrl_lazy_fault_ticks * 1000.0 / (double)f.QuadPart);
     for (int i = 0; i < n && i < 20; i++) {
         double ms = (double)g_prof_t[idx[i]] * 1000.0 / (double)f.QuadPart;
         LOGI("profile: %-18s %10lld %10.0f %8.1f", xrl_sysname(idx[i]), (long long)g_prof_n[idx[i]], ms,

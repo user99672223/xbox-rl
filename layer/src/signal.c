@@ -250,8 +250,11 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
      * any thread or code (guest, layer, D3D reading a guest buffer). Host view
      * while we take locks and call VirtualAlloc. */
     if (code == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+        u64 stk[2];
         int g = xrl_teb_enter_host(t);
+        xrl_teb_stack_here(stk);   /* we may be on a guest stack (teb.c) */
         int ok = xrl_mem_lazy_fault((u64)r->ExceptionInformation[1], (int)r->ExceptionInformation[0]);
+        xrl_teb_stack_back(stk);
         xrl_teb_restore(t, g);
         if (ok) return EXCEPTION_CONTINUE_EXECUTION;
     }
@@ -260,6 +263,8 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     if (t->in_sys > 0 || host_stack_fault(ep->ContextRecord)) return EXCEPTION_CONTINUE_SEARCH;   /* layer/host code: SEH handles it */
     /* A guest fault: the guest TEB view is live; the handler below is host code. */
     int was_guest = xrl_teb_enter_host(t);
+    u64 stk[2];
+    xrl_teb_stack_here(stk);
 
     /* Windows zeroes the FS base on context switches; the first guest access
      * afterwards faults. Restore from the authoritative copy and retry. */
@@ -267,6 +272,7 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         if ((u64)_readfsbase_u64() != t->guest_tp) {
             _writefsbase_u64(t->guest_tp);
             InterlockedIncrement64(&xrl_fs_rearms);
+            xrl_teb_stack_back(stk);
             xrl_teb_restore(t, was_guest);
             return EXCEPTION_CONTINUE_EXECUTION;
         }

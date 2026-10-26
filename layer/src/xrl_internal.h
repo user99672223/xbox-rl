@@ -108,6 +108,8 @@ void xrl_teb_thread_init(xrl_thread *t);
 int  xrl_teb_enter_host(xrl_thread *t);       /* returns 1 if the guest view was live */
 void xrl_teb_enter_guest(xrl_thread *t);
 void xrl_teb_restore(xrl_thread *t, int was_guest);
+void xrl_teb_stack_here(u64 saved[2]);        /* host code on a guest stack: limits around rsp */
+void xrl_teb_stack_back(const u64 saved[2]);
 
 /* com.c: host COM objects called directly by the guest (docs/gs-teb.md Stage 2) */
 void xrl_com_scan(const u64 *v, int n);

@@ -393,7 +393,7 @@ int xrl_mem_init(u64 budget)
     if (GetEnvironmentVariableA("XRL_LAZY_MIN_KB", lm, sizeof lm)) LAZY_MIN = strtoull(lm, NULL, 10) << 10;
     if (GetEnvironmentVariableA("XRL_LAZY_CHUNK_KB", lm, sizeof lm)) {
         u64 c = strtoull(lm, NULL, 10) << 10;
-        if (c >= GRAN && !(c & (c - 1))) g_lazy_chunk = c;   /* power of two, >= 64 KiB */
+        if (c >= LX_PAGE && !(c & (c - 1))) g_lazy_chunk = c;   /* power of two, >= one page */
     }
     static const u64 tries[] = { 1ull << 40, 1ull << 38, 1ull << 36, 1ull << 34, 1ull << 32, 1ull << 31 };
     for (size_t i = 0; i < ARRAY_LEN(tries); i++) {
@@ -780,6 +780,25 @@ slong xrl_mem_populate(u64 addr, u64 len)
     return r;
 }
 
+/* Where the commit charge is (logged once, on the first out-of-memory). Lock held. */
+static void mem_breakdown_locked(void)
+{
+    u64 lazy = 0, eager = 0, file = 0, stack = 0, big_c = 0, big_v = 0;
+    size_t nlazy = 0;
+    for (size_t i = 0; i < g_n; i++) {
+        vma *v = &g_v[i];
+        u64 c = v->committed ? v->end - v->start : v->lazy ? committed_bytes(v->start, v->end) : 0;
+        if (!c) continue;
+        if (!strcmp(v->name, "[stack]")) stack += c;
+        else if (v->name[0] && !v->lazy) file += c;          /* named = file-backed copy-in */
+        else if (v->lazy) { lazy += c; nlazy++; if (c > big_c) { big_c = c; big_v = v->start; } }
+        else eager += c;
+    }
+    LOGE("mem: breakdown: lazy-touched %llu MiB in %zu mappings (largest %llu MiB at %llx), "
+         "eager anonymous %llu MiB, file copies %llu MiB, layer stacks %llu MiB",
+         lazy >> 20, nlazy, big_c >> 20, big_v, eager >> 20, file >> 20, stack >> 20);
+}
+
 /* Commit the whole lazy mapping containing `addr` (a new thread's stack). */
 slong xrl_mem_populate_containing(u64 addr)
 {
@@ -794,7 +813,20 @@ slong xrl_mem_populate_containing(u64 addr)
 /* VEH: a fault at `addr` (access 0 read, 1 write, 8 execute). Commits the
  * 64 KiB around it if it lies in a lazy VMA that permits the access. Returns
  * 1 to retry the instruction, 0 for a real fault. */
+volatile LONG64 xrl_lazy_faults, xrl_lazy_fault_ticks;   /* XRL_PROFILE output */
+static int lazy_fault_locked_entry(u64 addr, int access);
+
 int xrl_mem_lazy_fault(u64 addr, int access)
+{
+    LARGE_INTEGER q0, q1;
+    QueryPerformanceCounter(&q0);
+    int ok = lazy_fault_locked_entry(addr, access);
+    QueryPerformanceCounter(&q1);
+    if (ok) { InterlockedIncrement64(&xrl_lazy_faults); InterlockedAdd64(&xrl_lazy_fault_ticks, q1.QuadPart - q0.QuadPart); }
+    return ok;
+}
+
+static int lazy_fault_locked_entry(u64 addr, int access)
 {
     int ok = 0;
     AcquireSRWLockExclusive(&g_lock);
@@ -811,8 +843,12 @@ int xrl_mem_lazy_fault(u64 addr, int access)
             if (e > v->end) e = v->end;
             slong r = commit_lazy_locked(s, e, v->prot);
             ok = r == 0;
-            if (r) LOGE("mem: out of memory: cannot commit the page at %llx (%llu MiB committed, budget %llu MiB)",
-                        addr, (u64)g_committed >> 20, g_budget >> 20);
+            if (r) {
+                LOGE("mem: out of memory: cannot commit the page at %llx (%llu MiB committed, budget %llu MiB)",
+                     addr, (u64)g_committed >> 20, g_budget >> 20);
+                static volatile LONG once;
+                if (!InterlockedExchange(&once, 1)) mem_breakdown_locked();
+            }
         }
     }
     ReleaseSRWLockExclusive(&g_lock);

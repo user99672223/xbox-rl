@@ -80,3 +80,26 @@ void xrl_teb_restore(xrl_thread *t, int was_guest)
 {
     if (was_guest) xrl_teb_enter_guest(t);
 }
+
+/* The VEH runs on the faulting thread's own (guest) stack, but the host view's
+ * StackBase/StackLimit describe the thread's host stack. Host code checks rsp
+ * against them (__chkstk walks pages from StackLimit down to rsp), which ran a
+ * guest-stack VEH into STATUS_STACK_OVERFLOW. While host code runs on the
+ * current stack, describe a window around rsp instead; undo before any view
+ * swap so the host view keeps its real values. */
+void xrl_teb_stack_here(u64 saved[2])
+{
+    u64 here = (u64)(uintptr_t)&saved;
+    saved[0] = __readgsqword(0x08);
+    saved[1] = __readgsqword(0x10);
+    if (here < saved[1] || here >= saved[0]) {
+        __writegsqword(0x08, ALIGN_UP(here, 0x1000) + 0x10000);
+        __writegsqword(0x10, ALIGN_DOWN(here, 0x1000) - 0x40000);
+    }
+}
+
+void xrl_teb_stack_back(const u64 saved[2])
+{
+    __writegsqword(0x08, saved[0]);
+    __writegsqword(0x10, saved[1]);
+}
