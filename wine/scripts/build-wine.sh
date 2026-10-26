@@ -38,6 +38,9 @@ else
   SYS="$WORK/sysroot"; OUT="$WORK/out/rootfs"; BLD="$WORK/build/wine"
 fi
 SRC="$WORK/src/wine"; TOOLS="$WORK/build/wine-tools"
+# gnutls (build-gnutls.sh) makes schannel/bcrypt work: configure --with-gnutls when it was built
+DEPS="$WORK/deps"; gnutls_args=(--without-gnutls)
+[ $variant != hosttest ] && [ -f "$DEPS/lib/libgnutls.so" ] && gnutls_args=(--with-gnutls "GNUTLS_CFLAGS=-I$DEPS/include" "GNUTLS_LIBS=-L$DEPS/lib -lgnutls")
 # The WSL disk reports ~1 TB free but its VHDX lives on C:, so measure the Windows drive.
 free_gb() { df -BG --output=avail /mnt/c 2>/dev/null | tail -1 | tr -dc 0-9; }
 cap_jobs
@@ -87,7 +90,7 @@ if want configure; then
       ac_cv_func_epoll_create=no ac_cv_func_epoll_create1=no \
       --prefix=/usr --libdir=/usr/lib \
       --with-wine-tools="$TOOLS" --enable-win64 --disable-tests --disable-amd_ags_x64 \
-      --without-x --without-freetype --without-gnutls --without-gstreamer --without-pulse \
+      --without-x --without-freetype "${gnutls_args[@]}" --without-gstreamer --without-pulse \
       --without-alsa --without-oss --without-cups --without-dbus --without-v4l2 --without-udev \
       --without-usb --without-sane --without-gphoto --without-pcap --without-krb5 --without-opencl \
       --without-vulkan --without-sdl --without-unwind --without-wayland --without-capi \
@@ -117,6 +120,12 @@ if want install; then
         "$OUT"/usr/lib/wine/*/wine-preloader "$OUT"/usr/lib/wine/*/wine64-preloader
   # server/ has no MODULE, so install-lib does not know about wineserver.so (the in-process server)
   install -m 755 "$BLD/server/wineserver.so" "$OUT/usr/lib/wine/x86_64-unix/wineserver.so"
+  # gnutls and its two libraries, which Wine dlopen()s by soname (secur32, bcrypt)
+  if [ "${gnutls_args[0]}" = --with-gnutls ]; then
+    mkdir -p "$OUT/usr/lib"
+    cp -a "$DEPS"/lib/libgnutls.so* "$DEPS"/lib/libnettle.so* "$DEPS"/lib/libhogweed.so* "$OUT/usr/lib/"
+    log "wine: gnutls installed into the rootfs"
+  fi
   # the interpreter the layer's VFS serves at /lib/ld-musl-x86_64.so.1
   mkdir -p "$OUT/lib"; cp "$SYS/usr/lib/libc.so" "$OUT/lib/ld-musl-x86_64.so.1"
   # Thread pointer: the console has no FSGSBASE, so every `mov %fs:0,%reg` becomes a load from
