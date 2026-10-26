@@ -211,8 +211,25 @@ static char *g_threadsmax(const char *p, size_t *len) { (void)p; return dupfmt(l
 static char *g_corepattern(const char *p, size_t *len) { (void)p; return dupfmt(len, "core\n"); }
 static char *g_one(const char *p, size_t *len) { (void)p; return dupfmt(len, "1\n"); }
 static char *g_paranoid(const char *p, size_t *len) { (void)p; return dupfmt(len, "2\n"); }
-static char *g_mounts(const char *p, size_t *len) { (void)p; return dupfmt(len, "rootfs / rootfs rw 0 0\nproc /proc proc rw 0 0\n"); }
-static char *g_mountinfo(const char *p, size_t *len) { (void)p; return dupfmt(len, "1 1 0:1 / / rw - rootfs rootfs rw\n"); }
+/* the filesystems the layer really provides: the guest's root, and the virtual /proc, /sys and /dev */
+static char *g_mounts(const char *p, size_t *len)
+{
+    (void)p;
+    return dupfmt(len,
+        "rootfs / rootfs rw 0 0\n"
+        "proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "sysfs /sys sysfs rw,nosuid,nodev,noexec,relatime 0 0\n"
+        "devtmpfs /dev devtmpfs rw,nosuid,relatime,mode=755 0 0\n");
+}
+static char *g_mountinfo(const char *p, size_t *len)
+{
+    (void)p;
+    return dupfmt(len,
+        "1 1 0:1 / / rw - rootfs rootfs rw\n"
+        "2 1 0:2 / /proc rw,nosuid,nodev,noexec,relatime - proc proc rw\n"
+        "3 1 0:3 / /sys rw,nosuid,nodev,noexec,relatime - sysfs sysfs rw\n"
+        "4 1 0:4 / /dev rw,nosuid,relatime - devtmpfs devtmpfs rw,mode=755\n");
+}
 static char *g_cpuinfo(const char *p, size_t *len) { (void)p; return xrl_cpuinfo_text(len); }
 static char *g_meminfo(const char *p, size_t *len)
 {
@@ -241,7 +258,7 @@ static char *g_procstat(const char *p, size_t *len)
 static char *g_uptime(const char *p, size_t *len) { (void)p; u64 ms = xrl_mono_ns() / 10000000ull; return dupfmt(len, "%llu.%02llu %llu.%02llu\n", ms / 100, ms % 100, ms / 100, ms % 100); }
 static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, G.pid); }
 static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-xrl (xbox-rl@layer) (gcc) " XRL_UTS_VERSION "\n"); }
-static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\tproc\nnodev\ttmpfs\n\text4\n"); }
+static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\trootfs\nnodev\tproc\nnodev\tsysfs\nnodev\tdevtmpfs\nnodev\ttmpfs\n\text4\n"); }
 static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-xrl\n"); }
 static char *g_ostype(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux\n"); }
 static char *g_hostname(const char *p, size_t *len) { (void)p; return dupfmt(len, "%s\n", xrl_hostname()); }

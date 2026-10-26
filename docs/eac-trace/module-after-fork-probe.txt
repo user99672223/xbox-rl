@@ -1,0 +1,164 @@
+# The same, AFTER /proc/1 exists (the layer as committed in f5a7d2d, plus XRL_FORK_TASKS=1 and
+# XRL_EXPERIMENT_TRACEME=1 from the fork-task experiment, see docs/decisions.md; neither is in the tree).
+# The module now forks a child (tid 23904 below, run as a task on the parent's stack): the child closes every
+# descriptor from 3 up (about 65500 close calls, left out), prctl(PR_SET_DUMPABLE, 0), ptrace(PTRACE_TRACEME), raises SIGSTOP.
+[23984] memfd_create("c3ca429f-533a-a9ff-3edb-e74b2174b40c", 0x2) = 204
+[23984] write(204 (/memfd), len 12081735) = 12081735 "<the module image>"
+[23984] getpid(f, 0, 14022581f) = 10872
+[23984] open("/proc/10872/maps", 0x0) = 207
+  [... 10 reads of the maps file (4096 bytes each)]
+  [... 5 reads of the maps file (4096 bytes each)]
+  [... 7 reads of the maps file (4096 bytes each)]
+  [... 10 reads of the maps file (4096 bytes each)]
+[23984] open("/proc/self/fd/204", 0x88000) = 207
+[23984] fcntl(207, cmd 2, 1) = 0
+[23984] fstat(cf, 19cf050, 0) = 0 {dev=f24bb042 ino=6473924465140244 mode=100644 nlink=1 uid=1000 gid=1000 size=12081735}
+[23984] read(207 (/proc/self/fd/204), len 960) = 960 "\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00>\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08.\xb8\x00\x00\x00\x00\x00\xd0[\x96\x00\x00\x00\x00\x00\x00\x00\x
+[23984] pread64(207 (/proc/self/fd/204), len 616) = 616 "\x01\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00p!\x04\x00\x00\x00\x00\x00p!\x04\x00\x00\x00\x00\x00\
+[23984] open("/usr/lib/wine/x86_64-unix/libgcc_s.so.1", 0x88000) = -2 ENOENT
+[23984] open("/lib/libgcc_s.so.1", 0x88000) = -2 ENOENT
+[23984] open("/usr/local/lib/libgcc_s.so.1", 0x88000) = -2 ENOENT
+[23984] open("/usr/lib/libgcc_s.so.1", 0x88000) = 207
+[23984] fcntl(207, cmd 2, 1) = 0
+[23984] fstat(cf, 19cf030, 0) = 0 {dev=f24bb042 ino=7599824371959374 mode=100644 nlink=1 uid=1000 gid=1000 size=2773584}
+[23984] read(207 (/usr/lib/libgcc_s.so.1), len 960) = 960 "\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00>\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+928)"
+[23984] open("/usr/lib/wine/x86_64-unix/ld-linux-x86-64.so.2", 0x88000) = -2 ENOENT
+[23984] open("/lib/ld-linux-x86-64.so.2", 0x88000) = 207
+[23984] fcntl(207, cmd 2, 1) = 0
+[23984] fstat(cf, 19cf030, 0) = 0 {dev=f24bb042 ino=17169973579444144 mode=100644 nlink=1 uid=1000 gid=1000 size=16056}
+[23984] read(207 (/lib/ld-linux-x86-64.so.2), len 960) = 960 "\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x03\x00>\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+928)"
+[23984] membarrier(8, 0, 0) = 0
+[23984] stat("/prefix/dosdevices/z:/game/Binaries/Win64/RocketLeague.exe") = 0 {dev=f24bb042 ino=1688849860331606 mode=100755 nlink=1 uid=1000 gid=1000 size=39210936}
+[23984] writev(a6, 1003ff0b0, 3) = 226
+[23984] read(165 (), len 64) = 64 "\x00\x00\x00\x00\x00\x00\x00\x00\xf8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+32)"
+[23984] write(166 (), len 64) = 64 "3\x00\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\xf8\x00\x00\x00\xe8\x03\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+16)"
+[23984] read(165 (), len 64) = 64 "\x00\x00\x00\x00)\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+32)"
+[23984] read(165 (), len 41) = 41 "%\x00\x00\x00/game/Binaries/Win64/RocketL...(+9)"
+[23984] write(166 (), len 64) = 64 "\x15\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xf8\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+16)"
+[23984] read(165 (), len 64) = 64 "\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00...(+32)"
+[23984] getpid(7ff4df1d8010, 1000, 0) = 10872
+[23984] openat(-100, "/proc/10872/status", 0x0) = 207
+[23984] read(207 (/proc/10872/status), len 4096) = 1112 "Name:\x09wine64\nUmask:\x090022\nState:\x09R (running)\nTgid:\x0910872\nNgid:\x090\nPid:\x0910872\nPPid:\x091\nTracerPid:\x090\nUid:\x091000\x091000\x091000\x091000\nGid:\x091000\x0
+[23984] getppid(19cf420, 19cf412, e99e00) = 1
+[23984] openat(-100, "/proc/1/comm", 0x0) = 207
+[23984] read(207 (/proc/1/comm), len 31) = 5 "init\n"
+[23984] getppid(19cf411, 19cf400, 2a971600) = 1
+[23984] openat(-100, "/proc/1/cmdline", 0x0) = 207
+[23984] read(207 (/proc/1/cmdline), len 31) = 6 "/init\x00"
+[23984] getppid(19cf400, 0, 19cf41c) = 1
+[23984] openat(-100, "/proc/1/status", 0x0) = 207
+[23984] read(207 (/proc/1/status), len 31) = 31 "Name:\x09init\nUmask:\x090022\nState:\x09S"
+[23984] openat(-100, "/proc/self/maps", 0x0) = 207
+[23984] newfstatat(-100, "/proc/mounts", 0x19cf168) = 0 {dev=2 ino=2210189664816 mode=100444 nlink=1 uid=1000 gid=1000 size=0}
+[23984] openat(-100, "/proc/mounts", 0x0) = 207
+[23984] read(207 (/proc/mounts), len 4096) = 46 "rootfs / rootfs rw 0 0\nproc /proc proc rw 0 0\n"
+[23984] read(207 (/proc/mounts), len 4096) = 0
+[23984] openat(-100, "/sys/devices/virtual/dmi/id/board_name", 0x0) = -2 ENOENT
+[23984] openat(-100, "/sys/devices/virtual/dmi/id/product_name", 0x0) = -2 ENOENT
+[23984] open("/proc/bus/pci/devices", 0x8000) = -2 ENOENT
+[23984] readlinkat(-100, "/proc/self/exe") = 32 -> "/usr/lib/wine/x86_64-unix/wine64"
+[23984] readlink("/usr") = -22 EINVAL
+[23984] readlink("/usr/lib") = -22 EINVAL
+[23984] readlink("/usr/lib/wine") = -22 EINVAL
+[23984] readlink("/usr/lib/wine/x86_64-unix") = -22 EINVAL
+[23984] readlink("/usr/lib/wine/x86_64-unix/wine64") = -22 EINVAL
+[23984] open("/usr/lib/wine/x86_64-unix/EasyAntiCheat\Certificates\runtime.conf", 0x8000) = -2 ENOENT
+[23984] newfstatat(-100, "/proc/self/maps", 0x19cf158) = 0 {dev=2 ino=2210189393664 mode=100444 nlink=1 uid=1000 gid=1000 size=0}
+[23984] openat(-100, "/proc/self/maps", 0x0) = 207
+  [... 1 reads of the maps file (4096 bytes each)]
+  [... 1 reads of the maps file (4096 bytes each)]
+  [... 2 reads of the maps file (4096 bytes each)]
+  [... 4 reads of the maps file (4096 bytes each)]
+  [... 8 reads of the maps file (4096 bytes each)]
+  [... 17 reads of the maps file (4096 bytes each)]
+[23904] set_tid_address(7ff4e2209fb0, 0, 0) = 23904
+[23904] prlimit64(pid 0, resource 7) = 0 {cur=65536 max=65536}
+[23904] prctl(4, 0, 0) = 0
+[23904] ptrace(0, 0, 0) = 0
+[23984] fork(0, 0, 0) = 23904
+[23984] wait4(5d60, 19cf46c, 0) = 23904
+[23984] kill(5d60, 9, 0) = -3 ESRCH
+[23984] kill(5d60, 9, 0) = -3 ESRCH
+[23984] open("/run/host/os-release", 0x8000) = -2 ENOENT
+[23984] open("/etc/os-release", 0x8000) = 3
+[23984] lseek(3, 0, 2) = 90
+[23984] lseek(3, 0, 1) = 90
+[23984] lseek(3, 0, 0) = 0
+[23984] readv(3, 19cef20, 2) = 90 "NAME=\"xbox-rl\"\nID=xbox-rl\nPRETTY_NAME=\"xbox-rl Linux compatibility layer (musl userland)\"" "\n"
+[23984] newfstatat(-100, "/sys/class/dmi/id/sys_vendor", 0x19cf068) = -2 ENOENT
+[23984] newfstatat(-100, "/sys/class/dmi/id/product_name", 0x19cf068) = -2 ENOENT
+[23984] newfstatat(-100, "/run/host/container-manager", 0x19cef18) = -2 ENOENT
+[23984] newfstatat(-100, "/.flatpak-info", 0x19cef88) = -2 ENOENT
+[23984] newfstatat(-100, "/run/.containerenv", 0x19cef88) = -2 ENOENT
+[23984] newfstatat(-100, "/.dockerenv", 0x19cef88) = -2 ENOENT
+[23984] uname(19cecb2, 0, 0) = 0 {sysname=Linux nodename=ms717873 release=6.1.0-xrl version=#1 SMP xbox-rl layer 0.1.0 machine=x86_64 domain=(none)}
+[23984] uname(19cece2, 0, 0) = 0 {sysname=Linux nodename=ms717873 release=6.1.0-xrl version=#1 SMP xbox-rl layer 0.1.0 machine=x86_64 domain=(none)}
+[23984] uname(19cecd2, 0, 0) = 0 {sysname=Linux nodename=ms717873 release=6.1.0-xrl version=#1 SMP xbox-rl layer 0.1.0 machine=x86_64 domain=(none)}
+[23984] open("/etc/hosts", 0x88000) = 3
+[23984] fcntl(3, cmd 2, 1) = 0
+[23984] read(3 (/etc/hosts), len 1024) = 48 "127.0.0.1 localhost\n::1 localhost ip6-localhost\n"
+[23984] read(3 (/etc/hosts), len 1024) = 0
+[23984] open("/etc/resolv.conf", 0x88000) = 3
+[23984] fcntl(3, cmd 2, 1) = 0
+[23984] read(3 (/etc/resolv.conf), len 248) = 102 "# staged by wine/scripts/stage-rootfs.sh; edit for your network\nnameserver 1.1.1.1\nnameserver 8.8.8.8\n"
+[23984] read(3 (/etc/resolv.conf), len 248) = 0
+[23984] socket(domain 2, type 0x80802, proto 0) = 3
+[23984] bind(3, {AF_INET 0.0.0.0:0}) = 0
+[23984] sendto(3, len 35, 0x4000, {AF_INET 1.1.1.1:53}) = 35 "\x9cE\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03api\x09epicgames\x03dev\x00\x00\x01\x00\x01"
+[23984] sendto(3, len 35, 0x4000, {AF_INET 8.8.8.8:53}) = 35 "\x9cE\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x03api\x09epicgames\x03dev\x00\x00\x01\x00\x01"
+[23984] recvmsg(3, 19cad00, 0) = 117
+[23984] socket(domain 2, type 0x1, proto 6) = 3
+[23984] fcntl(3, cmd 3, 0) = 2
+[23984] fcntl(3, cmd 4, 802) = 0
+[23984] connect(3, {AF_INET 104.18.125.108:443}) = -115 EINPROGRESS
+[23984] fcntl(3, cmd 4, 2) = 0
+[23984] epoll_create1(0, 0, 0) = 4
+[23984] epoll_ctl(4, 1, 3) = 0
+[23984] getsockopt(3, level 1, opt 4 (SO_ERROR)) = 0
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] setsockopt(3, level 1, opt 21) = 0
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] setsockopt(3, level 1, opt 21) = 0
+[23984] uname(19cdcf2, 0, 0) = 0 {sysname=Linux nodename=ms717873 release=6.1.0-xrl version=#1 SMP xbox-rl layer 0.1.0 machine=x86_64 domain=(none)}
+[23984] getrandom(19cdec8, 80, 0) = 128
+[23984] sendto(3, len 182, 0x4000, NULL) = 182 "\x16\x03\x03\x00\xb1\x01\x00\x00\xad\x03\x03j\xdf^\xee\xe9\x1c\xd1\xc1\xa5\xd3\x9e\x92\x1a\x9c\xe8\xf2\xea\x92i3q(\xf7F^\x9em\xe2\x8c\xae\xa5_\x00\x00&\xc00...(+134)"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x16\x03\x03\x00_"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 95) = 95 "\x02\x00\x00[\x03\x03j\xdf^\xefl\xc8\xa2\xf4\x82i\xfc\n\xa7\x1dzW\xaa1MN1n\x10)DO...(+63)"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x16\x03\x03\x0f\x96"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 3990) = 3990 "\x0b\x00\x0f\x92\x00\x0f\x8f\x00\x05\x110\x82\x05\x0d0\x82\x03\xf5\xa0\x03\x02\x01\x02\x02\x10X\xba\x89Yg\x9el...(+3958)"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x16\x03\x03\x01M"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 333) = 333 "\x0c\x00\x01I\x03\x00\x17A\x04+\x11\xaeO\xd0\xe3e\xd2\xc9\x96|}\x92\xcb\x82T\x8en\x85\xa3i\xeb\x85...(+301)"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x16\x03\x03\x00\x04"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 4) = 4 "\x0e\x00\x00\x00"
+[23984] sendto(3, len 75, 0x4000, NULL) = 75 "\x16\x03\x03\x00F\x10\x00\x00BA\x04:5\x90\x8a\xe5r9\x84\x00\xa2\xc5\xaf\x12\x8d@:\xd8r\x11F\xc3'\x0f\xeb\xe7\x1e\xb9\x127\xb1M\xd1\xae\xa8y\xd8}...(+27)"
+[23984] sendto(3, len 6, 0x4000, NULL) = 6 "\x14\x03\x03\x00\x01\x01"
+[23984] sendto(3, len 45, 0x4000, NULL) = 45 "\x16\x03\x03\x00(\x00\x00\x00\x00\x00\x00\x00\x00\xebRl\xbc\x00\x92\xce\xba\xe6\x83\x1eq\xd1$#\xf5\xb1B\x16\x85\xbc\xba\x95\x99\x93\x81\x8f\xb04!\xcf\xfb"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x14\x03\x03\x00\x01"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 1) = 1 "\x01"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x16\x03\x03\x00("
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 40) = 40 "\x00\x00\x00\x00\x00\x00\x00\x00\xe2\x89(ET\x15^m\xc3\x923\x84$\x8c\x9c/\x18q\x17\xad\x9e\x19\x19\x19...(+8)"
+[23984] sendto(3, len 938, 0x4000, NULL) = 938 "\x17\x03\x03\x03\xa5\x00\x00\x00\x00\x00\x00\x00\x01\xbf\xf2I\xcc\xd0A\xf2]\x9a\x9bg\xd0\x1d\x91\x99\x0bia\x13\x03\xb2\x84D\xdeK\xb3P\"0\x03|\xa2-\x0e\x18...(+890)"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 5) = 5 "\x17\x03\x03\x02\xa2"
+[23984] setsockopt(3, level 1, opt 20) = 0
+[23984] recvfrom(3 (), len 674) = 674 "\x00\x00\x00\x00\x00\x00\x00\x01\xae\x1a\x02\x9c9;\x88RIu\x09'4\xa0S\x12\x1dx\x98\xdf\xaf\xee*\xc6...(+642)"
+[23984] sendto(3, len 31, 0x4000, NULL) = 31 "\x15\x03\x03\x00\x1a\x00\x00\x00\x00\x00\x00\x00\x02\n\xae)Y\xa7\xf2\xb6=\"\x8c\xba$e\xcd)\x1am\xf2"
+[23984] write(166 (), len 64) = -9 EBADF
+[23984] writev(2, 1003feea0, 2) = 24
+[23984] writev(2, 1003ff0c0, 1) = 5
+[23984] writev(2, 1003ff0d0, 1) = 1
+[23984] writev(2, 1003ff0d0, 1) = 1
+[23984] writev(2, 1003ff0c0, 1) = 19
+[23984] writev(2, 1003ff0d0, 1) = 1

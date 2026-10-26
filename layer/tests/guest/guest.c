@@ -590,6 +590,8 @@ static void test_procfs_rlimits(void)
     CHECK(sc3(2, "/proc/1/maps", 0, 0) == -13, "/proc/1/maps: EACCES");
     CHECK(sc3(89, "/proc/1/exe", t, sizeof t) == -13, "readlink /proc/1/exe: EACCES");
     CHECK(sc3(2, "/proc/2/comm", 0, 0) == -2, "a process that does not exist: ENOENT");
+    n = slurp("/proc/mounts", b, sizeof b);
+    CHECK(n > 0 && find(b, " / rootfs ") && find(b, " /proc proc ") && find(b, " /sys sysfs ") && find(b, " /dev devtmpfs "), "/proc/mounts lists the filesystems the layer provides");
     n = slurp("/proc/self/cgroup", t, sizeof t);
     CHECK(n > 0 && !memcmp(t, "0::/", 4), "/proc/self/cgroup");
     n = slurp("/proc/version", b, sizeof b);
