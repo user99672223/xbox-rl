@@ -23,7 +23,7 @@ never run on the target. **WRITTEN** = source exists, not verified. **NOT DONE**
 | xinput forwarder | **TESTED** end to end against a fake host (PE -> xinput1_4.dll -> xrlhost -> op-table) |
 | d3d11 / d3d12 device creation | **TESTED** against the fake host (returns the host's object; makes the queue with a direct MS-ABI COM call) |
 | dxgi swapchain redirect | **BUILT**, not run. Swapchain *wrapper for D3D11* (`GetBuffer`->wrapped resource): **NOT DONE** |
-| audio (winexrl.drv) | **NOT DONE** (blocked on an ABI addition, section 8) |
+| audio (winexrl.drv) | **TESTED** under the real layer on the laptop (Wine patch 0022, `docs/decisions.md` 2026-10-26 Sound): WASAPI shared event/poll, PCM16, XAudio2 on top, all through `xrl_audio_ops` |
 | Anything on the actual console | **NOT DONE** - nothing here has run under the real layer |
 
 ---------------------------------------------------------------------------------------------
@@ -162,10 +162,10 @@ a thread of a second Wine instance - a different project.
 | `xinput1_1..1_4`, `xinputuap`, `xinput9_1_0` | TESTED (fake host) | no battery/headset info (ops lack them) |
 | `d3d12.dll` | TESTED (fake host) | `D3D12CreateDevice` only; FL gate 12_0 until `get_adapter_info` |
 | `d3d11.dll` | TESTED (fake host) | device creation; `D3D11On12CreateDevice`; swapchain-with-device helper BUILT |
-| `dxgi.dll` | BUILT | Wine's own factory/adapter/output enumeration (wined3d "no3d" + `renderer=no3d` baked in the prefix); swapchain redirect only. **D3D11 swapchain wrapper NOT DONE** |
-| `xaudio2_*` / audio | NOT DONE | see below |
+| `dxgi.dll` | TESTED (laptop, real layer, real GPU) | Wine's own factory/adapter/output enumeration (wined3d "no3d" + `renderer=no3d` baked in the prefix); swapchains for native devices come from the host (patch 0020; D3D11 ones are gfx/'s `d3d11_swapchain.cpp`, see the decisions log) |
+| `winexrl.drv` (audio) + Wine's own `xaudio2_*` on WASAPI | TESTED (laptop, real layer) | see below |
 
-Audio: not an XAudio2 forwarder. Wine's `xaudio2_7/8/9` are FAudio-over-WASAPI; one mmdevapi driver (`winexrl.drv`,
+Audio (now built, see the decisions log): not an XAudio2 forwarder. Wine's `xaudio2_7/8/9` are FAudio-over-WASAPI; one mmdevapi driver (`winexrl.drv`,
 ~600 lines modelled on `winealsa.drv`'s `unix_funcs`) feeding `create_source_voice` + `voice_submit_buffer` covers WASAPI,
 DirectSound, winmm and XAudio2 with no callback thunking. Blocked on pacing info (ABI request #4); `xrlhost` already exposes
 the 7 audio ops. Also needed: add `xrl` to mmdevapi's default driver list.

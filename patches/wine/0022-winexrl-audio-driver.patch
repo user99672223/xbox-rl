@@ -1,0 +1,908 @@
+diff --git a/configure.ac b/configure.ac
+index 5b97797..f96e554 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -3449,6 +3449,7 @@ WINE_CONFIG_MAKEFILE(dlls/wineusb.sys)
+ WINE_CONFIG_MAKEFILE(dlls/winevulkan)
+ WINE_CONFIG_MAKEFILE(dlls/winewayland.drv)
+ WINE_CONFIG_MAKEFILE(dlls/winex11.drv)
++WINE_CONFIG_MAKEFILE(dlls/winexrl.drv)
+ WINE_CONFIG_MAKEFILE(dlls/winexinput.sys)
+ WINE_CONFIG_MAKEFILE(dlls/wing.dll16)
+ WINE_CONFIG_MAKEFILE(dlls/wing32)
+diff --git a/dlls/mmdevapi/main.c b/dlls/mmdevapi/main.c
+index 66dae85..8725c6a 100644
+--- a/dlls/mmdevapi/main.c
++++ b/dlls/mmdevapi/main.c
+@@ -125,7 +125,7 @@ fail:
+ 
+ static BOOL WINAPI init_driver(INIT_ONCE *once, void *param, void **context)
+ {
+-    static WCHAR default_list[] = L"pulse,alsa,oss,coreaudio";
++    static WCHAR default_list[] = L"xrl,pulse,alsa,oss,coreaudio";
+     DriverFuncs driver;
+     HKEY key;
+     WCHAR reg_list[256], *p, *next, *driver_list = default_list;
+diff --git a/dlls/winexrl.drv/Makefile.in b/dlls/winexrl.drv/Makefile.in
+new file mode 100644
+index 0000000..7202a87
+--- /dev/null
++++ b/dlls/winexrl.drv/Makefile.in
+@@ -0,0 +1,5 @@
++MODULE    = winexrl.drv
++UNIXLIB   = winexrl.so
++
++SOURCES = \
++	xrl.c
+diff --git a/dlls/winexrl.drv/xrl.c b/dlls/winexrl.drv/xrl.c
+new file mode 100755
+index 0000000..00b0ad2
+--- /dev/null
++++ b/dlls/winexrl.drv/xrl.c
+@@ -0,0 +1,866 @@
++/*
++ * xbox-rl: winexrl.drv -- the mmdevapi audio driver that plays through the host.
++ *
++ * Wine's mmdevapi implements IAudioClient / IAudioRenderClient (and with them everything
++ * built on WASAPI: DirectSound, winmm waveOut, FAudio-based XAudio2 and Wwise) on top of a
++ * "driver": a unix library with the entry points of enum unix_funcs (mmdevapi/unixlib.h).  The
++ * stock drivers talk to ALSA / PulseAudio / CoreAudio, none of which exists here.  This one has
++ * one device, "Xbox Audio", and feeds the host's xrl_audio_ops (include/xrl_abi.h): one XAudio2
++ * source voice per WASAPI stream, on a mastering voice made once (2 channels, 48 kHz).
++ *
++ * Shape of a render stream (modelled on winealsa.drv, whose unix_funcs semantics mmdevapi
++ * expects):
++ *
++ *   app --GetBuffer/ReleaseBuffer--> ring (bufsize frames) --timer thread--> voice_submit_buffer
++ *
++ * The timer thread wakes every period, learns how many frames the host has played
++ * (voice_get_state), keeps QUEUE_PERIODS periods queued at the host, and signals the app's event.
++ * Padding (what GetCurrentPadding reports) is frames written minus frames the host played, so
++ * the app sees the real consumption rate of the host's audio device and never needs a clock of
++ * its own.  A host without voice_get_state is paced by the wall clock instead.
++ *
++ * The queued periods are "hidden" from the app as in winealsa.drv: the ring holds bufsize +
++ * hidden frames, padding is reduced by hidden (never below 0), and GetStreamLatency reports
++ * hidden.  Without that the app could never have more than bufsize frames outstanding, the host
++ * queue would run dry between two timer ticks (the Windows timer is coarse: ~15.6 ms), and the
++ * stream would starve at about 90% of real time.
++ *
++ * Formats: IEEE float 32 and PCM 16 pass straight through (the host's source voices are those
++ * two); everything else is refused by is_format_supported, and mmdevapi offers the mix format
++ * (float, 2 channels, 48 kHz) as the closest match.  Volumes (set_volumes) are applied in
++ * software when submitting.  Capture is not supported: there is no capture endpoint.
++ *
++ * Copyright 2026 xbox-rl contributors.  LGPL-2.1-or-later, like Wine.
++ */
++
++#if 0
++#pragma makedep unix
++#endif
++
++#include "config.h"
++
++#include <stdarg.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++#include <pthread.h>
++
++#include "ntstatus.h"
++#define WIN32_NO_STATUS
++#include "windef.h"
++#include "winbase.h"
++#include "winternl.h"
++#include "initguid.h"
++#include "mmdeviceapi.h"
++#include "ks.h"
++#include "ksmedia.h"
++
++#include "wine/debug.h"
++#include "wine/unixlib.h"
++
++#include "xrl_abi.h"
++#include "../mmdevapi/unixlib.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(xrlaudio);
++
++#ifndef MMSYSERR_NOTSUPPORTED
++#define MMSYSERR_NOTSUPPORTED 8
++#endif
++
++#define XRL_MIX_RATE      48000
++#define XRL_MIX_CHANNELS  2
++#define MIN_PERIOD_RT     50000          /* 5 ms */
++#define DEF_PERIOD_RT     100000         /* 10 ms */
++#define QUEUE_PERIODS     4              /* periods kept queued at the host: the hidden latency */
++
++enum sample_kind { KIND_FLOAT32, KIND_PCM16 };
++
++struct xrl_stream
++{
++    xrl_handle voice;
++    WAVEFORMATEX *fmt;
++    enum sample_kind kind;
++    DWORD flags;
++    AUDCLNT_SHAREMODE share;
++    HANDLE event;
++    BOOL started, please_quit;
++
++    REFERENCE_TIME period_rt;
++    UINT32 bufsize_frames, period_frames, hidden_frames, ring_frames;
++    BYTE *ring, *tmp;
++    UINT32 tmp_frames;
++    UINT32 rd_offs, wr_offs;         /* ring (ring_frames): next frame to submit / next frame the app writes */
++    LONG32 getbuf_last;              /* frames of an open GetBuffer; < 0 when it is in tmp */
++
++    UINT64 written, submitted;       /* frames the app wrote / frames handed to the host */
++    UINT64 played, last_pos;         /* frames the host played (cached per tick) / monotone position */
++    LARGE_INTEGER clock_ref;         /* wall-clock pacing fallback */
++    BOOL clock_running;
++    float *vols;
++    BYTE *scratch;                   /* volume-scaled copy of one chunk */
++    UINT32 scratch_frames;
++
++    UINT64 submit_calls, submit_bytes, underruns;
++    pthread_mutex_t lock;
++};
++
++static pthread_mutex_t engine_lock = PTHREAD_MUTEX_INITIALIZER;
++static xrl_handle xaudio2, mastering;
++
++static NTSTATUS not_implemented( void *args ) { return STATUS_SUCCESS; }
++
++static const xrl_audio_ops *get_audio_ops(void)
++{
++    static const xrl_audio_ops *ops;
++    static int tried;
++    int64_t ret;
++
++    if (!tried)
++    {
++        ret = xrl_syscall( XRL_SYS_GET_AUDIO_OPS, 0, 0, 0, 0, 0, 0 );
++        if (ret < -4095 || ret >= 0) ops = (const xrl_audio_ops *)ret;
++        if (ops && ops->struct_size < offsetof(xrl_audio_ops, release) + sizeof(ops->release))
++        {
++            ERR( "audio op-table too small (%u)\n", ops->struct_size );
++            ops = NULL;
++        }
++        TRACE( "audio ops %p\n", ops );
++        tried = 1;
++    }
++    return ops;
++}
++
++static BOOL ops_have_state( const xrl_audio_ops *ops )
++{
++    return ops->struct_size >= offsetof(xrl_audio_ops, voice_get_state) + sizeof(ops->voice_get_state) &&
++           ops->voice_get_state;
++}
++
++static inline void lock( struct xrl_stream *s ) { pthread_mutex_lock( &s->lock ); }
++static inline void unlock( struct xrl_stream *s ) { pthread_mutex_unlock( &s->lock ); }
++
++static NTSTATUS unlock_result( struct xrl_stream *s, HRESULT *result, HRESULT value )
++{
++    *result = value;
++    unlock( s );
++    return STATUS_SUCCESS;
++}
++
++static inline struct xrl_stream *get_stream( stream_handle h ) { return (struct xrl_stream *)(UINT_PTR)h; }
++
++static UINT64 muldiv64( UINT64 a, UINT64 b, UINT64 c ) { return c ? a * b / c : 0; }
++
++/* what GetCurrentPadding reports: written, not yet played, minus the frames hidden at the host */
++static UINT32 visible_padding( const struct xrl_stream *s )
++{
++    UINT64 held = s->written - s->played;
++    return held > s->hidden_frames ? (UINT32)(held - s->hidden_frames) : 0;
++}
++
++static UINT64 qpc_100ns( void )
++{
++    LARGE_INTEGER stamp, freq;
++    NtQueryPerformanceCounter( &stamp, &freq );
++    return (UINT64)stamp.QuadPart * 10000000 / freq.QuadPart;
++}
++
++/* the sample format of `fmt` as the host's voices know it, or -1 */
++static int format_kind( const WAVEFORMATEX *fmt )
++{
++    const WAVEFORMATEXTENSIBLE *ext = (const WAVEFORMATEXTENSIBLE *)fmt;
++    GUID sub = {0};
++
++    if (fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE)
++    {
++        if (fmt->cbSize < sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX)) return -1;
++        sub = ext->SubFormat;
++        if (ext->Samples.wValidBitsPerSample != fmt->wBitsPerSample) return -1;
++    }
++    else if (fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT) sub = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
++    else if (fmt->wFormatTag == WAVE_FORMAT_PCM) sub = KSDATAFORMAT_SUBTYPE_PCM;
++    else return -1;
++
++    if (fmt->nChannels < 1 || fmt->nChannels > 8) return -1;
++    if (fmt->nSamplesPerSec < 1000 || fmt->nSamplesPerSec > 200000) return -1;
++    if (fmt->nBlockAlign != fmt->nChannels * fmt->wBitsPerSample / 8) return -1;
++    if (IsEqualGUID( &sub, &KSDATAFORMAT_SUBTYPE_IEEE_FLOAT ) && fmt->wBitsPerSample == 32) return KIND_FLOAT32;
++    if (IsEqualGUID( &sub, &KSDATAFORMAT_SUBTYPE_PCM ) && fmt->wBitsPerSample == 16) return KIND_PCM16;
++    return -1;
++}
++
++/* The mastering voice every source voice plays into, made on first use. */
++static HRESULT engine_start( const xrl_audio_ops *ops, xrl_handle *engine )
++{
++    xrl_status st;
++    HRESULT hr = S_OK;
++
++    pthread_mutex_lock( &engine_lock );
++    if (!xaudio2)
++    {
++        if (ops->xaudio2_create( &xaudio2 ) != XRL_OK || !xaudio2)
++        {
++            ERR( "host xaudio2_create failed\n" );
++            xaudio2 = 0;
++            hr = AUDCLNT_E_DEVICE_INVALIDATED;
++        }
++        else if ((st = ops->create_mastering_voice( xaudio2, XRL_MIX_CHANNELS, XRL_MIX_RATE, &mastering )) != XRL_OK)
++        {
++            ERR( "host create_mastering_voice failed: %d\n", st );
++            ops->release( xaudio2 );
++            xaudio2 = mastering = 0;
++            hr = AUDCLNT_E_DEVICE_INVALIDATED;
++        }
++        else TRACE( "host audio engine %#llx, mastering voice %#llx\n", (long long)xaudio2, (long long)mastering );
++    }
++    *engine = xaudio2;
++    pthread_mutex_unlock( &engine_lock );
++    return hr;
++}
++
++static xrl_status make_voice( const xrl_audio_ops *ops, xrl_handle engine, const WAVEFORMATEX *fmt,
++                              enum sample_kind kind, xrl_handle *voice )
++{
++    return ops->create_source_voice( engine, fmt->nChannels, fmt->nSamplesPerSec,
++                                     kind == KIND_FLOAT32 ? 32 : 16, voice );
++}
++
++static NTSTATUS xrl_process_attach( void *args )
++{
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_process_detach( void *args )
++{
++    const xrl_audio_ops *ops = get_audio_ops();
++
++    pthread_mutex_lock( &engine_lock );
++    if (ops && mastering) ops->release( mastering );
++    if (ops && xaudio2) ops->release( xaudio2 );
++    mastering = xaudio2 = 0;
++    pthread_mutex_unlock( &engine_lock );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_test_connect( void *args )
++{
++    struct test_connect_params *params = args;
++    params->priority = get_audio_ops() ? Priority_Preferred : Priority_Unavailable;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_main_loop( void *args )
++{
++    struct main_loop_params *params = args;
++    NtSetEvent( params->event, NULL );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_get_endpoint_ids( void *args )
++{
++    static const WCHAR name[] = { 'X','b','o','x',' ','A','u','d','i','o',0 };
++    static const char device[] = "xrl";
++    struct get_endpoint_ids_params *params = args;
++    unsigned int needed;
++
++    params->num = 0;
++    params->default_idx = 0;
++    params->result = S_OK;
++    if (params->flow != eRender) return STATUS_SUCCESS;   /* no capture endpoint */
++
++    needed = sizeof(*params->endpoints) + sizeof(name) + ((sizeof(device) + 1) & ~1);
++    params->num = 1;
++    if (needed > params->size)
++    {
++        params->size = needed;
++        params->result = HRESULT_FROM_WIN32( ERROR_INSUFFICIENT_BUFFER );
++        return STATUS_SUCCESS;
++    }
++    params->endpoints[0].name = sizeof(*params->endpoints);
++    memcpy( (char *)params->endpoints + params->endpoints[0].name, name, sizeof(name) );
++    params->endpoints[0].device = params->endpoints[0].name + sizeof(name);
++    memcpy( (char *)params->endpoints + params->endpoints[0].device, device, sizeof(device) );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_create_stream( void *args )
++{
++    struct create_stream_params *params = args;
++    const xrl_audio_ops *ops = get_audio_ops();
++    const WAVEFORMATEX *fmt = params->fmt;
++    struct xrl_stream *s;
++    xrl_handle engine;
++    int kind;
++    xrl_status st;
++    UINT32 i;
++
++    params->result = S_OK;
++    if (!ops) { params->result = AUDCLNT_E_DEVICE_INVALIDATED; return STATUS_SUCCESS; }
++    if (params->flow != eRender) { params->result = AUDCLNT_E_ENDPOINT_CREATE_FAILED; return STATUS_SUCCESS; }
++    if (params->share != AUDCLNT_SHAREMODE_SHARED) { params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED; return STATUS_SUCCESS; }
++    if ((kind = format_kind( fmt )) < 0) { params->result = AUDCLNT_E_UNSUPPORTED_FORMAT; return STATUS_SUCCESS; }
++    if (FAILED(params->result = engine_start( ops, &engine ))) return STATUS_SUCCESS;
++
++    if (!(s = calloc( 1, sizeof(*s) ))) { params->result = E_OUTOFMEMORY; return STATUS_SUCCESS; }
++    s->kind = kind;
++    s->fmt = malloc( sizeof(WAVEFORMATEXTENSIBLE) );
++    if (!s->fmt) goto nomem;
++    memcpy( s->fmt, fmt, fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE ? sizeof(WAVEFORMATEXTENSIBLE) : sizeof(WAVEFORMATEX) );
++
++    s->period_rt = params->period < MIN_PERIOD_RT ? DEF_PERIOD_RT : params->period;
++    s->period_frames = muldiv64( fmt->nSamplesPerSec, s->period_rt, 10000000 );
++    s->bufsize_frames = muldiv64( params->duration, fmt->nSamplesPerSec, 10000000 );
++    if (s->bufsize_frames < 2 * s->period_frames) s->bufsize_frames = 2 * s->period_frames;
++    s->hidden_frames = QUEUE_PERIODS * s->period_frames;
++    s->ring_frames = s->bufsize_frames + s->hidden_frames;
++    s->ring = calloc( s->ring_frames, fmt->nBlockAlign );
++    s->vols = malloc( fmt->nChannels * sizeof(float) );
++    if (!s->ring || !s->vols) goto nomem;
++    for (i = 0; i < fmt->nChannels; i++) s->vols[i] = 1.0f;
++
++    if ((st = make_voice( ops, engine, fmt, kind, &s->voice )) != XRL_OK || !s->voice)
++    {
++        ERR( "host create_source_voice (%u ch, %u Hz, %u bit) failed: %d\n", fmt->nChannels,
++             (unsigned)fmt->nSamplesPerSec, fmt->wBitsPerSample, st );
++        params->result = AUDCLNT_E_ENDPOINT_CREATE_FAILED;
++        goto fail;
++    }
++
++    s->share = params->share;
++    s->flags = params->flags;
++    pthread_mutex_init( &s->lock, NULL );
++    TRACE( "stream %p: %u ch %u Hz %u bit, period %u frames, buffer %u frames, voice %#llx\n", s, fmt->nChannels,
++           (unsigned)fmt->nSamplesPerSec, fmt->wBitsPerSample, s->period_frames, s->bufsize_frames, (long long)s->voice );
++    *params->channel_count = fmt->nChannels;
++    *params->stream = (stream_handle)(UINT_PTR)s;
++    return STATUS_SUCCESS;
++
++nomem:
++    params->result = E_OUTOFMEMORY;
++fail:
++    free( s->ring ); free( s->vols ); free( s->fmt ); free( s );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_release_stream( void *args )
++{
++    struct release_stream_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    const xrl_audio_ops *ops = get_audio_ops();
++
++    if (params->timer_thread)
++    {
++        s->please_quit = TRUE;
++        NtWaitForSingleObject( params->timer_thread, FALSE, NULL );
++        NtClose( params->timer_thread );
++    }
++    if (ops && s->voice)
++    {
++        ops->voice_stop( s->voice );
++        ops->release( s->voice );
++    }
++    TRACE( "stream %p released: %llu submits, %llu bytes, %llu underruns\n", s, (unsigned long long)s->submit_calls,
++           (unsigned long long)s->submit_bytes, (unsigned long long)s->underruns );
++    pthread_mutex_destroy( &s->lock );
++    free( s->ring ); free( s->tmp ); free( s->scratch ); free( s->vols ); free( s->fmt ); free( s );
++    params->result = S_OK;
++    return STATUS_SUCCESS;
++}
++
++/* frames the host has played of what it was given (cached in s->played) */
++static void refresh_played( struct xrl_stream *s, const xrl_audio_ops *ops )
++{
++    UINT64 played = s->played;
++
++    if (ops_have_state( ops ))
++    {
++        uint64_t samples = 0;
++        uint32_t queued = 0;
++        if (ops->voice_get_state( s->voice, &samples, &queued ) == XRL_OK) played = samples;
++    }
++    else if (s->started)
++    {
++        UINT64 now = qpc_100ns();
++        if (s->clock_running) played += muldiv64( now - s->clock_ref.QuadPart, s->fmt->nSamplesPerSec, 10000000 );
++        s->clock_ref.QuadPart = now;
++        s->clock_running = TRUE;
++    }
++    if (played > s->submitted) played = s->submitted;
++    if (played > s->played) s->played = played;
++}
++
++static void scale_into( struct xrl_stream *s, BYTE *dst, const BYTE *src, UINT32 frames )
++{
++    UINT32 ch = s->fmt->nChannels, i, c;
++    BOOL unity = TRUE;
++
++    for (c = 0; c < ch; c++) if (s->vols[c] != 1.0f) unity = FALSE;
++    if (unity) { memcpy( dst, src, frames * s->fmt->nBlockAlign ); return; }
++    if (s->kind == KIND_FLOAT32)
++    {
++        const float *in = (const float *)src;
++        float *out = (float *)dst;
++        for (i = 0; i < frames; i++) for (c = 0; c < ch; c++) out[i * ch + c] = in[i * ch + c] * s->vols[c];
++    }
++    else
++    {
++        const INT16 *in = (const INT16 *)src;
++        INT16 *out = (INT16 *)dst;
++        for (i = 0; i < frames; i++)
++            for (c = 0; c < ch; c++)
++            {
++                float v = in[i * ch + c] * s->vols[c];
++                out[i * ch + c] = v > 32767.0f ? 32767 : v < -32768.0f ? -32768 : (INT16)v;
++            }
++    }
++}
++
++/* hand up to `frames` unsubmitted frames to the host (contiguous part of the ring only) */
++static UINT32 submit_chunk( struct xrl_stream *s, const xrl_audio_ops *ops, UINT32 frames )
++{
++    UINT32 contiguous = s->ring_frames - s->rd_offs, bytes;
++    const BYTE *src;
++    xrl_status st;
++
++    if (frames > contiguous) frames = contiguous;
++    if (!frames) return 0;
++    src = s->ring + (size_t)s->rd_offs * s->fmt->nBlockAlign;
++    bytes = frames * s->fmt->nBlockAlign;
++    if (s->scratch_frames < frames)
++    {
++        free( s->scratch );
++        s->scratch = malloc( bytes );
++        s->scratch_frames = s->scratch ? frames : 0;
++        if (!s->scratch) return 0;
++    }
++    scale_into( s, s->scratch, src, frames );
++    if ((st = ops->voice_submit_buffer( s->voice, s->scratch, bytes, 0 )) != XRL_OK)
++    {
++        WARN( "host voice_submit_buffer failed: %d\n", st );
++        return 0;
++    }
++    s->rd_offs = (s->rd_offs + frames) % s->ring_frames;
++    s->submitted += frames;
++    s->submit_calls++;
++    s->submit_bytes += bytes;
++    return frames;
++}
++
++static void tick( struct xrl_stream *s, const xrl_audio_ops *ops )
++{
++    UINT64 target = (UINT64)QUEUE_PERIODS * s->period_frames;
++
++    refresh_played( s, ops );
++    if (s->started)
++    {
++        while (s->submitted - s->played < target && s->written > s->submitted)
++        {
++            UINT64 pending = s->written - s->submitted;
++            UINT32 n = pending < s->period_frames ? (UINT32)pending : s->period_frames;
++            if (!submit_chunk( s, ops, n )) break;
++        }
++        if (s->submitted == s->played && s->written == s->submitted) s->underruns++;
++        if (s->event) NtSetEvent( s->event, NULL );
++    }
++}
++
++static NTSTATUS xrl_timer_loop( void *args )
++{
++    struct timer_loop_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    const xrl_audio_ops *ops = get_audio_ops();
++    LARGE_INTEGER delay, next;
++    INT64 adjust;
++
++    lock( s );
++    delay.QuadPart = -s->period_rt;
++    next.QuadPart = (INT64)qpc_100ns() + s->period_rt;
++    while (!s->please_quit)
++    {
++        if (ops) tick( s, ops );
++        unlock( s );
++        NtDelayExecution( FALSE, &delay );
++        lock( s );
++        adjust = next.QuadPart - (INT64)qpc_100ns();
++        if (adjust > s->period_rt / 2) adjust = s->period_rt / 2;
++        else if (adjust < -(INT64)(s->period_rt / 2)) adjust = -(INT64)(s->period_rt / 2);
++        delay.QuadPart = -(s->period_rt + adjust);
++        next.QuadPart += s->period_rt;
++    }
++    unlock( s );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_start( void *args )
++{
++    struct start_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    const xrl_audio_ops *ops = get_audio_ops();
++
++    lock( s );
++    if ((s->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK) && !s->event)
++        return unlock_result( s, &params->result, AUDCLNT_E_EVENTHANDLE_NOT_SET );
++    if (s->started) return unlock_result( s, &params->result, AUDCLNT_E_NOT_STOPPED );
++    if (!ops || ops->voice_start( s->voice ) != XRL_OK)
++        return unlock_result( s, &params->result, AUDCLNT_E_DEVICE_INVALIDATED );
++    s->started = TRUE;
++    s->clock_running = FALSE;
++    TRACE( "stream %p started, %llu frames waiting\n", s, (unsigned long long)(s->written - s->played) );
++    tick( s, ops );
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_stop( void *args )
++{
++    struct stop_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    const xrl_audio_ops *ops = get_audio_ops();
++
++    lock( s );
++    if (!s->started) return unlock_result( s, &params->result, S_FALSE );
++    if (ops)
++    {
++        refresh_played( s, ops );
++        ops->voice_stop( s->voice );
++    }
++    s->started = FALSE;
++    TRACE( "stream %p stopped\n", s );
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_reset( void *args )
++{
++    struct reset_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    const xrl_audio_ops *ops = get_audio_ops();
++    xrl_handle engine, voice = 0;
++
++    lock( s );
++    if (s->started) return unlock_result( s, &params->result, AUDCLNT_E_NOT_STOPPED );
++    if (s->getbuf_last) return unlock_result( s, &params->result, AUDCLNT_E_BUFFER_OPERATION_PENDING );
++    /* the host cannot flush: a new voice drops what is still queued */
++    if (ops && SUCCEEDED(engine_start( ops, &engine )) &&
++        make_voice( ops, engine, s->fmt, s->kind, &voice ) == XRL_OK && voice)
++    {
++        ops->release( s->voice );
++        s->voice = voice;
++    }
++    s->written = s->submitted = s->played = s->last_pos = 0;
++    s->rd_offs = s->wr_offs = 0;
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_get_render_buffer( void *args )
++{
++    struct get_render_buffer_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    UINT32 frames = params->frames;
++
++    lock( s );
++    if (s->getbuf_last) return unlock_result( s, &params->result, AUDCLNT_E_OUT_OF_ORDER );
++    if (!frames) return unlock_result( s, &params->result, S_OK );
++    if (visible_padding( s ) + frames > s->bufsize_frames)
++        return unlock_result( s, &params->result, AUDCLNT_E_BUFFER_TOO_LARGE );
++
++    if (s->wr_offs + frames > s->ring_frames)
++    {
++        /* the request wraps the ring: hand out a linear buffer, copied in at ReleaseBuffer */
++        if (s->tmp_frames < frames)
++        {
++            free( s->tmp );
++            s->tmp = malloc( (size_t)frames * s->fmt->nBlockAlign );
++            if (!s->tmp) { s->tmp_frames = 0; return unlock_result( s, &params->result, E_OUTOFMEMORY ); }
++            s->tmp_frames = frames;
++        }
++        *params->data = s->tmp;
++        s->getbuf_last = -(LONG32)frames;
++    }
++    else
++    {
++        *params->data = s->ring + (size_t)s->wr_offs * s->fmt->nBlockAlign;
++        s->getbuf_last = frames;
++    }
++    /* silence, as GetBuffer's contract wants for a buffer the app may only partly fill */
++    memset( *params->data, 0, (size_t)frames * s->fmt->nBlockAlign );
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_release_render_buffer( void *args )
++{
++    struct release_render_buffer_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    UINT32 frames = params->written_frames, open_frames;
++    UINT32 bpf, chunk;
++    BYTE *buffer;
++
++    lock( s );
++    if (!frames) { s->getbuf_last = 0; return unlock_result( s, &params->result, S_OK ); }
++    if (!s->getbuf_last) return unlock_result( s, &params->result, AUDCLNT_E_OUT_OF_ORDER );
++    open_frames = s->getbuf_last >= 0 ? s->getbuf_last : -s->getbuf_last;
++    if (frames > open_frames) return unlock_result( s, &params->result, AUDCLNT_E_INVALID_SIZE );
++
++    bpf = s->fmt->nBlockAlign;
++    buffer = s->getbuf_last >= 0 ? s->ring + (size_t)s->wr_offs * bpf : s->tmp;
++    if (params->flags & AUDCLNT_BUFFERFLAGS_SILENT) memset( buffer, 0, (size_t)frames * bpf );
++    if (s->getbuf_last < 0)
++    {
++        chunk = s->ring_frames - s->wr_offs;
++        if (frames <= chunk) memcpy( s->ring + (size_t)s->wr_offs * bpf, buffer, (size_t)frames * bpf );
++        else
++        {
++            memcpy( s->ring + (size_t)s->wr_offs * bpf, buffer, (size_t)chunk * bpf );
++            memcpy( s->ring, buffer + (size_t)chunk * bpf, (size_t)(frames - chunk) * bpf );
++        }
++    }
++    s->wr_offs = (s->wr_offs + frames) % s->ring_frames;
++    s->written += frames;
++    s->getbuf_last = 0;
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_get_capture_buffer( void *args )
++{
++    struct get_capture_buffer_params *params = args;
++    params->result = AUDCLNT_E_WRONG_ENDPOINT_TYPE;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_release_capture_buffer( void *args )
++{
++    struct release_capture_buffer_params *params = args;
++    params->result = AUDCLNT_E_WRONG_ENDPOINT_TYPE;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_is_format_supported( void *args )
++{
++    struct is_format_supported_params *params = args;
++
++    if (params->flow != eRender) params->result = AUDCLNT_E_DEVICE_INVALIDATED;
++    else if (params->share != AUDCLNT_SHAREMODE_SHARED) params->result = AUDCLNT_E_EXCLUSIVE_MODE_NOT_ALLOWED;
++    else params->result = format_kind( params->fmt_in ) >= 0 ? S_OK : AUDCLNT_E_UNSUPPORTED_FORMAT;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_get_mix_format( void *args )
++{
++    struct get_mix_format_params *params = args;
++    WAVEFORMATEXTENSIBLE *fmt = params->fmt;
++
++    if (params->flow != eRender) { params->result = AUDCLNT_E_DEVICE_INVALIDATED; return STATUS_SUCCESS; }
++    fmt->Format.wFormatTag = WAVE_FORMAT_EXTENSIBLE;
++    fmt->Format.nChannels = XRL_MIX_CHANNELS;
++    fmt->Format.nSamplesPerSec = XRL_MIX_RATE;
++    fmt->Format.wBitsPerSample = 32;
++    fmt->Format.nBlockAlign = XRL_MIX_CHANNELS * 4;
++    fmt->Format.nAvgBytesPerSec = XRL_MIX_RATE * fmt->Format.nBlockAlign;
++    fmt->Format.cbSize = sizeof(WAVEFORMATEXTENSIBLE) - sizeof(WAVEFORMATEX);
++    fmt->Samples.wValidBitsPerSample = 32;
++    fmt->dwChannelMask = KSAUDIO_SPEAKER_STEREO;
++    fmt->SubFormat = KSDATAFORMAT_SUBTYPE_IEEE_FLOAT;
++    params->result = S_OK;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_get_device_period( void *args )
++{
++    struct get_device_period_params *params = args;
++    if (params->def_period) *params->def_period = DEF_PERIOD_RT;
++    if (params->min_period) *params->min_period = MIN_PERIOD_RT;
++    params->result = S_OK;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_get_buffer_size( void *args )
++{
++    struct get_buffer_size_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    lock( s );
++    *params->frames = s->bufsize_frames;
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_get_latency( void *args )
++{
++    struct get_latency_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    lock( s );
++    /* what the host holds ahead of the speakers */
++    *params->latency = (REFERENCE_TIME)muldiv64( s->hidden_frames, 10000000, s->fmt->nSamplesPerSec );
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_get_current_padding( void *args )
++{
++    struct get_current_padding_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    lock( s );
++    /* updated per period by the timer thread, like winealsa */
++    *params->padding = visible_padding( s );
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_get_next_packet_size( void *args )
++{
++    struct get_next_packet_size_params *params = args;
++    *params->frames = 0;    /* render streams only */
++    params->result = S_OK;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_get_frequency( void *args )
++{
++    struct get_frequency_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    lock( s );
++    *params->freq = (UINT64)s->fmt->nSamplesPerSec * s->fmt->nBlockAlign;   /* shared mode: bytes */
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_get_position( void *args )
++{
++    struct get_position_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    const xrl_audio_ops *ops = get_audio_ops();
++    UINT64 position;
++
++    if (params->device) { params->result = E_NOTIMPL; return STATUS_SUCCESS; }
++    lock( s );
++    if (ops) refresh_played( s, ops );
++    position = s->played;
++    if (position < s->last_pos) position = s->last_pos; else s->last_pos = position;
++    *params->pos = position * s->fmt->nBlockAlign;      /* shared mode: bytes */
++    if (params->qpctime) *params->qpctime = qpc_100ns();
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_set_volumes( void *args )
++{
++    struct set_volumes_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    unsigned int i;
++
++    lock( s );
++    for (i = 0; i < s->fmt->nChannels; i++)
++        s->vols[i] = params->volumes[i] * params->session_volumes[i] * params->master_volume;
++    unlock( s );
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_set_event_handle( void *args )
++{
++    struct set_event_handle_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++
++    lock( s );
++    if (!(s->flags & AUDCLNT_STREAMFLAGS_EVENTCALLBACK))
++        return unlock_result( s, &params->result, AUDCLNT_E_EVENTHANDLE_NOT_EXPECTED );
++    if (s->event) return unlock_result( s, &params->result, HRESULT_FROM_WIN32( ERROR_INVALID_NAME ) );
++    s->event = params->event;
++    return unlock_result( s, &params->result, S_OK );
++}
++
++static NTSTATUS xrl_is_started( void *args )
++{
++    struct is_started_params *params = args;
++    struct xrl_stream *s = get_stream( params->stream );
++    lock( s );
++    return unlock_result( s, &params->result, s->started ? S_OK : S_FALSE );
++}
++
++static NTSTATUS xrl_get_prop_value( void *args )
++{
++    struct get_prop_value_params *params = args;
++    PROPVARIANT *out = params->value;
++
++    if (params->flow != eCapture && IsEqualPropertyKey( *params->prop, PKEY_AudioEndpoint_PhysicalSpeakers ))
++    {
++        out->vt = VT_UI4;
++        out->ulVal = KSAUDIO_SPEAKER_STEREO;
++        params->result = S_OK;
++        return STATUS_SUCCESS;
++    }
++    params->result = E_NOTIMPL;
++    return STATUS_SUCCESS;
++}
++
++/* mmdevapi also loads its driver as winmm's MIDI/aux driver: there is none here */
++static NTSTATUS xrl_midi_init( void *args )
++{
++    struct midi_init_params *params = args;
++    *params->err = 0;                       /* DRV_FAILURE: no notify thread */
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_midi_out_message( void *args )
++{
++    struct midi_out_message_params *params = args;
++    *params->err = MMSYSERR_NOTSUPPORTED;
++    params->notify->send_notify = FALSE;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_midi_in_message( void *args )
++{
++    struct midi_in_message_params *params = args;
++    *params->err = MMSYSERR_NOTSUPPORTED;
++    params->notify->send_notify = FALSE;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_midi_notify_wait( void *args )
++{
++    struct midi_notify_wait_params *params = args;
++    *params->quit = TRUE;
++    params->notify->send_notify = FALSE;
++    return STATUS_SUCCESS;
++}
++
++static NTSTATUS xrl_aux_message( void *args )
++{
++    struct aux_message_params *params = args;
++    *params->err = MMSYSERR_NOTSUPPORTED;
++    return STATUS_SUCCESS;
++}
++
++const unixlib_entry_t __wine_unix_call_funcs[] =
++{
++    xrl_process_attach,
++    xrl_process_detach,
++    xrl_main_loop,
++    xrl_get_endpoint_ids,
++    xrl_create_stream,
++    xrl_release_stream,
++    xrl_start,
++    xrl_stop,
++    xrl_reset,
++    xrl_timer_loop,
++    xrl_get_render_buffer,
++    xrl_release_render_buffer,
++    xrl_get_capture_buffer,
++    xrl_release_capture_buffer,
++    xrl_is_format_supported,
++    not_implemented,            /* get_loopback_capture_device: result stays E_NOTIMPL */
++    xrl_get_mix_format,
++    xrl_get_device_period,
++    xrl_get_buffer_size,
++    xrl_get_latency,
++    xrl_get_current_padding,
++    xrl_get_next_packet_size,
++    xrl_get_frequency,
++    xrl_get_position,
++    xrl_set_volumes,
++    xrl_set_event_handle,
++    not_implemented,            /* set_sample_rate */
++    xrl_test_connect,
++    xrl_is_started,
++    xrl_get_prop_value,
++    not_implemented,            /* midi_get_driver: empty name = use this driver */
++    xrl_midi_init,
++    not_implemented,            /* midi_release */
++    xrl_midi_out_message,
++    xrl_midi_in_message,
++    xrl_midi_notify_wait,
++    xrl_aux_message,
++};
++
++C_ASSERT( ARRAYSIZE(__wine_unix_call_funcs) == funcs_count );

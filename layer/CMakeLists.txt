@@ -40,10 +40,14 @@ if(XRL_BUILD_TESTS AND NOT XRL_UWP)
     # gfx/ in its desktop mode, for XRL_REAL_GFX=1 (tests/desktop_gfx.cpp)
     enable_language(CXX)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../gfx ${CMAKE_CURRENT_BINARY_DIR}/gfx EXCLUDE_FROM_ALL)
-    add_executable(xrl_test_host tests/test_host.c tests/desktop_gfx.cpp)
-    target_include_directories(xrl_test_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+    # host/src/audio_ops.cpp (XAudio2) unchanged, with a stand-in for the UWP project's pch.h
+    add_executable(xrl_test_host tests/test_host.c tests/desktop_gfx.cpp tests/desktop_audio.cpp
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../host/src/audio_ops.cpp)
+    target_include_directories(xrl_test_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
+                               ${CMAKE_CURRENT_SOURCE_DIR}/tests/shim ${CMAKE_CURRENT_SOURCE_DIR}/../host/src)
     target_compile_definitions(xrl_test_host PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(xrl_test_host PRIVATE xrl_layer xrl_gfx user32)
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../host/src/audio_ops.cpp PROPERTIES COMPILE_OPTIONS "/EHsc;/utf-8")
+    target_link_libraries(xrl_test_host PRIVATE xrl_layer xrl_gfx user32 xaudio2)
     add_executable(xrl_catch tests/catch.c)
     target_compile_definitions(xrl_catch PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_link_libraries(xrl_catch PRIVATE dbghelp)

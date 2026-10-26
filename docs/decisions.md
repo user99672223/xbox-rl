@@ -144,6 +144,51 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Sound: `winexrl.drv`, an mmdevapi driver over `xrl_audio_ops`.** Wine logged
+  `No driver from L"pulse,alsa,oss,coreaudio" could be initialized`, so every WASAPI client failed in
+  `GetDefaultAudioEndpoint`. Design choice: a **new Wine mmdevapi driver** (Wine patch 0022,
+  `dlls/winexrl.drv`, a unix library like winealsa.drv with an empty PE stub) instead of an XAudio2
+  forwarder. Wine's own `xaudio2_7/8/9` are FAudio on top of WASAPI, DirectSound and winmm waveOut are
+  too, and Wwise's WASAPI sink talks to mmdevapi directly: one driver under mmdevapi serves all of them
+  with no XAudio2 COM-object forwarding and no callback thunking. mmdevapi's default driver list now
+  starts with `xrl`.
+  - **Device and formats.** One render endpoint, "Xbox Audio" (no capture endpoint), mix format
+    float32 / 2 ch / 48 kHz. IEEE float 32 and PCM 16 (1-8 channels, 1-200 kHz) pass straight to the
+    host's source voices; anything else (24-bit...) is refused and mmdevapi offers the mix format.
+    Shared mode only. Volumes (`set_volumes`) are applied in software when handing data to the host.
+  - **Streaming.** App -> `GetBuffer`/`ReleaseBuffer` -> a ring -> the timer thread (a PE thread inside a
+    unix call, as in every Wine driver) -> `voice_submit_buffer`, one XAudio2 source voice per WASAPI
+    stream on one mastering voice (2 ch, 48 kHz) made on first use. **Pacing comes from the host:** each
+    period (10 ms) the thread asks `voice_get_state` (ABI v2, `SamplesPlayed`) how much the voice has
+    played, keeps four periods queued at the host and signals the app's event, so padding and
+    `GetPosition` follow the host's audio device and the app needs no clock of its own (a host without
+    `voice_get_state` is paced by the wall clock). The queued frames are *hidden* from the app as in
+    winealsa (padding = written - played - hidden, ring = buffer + hidden, `GetStreamLatency` = hidden
+    = 40 ms): without it the app can never have more than its 30 ms buffer outstanding and the host
+    queue ran dry between two ticks of the coarse Windows timer (15.6 ms; the layer's sleeps do not
+    get finer), which starved the stream at 90% of real time (measured; fixed, ratio now 1.00).
+    `Reset` makes a new voice because the host ABI cannot flush.
+  - **Host side.** `host/src/audio_ops.cpp` gained `voice_get_state` (the slot existed in the ABI,
+    the console host never filled it), COM initialisation on whichever guest thread creates voices
+    (`CreateMasteringVoice` failed with CO_E_NOTINITIALIZED from a Wine thread), and per-voice
+    counters: one log line `voice X: N buffers, M frames so far; last K buffers peak P` about every
+    second of audio, so a log proves buffers arrive and how loud they are. The desktop test host now
+    compiles that same file (`layer/tests/desktop_audio.cpp` + a stand-in `pch.h`) and plays through
+    the laptop's XAudio2; `XRL_NO_AUDIO=1` keeps the old stubs.
+  - **Test.** `wine/tests/pe/xrl_audio_test.c` (WASAPI shared: event-driven float, polling, event-driven
+    PCM16, a refused 24-bit format, stop/reset/start, and Wine's XAudio2 on top) all pass under Wine on
+    the layer: 2 s of audio take 1.96-1.98 s of wall clock (ratio 1.00), 480-frame buffers arrive at
+    the host at 100/s with peak 0.100 (the tone's amplitude); `results/desktop-wine-audio-1.txt`.
+    Not listened to by a person; not run on the console.
+  - **Prefix.** The baked prefix predates the module, and Wine does not find a builtin that has no
+    fake DLL in `system32` (status c0000135); `stage-rootfs.sh` copies `winexrl.drv` there (the baked
+    fakes are byte-identical copies of the build's files). Re-baking from a build that has the module
+    makes this unnecessary.
+  - **Build flags gotcha.** After editing `configure.ac` for a new directory, `config.status --recheck`
+    loses the cross flags (they come from the environment: `x86_64_CFLAGS` became `-g -O2`, the
+    rebuilt PE DLLs grew by 17 MB). Re-run it as `CROSSCFLAGS=-O1 ./config.status --recheck` and
+    delete the objects built in between.
+
 - **2026-10-26 — First frames on screen: a D3D11 program presents through the whole stack.**
   `wine/tests/pe/xrl_present_test.c` (Windows x64, mingw) creates a window, a D3D11 device and
   swapchains by every route a game uses (`IDXGIFactory::CreateSwapChain`,

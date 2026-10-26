@@ -24,6 +24,15 @@ rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclud
 log "stage: prefix -> $dest/prefix"
 rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
 
+# xbox-rl's own builtin PE modules added after the prefix was baked have no fake DLL in system32,
+# and Wine does not find them there ("Failed to load module", status c0000135). The baked fakes
+# are byte-identical copies of the build's own files, so the real file does the job. (Re-baking
+# the prefix from a build that has the module would make this unnecessary.)
+sys32="$dest/prefix/drive_c/windows/system32"
+for m in winexrl.drv; do
+  [ -e "$sys32/$m" ] || { cp "$rootfs/usr/lib/wine/x86_64-windows/$m" "$sys32/$m" && log "stage: $m added to the prefix's system32"; }
+done
+
 # Wine's unix side reads a stable machine identity; keep one per staged tree.
 mkdir -p "$dest/etc"
 [ -s "$dest/etc/machine-id" ] || { head -c 16 /dev/urandom | od -An -tx1 | tr -d ' 

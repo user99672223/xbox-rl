@@ -14,7 +14,7 @@ tests=("$@"); [ ${#tests[@]} = 0 ] && tests=(xrl_present_test xrl_audio_test)
 for t in "${tests[@]}"; do
   case $t in
     xrl_present_test) libs="-ld3d11 -ldxgi -luuid -lole32 -luser32" ;;
-    xrl_audio_test)   libs="-lole32 -luuid -lwinmm" ;;
+    xrl_audio_test)   libs="-lole32 -luuid -lm" ;;
     *) die "unknown test $t" ;;
   esac
   [ -f "$here/$t.c" ] || { warn "$t.c does not exist yet"; continue; }
