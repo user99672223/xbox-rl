@@ -429,6 +429,14 @@ SYS(zero_ok) { UNUSED6; return 0; }
  * elsewhere), lists are empty. */
 SYS(xattr_nodata) { UNUSED6; return -LX_ENODATA; }
 SYS(xattr_notsup) { UNUSED6; return -LX_EOPNOTSUPP; }
+SYS(chmod) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a1); if (r) return r; return xrl_vfs_chmod(LX_AT_FDCWD, p, (u32)a2, 0); }
+SYS(fchmod) { UNUSED6; return xrl_vfs_fchmod((int)a1, (u32)a2); }
+SYS(fchmodat) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a2); if (r) return r; return xrl_vfs_chmod((int)a1, p, (u32)a3, 0); }
+SYS(fchmodat2) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a2); if (r) return r; return xrl_vfs_chmod((int)a1, p, (u32)a3, (int)a4); }
+SYS(chown) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a1); if (r) return r; return xrl_vfs_chown(LX_AT_FDCWD, p, (u32)a2, (u32)a3, 0); }
+SYS(lchown) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a1); if (r) return r; return xrl_vfs_chown(LX_AT_FDCWD, p, (u32)a2, (u32)a3, LX_AT_SYMLINK_NOFOLLOW); }
+SYS(fchown) { UNUSED6; return xrl_vfs_fchown((int)a1, (u32)a2, (u32)a3); }
+SYS(fchownat) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a2); if (r) return r; return xrl_vfs_chown((int)a1, p, (u32)a3, (u32)a4, (int)a5); }
 SYS(umask) { UNUSED6; u32 old = G.umask; G.umask = (u32)a1 & 0777; return old; }
 
 SYS(pipe) { UNUSED6; int fds[2]; slong r = xrl_pipe_create(0, fds); if (r) return r; return xrl_ctu((u64)a1, fds, 8); }
@@ -661,7 +669,8 @@ SYS(exit_group) { UNUSED6; xrl_do_exit((int)a1, 1); return 0; }
 SYS(gettid) { UNUSED6; xrl_thread *t = xrl_cur(); return t ? t->tid : G.pid; }
 SYS(getpid) { UNUSED6; return G.pid; }
 SYS(getppid) { UNUSED6; return 1; }
-SYS(uid) { UNUSED6; return 1000; }
+SYS(uid) { UNUSED6; return xrl_cur_uid(); }
+SYS(gid) { UNUSED6; return xrl_cur_gid(); }
 SYS(set_tid_address) { UNUSED6; xrl_thread *t = xrl_cur(); if (t) t->clear_child_tid = (u64)a1; return t ? t->tid : G.pid; }
 SYS(set_robust_list) { UNUSED6; xrl_thread *t = xrl_cur(); if (a2 != 24) return -LX_EINVAL; if (t) { t->robust_list = (u64)a1; t->robust_len = (u64)a2; } return 0; }
 SYS(get_robust_list)
@@ -738,7 +747,8 @@ SYS(times) { UNUSED6; return xrl_sys_times((u64)a1); }
 SYS(getrusage) { UNUSED6; return xrl_sys_getrusage((int)a1, (u64)a2); }
 SYS(getpgid) { UNUSED6; return G.pid; }
 SYS(getgroups) { UNUSED6; return 0; }
-SYS(getresuid) { UNUSED6; u32 id = 1000; if (xrl_ctu((u64)a1, &id, 4) || xrl_ctu((u64)a2, &id, 4) || xrl_ctu((u64)a3, &id, 4)) return -LX_EFAULT; return 0; }
+SYS(getresuid) { UNUSED6; u32 id = xrl_cur_uid(); if (xrl_ctu((u64)a1, &id, 4) || xrl_ctu((u64)a2, &id, 4) || xrl_ctu((u64)a3, &id, 4)) return -LX_EFAULT; return 0; }
+SYS(getresgid) { UNUSED6; u32 id = xrl_cur_gid(); if (xrl_ctu((u64)a1, &id, 4) || xrl_ctu((u64)a2, &id, 4) || xrl_ctu((u64)a3, &id, 4)) return -LX_EFAULT; return 0; }
 SYS(personality) { UNUSED6; return 0; }
 SYS(restart_syscall) { UNUSED6; return -LX_EINTR; }
 
@@ -778,8 +788,8 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_symlink, symlink), T(NR_symlinkat, symlinkat), T(NR_link, link), T(NR_linkat, linkat),
     T(NR_chdir, chdir), T(NR_fchdir, fchdir), T(NR_getcwd, getcwd), T(NR_truncate, truncate), T(NR_ftruncate, ftruncate),
     T(NR_fsync, fsync), T(NR_fdatasync, fsync), T(NR_fallocate, fallocate), T(NR_fadvise64, zero_ok),
-    T(NR_flock, zero_ok), T(NR_chmod, zero_ok), T(NR_fchmod, zero_ok), T(NR_fchmodat, zero_ok),
-    T(NR_chown, zero_ok), T(NR_fchown, zero_ok), T(NR_lchown, zero_ok), T(NR_umask, umask),
+    T(NR_flock, zero_ok), T(NR_chmod, chmod), T(NR_fchmod, fchmod), T(NR_fchmodat, fchmodat), T(NR_fchmodat2, fchmodat2),
+    T(NR_chown, chown), T(NR_fchown, fchown), T(NR_lchown, lchown), T(NR_fchownat, fchownat), T(NR_umask, umask),
     T(NR_utimensat, utimensat), T(NR_utimes, utimes), T(NR_statfs, statfs), T(NR_fstatfs, fstatfs),
     /* poll / sockets */
     T(NR_poll, poll), T(NR_ppoll, ppoll), T(NR_select, select), T(NR_pselect6, pselect6),T(NR_epoll_create, epoll_create), T(NR_epoll_create1, epoll_create1),
@@ -794,10 +804,10 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_clock_nanosleep, clock_nanosleep), T(NR_nanosleep, nanosleep), T(NR_gettimeofday, gettimeofday),
     T(NR_time, time), T(NR_times, times), T(NR_getrusage, getrusage),
     /* ident / misc */
-    T(NR_getpid, getpid), T(NR_getppid, getppid), T(NR_getuid, uid), T(NR_geteuid, uid), T(NR_getgid, uid), T(NR_getegid, uid),
+    T(NR_getpid, getpid), T(NR_getppid, getppid), T(NR_getuid, uid), T(NR_geteuid, uid), T(NR_getgid, gid), T(NR_getegid, gid),
     T(NR_getpgid, getpgid), T(NR_getpgrp, getpgid), T(NR_getsid, getpgid), T(NR_setsid, getpgid), T(NR_setpgid, zero_ok),
     T(NR_setuid, zero_ok), T(NR_setgid, zero_ok), T(NR_setresuid, zero_ok), T(NR_setresgid, zero_ok),
-    T(NR_getgroups, getgroups), T(NR_getresuid, getresuid), T(NR_getresgid, getresuid),
+    T(NR_getgroups, getgroups), T(NR_getresuid, getresuid), T(NR_getresgid, getresgid),
     T(NR_prctl, prctl), T(NR_arch_prctl, arch_prctl), T(NR_uname, uname), T(NR_sysinfo, sysinfo), T(NR_getrandom, getrandom), T(NR_membarrier, membarrier),
     T(NR_getrlimit, getrlimit), T(NR_setrlimit, setrlimit), T(NR_prlimit64, prlimit64), T(NR_personality, personality),
     T(NR_sched_getaffinity, sched_getaffinity), T(NR_sched_setaffinity, zero_ok), T(NR_getcpu, getcpu),

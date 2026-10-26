@@ -6,8 +6,10 @@ The layer's VFS (layer/src/vfs.c) cannot use NTFS symlinks or Unix permission bi
 cannot hold in two tables at the root of the tree:
 
   .xrl-symlinks   one "guest_path<TAB>target" per symlink (read by vfs.c)
-  .xrl-meta       one "guest_path<TAB>mode(octal)<TAB>uid<TAB>gid" per file whose mode/owner is not the
-                  layer's default (0644 files, 0755 directories, owner 0:0 in an unpacked rootfs)
+  .xrl-meta       "#default<TAB>0<TAB>0" (the owner of every file not listed: root), then one
+                  "guest_path<TAB>mode(octal)<TAB>uid<TAB>gid" per file whose mode/owner is not the layer's
+                  default (0755 directory, 0755 file with an executable-looking name like vfs.c is_exec_name,
+                  0644 any other file; owner 0:0). The layer appends to this file as the guest chmods/creates.
 
 Hard links become copies. Names Windows cannot represent are stored as U+F0xx (vfs.c comp_to_host).
 Device nodes and fifos are skipped (the layer synthesises /dev).
@@ -19,6 +21,12 @@ import sys
 import tarfile
 
 BAD = set('"*:<>|\\') | {chr(c) for c in range(32)}
+EXEC_EXT = ('.exe', '.dll', '.so', '.sh', '.drv', '.sys', '.ocx', '.cpl', '.scr', '.com', '.bat', '.cmd', '.acm', '.ax', '.vxd', '.tlb')
+
+
+def default_perm(g, isdir):
+    return 0o755 if isdir or g.lower().endswith(EXEC_EXT) else 0o644
+
 
 
 def host_name(comp):
@@ -57,7 +65,7 @@ def main():
             hp = host_path(root, g)
             if m.isdir():
                 os.makedirs(hp, exist_ok=True)
-                if (m.mode & 0o7777) != 0o755 or m.uid or m.gid:
+                if (m.mode & 0o7777) != default_perm(g, True) or m.uid or m.gid:
                     meta[g] = (m.mode & 0o7777, m.uid, m.gid)
             elif m.issym():
                 syms[g] = m.linkname
@@ -70,7 +78,7 @@ def main():
                 with open(host_path(root, src), 'rb') as a, open(hp, 'wb') as b:
                     b.write(a.read())
                 n_files += 1
-                if (m.mode & 0o7777) != 0o644 or m.uid or m.gid:
+                if (m.mode & 0o7777) != default_perm(g, False) or m.uid or m.gid:
                     meta[g] = (m.mode & 0o7777, m.uid, m.gid)
             elif m.isreg():
                 os.makedirs(os.path.dirname(hp), exist_ok=True)
@@ -82,7 +90,7 @@ def main():
                         b.write(buf)
                         n_bytes += len(buf)
                 n_files += 1
-                if (m.mode & 0o7777) != 0o644 or m.uid or m.gid:
+                if (m.mode & 0o7777) != default_perm(g, False) or m.uid or m.gid:
                     meta[g] = (m.mode & 0o7777, m.uid, m.gid)
             else:
                 skipped.append(g)
@@ -90,6 +98,7 @@ def main():
         for g in sorted(syms):
             f.write('%s\t%s\n' % (g, syms[g]))
     with open(os.path.join(root, '.xrl-meta'), 'w', encoding='utf-8', newline='\n') as f:
+        f.write('#default\t0\t0\n')
         for g in sorted(meta):
             md, u, gi = meta[g]
             f.write('%s\t%o\t%d\t%d\n' % (g, md, u, gi))

@@ -94,7 +94,7 @@ static const xfile_ops g_un_ops;
 static usock *u_of(xfile *f) { return f && f->ops == &g_un_ops ? (usock *)f->priv : NULL; }
 static int conn_oriented(const usock *u) { return u->type != LX_SOCK_DGRAM; }
 
-static void cur_cred(lx_ucred *c) { c->pid = G.pid; c->uid = 1000; c->gid = 1000; }   /* getpid()/getuid() as syscall.c answers them */
+static void cur_cred(lx_ucred *c) { c->pid = G.pid; c->uid = xrl_cur_uid(); c->gid = xrl_cur_gid(); }   /* getpid()/geteuid()/getegid() as syscall.c answers them */
 
 static void un_ref(void *p) { InterlockedIncrement(&((usock *)p)->refs); }
 static void un_unref(void *p)

@@ -183,6 +183,8 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_symlinkat 266
 #define NR_readlinkat 267
 #define NR_fchmodat 268
+#define NR_fchownat 260
+#define NR_fchmodat2 452
 #define NR_faccessat 269
 #define NR_pselect6 270
 #define NR_ppoll 271

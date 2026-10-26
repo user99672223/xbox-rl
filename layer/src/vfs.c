@@ -25,6 +25,8 @@
  */
 #include "xrl_internal.h"
 
+static void meta_load(const wchar_t *file_w);
+
 /* ============================================================== symlinks */
 typedef struct sym { char *path; char *target; } sym;
 static sym *g_sym;
@@ -227,6 +229,7 @@ slong xrl_vfs_init(const char *root)
     }
     wcscpy_s(g_symfile_w, 1024, G.vfs_root_w); wcscat_s(g_symfile_w, 1024, L"\\.xrl-symlinks");
     sym_load(NULL);
+    { wchar_t mf[1024]; wcscpy_s(mf, 1024, G.vfs_root_w); wcscat_s(mf, 1024, L"\\.xrl-meta"); meta_load(mf); }
     /* conventional device symlinks */
     sym_add("/dev/stdin", "/proc/self/fd/0", 0);
     sym_add("/dev/stdout", "/proc/self/fd/1", 0);
@@ -362,6 +365,9 @@ static void ft_to_ts(FILETIME ft, lx_timespec *ts)
     ts->tv_nsec = (s64)(t % 10000000ull) * 100;
 }
 
+static int g_meta_on;
+static void meta_apply(const char *gpath, lx_stat *st);
+
 static u64 hash_str(const char *s)
 {
     u64 h = 1469598103934665603ull;
@@ -407,6 +413,7 @@ static slong fstat_handle(HANDLE h, const char *gpath, lx_stat *st)
         st->st_dev = 1;
     }
     if (!st->st_ino) st->st_ino = 1;
+    if (g_meta_on && gpath) meta_apply(gpath, st);
     return 0;
 }
 
@@ -520,6 +527,281 @@ slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj)
     if (i >= 0) return 0;
     lx_stat st;
     return xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);   /* an ordinary file: type 0 */
+}
+
+/* ================================================================= meta
+ * Unix modes and owners. NTFS has neither, so a table keeps them: <vfs_root>\.xrl-meta, one
+ * "guest_path<TAB>mode(octal)<TAB>uid<TAB>gid" per file whose mode/owner differs from the default (0644 file,
+ * 0755 directory or executable-looking name, owner = the "#default<TAB>uid<TAB>gid" line that
+ * tools/xrl-rootfs-unpack.py writes for a rootfs whose files belong to root). A change is appended to the file
+ * as a line of the same form ("-<TAB>path" forgets a path); a later line wins, so the file is a journal that
+ * load replays. The mechanism is ON only when .xrl-meta exists: the Wine prefix and every tree baked before
+ * this keep today's behaviour (everything 1000:1000, chmod/chown accepted and ignored). With it on: stat and
+ * fstat report the table, chmod/chown change it (with Linux's permission rules), new files and directories get
+ * (mode & ~umask) owned by the caller, unlink/rename/link carry the entries, open() and access() check the
+ * permission bits for a non-root caller. Directory permissions along the path are not checked. */
+typedef struct mentry { struct mentry *next; char *path; u32 mode, uid, gid; u64 h; } mentry;
+static mentry **g_mb;
+static size_t g_mbn, g_mcount;
+static int g_meta_on;
+static u32 g_mdef_uid, g_mdef_gid;
+static SRWLOCK g_meta_lock = SRWLOCK_INIT;
+static HANDLE g_meta_h = INVALID_HANDLE_VALUE;
+
+static mentry *meta_find(const char *path, u64 h)   /* lock held */
+{
+    if (!g_mbn) return NULL;
+    for (mentry *e = g_mb[h % g_mbn]; e; e = e->next) if (e->h == h && !strcmp(e->path, path)) return e;
+    return NULL;
+}
+
+static void meta_unlink_entry(mentry *e)   /* lock held */
+{
+    mentry **pp = &g_mb[e->h % g_mbn];
+    while (*pp != e) pp = &(*pp)->next;
+    *pp = e->next;
+    free(e->path); free(e);
+    g_mcount--;
+}
+
+static void meta_set_mem(const char *path, u32 mode, u32 uid, u32 gid)   /* lock held */
+{
+    u64 h = hash_str(path);
+    mentry *e = meta_find(path, h);
+    if (!e) {
+        if (g_mcount >= g_mbn * 2) {   /* grow */
+            size_t nb = g_mbn ? g_mbn * 4 : 1024;
+            mentry **n = (mentry **)calloc(nb, sizeof *n);
+            if (!n) return;
+            for (size_t i = 0; i < g_mbn; i++) for (mentry *x = g_mb[i], *nx; x; x = nx) { nx = x->next; x->next = n[x->h % nb]; n[x->h % nb] = x; }
+            free(g_mb); g_mb = n; g_mbn = nb;
+        }
+        e = (mentry *)calloc(1, sizeof *e);
+        if (!e) return;
+        e->path = _strdup(path); e->h = h;
+        e->next = g_mb[h % g_mbn]; g_mb[h % g_mbn] = e;
+        g_mcount++;
+    }
+    e->mode = mode; e->uid = uid; e->gid = gid;
+}
+
+static void meta_journal_set(const char *path, u32 mode, u32 uid, u32 gid)   /* lock held */
+{
+    if (g_meta_h == INVALID_HANDLE_VALUE || strpbrk(path, "\t\n")) return;
+    char line[PATHBUF + 64];
+    int n = snprintf(line, sizeof line, "%s\t%o\t%u\t%u\n", path, mode, uid, gid);
+    DWORD w;
+    if (n > 0 && n < (int)sizeof line) WriteFile(g_meta_h, line, (DWORD)n, &w, NULL);
+}
+
+static void meta_journal_del(const char *path)   /* lock held */
+{
+    if (g_meta_h == INVALID_HANDLE_VALUE || strpbrk(path, "\t\n")) return;
+    char line[PATHBUF + 8];
+    int n = snprintf(line, sizeof line, "-\t%s\n", path);
+    DWORD w;
+    if (n > 0 && n < (int)sizeof line) WriteFile(g_meta_h, line, (DWORD)n, &w, NULL);
+}
+
+static int meta_lookup(const char *path, u32 *mode, u32 *uid, u32 *gid)
+{
+    int r = 0;
+    AcquireSRWLockShared(&g_meta_lock);
+    mentry *e = meta_find(path, hash_str(path));
+    if (e) { *mode = e->mode; *uid = e->uid; *gid = e->gid; r = 1; }
+    ReleaseSRWLockShared(&g_meta_lock);
+    return r;
+}
+
+static u32 default_perm(const char *path, int isdir) { return isdir ? 0755 : is_exec_name(path) ? 0755 : 0644; }
+
+static void meta_put(const char *path, u32 mode, u32 uid, u32 gid, int isdir)
+{
+    AcquireSRWLockExclusive(&g_meta_lock);
+    if (mode == default_perm(path, isdir) && uid == g_mdef_uid && gid == g_mdef_gid) {   /* the default: no entry */
+        mentry *e = meta_find(path, hash_str(path));
+        if (e) { meta_unlink_entry(e); meta_journal_del(path); }
+    } else { meta_set_mem(path, mode, uid, gid); meta_journal_set(path, mode, uid, gid); }
+    ReleaseSRWLockExclusive(&g_meta_lock);
+}
+
+static void meta_drop(const char *path)
+{
+    if (!g_meta_on) return;
+    AcquireSRWLockExclusive(&g_meta_lock);
+    mentry *e = meta_find(path, hash_str(path));
+    if (e) { meta_unlink_entry(e); meta_journal_del(path); }
+    ReleaseSRWLockExclusive(&g_meta_lock);
+}
+
+/* rename: the entry of `from` and, for a directory, everything below it, now live under `to` */
+static void meta_move(const char *from, const char *to)
+{
+    if (!g_meta_on) return;
+    size_t fl = strlen(from);
+    AcquireSRWLockExclusive(&g_meta_lock);
+    mentry *e = meta_find(to, hash_str(to));
+    if (e) { meta_unlink_entry(e); meta_journal_del(to); }
+    size_t nmv = 0, cap = 0;
+    mentry **list = NULL;   /* collected first: moving changes the table under the walk */
+    for (size_t i = 0; i < g_mbn; i++)
+        for (mentry *x = g_mb[i]; x; x = x->next)
+            if (!strncmp(x->path, from, fl) && (x->path[fl] == 0 || x->path[fl] == '/')) {
+                if (nmv == cap) { cap = cap ? cap * 2 : 16; list = (mentry **)realloc(list, cap * sizeof *list); }
+                list[nmv++] = x;
+            }
+    for (size_t i = 0; i < nmv; i++) {
+        char np[PATHBUF], op[PATHBUF];
+        strcpy_s(op, sizeof op, list[i]->path);
+        snprintf(np, sizeof np, "%s%s", to, op + fl);
+        u32 m = list[i]->mode, u = list[i]->uid, g = list[i]->gid;
+        meta_unlink_entry(list[i]); meta_journal_del(op);
+        meta_set_mem(np, m, u, g); meta_journal_set(np, m, u, g);
+    }
+    free(list);
+    ReleaseSRWLockExclusive(&g_meta_lock);
+}
+
+/* hard link: the new name starts with the mode and owner of the old one */
+static void meta_copy(const char *from, const char *to)
+{
+    u32 m, u, g;
+    if (g_meta_on && meta_lookup(from, &m, &u, &g)) {
+        AcquireSRWLockExclusive(&g_meta_lock);
+        meta_set_mem(to, m, u, g); meta_journal_set(to, m, u, g);
+        ReleaseSRWLockExclusive(&g_meta_lock);
+    }
+}
+
+static void meta_apply(const char *gpath, lx_stat *st)
+{
+    u32 mode, uid, gid;
+    if (meta_lookup(gpath, &mode, &uid, &gid)) { st->st_mode = (st->st_mode & LX_S_IFMT) | (mode & 07777); st->st_uid = uid; st->st_gid = gid; }
+    else { st->st_uid = g_mdef_uid; st->st_gid = g_mdef_gid; }
+}
+
+/* a file or directory was just created: (requested mode & ~umask), owned by the caller */
+static void meta_created(const char *gabs, int isdir, u32 mode)
+{
+    if (!g_meta_on) return;
+    meta_put(gabs, mode & ~G.umask & 07777, xrl_cur_uid(), xrl_cur_gid(), isdir);
+}
+
+static void meta_load(const wchar_t *file_w)
+{
+    g_mdef_uid = xrl_cur_uid(); g_mdef_gid = xrl_cur_gid();
+    HANDLE h = CreateFile2(file_w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;   /* no table: meta stays off */
+    g_meta_on = 1;
+    LARGE_INTEGER sz;
+    if (GetFileSizeEx(h, &sz) && sz.QuadPart < (64ll << 20)) {
+        char *buf = (char *)malloc((size_t)sz.QuadPart + 1);
+        DWORD got = 0;
+        if (buf && ReadFile(h, buf, (DWORD)sz.QuadPart, &got, NULL)) {
+            buf[got] = 0;
+            AcquireSRWLockExclusive(&g_meta_lock);
+            for (char *p = buf; *p;) {
+                char *nl = strchr(p, '\n');
+                if (nl) *nl = 0;
+                size_t ln = strlen(p);
+                if (ln && p[ln - 1] == '\r') p[ln - 1] = 0;
+                if (!strncmp(p, "#default\t", 9)) { unsigned u, g; if (sscanf(p + 9, "%u\t%u", &u, &g) == 2) { g_mdef_uid = u; g_mdef_gid = g; } }
+                else if (!strncmp(p, "-\t/", 3)) { mentry *e = meta_find(p + 2, hash_str(p + 2)); if (e) meta_unlink_entry(e); }
+                else if (p[0] == '/') {
+                    char *t1 = strchr(p, '\t');
+                    unsigned m, u, g;
+                    if (t1 && sscanf(t1 + 1, "%o\t%u\t%u", &m, &u, &g) == 3) { *t1 = 0; meta_set_mem(p, m, u, g); }
+                }
+                if (!nl) break;
+                p = nl + 1;
+            }
+            ReleaseSRWLockExclusive(&g_meta_lock);
+        }
+        free(buf);
+    }
+    CloseHandle(h);
+    g_meta_h = CreateFile2(file_w, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING, NULL);
+    LOGI("vfs: modes and owners on: %zu entries from .xrl-meta (default owner %u:%u)", g_mcount, g_mdef_uid, g_mdef_gid);
+}
+
+/* permission bits against the caller: want = 4 read, 2 write, 1 execute */
+static int perm_ok(const lx_stat *st, int want)
+{
+    u32 euid = xrl_cur_uid(), egid = xrl_cur_gid();
+    u32 m = st->st_mode & 0777;
+    if (euid == 0) return !(want & 1) || (st->st_mode & LX_S_IFMT) == LX_S_IFDIR || (m & 0111);
+    u32 cls = euid == st->st_uid ? (m >> 6) & 7 : egid == st->st_gid ? (m >> 3) & 7 : m & 7;
+    return (cls & (u32)want) == (u32)want;
+}
+
+static slong chmod_gabs(const char *gabs, u32 mode)
+{
+    lx_stat st;
+    slong r = xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);
+    if (r) return r;
+    if (!g_meta_on) return 0;
+    u32 euid = xrl_cur_uid();
+    if (euid != 0 && euid != st.st_uid) return -LX_EPERM;
+    meta_put(gabs, mode & 07777, st.st_uid, st.st_gid, (st.st_mode & LX_S_IFMT) == LX_S_IFDIR);
+    AcquireSRWLockExclusive(&g_vn_lock);
+    int i = vn_find(gabs);
+    if (i >= 0) g_vn[i].mode = mode & 07777;
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    return 0;
+}
+
+static slong chown_gabs(const char *gabs, u32 uid, u32 gid)   /* (u32)-1 = leave */
+{
+    lx_stat st;
+    slong r = xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);
+    if (r) return r;
+    if (!g_meta_on) return 0;
+    u32 euid = xrl_cur_uid();
+    u32 nu = uid == (u32)-1 ? st.st_uid : uid, ng = gid == (u32)-1 ? st.st_gid : gid;
+    if (euid != 0 && (euid != st.st_uid || nu != st.st_uid || (ng != st.st_gid && ng != xrl_cur_gid()))) return -LX_EPERM;
+    u32 mode = st.st_mode & 07777;
+    if ((nu != st.st_uid || ng != st.st_gid) && (st.st_mode & LX_S_IFMT) != LX_S_IFDIR) mode &= ~06000u;   /* an ownership change drops setuid/setgid */
+    meta_put(gabs, mode, nu, ng, (st.st_mode & LX_S_IFMT) == LX_S_IFDIR);
+    return 0;
+}
+
+static int gpath_is_file(const xfile *f) { return f->gpath && f->gpath[0] == '/' && strncmp(f->gpath, "/memfd:", 7) != 0; }
+
+slong xrl_vfs_chmod(int dirfd, const char *path, u32 mode, int flags)
+{
+    char gabs[PATHBUF];
+    if (flags & ~(LX_AT_SYMLINK_NOFOLLOW | LX_AT_EMPTY_PATH)) return -LX_EINVAL;
+    if ((flags & LX_AT_EMPTY_PATH) && !path[0]) return xrl_vfs_fchmod(dirfd, mode);
+    slong r = xrl_vfs_resolve(dirfd, path, 1, gabs, sizeof gabs);
+    if (r) return r;
+    return chmod_gabs(gabs, mode);
+}
+
+slong xrl_vfs_fchmod(int fd, u32 mode)
+{
+    xfile *f = xrl_fd_get(fd);
+    if (!f) return -LX_EBADF;
+    slong r = gpath_is_file(f) ? chmod_gabs(f->gpath, mode) : 0;
+    xfile_unref(f);
+    return r;
+}
+
+slong xrl_vfs_chown(int dirfd, const char *path, u32 uid, u32 gid, int flags)
+{
+    char gabs[PATHBUF];
+    if ((flags & LX_AT_EMPTY_PATH) && !path[0]) return xrl_vfs_fchown(dirfd, uid, gid);
+    slong r = xrl_vfs_resolve(dirfd, path, !(flags & LX_AT_SYMLINK_NOFOLLOW), gabs, sizeof gabs);
+    if (r) return r;
+    return chown_gabs(gabs, uid, gid);
+}
+
+slong xrl_vfs_fchown(int fd, u32 uid, u32 gid)
+{
+    xfile *f = xrl_fd_get(fd);
+    if (!f) return -LX_EBADF;
+    slong r = gpath_is_file(f) ? chown_gabs(f->gpath, uid, gid) : 0;
+    xfile_unref(f);
+    return r;
 }
 
 /* ============================================================ disk files */
@@ -838,7 +1120,6 @@ static slong memfd_reopen(const char *gabs, int flags);
 
 static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
 {
-    (void)mode;
     char gabs[PATHBUF];
     int follow = !(flags & LX_O_NOFOLLOW);
     slong r = xrl_vfs_resolve(dirfd, path, follow, gabs, sizeof gabs);
@@ -872,6 +1153,15 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
     } else if (flags & LX_O_TRUNC) disp = TRUNCATE_EXISTING;
     else disp = OPEN_EXISTING;
 
+    if (g_meta_on) {   /* permission bits of an existing file (a root caller passes) */
+        lx_stat ps;
+        if (xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &ps) == 0) {
+            int want = acc == LX_O_RDONLY ? 4 : acc == LX_O_WRONLY ? 2 : 6;
+            if (flags & LX_O_TRUNC) want |= 2;
+            if (!perm_ok(&ps, want)) return -LX_EACCES;
+        }
+    }
+
     /* is it a directory? */
     DWORD attr = GetFileAttributesW(hp);
     int isdir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
@@ -887,15 +1177,18 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
     }
     if (flags & LX_O_DIRECTORY) return (attr == INVALID_FILE_ATTRIBUTES) ? -LX_ENOENT : -LX_ENOTDIR;
 
+    SetLastError(0);
     HANDLE h = hopen(hp, access, disp, FILE_ATTRIBUTE_NORMAL);
+    DWORD open_err = GetLastError();
     if (h == INVALID_HANDLE_VALUE) {
-        DWORD e = GetLastError();
+        DWORD e = open_err;
         if (e == ERROR_ACCESS_DENIED && (flags & LX_O_CREAT)) {
             DWORD a2 = GetFileAttributesW(hp);
             if (a2 != INVALID_FILE_ATTRIBUTES && (a2 & FILE_ATTRIBUTE_DIRECTORY)) return -LX_EISDIR;
         }
         return -(slong)xrl_win_to_errno(e);
     }
+    if (disp == CREATE_NEW || ((disp == OPEN_ALWAYS || disp == CREATE_ALWAYS) && open_err != ERROR_ALREADY_EXISTS)) meta_created(gabs, 0, (u32)mode);
     xfile *f = wrap_handle(h, flags & ~(LX_O_CREAT | LX_O_EXCL | LX_O_TRUNC), gabs, 0, hp);
     if (!f) { CloseHandle(h); return -LX_ENOMEM; }
     int fd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
@@ -1011,6 +1304,10 @@ slong xrl_vfs_access(int dirfd, const char *path, int mode)
     lx_stat st;
     slong r = xrl_vfs_stat(dirfd, path, 0, &st);
     if (r) return r;
+    if (g_meta_on) {
+        int want = (mode & 4) | (mode & 2) | (mode & 1);
+        return want && !perm_ok(&st, want) ? -LX_EACCES : 0;
+    }
     if ((mode & 2) && !(st.st_mode & 0222)) return -LX_EACCES;
     return 0;
 }
@@ -1038,13 +1335,13 @@ slong xrl_vfs_readlink(int dirfd, const char *path, char *buf, u64 cap)
 /* ============================================================== mutation */
 slong xrl_vfs_mkdir(int dirfd, const char *path, int mode)
 {
-    (void)mode;
     char gabs[PATHBUF]; wchar_t hp[PATHBUF];
     slong r = xrl_vfs_resolve(dirfd, path, 0, gabs, sizeof gabs);
     if (r) return r;
     r = xrl_vfs_host_path(gabs, hp, ARRAY_LEN(hp));
     if (r) return r;
     if (!CreateDirectoryW(hp, NULL)) return xrl_lasterr();
+    meta_created(gabs, 1, (u32)mode);
     return 0;
 }
 
@@ -1061,11 +1358,15 @@ slong xrl_vfs_unlink(int dirfd, const char *path, int flags)
     if (a == INVALID_FILE_ATTRIBUTES) return xrl_lasterr();
     if (a & FILE_ATTRIBUTE_DIRECTORY) {
         if (!(flags & LX_AT_REMOVEDIR)) return -LX_EISDIR;
-        return RemoveDirectoryW(hp) ? 0 : xrl_lasterr();
+        if (!RemoveDirectoryW(hp)) return xrl_lasterr();
+        meta_drop(gabs);
+        return 0;
     }
     if (flags & LX_AT_REMOVEDIR) return -LX_ENOTDIR;
     if (a & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(hp, a & ~FILE_ATTRIBUTE_READONLY);
-    return DeleteFileW(hp) ? 0 : xrl_lasterr();
+    if (!DeleteFileW(hp)) return xrl_lasterr();
+    meta_drop(gabs);
+    return 0;
 }
 
 slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *newp, int flags)
@@ -1090,6 +1391,7 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
         if (!RemoveDirectoryW(hn)) return xrl_lasterr();   /* ENOTEMPTY if not empty */
     } else if (an != INVALID_FILE_ATTRIBUTES && (ao & FILE_ATTRIBUTE_DIRECTORY)) return -LX_ENOTDIR;
     if (!MoveFileExW(ho, hn, MOVEFILE_REPLACE_EXISTING)) return xrl_lasterr();
+    meta_move(go, gn);
     return 0;
 }
 
@@ -1111,7 +1413,9 @@ slong xrl_vfs_link(int olddirfd, const char *oldp, int newdirfd, const char *new
     r = xrl_vfs_resolve(newdirfd, newp, 0, gn, sizeof gn);
     if (r) return r;
     if ((r = xrl_vfs_host_path(go, ho, ARRAY_LEN(ho))) || (r = xrl_vfs_host_path(gn, hn, ARRAY_LEN(hn)))) return r;
-    return CreateHardLinkW(hn, ho, NULL) ? 0 : xrl_lasterr();
+    if (!CreateHardLinkW(hn, ho, NULL)) return xrl_lasterr();
+    meta_copy(go, gn);
+    return 0;
 }
 
 slong xrl_vfs_chdir(const char *path)

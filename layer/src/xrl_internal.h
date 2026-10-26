@@ -323,6 +323,12 @@ slong xrl_vfs_link(int olddirfd, const char *oldp, int newdirfd, const char *new
 slong xrl_vfs_chdir(const char *path);
 slong xrl_vfs_getcwd(char *buf, u64 cap);
 slong xrl_vfs_truncate(const char *path, s64 len);
+slong xrl_vfs_chmod(int dirfd, const char *path, u32 mode, int flags);
+slong xrl_vfs_fchmod(int fd, u32 mode);
+slong xrl_vfs_chown(int dirfd, const char *path, u32 uid, u32 gid, int flags);   /* uid/gid (u32)-1: leave */
+slong xrl_vfs_fchown(int fd, u32 uid, u32 gid);
+u32 xrl_cur_uid(void);   /* util.c: the caller's effective ids (XRL_UID/XRL_GID, default 1000) */
+u32 xrl_cur_gid(void);
 slong xrl_vfs_utimens(int dirfd, const char *path, const lx_timespec *ts, int flags);
 slong xrl_vfs_statfs(const char *path, lx_statfs *st);
 int  xrl_vfs_host_path(const char *guest_abs, wchar_t *out, size_t cap);   /* -> \\?\ wide */
