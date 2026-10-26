@@ -36,6 +36,12 @@ nameserver 8.8.8.8
 ::1 localhost ip6-localhost
 ' > "$dest/etc/hosts"
 [ -s "$dest/etc/machine-id" ] || { tr -dc 'a-f0-9' < /dev/urandom | head -c 32; echo; } > "$dest/etc/machine-id"
+# Root CAs: Wine's crypt32 fills the Windows root store from the Linux bundle (dlls/crypt32/unixlib.c), and
+# TLS clients verify servers against it (Rocket League's Epic SDK). The build machine's public Mozilla bundle.
+ca=/etc/ssl/certs/ca-certificates.crt
+[ -s "$ca" ] || die "no CA bundle at $ca (apt install ca-certificates)"
+mkdir -p "$dest/etc/ssl/certs"
+cp "$ca" "$dest/etc/ssl/certs/ca-certificates.crt"
 
 bad=$(find "$rootfs" "$prefix" -type f -name '*[:*?"<>|\\]*' | head -5)
 [ -z "$bad" ] || die "file names NTFS cannot store (need the layer's U+F000 escaping): $bad"

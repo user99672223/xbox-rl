@@ -218,6 +218,7 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_getcpu 309
 #define NR_renameat2 316
 #define NR_getrandom 318
+#define NR_membarrier 324
 #define NR_memfd_create 319
 #define NR_statx 332
 #define NR_rseq 334

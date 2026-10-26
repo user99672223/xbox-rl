@@ -660,6 +660,21 @@ SYS(pause)
 }
 
 /* ================================================================ misc */
+/* membarrier: musl's dlopen of a library with TLS in a multi-threaded process issues
+ * PRIVATE_EXPEDITED (and, without the syscall, falls back to signalling every thread, which the
+ * layer cannot deliver). Windows has the same primitive: FlushProcessWriteBuffers. */
+SYS(membarrier)
+{
+    UNUSED6;
+    enum { QUERY = 0, GLOBAL = 1, PRIVATE_EXPEDITED = 8, REGISTER_PRIVATE_EXPEDITED = 16 };
+    if (a2 != 0) return -LX_EINVAL;
+    switch ((int)a1) {
+    case QUERY: return GLOBAL | PRIVATE_EXPEDITED | REGISTER_PRIVATE_EXPEDITED;
+    case GLOBAL: case PRIVATE_EXPEDITED: FlushProcessWriteBuffers(); return 0;
+    case REGISTER_PRIVATE_EXPEDITED: return 0;
+    default: return -LX_EINVAL;
+    }
+}
 SYS(arch_prctl) { UNUSED6; return xrl_sys_arch_prctl((int)a1, (u64)a2); }
 SYS(prctl) { UNUSED6; return xrl_sys_prctl((int)a1, (u64)a2, (u64)a3, (u64)a4, (u64)a5); }
 SYS(uname) { UNUSED6; return xrl_sys_uname((u64)a1); }
@@ -739,7 +754,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_getpgid, getpgid), T(NR_getpgrp, getpgid), T(NR_getsid, getpgid), T(NR_setsid, getpgid), T(NR_setpgid, zero_ok),
     T(NR_setuid, zero_ok), T(NR_setgid, zero_ok), T(NR_setresuid, zero_ok), T(NR_setresgid, zero_ok),
     T(NR_getgroups, getgroups), T(NR_getresuid, getresuid), T(NR_getresgid, getresuid),
-    T(NR_prctl, prctl), T(NR_arch_prctl, arch_prctl), T(NR_uname, uname), T(NR_sysinfo, sysinfo), T(NR_getrandom, getrandom),
+    T(NR_prctl, prctl), T(NR_arch_prctl, arch_prctl), T(NR_uname, uname), T(NR_sysinfo, sysinfo), T(NR_getrandom, getrandom), T(NR_membarrier, membarrier),
     T(NR_getrlimit, getrlimit), T(NR_setrlimit, setrlimit), T(NR_prlimit64, prlimit64), T(NR_personality, personality),
     T(NR_sched_getaffinity, sched_getaffinity), T(NR_sched_setaffinity, zero_ok), T(NR_getcpu, getcpu),
     T(NR_sched_setparam, zero_ok), T(NR_sched_getparam, sched_getparam), T(NR_sched_setscheduler, zero_ok),
