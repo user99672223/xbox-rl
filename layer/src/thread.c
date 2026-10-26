@@ -322,7 +322,8 @@ static slong do_exit(int code, int group, int sig)
     int last = (int)(p->nthreads - p->ndaemons) <= 1 && !t->daemon;
     if (t->daemon) { InterlockedDecrement(&p->ndaemons); t->daemon = 0; }
     int ends = group || last;
-    if (ends && p->is_init) {
+    int is_init = p->is_init;   /* p may be freed as soon as this thread's record is unlinked */
+    if (ends && is_init) {
         InterlockedExchange(&G.exit_code, code);
         InterlockedExchange(&G.exiting, 1);
     }
@@ -334,10 +335,10 @@ static slong do_exit(int code, int group, int sig)
     if (t->timer) CloseHandle(t->timer);
     /* another process: it becomes a zombie (its fds close, its mm goes, the parent hears SIGCHLD, a vfork parent
      * runs again); this has to happen before our own record goes, it needs to know which thread is the caller */
-    if (ends && !p->is_init) xrl_proc_exit(p, sig ? sig : (code & 0xff) << 8, t);
+    if (ends && !is_init) xrl_proc_exit(p, sig ? sig : (code & 0xff) << 8, t);
     thread_unlink(t);
     xrl_thread_unbind();
-    if (ends && p->is_init) SetEvent(G.exit_event);
+    if (ends && is_init) SetEvent(G.exit_event);
     /* leave the record allocated: other threads may briefly hold pointers via tgkill lookup */
     ExitThread((DWORD)code);
     return 0;

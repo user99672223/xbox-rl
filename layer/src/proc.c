@@ -584,7 +584,16 @@ slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self)
 int xrl_proc_family_stopped(xrl_proc *p) { return p->state == XP_STOPPED; }
 
 /* Signal for a whole process: a thread that does not block it, the leader first. */
+static slong proc_signal(xrl_proc *p, int sig, int from_kill);
 slong xrl_proc_signal(xrl_proc *p, int sig, int from_kill)
+{
+    xrl_proc_ref(p);   /* a thread of p may exit and p be reaped while the signal is being queued */
+    slong r = proc_signal(p, sig, from_kill);
+    xrl_proc_put(p);
+    return r;
+}
+
+static slong proc_signal(xrl_proc *p, int sig, int from_kill)
 {
     if (sig == 0) return 0;
     if (sig < 1 || sig > LX_NSIG) return -LX_EINVAL;
