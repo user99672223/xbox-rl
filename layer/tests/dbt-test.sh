@@ -29,7 +29,7 @@ for p in glibc_test cxx_test; do
 done
 if [ -n "$XRL_ROOTFS" ] && [ -d "${EAC_RUNTIME:-$HOME/xrl-work/eac-runtime}" ]; then
   echo "== EAC bridge chain on Wine, translated"
-  out=$(XRL_DBT=easyanticheat_x64.so sh tests/glibc/run-eac-bridge.sh 2>&1)
+  out=$(sh tests/glibc/run-eac-bridge.sh 2>&1)
   echo "$out" | grep -E "dbt:|differs|eac_bridge_test" | cut -c1-160
   echo "$out" | grep -q "eac_bridge_test: OK" || { echo "   FAIL"; fail=1; }
   echo "$out" | grep -q "differs from the file in 0 byte" || { echo "   FAIL: code changed"; fail=1; }

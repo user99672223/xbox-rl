@@ -26,8 +26,9 @@
  * address; unmapping an image does not drop its translations. The cache is a visible anonymous
  * mapping.
  *
- * Selected by XRL_DBT: unset/0 off, 1 every image rewrite.c would rewrite, else a comma-separated list
- * of path substrings.
+ * Selected by XRL_DBT: unset = images whose path contains "easyanticheat" (the anti-cheat's modules: they
+ * check their own code); 0 = none (everything is rewritten in place); 1 = every image rewrite.c would
+ * rewrite; else a comma-separated list of path substrings.
  */
 #include "xrl_internal.h"
 #include "rewrite_core.h"
@@ -426,7 +427,8 @@ int xrl_dbt_wanted(const char *path)
     if (mode < 0) {
         char v[256];
         DWORD n = GetEnvironmentVariableA("XRL_DBT", v, sizeof v);
-        if (!n || n >= sizeof v || !strcmp(v, "0")) mode = 0;
+        if (!n) { mode = 2; strcpy_s(list, sizeof list, "easyanticheat"); }   /* the default: the anti-cheat's own modules */
+        else if (n >= sizeof v || !strcmp(v, "0")) mode = 0;
         else if (!strcmp(v, "1")) mode = 1;
         else { mode = 2; strcpy_s(list, sizeof list, v); }
     }

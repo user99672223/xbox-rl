@@ -205,10 +205,17 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   unmapping an image does not drop its translations; a guest `mprotect` of the
   module's code makes it executable again untranslated; the table has four probe slots
   per hash (crowding is logged, the target then takes the slow path); the cache is
-  8x the image, 1-64 MiB, committed up front. `XRL_DBT=1` translates every image the
-  rewriter would patch, `XRL_DBT=a,b` only paths containing `a` or `b`
-  (`XRL_DBT=easyanticheat_x64.so` for the EAC module); `XRL_DBT_DUMP=prefix` writes the
+  8x the image, 1-64 MiB, committed up front. **Default: an image whose path contains
+  `easyanticheat` is translated, every other foreign image is still rewritten**;
+  `XRL_DBT=0` rewrites everything, `XRL_DBT=1` translates every image the rewriter would
+  patch, `XRL_DBT=a,b` only paths containing `a` or `b`; `XRL_DBT_DUMP=prefix` writes the
   cache and the original->cache map for `objdump -D -b binary -mi386:x86-64`.
+  Not verified on the real client: the module is a 12 MB opaque blob that the bootstrapper
+  downloads (`modules-cdn.eac-prod.on.epicgames.com/modules/<product>/<deployment>/linux64`,
+  no ELF header: the bootstrapper unpacks and loads it itself), and the bootstrapper's TLS
+  needs gnutls in Wine (see the exec handover entry), so no run could reach it. The
+  translator was exercised on Valve's real bridge `.so`, the stand-in, a static glibc
+  program (about 650 KB of code translated) and a C++ program.
 
 - **2026-10-26 — Exec handover: the process a Windows program creates replaces it
   inside the same OS process (layer `execve` + Wine 0020).** Rocket League starts
@@ -291,6 +298,14 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     with the old image kept, the child prints its pid, its arguments and the inherited
     variable and exits 0; the parent never comes back from `CreateProcess`. Verified
     on the laptop harness.
+
+  Verified on the real bootstrapper (laptop harness, `XRL_TEST_BUDGET_MB=1536`):
+  `RocketLeague_EAC.exe` reads its settings, fails the module download in TLS, takes its
+  own null-client path, and its `CreateProcess` of `RocketLeague.exe` becomes the handover
+  ("this process hands the OS process to ...Win64\RocketLeague.exe", 92 -> 30 MiB
+  committed after the old image is released); the game then starts as the new process and
+  gets as far as launching it directly does (EOS init, D3D11On12 device creation; where
+  both then fail the same way on this tree: the graphics path is the other agent's).
 
   Costs, stated plainly: a program that `CreateProcess`es and then keeps working or
   waits for the child (a shell, an installer, `cmd /c`, any launcher that does
