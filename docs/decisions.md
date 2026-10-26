@@ -172,9 +172,12 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   - **Tested on the laptop** (desktop host, guest `rootfs-console`, `XRL_DISPLAY=2560x1440@120`): the modeset
     repro without arguments completes 80 mode changes with the enum thread running (6610 enum loops) and exits 0;
     with `trace+win` each change shows `desktop_window_proc ... change from ... to ...` on the desktop thread.
-    Rocket League windowed 2560x1440: swapchain created, `perf: frames` 11-15 fps. Fullscreen 1920x1080: the
-    swapchain is created; frames were seen in a run with the same patch before the small `load_display_driver`
-    change, the run after it ran out of time while swapping (and a third was starved of disk for the swap file).
+    Rocket League windowed 2560x1440: swapchain created, `perf: frames` 11-15 fps. Fullscreen 1920x1080:
+    swapchain created, `perf: frames` 29-44 fps for 3 minutes (240 s run); no `handle_syscall_fault`, no musl
+    crash. One of three fullscreen runs stalled before its swapchain (main thread ~2M syscalls/s, one unnamed
+    thread at 100% user CPU without syscalls, no `desktop thread not ready` error); not
+    reproduced in the next run with `XRL_PROFILE=1 XRL_HANG_DUMP=170`, cause unknown. If it recurs, rerun with
+    those two variables to see where the threads are.
 
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
