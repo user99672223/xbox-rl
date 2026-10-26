@@ -1,0 +1,15 @@
+// App.idl - the WinRT runtimeclass the Xbox launcher needs to find.
+//
+// The launcher REFUSES an exe whose manifest EntryPoint has no matching WinRT
+// metadata, before any process is created and with no dump (docs/decisions.md).
+// MSBuild runs midlrt on this file to produce XboxRL.winmd, and the C++/WinRT
+// build integration emits the activation-factory glue (App.h / app.cpp).
+// The manifest's  EntryPoint="XboxRL.App"  names this class.
+namespace XboxRL
+{
+    [default_interface]
+    runtimeclass App : [default] Windows.ApplicationModel.Core.IFrameworkViewSource
+    {
+        App();
+    }
+}

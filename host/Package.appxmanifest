@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Package.appxmanifest - xbox-rl host.   (tools/build.ps1 stamps Version and writes the
+  packaged copy to host/build/; edit THIS file for everything else.)
+
+  Notes (full reasoning in host/notes-A.md):
+   * EntryPoint="XboxRL.App" must name the runtimeclass in App.idl / XboxRL.winmd, or the
+     Xbox launcher refuses the package before any process exists.
+   * TargetDeviceFamily: Windows.Universal (App-bucket install) + Windows.Xbox (Game
+     bucket). Same recipe as the earlier probe, which installed and ran on the console.
+   * Capabilities are exactly what the brief mandates: codeGeneration (RWX VirtualAlloc
+     for the Blink JIT / ELF loader) and expandedResources (Xbox: more memory/CPU for
+     the title). No network/library capabilities: the game runs offline. Extra DEVICE
+     capabilities make the Xbox shell reject the manifest at launch - do not add them
+     speculatively.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:mp="http://schemas.microsoft.com/appx/2014/phone/manifest"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap mp rescap">
+
+  <Identity Name="xbox-rl.host"
+            Publisher="CN=xbox-rl"
+            Version="1.0.0.0"
+            ProcessorArchitecture="x64" />
+
+  <mp:PhoneIdentity PhoneProductId="5b1f3c2e-8a47-4d0b-9c63-7e2d41a0b9f5"
+                    PhonePublisherId="00000000-0000-0000-0000-000000000000" />
+
+  <Properties>
+    <DisplayName>xbox-rl host</DisplayName>
+    <PublisherDisplayName>xbox-rl</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Universal" MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+    <TargetDeviceFamily Name="Windows.Xbox"      MinVersion="10.0.17763.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="xbox-rl-host.exe" EntryPoint="XboxRL.App">
+      <uap:VisualElements DisplayName="xbox-rl"
+                          Description="Windows game compatibility host (Wine on a user-mode Linux layer)."
+                          BackgroundColor="#1b1b2f"
+                          Square150x150Logo="Assets\Square150x150Logo.png"
+                          Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" />
+        <uap:SplashScreen Image="Assets\SplashScreen.png" BackgroundColor="#1b1b2f" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <rescap:Capability Name="codeGeneration" />
+    <rescap:Capability Name="expandedResources" />
+  </Capabilities>
+</Package>

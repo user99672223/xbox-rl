@@ -1,0 +1,27 @@
+# launch.cfg - OPTIONAL runtime configuration for the host, read from the app's LocalState
+# at startup. Upload with:   pwsh tools/push-file.ps1 -Local host\launch.cfg.example
+# (rename/copy first; the file on the console must be called launch.cfg).
+# Every key is optional; defaults are in host/src/xrl_host.h (HostConfig) and host/src/boot.cpp.
+
+# --- what the probe does ------------------------------------------------------------------
+# probe=all|quick|none      probe build default: all.  full build default: quick.
+#probe=all
+#probe_swapchain=1         CoreWindow swapchain + 120 presents (the "does the Xbox hang?" test)
+#probe_audio=1             XAudio2 + 200 ms quiet beep
+#linger_s=5                probe build: seconds to stay up after the probe before exiting
+#log_level=0               0 trace, 1 info, 2 warn, 3 error (minimum written to log.txt)
+
+# --- full build: boot context handed to xrl_layer_boot() ----------------------------------
+#vfs_root=                 default <LocalState>\rootfs
+#prefix_path=/prefix
+#game_path=/game
+#mem_budget_mb=4096        xrl_boot_context::guest_mem_budget (placeholder default!)
+#skip_layer=0              1 = open the window + run the probe but don't call xrl_layer_boot()
+# argv= and env= lines are repeatable and ORDERED; if any argv= is present the default argv is
+# replaced entirely (same for env=).
+#argv=/usr/bin/wine64
+#argv=/game/Binaries/Win64/RocketLeague.exe
+#argv=-nocrashdialog
+#env=WINEPREFIX=/prefix
+#env=WINEDEBUG=err+all
+#env=HOME=/root

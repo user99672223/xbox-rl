@@ -1,0 +1,176 @@
+# Workstream A notes (host/ + tools/)
+
+Non-obvious decisions, what is real vs stubbed, and what is verified. The integrator merges
+anything cross-cutting into `docs/decisions.md`; this file is A's own.
+
+## 1. What exists and what has been verified (2026-10-26)
+
+| Piece | State | Verified how |
+|-------|-------|--------------|
+| UWP C++/WinRT project (`XboxRL.vcxproj`, `App.idl`, manifest) | **Builds + packages + signs** headlessly (`tools/build.ps1`), Probe and Full modes | MSBuild, 0 errors / 0 warnings (excluding the expected D9025 override notice). `makeappx unpack` confirms `XboxRL.winmd`, exe, resources.pri, manifest (`EntryPoint="XboxRL.App"`, caps `codeGeneration`+`expandedResources`, `Windows.Universal`+`Windows.Xbox`), and `SDL2.dll` at package root in Full mode |
+| Probe logic (RWX, 4 GiB, VA map, D3D12, D3D11On12, XAudio2, WGI) | **Runs and passes on the dev laptop** as a desktop exe (`tools/test-desktop.ps1`) - same source files, only the app shell differs | D3D12 device + queue + D3D11On12 device/texture/RTV/clear, RWX exec + RW->RX flip + worker-thread JIT, XAudio2 beep, WGI enumeration all OK; 4 GiB touched+verified OK on the first run (a later run failed with `ERROR_COMMITMENT_LIMIT` purely because the laptop had <2.5 GB free commit - the failure path logs and continues correctly) |
+| UWP packaging **run** (activation, CoreWindow, swapchain, SDL window) | **NOT run anywhere.** The laptop's Windows Developer Mode is off, so `Add-AppxPackage -Register` fails (0x80073CFF); I did not change that system setting. The CoreWindow swapchain probe step, the SDL front-end, `Suspending/Resuming` hooks and the launcher/activation path are therefore compile-verified only | needs the console |
+| `tools/*.ps1` | Parse-checked; deploy/push-file/push-game/run/logs/kill exercised end-to-end against `tools/test/mock_device_portal.py` (`tools/test/test-tools.ps1`) | proves script logic, **not** that the real Device Portal behaves like the mock (see section 7) |
+| gfx/audio/input ops | Real code, tested through the probe on the laptop (except the CoreWindow swapchain, which needs the UWP shell) | |
+| `xrl_layer_boot` | **Stub** (`layer_stub.cpp`): validates + logs the boot context, returns -1. Replaced at link time by C's `layer.lib` (`/p:XrlLayerLib=`) | boot-context building exercised in the desktop harness |
+| `xrl_gfx_ops` | **Default implementation is real but minimal**; D replaces it by exporting `xrl_gfx_ops_get` (see `src/gfx_seam.h`) | |
+
+## 2. Project structure decisions
+
+* **One exe, two build modes** (`XrlMode=Probe|Full`, MSBuild property, set by `tools/build.ps1 -Mode`).
+  *Probe*: no SDL, no layer; `wWinMain -> CoreApplication::Run(make<App>())` with a small
+  C++/WinRT `IFrameworkView` - **the exact shape already proven to launch on this console** by
+  the earlier probe project. *Full*: `wWinMain -> SDL_WinRTRunApp(sdl_main)`; SDL's WinRT backend
+  owns the view/event pump and calls our `main` on the UI thread (that is how SDL's WinRT port
+  works). Both modes use the same manifest, the same `XboxRL.App` runtimeclass and the same
+  support code.
+* **`XboxRL.App` exists in both modes**, because the launcher needs `EntryPoint` to resolve to a
+  class in the package's `.winmd` *before it starts any process*. In Full mode it is not the object
+  handed to `CoreApplication::Run` (SDL's `SDLApplicationSource` is). **Unverified assumption:**
+  the launcher is satisfied by the winmd/manifest alone. If the console refuses the Full package
+  while accepting the Probe one, that is the cause; fix = patch SDL (`patches/sdl2-*.patch`) to
+  expose its `IFrameworkView` and return it from `App::CreateView()`.
+* **WINAPI_FAMILY override.** All TUs force `WINAPI_FAMILY_DESKTOP_APP` (`/U WINAPI_FAMILY /D ...`)
+  so VirtualAlloc(RWX), VEH, CreateFileW etc. are declared; AppContainer enforcement at run time comes
+  from the PE flag + manifest, not header visibility. (Same recipe as the earlier probe; produces the
+  harmless D9025 notice.) **Exception: `sdl_main.cpp`** is compiled with the stock UWP
+  `WINAPI_FAMILY_APP` because SDL's headers only define `__WINRT__` / `SDL_WinRTRunApp` /
+  `SDL_SysWMinfo::winrt` under that family. That TU deliberately includes no C++/WinRT, D3D or XAudio
+  headers.
+* **`/EHa`** everywhere: probe steps must survive access violations / SEH.
+* **Release is the supported config.** Debug needs the debug VCLibs dependency package.
+* **C++/WinRT NuGet** is pinned and hash-checked (`tools/fetch-deps.ps1`, `vendor/PINS.md`): it is
+  what makes the UWP workload emit a real winmd for our own runtimeclass. `vendor/packages/` is
+  git-ignored.
+* **Package version** `1.<days since 2026-10-26>.<minute of day>.0`, strictly increasing, so every
+  `deploy.ps1` is an in-place **update** that preserves LocalState (log, rootfs, the multi-GB game
+  copy). Never "uninstall then install" casually - that wipes LocalState.
+* **Signing**: self-signed `CN=xbox-rl` (= manifest Publisher), generated by `tools/new-cert.ps1` into
+  `host/signing/` (git-ignored), removed from the user cert store right after export. The PFX password
+  is the fixed non-secret `xrl-dev` (throwaway dev cert). `deploy.ps1` uploads the `.cer`; this
+  laptop's trust store is untouched.
+* Identity `xbox-rl.host`; tile name "xbox-rl".
+
+## 3. SDL2
+
+* Pinned `release-2.32.10` / `5d249570393f7a37e037abf22cd6012a4cc56a71` (`vendor/PINS.md`).
+  2.32 still ships the WinRT backend (`VisualC-WinRT/SDL-UWP.vcxproj`; SDL3 dropped it - do not
+  "upgrade" past 2.x). **No source patches**: SDL's project hardcodes toolset v142 / SDK "10.0" /
+  app-type revision 8.2, and global MSBuild properties override those, so `tools/build.ps1` passes
+  `PlatformToolset=v143;WindowsTargetPlatformVersion=10.0.26100.0;ApplicationTypeRevision=10.0`.
+  `tools/apply-patches.ps1` is in place for when a patch is needed.
+* SDL is built **Release only**, to `host/build/sdl/SDL2-UWP/SDL2.{dll,lib}`; `SDL2.dll` is shipped
+  at the **package root** (`<Link>SDL2.dll</Link>` metadata in the vcxproj - without it MSBuild put it in
+  `build\sdl\...` inside the package and the implicit import would not resolve).
+* SDL is used for: window (CoreWindow ownership + the event pump), keyboard, game-controller
+  hot-plug diagnostics. **SDL audio is intentionally not initialised**: guest audio goes to native
+  XAudio2 through `xrl_audio_ops`, which owns the single mastering voice; a second WASAPI client from
+  SDL buys nothing and risks device contention. Pad state for the guest comes from
+  Windows.Gaming.Input directly (`input_ops.cpp`), not SDL's controller layer; SDL's pad events are
+  logged only.
+* No SDL renderer / ANGLE / OpenGL is created - the swapchain is ours (gfx thread).
+
+## 4. Threading model (the Xbox D3D hang)
+
+`docs/decisions.md`: D3D11CreateDevice/D3D12CreateDevice on the CoreWindow UI thread blocks forever.
+
+| Thread | Does | Never does |
+|--------|------|------------|
+| UI thread (CoreWindow / SDL pump) | pump events, publish window size | any D3D/DXGI call, any layer call |
+| `gfx` thread (`gfx_thread.cpp`, MTA) | every device / swapchain / D3D11On12 *creation* | - |
+| `boot` thread (Full; 256 MiB reserved stack) | quick probe, then `xrl_layer_boot()` (blocks until guest exits) | - |
+| probe worker (Probe build) | the probe sequence | - |
+
+`gfx_thread_invoke()` waits with a "still waiting on '<what>'" warning every 5 s, so a hung create
+shows up in log.txt as a named, timestamped stall instead of silence. Present/GetBuffer/Release are
+free-threaded and are not marshalled. Layer threads may call the ops from any thread.
+
+## 5. The gfx seam (for D)
+
+`src/gfx_seam.h`. D exports ONE strong symbol `extern "C" const xrl_gfx_ops* xrl_gfx_ops_get(const
+xrl_gfx_host_services*)` in a static lib and the host links it with `/p:XrlGfxLib=`. The host's
+default is bound with `#pragma comment(linker, "/alternatename:xrl_gfx_ops_get=xrl_gfx_ops_get_default")`
+so the strong one wins without touching host source. The same trick binds `xrl_layer_boot` /
+`xrl_layer_request_exit` to the stub for C. **Handles are raw COM interface pointers** (one
+reference each; `release` = `IUnknown::Release`), matching the header's "a d3d12_device is really a
+native ID3D12Device*". Swapchain: flip-model `FLIP_DISCARD`, `DXGI_SCALING_NONE`, 2+ buffers, device
+FL 11_0 (the console's AppContainer cap).
+
+## 6. Logging
+
+* `LocalState/log.txt`, UTF-8 with BOM, format `[sssss.mmm tTID] L tag: message`; previous run rotated
+  to `log.prev.txt` *before* the new file is opened.
+* **Flush policy**: one `WriteFile` per line, no user-space buffering (survives process crash/kill);
+  warn/error lines (and shutdown, and the crash record) additionally `FlushFileBuffers`. Not
+  `FlushFileBuffers` on every trace line: with Wine tracing that is thousands of fsyncs/s on console
+  storage. The only loss mode is a hard power cut/console reset losing the last < ~1 s of trace-level lines.
+* Opened `FILE_SHARE_READ|WRITE|DELETE` so Device Portal can read it while the app runs.
+* 256 MiB cap, after which only warn/error lines are written (LocalState quota is unknown).
+* Embedded newlines in a message become `|` (one physical line per call).
+* Last-chance crash recorder (`SetUnhandledExceptionFilter` + `terminate` handler): code, address,
+  registers, symbolised module+offset stack. C's trap-and-emulate VEH runs *before* it and resumes
+  its exceptions, so it only sees real crashes. The crash path does not take the log lock (it may be
+  held by the crashing thread).
+* `log_level=` in `launch.cfg` raises the minimum level at runtime.
+
+## 7. The probe, and how to read it
+
+Order is cheapest-first so a hang later still leaves the earlier facts in the log. Grep `PROBE_RESULT`:
+
+`sysinfo` (package, OS build, CPU/features, hypervisor leaf, SYSTEM_INFO, memory,
+`MemoryManager.AppMemoryUsageLimit`) -> **`rwx`** (RWX alloc, execute, RW->RX->RW->RX patch, JIT from a
+worker thread) -> **`alloc4g`** (4 GiB commit, every page touched, readback) -> `vamap` (free-region map of the
+user VA, answers the header's "address-space hole" reference) -> **`d3d12`** (all DXGI adapters; device via
+`xrl_gfx_ops::d3d12_create_device` from a non-gfx thread so the marshalling is exercised; max FL, binding/
+heap tier, shader model, UMA, GPU VA bits, wave/raytracing; direct queue) -> **`d3d11on12`** (via
+`xrl_gfx_ops::d3d11on12_create`; QI `ID3D11On12Device`, texture + RTV + clear + flush) -> `swapchain`
+(CoreWindow swapchain through the ops + 120 vsynced clears; reports fps) -> `audio` (XAudio2 engine,
+48 kHz stereo mastering voice, 200 ms quiet beep) -> `input` (WGI pad snapshot) -> `PROBE_RESULT` line ->
+`ceiling` (commit-only ceiling 4.5/5/6/8 GiB + reserve-only 16 GiB..1 TiB; runs LAST, after the verdict is
+already in the log, in case an over-limit commit upsets the console). **Required** = rwx, alloc4g,
+d3d12, d3d11on12; the verdict line ends `required=PASS|FAIL`.
+
+Probe build exits itself `linger_s` (5) seconds after finishing; `run.ps1` follows the log until
+`exiting application`.
+
+## 8. Boot context defaults (all PLACEHOLDERS - override in `launch.cfg`, see `launch.cfg.example`)
+
+`vfs_root=<LocalState>\rootfs`, `prefix_path=/prefix`, `game_path=/game`,
+`argv=[/usr/bin/wine64, /game/Binaries/Win64/RocketLeague.exe, -nocrashdialog]`,
+`envp=[WINEPREFIX, HOME=/root, PATH, TMPDIR=/tmp, LANG, WINEDEBUG=err+all]`,
+`guest_mem_budget=4096 MiB`. B/C decide the real wine path/env; the RL anti-cheat-off launch option is
+**not known to A** and is not guessed - supply it via `argv=` lines.
+`push-game.ps1` puts the game at `LocalState\rootfs\game` = guest `/game`.
+
+## 9. Audio / input details
+
+* Audio handles = raw `IXAudio2*`/voice pointers + a registry of kinds so `release` knows
+  Release vs DestroyVoice. Submit copies the buffer (guest memory is not stable) and frees it in
+  `OnBufferEnd`. Format/flags interpretations and the missing ops: `ABI-CHANGE-REQUESTS.md` #2.
+* Input slots 0..3 assigned in arrival order and stable for a pad's lifetime (freed on disconnect),
+  XInput button mask, triggers 0..255, sticks +-32767/32768 with **no deadzone applied** (raw, like
+  XInput). Vibration 16-bit -> double. WGI only delivers readings while the app has focus.
+
+## 10. tools/ assumptions about Device Portal (UNVERIFIED against the real console)
+
+Everything below is from the earlier project's `deploy_xbox.ps1` (which did reach the console) and
+Device Portal documentation, exercised only against my mock:
+ * auth = HTTP Basic over HTTPS, cert check skipped (self-signed). `XBOX_URL` in `.env` is a test hook.
+ * `POST /api/app/packagemanager/certificate` (also: `.cer` is included in the package upload as a fallback),
+   `POST /api/app/packagemanager/package?package=<file>` multipart with msix + VCLibs dependency,
+   `GET /api/app/packagemanager/state` (tolerant: success is ultimately decided by the package list).
+ * `GET /api/app/packagemanager/packages` -> `InstalledPackages[].{Name,PackageFullName,PackageFamilyName,PackageRelativeId,Version{Major,Minor,Build,Revision}}`.
+ * files: `/api/filesystem/apps/file?knownfolderid=LocalAppData&packagefullname=..&path=\LocalState[\..]&filename=..`
+   (GET download, POST upload). Directory listing sizes are known stale -> never used for resume.
+ * `DELETE /api/taskmanager/app?package=<base64 fullname>&forcestop=yes` for kill (probably 403 like launch).
+ * Launch via REST is **not attempted** by default (403 per decisions.md); `run.ps1 -TryApi` tries once.
+
+## 11. Open questions (need the console or the integrator)
+
+1. Does the launcher accept the **Full** package (SDL runs the view, `XboxRL.App` only in the winmd)? (Probe first.)
+2. Which bucket does a Device-Portal install land in (App vs Game)? The probe's `MemoryManager` limit and `alloc4g`/`ceiling` answer it.
+3. Does `CreateSwapChainForCoreWindow` with a D3D12 queue succeed from a non-UI thread, and present at 60 fps? (`swapchain` step.)
+4. Device Portal: certificate endpoint on this firmware, `state` semantics, whether uploads create missing directories (push-game does a canary first), max single-upload size (RL has multi-GB files), sustained throughput for ~20+ GB.
+5. Is `Microsoft.VCLibs.140.00` present on the console? (`deploy.ps1` uploads the x64 dependency appx either way.)
+6. Real values for wine argv/env, the anti-cheat-off launch option, `guest_mem_budget`, and the ABI items in `ABI-CHANGE-REQUESTS.md` (especially #1).
+7. Process-wide: does anything in B/C need an Xbox-side thread priority/affinity policy from the host? Not set; default scheduling.

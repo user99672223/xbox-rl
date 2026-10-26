@@ -1,0 +1,197 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  XboxRL.vcxproj - the host UWP app (Workstream A). A *real* C++/WinRT UWP project:
+  the VS UWP workload's AppXPackage targets + the Microsoft.Windows.CppWinRT build
+  integration run midlrt on App.idl -> XboxRL.winmd and emit the activation-factory
+  glue, which is what the Xbox launcher demands before it will start any process
+  (docs/decisions.md). Hand-rolled midlrt in the Native Desktop workload fails
+  (MIDL5027); do not "simplify" this into a CMake/Win32 project.
+
+  Build with tools/build.ps1 (it fetches deps, builds SDL, stamps the version,
+  signs, and prints the package path). Direct MSBuild properties:
+
+    XrlMode      Probe (default) | Full
+                   Probe : no SDL, no layer. The first-milestone build.
+                   Full  : SDL2 WinRT front-end + boot context + layer seam.
+    XrlLayerLib  optional path to C's layer.lib   (Full)
+    XrlGfxLib    optional path to D's gfx.lib     (any mode; overrides the default gfx ops)
+    XrlSdlLibDir where SDL2.lib/SDL2.dll were built (Full; tools/build.ps1 sets it)
+    XrlManifest  the (version-stamped) manifest to package
+    XrlPfx / XrlPfxPassword   signing key for the msix
+-->
+<Project DefaultTargets="Build" ToolsVersion="17.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+
+  <PropertyGroup Label="XrlSettings">
+    <XrlRoot>$(MSBuildThisFileDirectory)..\</XrlRoot>
+    <XrlMode Condition="'$(XrlMode)' == ''">Probe</XrlMode>
+    <XrlCppWinRTVersion>2.0.250303.1</XrlCppWinRTVersion>
+    <XrlSdlLibDir Condition="'$(XrlSdlLibDir)' == ''">$(MSBuildThisFileDirectory)build\sdl\SDL2-UWP\</XrlSdlLibDir>
+    <XrlManifest Condition="'$(XrlManifest)' == ''">$(MSBuildThisFileDirectory)Package.appxmanifest</XrlManifest>
+    <XrlPfx Condition="'$(XrlPfx)' == ''">$(MSBuildThisFileDirectory)signing\xbox-rl-dev.pfx</XrlPfx>
+    <XrlPfxPassword Condition="'$(XrlPfxPassword)' == ''">xrl-dev</XrlPfxPassword>
+  </PropertyGroup>
+
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{6C0B8D5A-4C2E-4D7B-9B7E-2A9D5E1F0A31}</ProjectGuid>
+    <RootNamespace>XboxRL</RootNamespace>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <MinimumVisualStudioVersion>17.0</MinimumVisualStudioVersion>
+    <AppContainerApplication>true</AppContainerApplication>
+    <ApplicationType>Windows Store</ApplicationType>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <WindowsTargetPlatformMinVersion>10.0.17763.0</WindowsTargetPlatformMinVersion>
+    <ApplicationTypeRevision>10.0</ApplicationTypeRevision>
+    <CppWinRTOptimized>true</CppWinRTOptimized>
+    <CppWinRTGenerateWindowsMetadata>true</CppWinRTGenerateWindowsMetadata>
+    <SolutionDir>$(MSBuildThisFileDirectory)</SolutionDir>
+    <AppxBundle>Never</AppxBundle>
+    <AppxPackageSigningEnabled>true</AppxPackageSigningEnabled>
+    <PackageCertificateKeyFile>$(XrlPfx)</PackageCertificateKeyFile>
+    <PackageCertificatePassword>$(XrlPfxPassword)</PackageCertificatePassword>
+    <GenerateAppxPackageOnBuild>true</GenerateAppxPackageOnBuild>
+    <AppxPackageDir>$(MSBuildThisFileDirectory)build\package\</AppxPackageDir>
+  </PropertyGroup>
+
+  <Import Project="$(XrlRoot)vendor\packages\Microsoft.Windows.CppWinRT.$(XrlCppWinRTVersion)\build\native\Microsoft.Windows.CppWinRT.props" />
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+
+  <PropertyGroup Condition="'$(Configuration)'=='Debug'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)'=='Release'" Label="Configuration">
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v143</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
+  </PropertyGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+
+  <PropertyGroup>
+    <IntDir>$(MSBuildThisFileDirectory)build\app\$(Platform)-$(Configuration)-$(XrlMode)\</IntDir>
+    <OutDir>$(MSBuildThisFileDirectory)build\app\$(Platform)-$(Configuration)-$(XrlMode)\</OutDir>
+    <TargetName>xbox-rl-host</TargetName>
+    <GeneratedFilesDir>$(IntDir)Generated\</GeneratedFilesDir>
+  </PropertyGroup>
+
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <PrecompiledHeader>Use</PrecompiledHeader>
+      <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <WarningLevel>Level3</WarningLevel>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)src;$(XrlRoot)include;$(GeneratedFilesDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_UNICODE;UNICODE;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <!-- /EHa: SEH (access violations, privileged-instruction #GP) must be catchable
+           in the probe steps. -->
+      <ExceptionHandling>Async</ExceptionHandling>
+      <DisableSpecificWarnings>4453;4834;%(DisableSpecificWarnings)</DisableSpecificWarnings>
+      <!-- The host (and the layer it hosts) needs the desktop-partition Win32 surface
+           (VirtualAlloc RWX, VEH, CreateFileW, ...). AppContainer enforcement at run
+           time still comes from the PE flag + manifest, not from header visibility.
+           The UWP property sheets set WINAPI_FAMILY_APP AFTER ours, so it must be forced
+           on the command line (D9025 "overriding" warnings are expected and harmless).
+           Same recipe as the earlier probe project, proven to launch on the console.
+           sdl_main.cpp is the one TU that opts back out (see its ClCompile below). -->
+      <AdditionalOptions>%(AdditionalOptions) /U WINAPI_FAMILY /D WINAPI_FAMILY=WINAPI_FAMILY_DESKTOP_APP</AdditionalOptions>
+    </ClCompile>
+    <Link>
+      <!-- kernel32.lib explicit: WindowsApp.lib omits some exports we call
+           (AddVectoredExceptionHandler, VirtualProtect, ...). -->
+      <AdditionalDependencies>kernel32.lib;d3d12.lib;d3d11.lib;dxgi.lib;xaudio2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+    <Midl>
+      <MetadataFileName>$(OutDir)XboxRL.winmd</MetadataFileName>
+    </Midl>
+  </ItemDefinitionGroup>
+
+  <!-- ===== FULL mode: SDL2 front-end ===== -->
+  <ItemDefinitionGroup Condition="'$(XrlMode)' == 'Full'">
+    <ClCompile>
+      <PreprocessorDefinitions>XRL_FULL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <AdditionalDependencies>SDL2.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalLibraryDirectories>$(XrlSdlLibDir);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <!-- Optional libs from the other workstreams (any of these may be absent). -->
+  <ItemDefinitionGroup Condition="'$(XrlLayerLib)' != ''">
+    <Link>
+      <AdditionalDependencies>$(XrlLayerLib);%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(XrlGfxLib)' != ''">
+    <Link>
+      <AdditionalDependencies>$(XrlGfxLib);%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+
+  <ItemGroup>
+    <ClCompile Include="pch.cpp">
+      <PrecompiledHeader>Create</PrecompiledHeader>
+    </ClCompile>
+    <ClCompile Include="src\app.cpp" />
+    <ClCompile Include="src\audio_ops.cpp" />
+    <ClCompile Include="src\boot.cpp" />
+    <ClCompile Include="src\config.cpp" />
+    <ClCompile Include="src\gfx_ops_default.cpp" />
+    <ClCompile Include="src\gfx_thread.cpp" />
+    <ClCompile Include="src\input_ops.cpp" />
+    <ClCompile Include="src\layer_stub.cpp" />
+    <ClCompile Include="src\log.cpp" />
+    <ClCompile Include="src\probe.cpp" />
+    <!-- SDL front-end: stock UWP WINAPI_FAMILY_APP (so SDL's headers see __WINRT__),
+         no PCH, no C++/WinRT. Empty translation unit unless XRL_FULL. -->
+    <ClCompile Include="src\sdl_main.cpp">
+      <PrecompiledHeader>NotUsing</PrecompiledHeader>
+      <AdditionalOptions>
+      </AdditionalOptions>
+      <AdditionalIncludeDirectories Condition="'$(XrlMode)' == 'Full'">$(XrlRoot)vendor\SDL2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+
+    <ClInclude Include="pch.h" />
+    <ClInclude Include="App.h" />
+    <ClInclude Include="src\xrl_host.h" />
+    <ClInclude Include="src\gfx_seam.h" />
+    <Midl Include="App.idl" />
+
+    <AppxManifest Include="$(XrlManifest)">
+      <SubType>Designer</SubType>
+    </AppxManifest>
+
+    <Image Include="Assets\StoreLogo.png" />
+    <Image Include="Assets\Square150x150Logo.png" />
+    <Image Include="Assets\Square44x44Logo.png" />
+    <Image Include="Assets\Wide310x150Logo.png" />
+    <Image Include="Assets\SplashScreen.png" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(XrlMode)' == 'Full'">
+    <!-- Link= flattens the package path to the package ROOT: the exe's implicit import
+         of SDL2.dll is resolved next to the exe, never from a subfolder. -->
+    <None Include="$(XrlSdlLibDir)SDL2.dll">
+      <DeploymentContent>true</DeploymentContent>
+      <Link>SDL2.dll</Link>
+    </None>
+  </ItemGroup>
+
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Import Project="$(XrlRoot)vendor\packages\Microsoft.Windows.CppWinRT.$(XrlCppWinRTVersion)\build\native\Microsoft.Windows.CppWinRT.targets" />
+</Project>
