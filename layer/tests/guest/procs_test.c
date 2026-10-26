@@ -134,6 +134,7 @@ static long spawn(char **av)   /* fork + execve of this program; the child's exe
     return pid;
 }
 
+static volatile long g_val;   /* defined with its value below */
 static int role_ok(int cond) { return cond ? 0 : 1; }
 
 static void run_role(int argc, char **argv)
@@ -206,6 +207,48 @@ static void run_role(int argc, char **argv)
         exit_(9);
     }
     if (seq(role, "stop")) { msleep(20000); exit_(99); }
+    if (seq(role, "mtfork")) {   /* a multi-threaded process forks twice (no exec, then exec): its threads keep running */
+        long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+        int (*fns[2])(void *) = { thr_spin, thr_futex };
+        for (int i = 0; i < 2; i++) {
+            u8 *stk = mmap_anon(256 * 1024);
+            struct tls *t = mmap_anon(4096); t->self = t;
+            ctid_[i] = -1;
+            if (xclone(fns[i], stk + 256 * 1024 - 64, flags, 0, (void *)&ctid_[i], t, (void *)&ctid_[i]) <= 0) exit_(98);
+        }
+        msleep(100);
+        g_val = 1;
+        int st;
+        long pid = fork_();
+        if (pid == 0) { g_val = 5; exit_(role_ok(g_val == 5)); }
+        long w = wait4_(pid, &st, 0, 0);
+        if (w != pid || st != 0 || g_val != 1) exit_(1);
+        int before = spin_flag;
+        msleep(100);
+        if (spin_flag == before) exit_(2);   /* the spinning thread was not resumed */
+        char *av[] = { g_self, "exit", "4", 0 };
+        pid = fork_();
+        if (pid == 0) { execve_(g_self, av, g_envp); exit_(127); }
+        w = wait4_(pid, &st, 0, 0);
+        exit_(w == pid && st == (4 << 8) ? 0 : 3);
+    }
+    if (seq(role, "interleave")) {   /* a forked child that blocks lets the parent run; each keeps its own memory */
+        int p[2]; pipe2_(p, 0);
+        int st;
+        g_val = 1;
+        long pid = fork_();
+        if (pid == 0) {
+            msleep(300);
+            write_(p[1], "C", 1);
+            exit_(role_ok(g_val == 1));   /* the parent's later write must not show here */
+        }
+        g_val = 7;                        /* runs while the child sleeps */
+        write_(p[1], "P", 1);
+        long w = wait4_(pid, &st, 0, 0);
+        char b[4] = { 0, 0, 0, 0 };
+        long n = read_(p[0], b, 2);
+        exit_(w == pid && st == 0 && g_val == 7 && n == 2 && b[0] == 'P' && b[1] == 'C' ? 0 : 1);
+    }
     if (seq(role, "sigpipe")) {   /* write to a pipe nobody reads: SIGPIPE kills us (status 13) */
         int p[2]; pipe2_(p, 0);
         close_(p[0]);
@@ -610,6 +653,17 @@ static void driver(void)
     {
         long r = sc(56, 0x20000000 | 17 /* CLONE_NEWPID|SIGCHLD */, 0, 0, 0, 0, 0);
         CHECKV(r == -1, "clone with namespace flags -> -EPERM", r);
+    }
+    out("fork from a threaded process, interleaved parent and child:\n");
+    {
+        char *av[] = { g_self, "mtfork", 0 };
+        long pid = spawn(av);
+        long w = wait_for(pid, &st, 15000);
+        CHECKV(w == pid && st == 0, "a multi-threaded process forks (no exec, exec) and its threads keep running", st);
+        char *av2[] = { g_self, "interleave", 0 };
+        pid = spawn(av2);
+        w = wait_for(pid, &st, 15000);
+        CHECKV(w == pid && st == 0, "forked child blocks, parent runs and writes first, each keeps its memory", st);
     }
     CHECK(wait4_(-1, &st, 1, 0) == -10, "no children left at the end");
     outn("TOTAL FAILS", fails);
