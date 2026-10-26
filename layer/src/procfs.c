@@ -545,9 +545,33 @@ static xfile *open_dir(const char *norm, const char *orig)
     return f;
 }
 
+/* /proc/<pid>/{maps,exe} of a traced second process (task.c); 1 and sets *pid/leaf when gabs is such a path */
+char *xrl_task_remote_proc(int pid, const char *leaf, size_t *len);
+static int remote_path(const char *g, int *pid, const char **leaf)
+{
+    if (strncmp(g, "/proc/", 6) || g[6] < '0' || g[6] > '9') return 0;
+    const char *p = g + 6; int v = 0;
+    while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+    if (*p != '/' || v == G.pid || v == 1 || xrl_thread_by_tid(v)) return 0;
+    if (strcmp(p + 1, "maps") && strcmp(p + 1, "exe")) return 0;
+    *pid = v; *leaf = p + 1;
+    return 1;
+}
+
 xfile *xrl_proc_open(const char *gabs, int flags, int *err)
 {
     char norm[512];
+    {   int rp; const char *rl;
+        if (remote_path(gabs, &rp, &rl) && !strcmp(rl, "maps")) {
+            size_t n; char *d = xrl_task_remote_proc(rp, rl, &n);
+            if (!d) { *err = LX_ENOENT; return NULL; }
+            memfile *m = (memfile *)calloc(1, sizeof *m);
+            m->data = d; m->len = n;
+            xfile *f = xfile_new(&g_mf_ops, flags & LX_O_ACCMODE);
+            f->priv = m; f->gpath = _strdup(gabs);
+            return f;
+        }
+    }
     normalize(gabs, norm, sizeof norm);
     pent *e = plookup(norm);
     int isfd = 0, num = 0;
@@ -583,6 +607,15 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
 slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
 {
     char norm[512];
+    {   int rp; const char *rl;
+        if (remote_path(gabs, &rp, &rl) && !strcmp(rl, "exe")) {
+            size_t n; char *d = xrl_task_remote_proc(rp, rl, &n);
+            if (!d) return -LX_ENOENT;
+            if (n > cap) n = (size_t)cap;
+            memcpy(buf, d, n); free(d);
+            return (slong)n;
+        }
+    }
     normalize(gabs, norm, sizeof norm);
     char tmp[2048];
     tmp[0] = 0;
@@ -607,6 +640,16 @@ slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
 int xrl_proc_stat(const char *gabs, lx_stat *st)
 {
     if (strncmp(gabs, "/proc", 5) && strncmp(gabs, "/sys", 4)) return 0;
+    {   int rp; const char *rl;
+        if (remote_path(gabs, &rp, &rl)) {
+            memset(st, 0, sizeof *st);
+            size_t n; char *d = xrl_task_remote_proc(rp, rl, &n);
+            if (!d) return 1;   /* ENOENT */
+            free(d);
+            xrl_stat_synth(st, !strcmp(rl, "exe") ? (LX_S_IFLNK | 0777) : (LX_S_IFREG | 0444), (u64)rp, 0);
+            return 1;
+        }
+    }
     char norm[512];
     normalize(gabs, norm, sizeof norm);
     pent *e = plookup(norm);

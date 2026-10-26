@@ -171,6 +171,12 @@ xrl_thread *xrl_task_thread_new(xrl_thread *p, u64 rsp, struct xrl_task *k);   /
 void xrl_task_thread_start(xrl_thread *t);
 void *xrl_fd_table_clone(void);                          /* fd.c */
 void xrl_fd_table_free(void *tab);
+/* tracee.c: a traced layer process, controlled from its tracer's process over a named pipe */
+int  xrl_tr_send(HANDLE h, u32 op, u64 a, u64 b, const void *p, u32 len);
+int  xrl_tr_recv(HANDLE h, u32 *op, u64 *a, u64 *b, void **p, u32 *len);
+int  xrl_tracee_active(void);
+void xrl_tracee_boot(u64 *entry, u64 *sp);
+void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);
 void xrl_threads_terminate_all(void);

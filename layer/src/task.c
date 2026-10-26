@@ -26,6 +26,9 @@ typedef struct xrl_task {
     u64 lo_p, lo_c, hi;
     int exited, killed, reaped, sigdeath, execd, status;
     HANDLE proc;                               /* the host process an exec started */
+    HANDLE pipe;                               /* traced exec: the tracer's end of the control pipe (tracee.c) */
+    int remote, running;                       /* traced exec: the task stands for a second process; it runs between a CONT and the next stop */
+    char exe[256];
     int traced, opts, resumed, mode;          /* mode: 0 PTRACE_CONT, 1 PTRACE_SYSCALL */
     int stopped, reported, entry_stopped;
     int s_kind, s_sig;                         /* 0 signal-delivery-stop, 1 syscall entry, 2 syscall exit, 3 exec */
@@ -257,7 +260,117 @@ BOOL CALLBACK init(PINIT_ONCE io, PVOID p, PVOID *c)
     return TRUE;
 }
 
-static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp)
+
+/* ---- a traced exec: the program is a second layer process and this task is its tracer-side handle ----------
+ * (tracee.c has the other end.) The pipe carries ptrace requests; the process handle gives exit status. */
+static int rcall(xrl_task *k, u32 op, u64 a, u64 b, const void *pl, u32 plen, void **out, u32 *outlen)
+{
+    u32 rop, len; u64 ra, rb; void *p = NULL;
+    if (xrl_tr_send(k->pipe, op, a, b, pl, plen)) return -LX_ESRCH;
+    if (xrl_tr_recv(k->pipe, &rop, &ra, &rb, &p, &len) || rop != 3 /* RESP */) { free(p); return -LX_ESRCH; }
+    if (out) { *out = p; if (outlen) *outlen = len; } else free(p);
+    return (int)(s64)ra;
+}
+
+/* the tracee ended: collect the exit code */
+static void remote_gone(xrl_task *k)
+{
+    DWORD ec = 0;
+    WaitForSingleObject(k->proc, 5000);
+    GetExitCodeProcess(k->proc, &ec);
+    if (!k->killed) k->status = (int)(ec & 0xff) << 8;
+    k->exited = 1; k->running = 0;
+}
+
+static slong remote_wait(xrl_task *k, u64 ustatus, int options)
+{
+    for (;;) {
+        if (k->exited || k->killed) {
+            if (!k->exited) remote_gone(k);
+            int st = k->status, r = k->pid;
+            if (ustatus && xrl_ctu(ustatus, &st, 4)) return -LX_EFAULT;
+            k->reaped = 1;
+            CloseHandle(k->proc); k->proc = NULL; CloseHandle(k->pipe); k->pipe = NULL;
+            spawn_slot_give();
+            return r;
+        }
+        if (k->stopped && !k->reported) {
+            int st = k->status;
+            if (ustatus && xrl_ctu(ustatus, &st, 4)) return -LX_EFAULT;
+            k->reported = 1;
+            return k->pid;
+        }
+        if (!k->running) { LOGW("wait4(%d): the tracee is stopped and nobody continued it: this would wait forever", k->pid); return -LX_ECHILD; }
+        if (options & 1) {   /* WNOHANG */
+            DWORD avail = 0;
+            if (PeekNamedPipe(k->pipe, NULL, 0, NULL, &avail, NULL) && !avail) {
+                if (WaitForSingleObject(k->proc, 0) != WAIT_OBJECT_0) return 0;
+                remote_gone(k); continue;
+            }
+        }
+        u32 op, len; u64 a, b; void *p = NULL;
+        if (xrl_tr_recv(k->pipe, &op, &a, &b, &p, &len)) { remote_gone(k); continue; }
+        free(p);
+        if (op == 2 /* STOP */) { k->running = 0; k->stopped = 1; k->reported = 0; k->s_kind = 4; k->s_sig = (int)a; k->status = ((int)a << 8) | 0x7f; }
+    }
+}
+
+static slong remote_ptrace(xrl_task *k, int req, u64 addr, u64 data)
+{
+    void *out = NULL; u32 olen = 0; int e;
+    switch (req) {
+    case 0x4200: k->opts = (int)data; return 0;
+    case 7: case 24: case 9:
+        if ((e = rcall(k, 14 /* CONT */, 0, 0, NULL, 0, NULL, NULL))) return e;
+        k->running = 1; k->stopped = 0; return 0;
+    case 17:
+        if ((e = rcall(k, 17 /* DETACH */, 0, 0, NULL, 0, NULL, NULL))) return e;
+        k->running = 1; k->stopped = 0; k->traced = 0; return 0;
+    case 8: { slong r; xrl_task_kill(k->pid, LX_SIGKILL, &r); return 0; }
+    case 1: case 2: {
+        if ((e = rcall(k, 10 /* PEEK */, addr, 8, NULL, 0, &out, &olen))) return -LX_EIO;
+        if (olen != 8) { free(out); return -LX_EIO; }
+        e = xrl_ctu(data, out, 8) ? -LX_EFAULT : 0; free(out); return e; }
+    case 4: case 5: return rcall(k, 11 /* POKE */, addr, 0, &data, 8, NULL, NULL) ? -LX_EIO : 0;
+    case 12: case 0x4204: {
+        if ((e = rcall(k, 12 /* GETREGS */, 0, 0, NULL, 0, &out, &olen))) return e;
+        if (req == 12) { e = xrl_ctu(data, out, olen) ? -LX_EFAULT : 0; free(out); return e; }
+        u64 iov[2]; if (xrl_cfu(iov, data, 16)) { free(out); return -LX_EFAULT; }
+        u64 n = iov[1] < olen ? iov[1] : olen; iov[1] = n;
+        e = (xrl_ctu(iov[0], out, (size_t)n) || xrl_ctu(data, iov, 16)) ? -LX_EFAULT : 0; free(out); return e; }
+    case 13: case 0x4205: {
+        u64 r[27]; u64 src = data;
+        if (req == 0x4205) { u64 iov[2]; if (xrl_cfu(iov, data, 16) || iov[1] < sizeof r) return -LX_EINVAL; src = iov[0]; }
+        if (xrl_cfu(r, src, sizeof r)) return -LX_EFAULT;
+        return rcall(k, 13 /* SETREGS */, 0, 0, r, sizeof r, NULL, NULL); }
+    case 0x4202: {
+        u32 si[32]; memset(si, 0, sizeof si);
+        si[0] = 5;
+        si[2] = k->s_kind == 3 ? ((k->opts & 0x10) ? (5 | (4 << 8)) : 5) : 0x80;
+        return xrl_ctu(data, si, sizeof si) ? -LX_EFAULT : 0; }
+    case 0x4201: { u64 m = 0; return xrl_ctu(data, &m, 8) ? -LX_EFAULT : 0; }
+    default: LOGW("ptrace request 0x%x on remote task %d: not supported", req, k->pid); return -LX_EIO;
+    }
+}
+
+/* /proc/<pid>/{maps,exe} of a traced second process, for xrl_proc_*; the text is malloc'd */
+char *xrl_task_remote_proc(int pid, const char *leaf, size_t *len)
+{
+    xrl_task *k = NULL;
+    AcquireSRWLockShared(&g_task_lock);
+    for (xrl_task *c = g_tasks; c; c = c->next) if (c->pid == pid && c->remote && c->pipe && !c->reaped && !c->exited && !c->running) { k = c; break; }
+    ReleaseSRWLockShared(&g_task_lock);
+    if (!k) return NULL;
+    if (!strcmp(leaf, "exe")) { char *s = _strdup(k->exe); *len = strlen(s); return s; }
+    if (!strcmp(leaf, "maps")) {
+        void *out = NULL; u32 olen = 0;
+        if (rcall(k, 15 /* MAPS */, 0, 0, NULL, 0, &out, &olen)) return NULL;
+        *len = olen; return (char *)out ? (char *)out : _strdup("");
+    }
+    return NULL;
+}
+
+static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, int traced)
 {
     /* the program must exist and be an x86-64 ELF: the errors a caller of execve expects come before anything starts */
     char gpath[1024]; slong r;
@@ -295,7 +408,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp)
     wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
     wchar_t *cur = GetEnvironmentStringsW();
     for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
-        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE=", 11) && wcsncmp(e, L"XRL_ARGV0=", 10)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
     FreeEnvironmentStringsW(cur);
     for (int i = 0; i < 256; i++) {
         u64 sp; char s[4096];
@@ -305,13 +418,41 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp)
         free(a);
     }
     { wchar_t dv[40]; swprintf(dv, 40, L"XRL_SPAWN_DEPTH=%d", g_spawn_depth + 1); size_t l = wcslen(dv) + 1; memcpy(o, dv, l * sizeof(wchar_t)); o += l; }
+    char pname[128] = "";
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    if (traced) {
+        snprintf(pname, sizeof pname, "\\\\.\\pipe\\xrl-tracee-%lu-%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
+        pipe = CreateNamedPipeA(pname, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT, 1, 1 << 16, 1 << 16, 0, NULL);
+        if (pipe == INVALID_HANDLE_VALUE) { free(blk); spawn_slot_give(); return -LX_EAGAIN; }
+        wchar_t *wn = widen(pname); size_t l = wcslen(wn);
+        memcpy(o, L"XRL_TRACEE=", 11 * sizeof(wchar_t)); o += 11; memcpy(o, wn, (l + 1) * sizeof(wchar_t)); o += l + 1; free(wn);
+    }
+    {   u64 a0; char s0[1024];
+        if (!xrl_cfu(&a0, uargv, 8) && a0 && !xrl_strfu(s0, a0, sizeof s0)) { wchar_t *wa = widen(s0); size_t l = wcslen(wa); if ((size_t)(o - blk) + l + 16 < (1u << 19)) { memcpy(o, L"XRL_ARGV0=", 10 * sizeof(wchar_t)); o += 10; memcpy(o, wa, (l + 1) * sizeof(wchar_t)); o += l + 1; } free(wa); }
+    }
     *o++ = 0;
     STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
     BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, blk, NULL, &si, &pi);
     free(blk);
-    if (!ok) { LOGE("exec: CreateProcess failed: %lu", GetLastError()); spawn_slot_give(); return -LX_EAGAIN; }
+    if (!ok) { LOGE("exec: CreateProcess failed: %lu", GetLastError()); if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe); spawn_slot_give(); return -LX_EAGAIN; }
     CloseHandle(pi.hThread);
     k->proc = pi.hProcess;
+    if (traced) {   /* wait for the new process to reach its exec stop (HELLO) */
+        int up = 0;
+        for (int i = 0; i < 3000 && !up; i++) {   /* 30 s */
+            if (ConnectNamedPipe(pipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) up = 1;
+            else if (WaitForSingleObject(pi.hProcess, 10) == WAIT_OBJECT_0) break;
+        }
+        u32 op = 0, len; u64 a = 0, b; void *p = NULL;
+        DWORD mode = PIPE_READMODE_BYTE | PIPE_WAIT;
+        if (up) SetNamedPipeHandleState(pipe, &mode, NULL, NULL);
+        if (!up || xrl_tr_recv(pipe, &op, &a, &b, &p, &len) || op != 1 /* HELLO */) {
+            LOGE("exec: the traced process did not reach its exec stop"); free(p);
+            TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hProcess); CloseHandle(pipe); k->proc = NULL; spawn_slot_give(); return -LX_EAGAIN;
+        }
+        k->pipe = pipe; k->remote = 1; k->running = 0;
+        snprintf(k->exe, sizeof k->exe, "%s", gpath);
+    }
     LOGW("exec: task %d runs \"%s\" as host process %lu", k->pid, path, pi.dwProcessId);
     return 0;
 }
@@ -336,17 +477,14 @@ slong xrl_task_exec(xrl_thread *t, const char *path, u64 uargv, u64 uenvp)
             n++;
         }
     }
-    if (k->traced) {
-        save_regs(k, t, 3, SIGTRAP_, 59, NULL, 0);
-        stop(k, t, ((k->opts & 0x10) ? (SIGTRAP_ | (4 << 8)) : SIGTRAP_) << 8 | 0x7f);
+    slong r = spawn_process(k, path, uargv, uenvp, k->traced);
+    if (r < 0) return r;                             /* execve fails in the child, as on Linux */
+    if (k->traced) {                                 /* the exec stop is the tracee's HELLO: the tracer sees SIGTRAP (| EVENT_EXEC) */
+        k->stopped = 1; k->reported = 0; k->s_kind = 3;
+        k->status = ((k->opts & 0x10) ? (SIGTRAP_ | (4 << 8)) : SIGTRAP_) << 8 | 0x7f;
     }
-    if (!k->traced) {
-        slong r = spawn_process(k, path, uargv, uenvp);
-        if (r < 0) return r;                         /* execve fails in the child, as on Linux */
-        k->execd = 1;                                 /* the task ends here; its process goes on elsewhere */
-        xrl_do_exit(0, 1);
-    }
-    xrl_do_exit(0, 1);   /* a traced exec: the stop above was the end of what this model can show */
+    k->execd = 1;                                     /* the task ends here; its process goes on elsewhere */
+    xrl_do_exit(0, 1);
     return 0;
 }
 
@@ -370,6 +508,7 @@ slong xrl_task_wait(int pid, u64 ustatus, int options)
     xrl_task *k = find_child(pid);
     if (!k) return -LX_ECHILD;
     for (;;) {
+        if (k->remote) return remote_wait(k, ustatus, options);   /* a traced exec made it a second process meanwhile */
         if (k->proc) {   /* it exec'd: a host process now */
             DWORD wr = WaitForSingleObject(k->proc, (options & 1) ? 0 : INFINITE), ec = 0;
             if (wr == WAIT_TIMEOUT) return 0;
@@ -425,6 +564,7 @@ static slong ptrace_impl(int req, int pid, u64 addr, u64 data)
     xrl_task *k = find_child(pid);
     if (!k || !k->traced || k->exited) return -LX_ESRCH;
     if (!k->stopped) return -LX_ESRCH;   /* not in ptrace-stop */
+    if (k->remote) return remote_ptrace(k, req, addr, data);
     switch (req) {
     case 0x4200: k->opts = (int)data; return 0;                                   /* PTRACE_SETOPTIONS */
     case 7: case 24: case 9: k->mode = req == 24; k->resumed = 1; return 0;       /* CONT, SYSCALL, SINGLESTEP (as CONT) */

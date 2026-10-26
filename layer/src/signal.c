@@ -768,6 +768,12 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         }
     }
 
+    if (code == EXCEPTION_BREAKPOINT && xrl_tracee_active()) {   /* a traced process: the tracer sees the int3 (tracee.c) */
+        xrl_tracee_stop(ep->ContextRecord, t, LX_SIGTRAP);
+        xrl_teb_stack_back(stk);
+        xrl_teb_restore(t, was_guest);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     int sig = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_STACK_OVERFLOW ? LX_SIGSEGV :
               code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ? LX_SIGILL :
               code == EXCEPTION_BREAKPOINT || code == EXCEPTION_SINGLE_STEP ? LX_SIGTRAP :

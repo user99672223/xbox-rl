@@ -730,6 +730,55 @@ static void test_spawn(void)
     }
 }
 
+/* A traced exec: the child TRACEMEs, stops, execs; the new program is a second layer process the parent
+ * controls from outside: exec-stop with PTRACE_EVENT_EXEC, /proc/<pid>/maps and exe, PEEK of its ELF header and
+ * entry, POKE of an int3 over the entry, CONT, SIGTRAP stop with rip after the int3, GETREGS/SETREGS (rip back
+ * to the entry), the original byte restored, DETACH, and the program runs on to its exit status. This is the
+ * skeleton of how the EAC module puts its in-game part into the game. */
+static long u2s(char *o, long v) { char d[24]; int n = 0, k = 0; do d[n++] = (char)('0' + v % 10); while ((v /= 10)); while (n) o[k++] = d[--n]; o[k] = 0; return k; }
+static void test_traced_exec(void)
+{
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip traced exec (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {
+        sc4(101, 0, 0, 0, 0);
+        sc2(62, sc1(39, 0), 19);
+        const char *av[] = { "/bin/guest.elf", "--spawned", "traced", 0 }, *ev[] = { "XRL_SPAWN_ENV=tr", 0 };
+        sc3(59, "/bin/guest.elf", av, ev);
+        sc1(60, 98);
+        for (;;) sc1(60, 98);
+    }
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 19, "traced child stops with SIGSTOP");
+    sc4(101, 0x4200, pid, 0, 0x10 /* PTRACE_O_TRACEEXEC */);
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 | (4 << 8)) << 8 | 0x7f), "execve: exec-stop (SIGTRAP | PTRACE_EVENT_EXEC)");
+    char path[64] = "/proc/"; long k = 6; k += u2s(path + k, pid);
+    char mp[80], ep[80], b[400]; memcpy(mp, path, 64); memcpy(ep, path, 64);
+    memcpy(mp + k, "/maps", 6); memcpy(ep + k, "/exe", 5);
+    long n = sc3(89, ep, b, 100);
+    CHECK(n == 14 && !memcmp(b, "/bin/guest.elf", 14), "readlink /proc/<pid>/exe of the new process");
+    long fd = sc3(2, mp, 0, 0), m = fd >= 0 ? sc3(0, fd, b, 300) : -1;
+    if (fd >= 0) sc1(3, fd);
+    u64 base = 0;
+    if (m > 0) for (long i = 0; i < m && b[i] != '-'; i++) base = base * 16 + (u64)(b[i] <= '9' ? b[i] - '0' : b[i] - 'a' + 10);
+    u64 w = 0, entry = 0, orig = 0, regs[27];
+    CHECK(base && sc4(101, 2, pid, base, &w) == 0 && (u32)w == 0x464c457f, "/proc/<pid>/maps: the first mapping starts with the ELF header (PEEKDATA)");
+    sc4(101, 2, pid, base + 0x18, &entry);
+    CHECK(entry > base && sc4(101, 12, pid, 0, regs) == 0 && regs[16] == entry && regs[19] != 0, "GETREGS at the exec stop: rip = the entry point, a stack");
+    sc4(101, 2, pid, entry, &orig);
+    CHECK(sc4(101, 5, pid, entry, (orig & ~0xffull) | 0xcc) == 0, "POKEDATA: int3 over the first byte of the entry");
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 << 8) | 0x7f), "CONT: the tracee runs into the int3 and stops with SIGTRAP");
+    CHECK(sc4(101, 12, pid, 0, regs) == 0 && regs[16] == entry + 1, "GETREGS: rip is after the int3");
+    CHECK(sc4(101, 5, pid, entry, orig) == 0, "POKEDATA: the original bytes back");
+    regs[16] = entry;
+    CHECK(sc4(101, 13, pid, 0, regs) == 0, "SETREGS: rip back to the entry");
+    CHECK(sc4(101, 17, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == (33 << 8), "DETACH: the program runs on and exits with 33");
+    char fb[256]; memset(fb, 0, sizeof fb);
+    long ff = sc3(2, "/tmp/xrl_spawned.txt", 0, 0), fn = ff >= 0 ? sc3(0, ff, fb, 250) : -1;
+    if (ff >= 0) sc1(3, ff);
+    CHECK(fn > 0 && find(fb, "traced|") && find(fb, "|tr|"), "it ran with its arguments and environment");
+}
+
 static char cpubuf[1 << 16];
 static void test_cpuinfo(void)
 {
@@ -1386,6 +1435,7 @@ void cstart(u64 *sp)
     test_procfs_rlimits();
     test_fork_tasks();
     test_spawn();
+    test_traced_exec();
     test_threads();
     test_net();
     test_ntsync();
