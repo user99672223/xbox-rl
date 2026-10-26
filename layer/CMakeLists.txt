@@ -14,7 +14,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")   # /MD (UWP requires the dynamic CRT)
 
 set(XRL_SRC
-    src/boot.c src/com.c src/dbt.c src/elf.c src/exec.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c src/ntsync.c
+    src/boot.c src/com.c src/dbt.c src/elf.c src/evdev.c src/exec.c src/fbdev.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c src/ntsync.c
     src/cpuinfo.c src/hangdump.c src/net.c src/perf.c src/procfs.c src/rewrite.c src/rewrite_core.c src/signal.c src/syscall.c src/sysnames.c src/teb.c src/thread.c
     src/util.c src/vfs.c src/x86dec.c
     )
@@ -51,11 +51,11 @@ if(XRL_BUILD_TESTS AND NOT XRL_UWP)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../gfx ${CMAKE_CURRENT_BINARY_DIR}/gfx EXCLUDE_FROM_ALL)
     # host/src/audio_ops.cpp (XAudio2) unchanged, with a stand-in for the UWP project's pch.h
     add_executable(xrl_test_host tests/test_host.c tests/desktop_gfx.cpp tests/desktop_audio.cpp
-                   ${CMAKE_CURRENT_SOURCE_DIR}/../host/src/audio_ops.cpp)
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../host/src/audio_ops.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../host/src/input_queue.cpp)
     target_include_directories(xrl_test_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include
                                ${CMAKE_CURRENT_SOURCE_DIR}/tests/shim ${CMAKE_CURRENT_SOURCE_DIR}/../host/src)
     target_compile_definitions(xrl_test_host PRIVATE _CRT_SECURE_NO_WARNINGS)
-    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../host/src/audio_ops.cpp PROPERTIES COMPILE_OPTIONS "/EHsc;/utf-8")
+    set_source_files_properties(${CMAKE_CURRENT_SOURCE_DIR}/../host/src/audio_ops.cpp ${CMAKE_CURRENT_SOURCE_DIR}/../host/src/input_queue.cpp PROPERTIES COMPILE_OPTIONS "/EHsc;/utf-8")
     target_link_libraries(xrl_test_host PRIVATE xrl_layer xrl_gfx user32 xaudio2)
     add_executable(xrl_catch tests/catch.c)
     target_compile_definitions(xrl_catch PRIVATE _CRT_SECURE_NO_WARNINGS)

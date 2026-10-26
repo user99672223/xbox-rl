@@ -23,6 +23,7 @@ set(XRL_GFX_SOURCES
     src/caps.cpp
     src/swapchain.cpp
     src/d3d11_swapchain.cpp
+    src/fbpresent.cpp
     src/d3d11on12.cpp
     src/stub12.cpp
     src/ops.cpp

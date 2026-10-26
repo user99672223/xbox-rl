@@ -14,4 +14,7 @@ python3 ../../../tools/xrl-tpfix.py --check out/guest.elf
 # the execve test: one program in two roles (layer/tests/exec-test.sh)
 gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall     -o out/exec_test.elf exec_test.c
 python3 ../../../tools/xrl-tpfix.py out/exec_test.elf
-echo built out/guest.elf out/exec_test.elf
+# the display/input devices test (layer/tests/fbdemo-test.sh)
+gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall -Wno-unused-function     -o out/fbdemo.elf fbdemo.c
+python3 ../../../tools/xrl-tpfix.py out/fbdemo.elf
+echo built out/guest.elf out/exec_test.elf out/fbdemo.elf

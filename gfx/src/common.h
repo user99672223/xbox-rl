@@ -164,6 +164,9 @@ xrl_status HostSwapchainCreate11(ID3D11Device* dev, uint32_t w, uint32_t h, uint
 xrl_status D3D11SwapchainCreateOp(xrl_handle d3d11_device, xrl_handle d3d12_queue, const xrl_swapchain_desc* desc,
                                   xrl_handle* out);
 
+// ---------------------------------------------------------------- fbpresent.cpp
+xrl_status FramebufferPresentOp(const void* pixels, uint32_t w, uint32_t h, uint32_t stride, uint32_t flags);
+
 // ---------------------------------------------------------------- ops.cpp
 xrl_gfx_ops* MutableOps();
 void ResetOps();  // re-arm d3d11on12_create (called from init)
