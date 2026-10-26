@@ -280,6 +280,7 @@ static void remote_gone(xrl_task *k)
     GetExitCodeProcess(k->proc, &ec);
     if (!k->killed) k->status = (int)(ec & 0xff) << 8;
     k->exited = 1; k->running = 0;
+    LOGW("task %d: its host process ended with exit code 0x%lx", k->pid, ec);
 }
 
 static slong remote_wait(xrl_task *k, u64 ustatus, int options)
@@ -311,7 +312,7 @@ static slong remote_wait(xrl_task *k, u64 ustatus, int options)
         u32 op, len; u64 a, b; void *p = NULL;
         if (xrl_tr_recv(k->pipe, &op, &a, &b, &p, &len)) { remote_gone(k); continue; }
         free(p);
-        if (op == 2 /* STOP */) { k->running = 0; k->stopped = 1; k->reported = 0; k->s_kind = 4; k->s_sig = (int)a; k->status = ((int)a << 8) | 0x7f; }
+        if (op == 2 /* STOP */) { LOGW("task %d: its process stopped with signal %llu", k->pid, a); k->running = 0; k->stopped = 1; k->reported = 0; k->s_kind = 4; k->s_sig = (int)a; k->status = ((int)a << 8) | 0x7f; }
     }
 }
 

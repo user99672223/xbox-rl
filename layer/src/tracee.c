@@ -113,6 +113,7 @@ void xrl_tracee_boot(u64 *entry, u64 *sp)
     }
     if (!g_tr) { LOGE("tracee: cannot reach the tracer's pipe %s", name); ExitProcess(2); }
     InterlockedExchange(&g_tr_on, 1);
+    if (G.trace_syscalls >= 2) xrl_systrace_arm();
     u64 regs[27] = { 0 };
     regs[15] = (u64)-1; regs[16] = *entry; regs[17] = 0x33; regs[18] = 0x202; regs[19] = *sp; regs[20] = 0x2b;
     u8 fp[512] = { 0 };
@@ -130,7 +131,7 @@ void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
     u64 r[27] = { 0 };
     r[0] = c->R15; r[1] = c->R14; r[2] = c->R13; r[3] = c->R12; r[4] = c->Rbp; r[5] = c->Rbx; r[6] = c->R11; r[7] = c->R10;
     r[8] = c->R9; r[9] = c->R8; r[10] = c->Rax; r[11] = c->Rcx; r[12] = c->Rdx; r[13] = c->Rsi; r[14] = c->Rdi;
-    r[15] = (u64)-1; r[16] = c->Rip + 1; r[17] = 0x33; r[18] = c->EFlags; r[19] = c->Rsp; r[20] = 0x2b; r[21] = t->guest_tp;
+    r[15] = (u64)-1; r[16] = c->Rip + (sig == LX_SIGTRAP ? 1 : 0);   /* after the int3; a fault reports the faulting address */ r[17] = 0x33; r[18] = c->EFlags; r[19] = c->Rsp; r[20] = 0x2b; r[21] = t->guest_tp;
     u8 fp[512];
     memcpy(fp, &c->FltSave, sizeof fp);   /* XMM_SAVE_AREA32 is the FXSAVE layout, as Linux's user_fpregs_struct */
     xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);
@@ -139,5 +140,11 @@ void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
     c->R15 = r[0]; c->R14 = r[1]; c->R13 = r[2]; c->R12 = r[3]; c->Rbp = r[4]; c->Rbx = r[5]; c->R11 = r[6]; c->R10 = r[7];
     c->R9 = r[8]; c->R8 = r[9]; c->Rax = r[10]; c->Rcx = r[11]; c->Rdx = r[12]; c->Rsi = r[13]; c->Rdi = r[14];
     c->Rip = r[16]; c->EFlags = (DWORD)r[18]; c->Rsp = r[19];
+    {   /* the tracer may send the thread into a translated image (dbt.c): NtContinue to a page that is not executable for the host fails, so go to the translation */
+        u64 tr = xrl_dbt_translate(r[16]);
+        if (tr) c->Rip = tr;
+        LOGW("tracee: rip %llx -> %llx (translation %llx)", r[16], (u64)c->Rip, tr);
+    }
+    LOGW("tracee: resumes at rip=%llx rsp=%llx eflags=%llx rdi=%llx rsi=%llx fs_base=%llx mxcsr=%x cw=%x", r[16], r[19], r[18], r[14], r[13], r[21], c->MxCsr, *(u16 *)fp);
     if (r[21] != t->guest_tp) t->guest_tp = r[21];
 }

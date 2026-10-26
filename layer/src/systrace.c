@@ -103,6 +103,9 @@ static const char *sockopt_name(int level, int opt)
     return NULL;
 }
 
+/* a process started to be traced traces from its first call (what a tracer does to it is what is interesting) */
+void xrl_systrace_arm(void) { g_from_nr = -1; InterlockedExchange(&g_armed, 1); }
+
 void xrl_systrace(slong nr, const slong *a, slong r, int tid)
 {
     char l[1800], s1[640], s2[256];

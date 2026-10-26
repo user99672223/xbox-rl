@@ -177,6 +177,7 @@ void xrl_fd_table_free(void *tab);
 int  xrl_tr_send(HANDLE h, u32 op, u64 a, u64 b, const void *p, u32 len);
 int  xrl_tr_recv(HANDLE h, u32 *op, u64 *a, u64 *b, void **p, u32 *len);
 int  xrl_tracee_active(void);
+void xrl_systrace_arm(void);
 void xrl_tracee_boot(u64 *entry, u64 *sp);
 void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig);
 void xrl_wake_ctid(xrl_thread *t);

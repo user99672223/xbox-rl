@@ -277,6 +277,19 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     1), first step built and tested on the laptop, next step is the tracer/tracee channel across two layer
     processes (design above) and a console probe. Not run on the console. EAC with the game still ends before
     the game starts on this branch.
+  - **Update, end of the session (state of the traced-exec work).** Built after the entry above, all behind `XRL_FORK_TASKS=1`
+    and covered by `layer/tests/fork-tasks.sh`: a *traced* `execve` starts the program as a second layer process whose tracer
+    controls it over a named pipe (`layer/src/tracee.c`): exec stop, PEEK/POKE, GETREGS/SETREGS, FP registers, int3 and
+    fault stops, CONT/DETACH, `/proc/<pid>/maps` and `exe` of that process; descriptors that are memfds are inherited at the
+    same number; the glibc shim is preloaded in the new process; musl patch 0003 leaves `.dynamic`'s hash/symbol/string
+    entries absolute as glibc's ld.so does (the module reads them before any constructor can run). With these the module's
+    launch protocol runs on the layer up to the point where it hands control to its in-game part inside the new process; the
+    bootstrapper then reports `210, 'Unexpected error. (#2) (0)'` because that process ends with a Windows status
+    (0xc000000d, raised by ntdll's exception continue path) as soon as it is resumed into the in-game code. That
+    crash is not understood yet (it is in the layer's resume path, not in a system call). I stopped there on purpose: it is
+    the point where the work stops being about the system interface the module asks for, so Part 1/2 end here. Exactly
+    what is not done: that crash, `ptrace` single-step and syscall stops across processes, signals between processes,
+    pipes/sockets across processes, a console probe, any run on the console.
 
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch

@@ -716,6 +716,20 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
 {
     EXCEPTION_RECORD *r = ep->ExceptionRecord;
     DWORD code = r->ExceptionCode;
+    if (g_trace_faults && code >= 0xC0000000u && code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION && code != EXCEPTION_PRIV_INSTRUCTION && code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_IN_PAGE_ERROR && code != EXCEPTION_FLT_DIVIDE_BY_ZERO && code != EXCEPTION_FLT_INVALID_OPERATION && code != EXCEPTION_INT_OVERFLOW && code != EXCEPTION_DATATYPE_MISALIGNMENT)
+    {
+        void *bt[12]; USHORT nb = 0; bt[nb++] = r->ExceptionAddress; { CONTEXT *cc = ep->ContextRecord; bt[nb++] = (void *)cc->Rip; }
+        { DWORD64 *sp2 = (DWORD64 *)ep->ContextRecord->Rsp; for (int i = 0; i < 8 && nb < 12; i++) { DWORD64 v; __try { v = sp2[i]; } __except (EXCEPTION_EXECUTE_HANDLER) { break; } bt[nb++] = (void *)v; } }
+        char line[900]; int w = snprintf(line, sizeof line, "veh: exception %08lx (not one the layer handles); frames:", code);
+        for (USHORT i = 0; i < nb && w < 800; i++) {
+            HMODULE m = NULL; char nm[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)bt[i], &m) && m) {
+                GetModuleFileNameA(m, nm, sizeof nm); const char *b = strrchr(nm, '\\'); if (b) memmove(nm, b + 1, strlen(b));
+            }
+            w += snprintf(line + w, sizeof line - w, " %s+%llx", nm, (unsigned long long)((u64)bt[i] - (u64)m));
+        }
+        LOGW("%s", line);
+    }
     /* Only hardware-ish codes concern us. */
     switch (code) {
     case EXCEPTION_ACCESS_VIOLATION: case EXCEPTION_ILLEGAL_INSTRUCTION: case EXCEPTION_PRIV_INSTRUCTION:
@@ -741,6 +755,21 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     }
     if (g_trace_faults) trace_fault(ep, t);
     if (!t) return EXCEPTION_CONTINUE_SEARCH;
+    /* A traced process: a fault in guest code is a signal-delivery-stop for its tracer, whatever the faulting
+     * address is (a tracer that makes an injected call return to address 9 waits for exactly this SIGSEGV). */
+    if (xrl_tracee_active() && code != EXCEPTION_BREAKPOINT && t->in_sys == 0 && t->teb_guest_live && xrl_mem_is_mapped(ep->ContextRecord->Rsp)) {
+        int tsig = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_STACK_OVERFLOW ? LX_SIGSEGV :
+                   code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ? LX_SIGILL :
+                   code == EXCEPTION_SINGLE_STEP ? LX_SIGTRAP :
+                   code == EXCEPTION_IN_PAGE_ERROR || code == EXCEPTION_DATATYPE_MISALIGNMENT ? LX_SIGBUS : LX_SIGFPE;
+        int tg = xrl_teb_enter_host(t);
+        u64 tstk[2];
+        xrl_teb_stack_here(tstk);
+        xrl_tracee_stop(ep->ContextRecord, t, tsig);
+        xrl_teb_stack_back(tstk);
+        xrl_teb_restore(t, tg);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
     /* Whose fault is it? Guest code runs with the guest TEB view live, from
      * executable guest memory, on a writable guest stack. (The TEB's stack range
      * cannot tell: in Wine's view it is Wine's stack, so every fault in Wine
