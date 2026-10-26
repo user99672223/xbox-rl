@@ -387,6 +387,7 @@ static void vma_name(vma *v, const char *n)
 
 /* --------------------------------------------------------------- init */
 static void swap_disable(void);
+static void swap_reserve(u64 bytes);
 static void swap_knobs(void);
 
 int xrl_mem_init(u64 budget)
@@ -400,6 +401,7 @@ int xrl_mem_init(u64 budget)
     char lm[24];
     if (GetEnvironmentVariableA("XRL_LAZY_MIN_KB", lm, sizeof lm)) LAZY_MIN = strtoull(lm, NULL, 10) << 10;
     if (GetEnvironmentVariableA("XRL_NO_SWAP", lm, sizeof lm) && lm[0] == '1') swap_disable();
+    if (GetEnvironmentVariableA("XRL_SWAP_RESERVE_MB", lm, sizeof lm)) swap_reserve(strtoull(lm, NULL, 10) << 20);
     swap_knobs();
     if (GetEnvironmentVariableA("XRL_LAZY_CHUNK_KB", lm, sizeof lm)) {
         u64 c = strtoull(lm, NULL, 10) << 10;
@@ -566,7 +568,27 @@ static void slot_free(u32 s)
     }
     g_slotfree[g_nslotfree++] = s;
 }
-static u32 slot_alloc(void) { return g_nslotfree ? g_slotfree[--g_nslotfree] : g_nslots++; }
+/* The swap file only grows while the disk keeps XRL_SWAP_RESERVE_MB (default
+ * 1 GiB) free: past that, eviction fails and memory stays put, like a full
+ * swap partition, instead of filling the disk (the console's TEMP has a quota). */
+#define SLOT_NONE 0xffffffffu
+static u64 g_swap_reserve = 1ull << 30;
+static WCHAR g_swap_dir[MAX_PATH];
+static int g_swap_full;
+static u32 slot_alloc(void)
+{
+    if (g_nslotfree) return g_slotfree[--g_nslotfree];
+    if (!(g_nslots & 255)) {   /* every 16 MiB of growth */
+        ULARGE_INTEGER avail;
+        g_swap_full = g_swap_dir[0] && GetDiskFreeSpaceExW(g_swap_dir, &avail, NULL, NULL) && avail.QuadPart < g_swap_reserve;
+        if (g_swap_full) {
+            static volatile LONG once;
+            if (!InterlockedExchange(&once, 1))
+                LOGW("mem: swap file stops at %u MiB: less than %llu MiB left on its disk", g_nslots >> 4, g_swap_reserve >> 20);
+        }
+    }
+    return g_swap_full ? SLOT_NONE : g_nslots++;
+}
 
 static u32 popcnt16(u32 m) { u32 n = 0; for (; m; m &= m - 1) n++; return n; }
 
@@ -599,6 +621,7 @@ static int swap_open(void)
     WCHAR dir[MAX_PATH], path[MAX_PATH];
     DWORD n = GetTempPathW(MAX_PATH, dir);
     if (!n || n >= MAX_PATH - 40) { g_swap = 0; return -1; }
+    wcscpy_s(g_swap_dir, MAX_PATH, dir);
     swprintf_s(path, MAX_PATH, L"%sxrl-swap-%lu.bin", dir, GetCurrentProcessId());
     CREATEFILE2_EXTENDED_PARAMETERS p;
     memset(&p, 0, sizeof p);
@@ -721,7 +744,9 @@ static u64 evict(u32 idx)
         span_dirty(idx);   /* new pages as well: write the whole span again */
         span_parts(p->base, part_probe, NULL);
     }
-    ev_ctx c = { p->base, slot_alloc(), 0, 0, 0 };
+    u32 slot = slot_alloc();
+    if (slot == SLOT_NONE) { span_unprobe(idx); return 0; }   /* swap full: stays */
+    ev_ctx c = { p->base, slot, 0, 0, 0 };
     span_parts(p->base, part_evict, &c);
     if (c.err) {
         static volatile LONG once;
@@ -1013,12 +1038,13 @@ static u64 evict_batch(u32 *v, int n)
         int bad = 0;
         for (int q = 0; q < k && !bad; q++) {
             evb_ctx c = { g_sp[v[i + q]].base, slot_alloc(), 0, 0, 0 };
-            span_parts(c.base, part_evb_write, &c);
+            if (c.slot == SLOT_NONE) c.err = ERROR_DISK_FULL;
+            else span_parts(c.base, part_evb_write, &c);
             slots[q] = c.slot; masks[q] = c.mask;
             if (c.err) {
                 static volatile LONG once;
-                if (!InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): spans kept in memory", c.err);
-                for (int z = 0; z <= q; z++) slot_free(slots[z]);
+                if (c.err != ERROR_DISK_FULL && !InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): spans kept in memory", c.err);
+                for (int z = 0; z <= q; z++) if (slots[z] != SLOT_NONE) slot_free(slots[z]);
                 range_parts(a, b, part_unprobe, NULL);
                 for (int z = 0; z < k; z++) g_sp[v[i + z]].state = SP_HOT;
                 bad = 1;
@@ -1094,6 +1120,7 @@ static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
 /* Before committing `len` more bytes: probe ahead above 80% of the budget,
  * evict when the commit would come within 16 MiB of it. */
 static void swap_disable(void) { g_swap = 0; }
+static void swap_reserve(u64 bytes) { g_swap_reserve = bytes; }
 static void swap_knobs(void)
 {
     char v[4];
@@ -1122,6 +1149,15 @@ static void swap_room(u64 len, u64 xs, u64 xe)
     u64 high = b > (64ull << 20) ? b - (16ull << 20) : b;
     if (now + len <= b / 10 * 8) return;
     if (now + len <= high) { clock_run(0, 2, 0, xs, xe); return; }
+    if (g_swap_full && !g_nslotfree) {   /* full: look at the disk again at most once a second */
+        static u64 last;
+        u64 t = GetTickCount64();
+        if (t - last < 1000) return;
+        last = t;
+        ULARGE_INTEGER avail;
+        g_swap_full = !GetDiskFreeSpaceExW(g_swap_dir, &avail, NULL, NULL) || avail.QuadPart < g_swap_reserve;
+        if (g_swap_full) return;
+    }
     u64 want = now + len - high + (8ull << 20);   /* a little extra: fewer, larger passes */
     g_clk_runs++;
     clock_run(want, (u64)g_nsp * 3 + 16, 1, xs, xe);
