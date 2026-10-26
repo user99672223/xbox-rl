@@ -1425,6 +1425,7 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
     if (mtype != LX_MAP_SHARED && mtype != LX_MAP_PRIVATE && mtype != LX_MAP_SHARED_VALIDATE) return -LX_EINVAL;
     int fixed = (flags & (LX_MAP_FIXED | LX_MAP_FIXED_NOREPLACE)) != 0;
     if (fixed && (addr & (LX_PAGE - 1))) return -LX_EINVAL;
+    if (fixed && xrl_shm_overlaps(addr, len)) return -LX_EINVAL;
     if (fixed && (addr < 0x10000 || addr + len > 0x7fffffff0000ull || addr + len < addr)) return -LX_ENOMEM;
 
     xfile *f = NULL;

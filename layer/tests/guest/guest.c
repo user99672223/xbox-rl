@@ -1899,6 +1899,49 @@ static void test_review_fixes(void)
     sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]);
 }
 
+/* ---- second review round: MSG_DONTWAIT on send, shm file growth/offsets/identity, MAP_FIXED over a region, read-only slave --- */
+static void test_review_fixes2(void)
+{
+    out("review regressions (2):\n");
+    static u8 big[65536];
+    int sp[2];
+    sc4(53, 1, 1, 0, sp);
+    long total = 0, r = 0;
+    for (int i = 0; i < 64 && r >= 0; i++) { r = sc4(S_sendto, sp[0], big, sizeof big, 0x40 /*MSG_DONTWAIT*/); if (r > 0) total += r; }
+    CHECK(r == -11 && total > 65536, "send(MSG_DONTWAIT) on a full blocking stream socket -> -EAGAIN instead of blocking");
+    sc1(3, sp[0]); sc1(3, sp[1]);
+
+    long fd = sc3(319, "xrl-grow", 0, 0);
+    sc2(77, fd, 4096);
+    u8 *a = (u8 *)sc(9, 0, 4096, 3, 1, fd, 0);
+    a[10] = 0x42;
+    CHECK(sc(9, 0, 4096, 3, 1, fd, -4096) == -22, "mmap(MAP_SHARED, memfd, negative offset) -> -EINVAL");
+    sc2(77, fd, 1 << 20);   /* the file grows after it was mapped */
+    u8 *b = (u8 *)sc(9, 0, 1 << 20, 3, 1, fd, 0);
+    CHECK((long)b > 0 && b == a && b[10] == 0x42 && (b[900000] = 7) == 7, "growing the memfd and mapping it larger works (same pages, headroom)");
+    long fx = sc(9, a, 4096, 3, 0x11 /*MAP_SHARED|MAP_FIXED*/, fd, 0);
+    CHECK(fx == -22, "MAP_FIXED over a shared region -> -EINVAL (the pages are shared with others)");
+    sc2(11, a, 4096); sc2(11, b, 1 << 20); sc1(3, fd);
+
+    long s1 = sc3(2, "/dev/shm/xrl_ident", 0102, 0600);
+    sc2(77, s1, 4096);
+    u8 *p1 = (u8 *)sc(9, 0, 4096, 3, 1, s1, 0);
+    p1[0] = 0x11;
+    sc1(87, "/dev/shm/xrl_ident");
+    long s2 = sc3(2, "/dev/shm/xrl_ident", 0102, 0600);
+    sc2(77, s2, 4096);
+    u8 *p2 = (u8 *)sc(9, 0, 4096, 3, 1, s2, 0);
+    CHECK((long)p2 > 0 && p2 != p1 && p2[0] == 0, "a /dev/shm file unlinked and recreated is a new object, not the old pages");
+    sc2(11, p1, 4096); sc2(11, p2, 4096); sc1(3, s1); sc1(3, s2); sc1(87, "/dev/shm/xrl_ident");
+
+    long m = sc3(2, "/dev/ptmx", 02, 0);
+    int zero = 0; u32 n = 0; sc3(16, m, 0x40045431, &zero); sc3(16, m, 0x80045430, &n);
+    char path[32] = "/dev/pts/"; { char d[12]; int k = 0, t = (int)n; do d[k++] = (char)('0' + t % 10); while ((t /= 10)); int o = 9; while (k) path[o++] = d[--k]; path[o] = 0; }
+    long ro = sc3(2, path, 0 /*O_RDONLY*/, 0);
+    CHECK(ro >= 0 && (sc3(72, ro, 3 /*F_GETFL*/, 0) & 3) == 0, "open(/dev/pts/N, O_RDONLY) stays read-only (F_GETFL)");
+    sc1(3, ro); sc1(3, m);
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -1935,6 +1978,7 @@ void cstart(u64 *sp)
     test_pty();
     test_timers();
     test_review_fixes();
+    test_review_fixes2();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

@@ -566,10 +566,10 @@ static slong enqueue_locked(const usock *src, usock *dst, uchunk *c)
     return 0;
 }
 
-static slong send_chunk(xfile *f, usock *u, usock *dst, uchunk *c)
+static slong send_chunk(xfile *f, usock *u, usock *dst, uchunk *c, int flags)
 {
     unwait w;
-    uw_init(&w, u->sndtimeo_ms, (f->flags & LX_O_NONBLOCK) != 0);
+    uw_init(&w, u->sndtimeo_ms, (f->flags & LX_O_NONBLOCK) != 0 || (flags & LX_MSG_DONTWAIT) != 0);
     slong r;
     flist fl = {0};
     for (;;) {
@@ -601,7 +601,6 @@ static uchunk *chunk_make(const lx_iovec *iov, u64 niov, u64 skip, size_t n, slo
 static slong un_send(xfile *f, usock *u, const lx_iovec *iov, u64 niov, const u8 *uname_addr, u32 name_alen, int name_abs,
                      int have_name, xfile **files, int nfiles, const lx_ucred *cred, int flags)
 {
-    (void)flags;
     u64 total;
     slong r = lx_iov_total(iov, niov, &total);
     flist fl = {0};
@@ -633,7 +632,7 @@ static slong un_send(xfile *f, usock *u, const lx_iovec *iov, u64 niov, const u8
         AcquireSRWLockShared(&g_ul);
         if (u->type == LX_SOCK_DGRAM && u->alen) { memcpy(c->from, u->addr, u->alen); c->fromlen = u->alen; }
         ReleaseSRWLockShared(&g_ul);
-        r = send_chunk(f, u, dst, c);
+        r = send_chunk(f, u, dst, c, flags);
         if (!r) r = (slong)total;
     } else {
         u64 sent = 0;
@@ -645,7 +644,7 @@ static slong un_send(xfile *f, usock *u, const lx_iovec *iov, u64 niov, const u8
             if (!c) { r = sent ? (slong)sent : e; goto done; }
             if (!sent) { c->files = files; c->nfiles = nfiles; files = NULL; nfiles = 0; }   /* a zero-length stream send passes nothing, as on Linux */
             c->cred = *cred;
-            e = send_chunk(f, u, dst, c);
+            e = send_chunk(f, u, dst, c, flags);
             if (e) { r = sent ? (slong)sent : e; goto done; }
             sent += seg;
             r = (slong)sent;

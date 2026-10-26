@@ -200,7 +200,7 @@ static int in_char(pty *p, u8 c)
     if (!(lfl & T_ICANON)) { echo_char(p, c); ring_put(&p->in, c); return 0; }
     /* canonical: edit the line until a newline / EOL / EOF completes it */
     if (c == cc[V_EOF] && c) {
-        if (p->linelen) { for (int i = 0; i < p->linelen; i++) ring_put(&p->in, p->line[i]); p->canon += (size_t)p->linelen; p->linelen = 0; }
+        if (p->linelen) { size_t put = 0; for (int i = 0; i < p->linelen; i++) put += (size_t)ring_put(&p->in, p->line[i]); p->canon += put; p->linelen = 0; }
         else { p->eofs++; p->eofs_gen++; }
         return 0;
     }
@@ -222,8 +222,9 @@ static int in_char(pty *p, u8 c)
     echo_char(p, c);
     p->line[p->linelen++] = c;
     if (c == '\n' || (c == cc[V_EOL] && c) || (c == cc[V_EOL2] && c)) {
-        for (int i = 0; i < p->linelen; i++) ring_put(&p->in, p->line[i]);
-        p->canon += (size_t)p->linelen; p->linelen = 0;
+        size_t put = 0;
+        for (int i = 0; i < p->linelen; i++) put += (size_t)ring_put(&p->in, p->line[i]);
+        p->canon += put; p->linelen = 0;
     }
     return 0;
 }
@@ -579,7 +580,7 @@ xfile *xrl_pty_open_master(int flags, int *err)
  * lock: that is what it is for), checked and counted under one lock hold: a master closing in between would release the pty twice. */
 static xfile *slave_file(pty *p, int flags, int ignore_lock, int *err)
 {
-    xfile *f = xfile_new(&g_ps_ops, (flags & (LX_O_ACCMODE | LX_O_NONBLOCK)) ? (flags & (LX_O_ACCMODE | LX_O_NONBLOCK)) : LX_O_RDWR);
+    xfile *f = xfile_new(&g_ps_ops, flags & (LX_O_ACCMODE | LX_O_NONBLOCK));
     if (!f) { *err = LX_ENOMEM; return NULL; }
     AcquireSRWLockExclusive(&p->lock);
     if ((p->locked && !ignore_lock) || !p->master_open) { ReleaseSRWLockExclusive(&p->lock); f->ops = NULL; xfile_unref(f); *err = LX_EIO; return NULL; }   /* no close hook: it has no pty yet */

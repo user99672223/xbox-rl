@@ -426,6 +426,7 @@ int    xrl_tty_signal(int pgrp, int sig);
  * The mem.c hooks answer XRL_NOT_NET when the file / range is not shm.c's. */
 slong xrl_shm_map_file(xfile *f, u64 len, s64 off);       /* the address to return for mmap(MAP_SHARED, f, off), or -errno */
 slong xrl_shm_munmap(u64 addr, u64 len);
+int   xrl_shm_overlaps(u64 addr, u64 len);                /* mem.c: a MAP_FIXED range touching a shared region is refused */
 slong xrl_shmget(int key, u64 size, int flags);
 slong xrl_shmat(int id, u64 addr, int flags);
 slong xrl_shmdt(u64 addr);

@@ -199,7 +199,9 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   for one object (MAP_FIXED over it, `shmat` at a chosen address, a ring buffer mapped twice) - those get
   -EINVAL or the old private-copy mapping. Protection is per object. A memfd's pages live while a description
   or a mapping does, a `/dev/shm` file's while mapped and are written back at the last munmap (up to 64 MiB);
-  read()/write() on the file while it is mapped do not see the mapping's writes. **For proc.c / integration:** a
+  The pages of a file object are reserved with 8x headroom (1 MiB..1 GiB, committed only when touched) so the file can grow
+  after its first mapping (a Wayland-style pool resize); beyond that mmap fails -ENOMEM. A MAP_FIXED mapping over a region is
+  refused (-EINVAL). read()/write() on the file while it is mapped do not see the mapping's writes. **For proc.c / integration:** a
   process that exits or execs must not unmap these regions while another process maps them; `xrl_shm_munmap`
   claims the range and keeps the pages (its answer is `XRL_NOT_NET` for anything else). Bug found on the way
   (old): munmap/msync of a writable shared *file* mapping deadlocked on mem.c's own lock (the write-back's

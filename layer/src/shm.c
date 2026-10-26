@@ -8,7 +8,7 @@
  * region per object, and EVERY mapping or attach of the object returns the same address (plus the file offset).
  * Linux lets shmat(NULL) and mmap(NULL, ...) return any address, so this is legal; what it cannot do is put one
  * object at two addresses (MAP_FIXED over it, mapping a memfd twice side by side for a ring buffer, shmat at a
- * chosen address): those get the ordinary private-copy mapping or -EINVAL. Protection is per object, not per
+ * chosen address): those get the ordinary private-copy mapping or -EINVAL (a MAP_FIXED mapping over a region: -EINVAL). Protection is per object, not per
  * mapping: a PROT_READ attach of a segment is writable. A munmap that runs over the edge of one of these regions (into
  * its neighbours) fails with -EINVAL; none of the programs here does that.
  *
@@ -64,9 +64,32 @@ typedef struct shmseg {
     att *maps; int nmaps, capmaps;     /* file object: the mapped ranges */
 } shmseg;
 
-static SRWLOCK g_shm_lock = SRWLOCK_INIT;
+static SRWLOCK g_shm_lock = SRWLOCK_INIT;   /* order: mem.c's lock may be taken inside this one, never the other way round */
 static shmseg *g_segs;
 static int g_next_id;
+static volatile u64 g_lo = ~0ull, g_hi;   /* every region ever made lies in [g_lo, g_hi): a munmap elsewhere never takes the lock */
+static SRWLOCK g_gone_lock = SRWLOCK_INIT;   /* a leaf lock: memfds whose last description closed, not yet looked at */
+static u32 g_gone[64]; static int g_ngone;
+
+static void gone_apply(u32 n);
+static void shm_lock(void)   /* g_shm_lock, with the pending memfd closes applied */
+{
+    AcquireSRWLockExclusive(&g_shm_lock);
+    for (;;) {
+        u32 n;
+        AcquireSRWLockExclusive(&g_gone_lock);
+        int have = g_ngone > 0;
+        if (have) n = g_gone[--g_ngone];
+        ReleaseSRWLockExclusive(&g_gone_lock);
+        if (!have) break;
+        gone_apply(n);
+    }
+}
+static void bounds_add(u64 addr, u64 size)
+{
+    if (addr < g_lo) g_lo = addr;
+    if (addr + size > g_hi) g_hi = addr + size;
+}
 
 static s64 now_s(void) { return (s64)(xrl_real_ns() / 1000000000ull); }
 
@@ -81,14 +104,22 @@ static void seg_unlink(shmseg *g)   /* lock held */
     for (shmseg **pp = &g_segs; *pp; pp = &(*pp)->next) if (*pp == g) { *pp = g->next; break; }
 }
 
-/* pages go back, a file object is written back first (the file is still ours to write) */
+/* pages go back, a /dev/shm file is written back first (the file's size bounds it; a read-only description is replaced by a
+ * transient writable one) */
 static void seg_destroy(shmseg *g)   /* lock held, already unlinked */
 {
     if (g->addr) {
-        if (!g->sysv && g->file && g->file->ops->write && g->size <= SHM_WRITEBACK_MAX) {
-            lx_stat st;
-            if (g->file->ops->fstat && !g->file->ops->fstat(g->file, &st) && st.st_size > 0)
-                g->file->ops->write(g->file, (const void *)g->addr, (u64)st.st_size < g->size ? (u64)st.st_size : g->size, 0);
+        lx_stat st;
+        if (!g->sysv && g->file && g->file->ops->write && g->file->ops->fstat && !g->file->ops->fstat(g->file, &st) &&
+            st.st_size > 0 && (u64)st.st_size <= SHM_WRITEBACK_MAX) {
+            u64 n = (u64)st.st_size < g->size ? (u64)st.st_size : g->size;
+            if ((g->file->flags & LX_O_ACCMODE) != LX_O_RDONLY) g->file->ops->write(g->file, (const void *)g->addr, n, 0);
+            else if (g->file->gpath) {
+                slong fd = xrl_vfs_open(LX_AT_FDCWD, g->file->gpath, LX_O_WRONLY, 0);
+                xfile *wf = fd >= 0 ? xrl_fd_get((int)fd) : NULL;
+                if (wf) { wf->ops->write(wf, (const void *)g->addr, n, 0); xfile_unref(wf); }
+                if (fd >= 0) xrl_fd_close((int)fd);
+            }
         }
         xrl_mem_shared_free(g->addr, g->size);
     }
@@ -106,7 +137,7 @@ static shmseg *by_id(int id)
 slong xrl_shmget(int key, u64 size, int flags)
 {
     slong r = 0;
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     shmseg *g = NULL;
     if (key != LX_IPC_PRIVATE) for (g = g_segs; g; g = g->next) if (g->sysv && !g->removed && g->key == key) break;
     if (g) {
@@ -141,7 +172,7 @@ slong xrl_shmat(int id, u64 addr, int flags)
 {
     (void)flags;
     slong r;
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     shmseg *g = by_id(id);
     if (!g) r = -LX_EINVAL;
     else if (g->removed && g->nattch == 0) r = -LX_EIDRM;
@@ -150,6 +181,7 @@ slong xrl_shmat(int id, u64 addr, int flags)
             char nm[40];
             seg_name(g, nm, sizeof nm);
             g->addr = xrl_mem_shared_alloc(g->size, nm);
+            if (g->addr) bounds_add(g->addr, g->size);
         }
         if (!g->addr) r = -LX_ENOMEM;
         else if (addr && addr != g->addr) r = -LX_EINVAL;   /* one address per segment: see the header comment */
@@ -175,7 +207,7 @@ static void sysv_detach(shmseg *g, int pid)   /* lock held */
 slong xrl_shmdt(u64 addr)
 {
     slong r = -LX_EINVAL;
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     for (shmseg *g = g_segs; g; g = g->next)
         if (g->sysv && g->addr && g->addr == addr) { if (g->npids > 0) { sysv_detach(g, xrl_cur_pid()); r = 0; } break; }
     ReleaseSRWLockExclusive(&g_shm_lock);
@@ -204,7 +236,7 @@ slong xrl_shmctl(int id, int cmd, u64 ubuf)
         u64 v[5] = { SHM_MAX_BYTES, 1, SHM_MAX_IDS, SHM_MAX_IDS, SHM_MAX_BYTES / LX_PAGE };
         return xrl_ctu(ubuf, v, sizeof v) ? -LX_EFAULT : 0;
     }
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     if (c == LX_SHM_INFO) {   /* struct shm_info: used_ids, shm_tot, shm_rss, shm_swp, swap_attempts, swap_successes */
         u64 tot = 0; int used = 0;
         for (shmseg *g = g_segs; g; g = g->next) if (g->sysv) { used++; tot += g->size / LX_PAGE; }
@@ -247,11 +279,11 @@ slong xrl_shmctl(int id, int cmd, u64 ubuf)
 }
 
 /* ====================================================== memfd / /dev/shm */
-static const char *file_key(xfile *f, char *buf, size_t cap)
+static const char *file_key(xfile *f, u64 ino, char *buf, size_t cap)
 {
     if (!f->gpath) return NULL;
     if (!strncmp(f->gpath, "/memfd:", 7)) { snprintf(buf, cap, "memfd:%llu", (unsigned long long)(uintptr_t)f->priv); return buf; }   /* priv: the memfd's number (vfs.c) */
-    if (!strncmp(f->gpath, "/dev/shm/", 9)) return f->gpath;
+    if (!strncmp(f->gpath, "/dev/shm/", 9)) { snprintf(buf, cap, "%s#%llx", f->gpath, (unsigned long long)ino); return buf; }   /* the inode: a file recreated under the same name is another object */
     return NULL;
 }
 
@@ -276,18 +308,26 @@ static void maps_sub(shmseg *g, int pid, u64 s, u64 e)
 
 slong xrl_shm_map_file(xfile *f, u64 len, s64 off)
 {
-    char kb[64];
-    const char *key = file_key(f, kb, sizeof kb);
-    if (!key || !f->ops->fstat || !f->ops->read) return XRL_NOT_NET;
+    char kb[400];
+    lx_stat st0;
+    if (!f->ops->fstat || !f->ops->read || f->ops->fstat(f, &st0)) return XRL_NOT_NET;
+    const char *key = file_key(f, st0.st_ino, kb, sizeof kb);
+    if (!key) return XRL_NOT_NET;
+    if (off < 0 || (u64)off + len < (u64)off) return -LX_EINVAL;
     slong r;
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     shmseg *g;
     for (g = g_segs; g; g = g->next) if (!g->sysv && !strcmp(g->fkey, key)) break;
     u64 need = ALIGN_UP((u64)off + len, LX_PAGE);
     if (!g) {
-        lx_stat st;
-        u64 fsize = f->ops->fstat(f, &st) ? 0 : (u64)st.st_size;
-        u64 size = ALIGN_UP(fsize > need ? fsize : need, LX_PAGE);
+        u64 fsize = (u64)st0.st_size;
+        /* headroom: the file may be grown (ftruncate) and mapped again; the pages are only reserved, committed when touched */
+        u64 want = (fsize > need ? fsize : need) * 8;
+        if (want < (1ull << 20)) want = 1ull << 20;
+        if (want > (1ull << 30)) want = 1ull << 30;
+        if (want < need) want = need;
+        if (want < fsize) want = fsize;
+        u64 size = ALIGN_UP(want, LX_PAGE);
         g = (shmseg *)calloc(1, sizeof *g);
         if (!g) { ReleaseSRWLockExclusive(&g_shm_lock); return -LX_ENOMEM; }
         g->fkey = _strdup(key); g->size = size;
@@ -297,6 +337,7 @@ slong xrl_shm_map_file(xfile *f, u64 len, s64 off)
         if (!g->memfd) { g->file = f; xfile_ref(f); }   /* a memfd needs no write-back: its pages go when its last description does */
         g->addr = xrl_mem_shared_alloc(size, nm);
         if (!g->addr) { seg_destroy(g); ReleaseSRWLockExclusive(&g_shm_lock); return -LX_ENOMEM; }
+        bounds_add(g->addr, size);
         /* what was written before the first mmap. In 64 KiB pieces, zero ones skipped: reading straight into the
          * pages would commit all of a sparse 256 MiB memfd. */
         u8 *tmp = fsize ? (u8 *)malloc(65536) : NULL;
@@ -312,7 +353,7 @@ slong xrl_shm_map_file(xfile *f, u64 len, s64 off)
         g->next = g_segs; g_segs = g;
     } else if (need > g->size) {
         static volatile LONG once;
-        if (!InterlockedExchange(&once, 1)) LOGW("shm: %s mapped beyond the %llu bytes of its pages (grown after the first mmap): -ENOMEM", g->fkey, (unsigned long long)g->size);
+        if (!InterlockedExchange(&once, 1)) LOGW("shm: %s mapped beyond the %llu bytes reserved for it (grown past the headroom after the first mmap): -ENOMEM", g->fkey, (unsigned long long)g->size);
         ReleaseSRWLockExclusive(&g_shm_lock);
         return -LX_ENOMEM;
     }
@@ -326,8 +367,9 @@ slong xrl_shm_map_file(xfile *f, u64 len, s64 off)
  * Not ours: XRL_NOT_NET and mem.c unmaps as usual. */
 slong xrl_shm_munmap(u64 addr, u64 len)
 {
+    if (!g_hi || addr + len <= g_lo || addr >= g_hi) return XRL_NOT_NET;   /* not near any region: no lock */
     slong r = XRL_NOT_NET;
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     for (shmseg *g = g_segs; g; g = g->next) {
         if (!g->addr || addr + len <= g->addr || addr >= g->addr + g->size) continue;
         if (addr < g->addr || addr + len > g->addr + g->size) { r = -LX_EINVAL; break; }   /* straddles the region's edge */
@@ -343,26 +385,45 @@ slong xrl_shm_munmap(u64 addr, u64 len)
     return r;
 }
 
-/* vfs.c: the last open file description of memfd `n` is closed. Its pages go once nothing maps them either. */
-void xrl_shm_memfd_gone(u32 n)
+/* The memfd's pages go once nothing maps them either: done here for one memfd. */
+static void gone_apply(u32 n)   /* g_shm_lock held */
 {
     char key[32];
     snprintf(key, sizeof key, "memfd:%llu", (unsigned long long)n);
-    AcquireSRWLockExclusive(&g_shm_lock);
     for (shmseg *g = g_segs; g; g = g->next)
         if (g->memfd && !strcmp(g->fkey, key)) {
             g->orphan = 1;
             if (g->nmaps == 0) { seg_unlink(g); seg_destroy(g); }
             break;
         }
+}
+
+/* vfs.c: the last open file description of memfd `n` is closed. Called with mem.c's lock held (an unmap closing the last
+ * description), so it only queues: shm_lock() applies it before the next operation here. */
+void xrl_shm_memfd_gone(u32 n)
+{
+    AcquireSRWLockExclusive(&g_gone_lock);
+    if (g_ngone < 64) g_gone[g_ngone++] = n;
+    ReleaseSRWLockExclusive(&g_gone_lock);
+}
+
+/* mem.c, before a MAP_FIXED mapping: does [addr, addr+len) touch one of our regions? (Linux would replace the attach; here the
+ * pages are other processes' too, so the call is refused.) */
+int xrl_shm_overlaps(u64 addr, u64 len)
+{
+    if (!g_hi || addr + len <= g_lo || addr >= g_hi) return 0;
+    int r = 0;
+    shm_lock();
+    for (shmseg *g = g_segs; g; g = g->next) if (g->addr && addr + len > g->addr && addr < g->addr + g->size) { r = 1; break; }
     ReleaseSRWLockExclusive(&g_shm_lock);
+    return r;
 }
 
 /* proc.c: process `pid` ended or exec'd: its attaches and mappings go (the pages stay while another process has them). The guest's
  * own munmap calls cannot do this: a region belongs to the mm of whoever mapped it first, so another process's exit never unmaps it. */
 void xrl_shm_proc_gone(int pid)
 {
-    AcquireSRWLockExclusive(&g_shm_lock);
+    shm_lock();
     for (shmseg *g = g_segs, *nx; g; g = nx) {
         nx = g->next;
         if (g->sysv) {
