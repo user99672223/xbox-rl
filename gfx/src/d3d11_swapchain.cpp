@@ -415,11 +415,28 @@ private:
         }
         UINT hc = nd.buffer_count < 2 ? 2 : nd.buffer_count;
         hr = host_->ResizeBuffers(hc, nd.width, nd.height, hf, 0);
+        if (FAILED(hr) && native_) {
+            // Native D3D11 on the console: ResizeBuffers answers DXGI_ERROR_INVALID_CALL although we hold
+            // no buffer (the laptop's HWND swapchain resizes). Say who else holds buffer 0, then make a
+            // new host swapchain at the new size instead (the old one must be gone first: one per window).
+            ComPtr<ID3D11Texture2D> b0;
+            ULONG refs = 0;
+            if (SUCCEEDED(host_->GetBuffer(0, IID_PPV_ARGS(&b0)))) { refs = b0->AddRef(); b0->Release(); refs -= 2; }
+            b0.Reset();
+            Log(LOG_WARN, "d3d11 swapchain: host ResizeBuffers(%u, %ux%u) failed hr=0x%08lX (native D3D11; %lu other "
+                "references to buffer 0): making a new host swapchain", hc, nd.width, nd.height, (unsigned long)hr,
+                (unsigned long)refs);
+            host_.Reset();
+            ctx_->Flush();   // D3D11 destroys lazily: the old swapchain goes on the flush
+            xrl_status st = HostSwapchainCreate11(dev_.Get(), nd.width, nd.height, nd.buffer_count, nd.dxgi_format,
+                                                  host_, &hf);
+            hr = st == XRL_OK ? S_OK : E_FAIL;
+        }
         if (FAILED(hr)) {
             Log(LOG_ERROR, "d3d11 swapchain: host ResizeBuffers(%u, %ux%u, fmt %u) failed: hr=0x%08lX (does the game still hold "
                 "references to the buffer or its views?)", hc, nd.width, nd.height, (unsigned)hf, (unsigned long)hr);
             // try to come back to the old size so the swapchain stays usable
-            (void)BuildBuffers();
+            if (host_) (void)BuildBuffers();
             return hr;
         }
         host_format_ = hf;

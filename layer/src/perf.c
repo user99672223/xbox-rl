@@ -42,6 +42,56 @@ static void take_top(xrl_thread *t, pf_row *r)
 
 static u64 ft64(FILETIME f) { return ((u64)f.dwHighDateTime << 32) | f.dwLowDateTime; }
 
+/* A thread that spent the whole interval on the CPU without one syscall is spinning in its own
+ * code (the console's startup stall): where. Registers are taken with the thread suspended for
+ * a moment (under the thread list's shared lock); its stack is read afterwards with
+ * after a VirtualQuery (only what is committed and readable). */
+typedef struct pf_spin { int tid; char name[16]; u64 rip, rsp; } pf_spin;
+static int spin_sample(xrl_thread *t, pf_spin *s)
+{
+    if (SuspendThread(t->handle) == (DWORD)-1) return 0;
+    CONTEXT c;
+    memset(&c, 0, sizeof c);
+    c.ContextFlags = CONTEXT_CONTROL;
+    BOOL ok = GetThreadContext(t->handle, &c);
+    ResumeThread(t->handle);
+    if (!ok) return 0;
+    s->tid = t->tid; s->rip = c.Rip; s->rsp = c.Rsp;
+    memcpy(s->name, t->name, sizeof s->name);
+    s->name[sizeof s->name - 1] = 0;
+    return 1;
+}
+static void spin_report(const pf_spin *s)
+{
+    char nm[96], line[700];
+    u64 off = 0;
+    int len = snprintf(line, sizeof line, "perf: spin %s/%d rip %llx", s->name, s->tid, s->rip);
+    if (xrl_mem_name_of(s->rip, nm, sizeof nm, &off) == 1)
+        len += snprintf(line + len, sizeof line - len, " (%s+0x%llx)", nm[0] ? nm : "anon", off);
+    else
+        len += snprintf(line + len, sizeof line - len, " (host)");
+    /* return addresses into guest code on the top of its stack */
+    u64 stk[256];
+    SIZE_T got = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((void *)s->rsp, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
+        (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
+        !(mbi.Protect & PAGE_GUARD)) {
+        u64 end = (u64)mbi.BaseAddress + mbi.RegionSize;
+        got = end - s->rsp < sizeof stk ? (SIZE_T)(end - s->rsp) : sizeof stk;
+        memcpy(stk, (void *)s->rsp, got);
+    }
+    int shown = 0;
+    for (size_t i = 0; i < got / 8 && shown < 8 && len < (int)sizeof line - 120; i++) {
+        if (stk[i] < 0x10000 || xrl_mem_is_exec(stk[i]) != 1) continue;
+        if (xrl_mem_name_of(stk[i], nm, sizeof nm, &off) != 1) continue;
+        const char *b = strrchr(nm, '/');
+        len += snprintf(line + len, sizeof line - len, " <- %llx %s+0x%llx", stk[i], b ? b + 1 : nm, off);
+        shown++;
+    }
+    LOGI("%s", line);
+}
+
 static const pf_prev *prev_of(int tid)
 {
     for (int i = 0; i < g_nprev; i++) if (g_prev[i].tid == tid) return &g_prev[i];
@@ -71,7 +121,8 @@ static DWORD WINAPI perf_thread(LPVOID p)
         double pu = (double)(user - last_user) / 1e5 / secs, pk = (double)(kern - last_kern) / 1e5 / secs;   /* 100 ns -> % */
         last_user = user; last_kern = kern;
 
-        int n = 0, nn = 0, nthr = 0;
+        int n = 0, nn = 0, nthr = 0, nspin = 0;
+        pf_spin spins[2];
         u64 sys_all = 0;
         AcquireSRWLockShared(&G.thread_lock);
         for (xrl_thread *t = G.threads; t && n < PF_MAX; t = t->next) {
@@ -88,9 +139,11 @@ static DWORD WINAPI perf_thread(LPVOID p)
             take_top(t, r);
             memcpy(r->name, t->name, sizeof r->name);
             r->name[sizeof r->name - 1] = 0;
+            if (r->nsys == 0 && (double)r->cpu >= 0.9e7 * secs && nspin < 2 && spin_sample(t, &spins[nspin])) nspin++;
             if (nn < PF_MAX) { next[nn].tid = t->tid; next[nn].cpu = cpu; next[nn].nsys = t->nsys; nn++; }
         }
         ReleaseSRWLockShared(&G.thread_lock);
+        for (int i = 0; i < nspin; i++) spin_report(&spins[i]);
         memcpy(g_prev, next, nn * sizeof *next);
         g_nprev = nn;
         /* exited threads take their counts with them: the interval's total can only be estimated
