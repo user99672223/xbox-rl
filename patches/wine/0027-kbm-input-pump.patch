@@ -1,5 +1,5 @@
 diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
-index ffd8749..3f6b4d8 100644
+index ffd8749..1eb0f0c 100644
 --- a/dlls/user32/user_main.c
 +++ b/dlls/user32/user_main.c
 @@ -236,6 +236,210 @@ static void set_null_graphics_driver( const GUID *guid )
@@ -158,7 +158,7 @@ index ffd8749..3f6b4d8 100644
 +    SetThreadDescription( GetCurrentThread(), L"wine_xrl_input" );
 +    if (!(mod = LoadLibraryW( L"xrlhost.dll" )) || !(call = (void *)GetProcAddress( mod, "XrlCall" )))
 +    {
-+        TRACE( "no xrlhost.dll: no host keyboard/mouse\n" );
++        WARN( "no xrlhost.dll: no host keyboard/mouse\n" );
 +        return 0;
 +    }
 +    if (GetEnvironmentVariableA( "XRL_MOUSE", env, sizeof(env) ))
@@ -168,11 +168,11 @@ index ffd8749..3f6b4d8 100644
 +    rd->max = 64;
 +    if (call( XRL_CALL_INPUT_READ_EVENTS, rd, &status ) || status == XRL_STATUS_NOTAVAIL)
 +    {
-+        TRACE( "the host has no keyboard/mouse queue (ABI < 3)\n" );
++        WARN( "the host has no keyboard/mouse queue (ABI < 3)\n" );
 +        HeapFree( GetProcessHeap(), 0, rd );
 +        return 0;
 +    }
-+    TRACE( "host keyboard/mouse input is on\n" );
++    WARN( "host keyboard/mouse input is on\n" );
 +    for (;;)
 +    {
 +        DWORD now = GetTickCount();
@@ -185,7 +185,7 @@ index ffd8749..3f6b4d8 100644
 +            {
 +                mode_req.mode = want;
 +                if (!call( XRL_CALL_INPUT_SET_MOUSE_MODE, &mode_req, &status )) mode = want;
-+                TRACE( "mouse mode %s\n", want == XRL_MOUSE_RELATIVE ? "relative" : "absolute" );
++                WARN( "mouse mode %s\n", want == XRL_MOUSE_RELATIVE ? "relative" : "absolute" );
 +            }
 +            last_check = now;
 +        }
@@ -213,9 +213,12 @@ index ffd8749..3f6b4d8 100644
  static DWORD WINAPI desktop_thread( void *arg )
  {
      GUID guid = {0};  /* the null driver's display GUID, as explorer sets it */
-@@ -261,6 +465,7 @@ static DWORD WINAPI desktop_thread( void *arg )
+@@ -259,8 +463,9 @@ static DWORD WINAPI desktop_thread( void *arg )
+     NtUserSetWindowPos( hwnd, 0, GetSystemMetrics( SM_XVIRTUALSCREEN ), GetSystemMetrics( SM_YVIRTUALSCREEN ),
+                         GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ),
                          SWP_SHOWWINDOW );
-     TRACE( "desktop window %p, message loop starting\n", hwnd );
+-    TRACE( "desktop window %p, message loop starting\n", hwnd );
++    WARN( "desktop window %p, message loop starting\n", hwnd );
      InterlockedExchange( &desktop_state, 2 );
 +    xrl_start_input_pump();
  

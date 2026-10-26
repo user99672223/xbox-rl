@@ -188,6 +188,22 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     layer's regression suite stays at 0 fails; the UWP builds of the layer and gfx compile and link; `sdl_main.cpp`
     compiles against the vendored SDL headers. The console path (SDL input, CoreWindow swapchain for the blit) has
     not been run.
+  - **Windows games (Wine): `patches/wine/0027-kbm-input-pump.patch`.** The desktop thread of 0026 starts one more
+    thread per process (`wine_xrl_input`, in user32) that loads `xrlhost.dll`, waits on the host queue
+    (`xrl_input_ops.wait_events`, 100 ms slices) and replays the events with `NtUserSendInput`: keys become PS/2
+    scancodes (Linux code == set-1 scancode for the main block, a table for the E0 keys) plus the layout's virtual
+    key, so the wineserver does focus routing, key repeat (the pump ignores the host's value-2 repeats), `WM_CHAR`
+    and `WM_INPUT` itself; `ABS` events (0..32767) become `MOUSEEVENTF_ABSOLUTE` (0..65535), `REL` a relative move,
+    wheels `WHEEL_DELTA` notches. The pump puts the host in relative mode while the application hides the cursor
+    (`GetCursorInfo` flags, polled every 100 ms; the usual state of a game with mouse look) and in absolute mode
+    otherwise (`XRL_MOUSE=abs|rel` forces one, `XRL_KBM=0` switches the pump off). Not done: ClipCursor/SetCursorPos
+    do not reach the host (no cursor warp), no IME/TEXT use, no gamepad change. **Needs 0026** (it hangs off the
+    desktop thread) and a restaged rootfs: the shared `~/xrl-work/rootfs` predates 0026, so the pump is dormant
+    there until the next stage. `wine/tests/kbm-test.sh` (XRL_ROOTFS=<tree with the 0026/0027 build>) runs a Windows
+    window that logs what it receives while the test host injects events: key A with `WM_CHAR`, Shift+B, an extended
+    key, a wheel notch, a click at the centre of the screen from an absolute position, a relative move arriving as
+    raw input - 10/10 on the laptop (`XRL_DISPLAY` 1920x1200) with the build tree's win32u/user32/xrlhost
+    overlaid on a hard-linked copy of the shared rootfs. Console not run.
 
 - **2026-10-26 — `XRL_D3D11=native`: the game's D3D11 can run on a native D3D11 device instead of D3D11On12;
   measured on the laptop at RL's title menu it halves the render thread's CPU and cuts Present ~4x. Opt-in; the
