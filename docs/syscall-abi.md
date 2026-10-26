@@ -30,6 +30,13 @@ Grouped by the subsystem in the layer that owns them. Numbers are x86-64.
   `set_robust_list`(273), `gettid`(186), `sched_yield`(24),
   `rt_sigprocmask`(14), `rt_sigaction`(13), `tgkill`(234), `exit`(60),
   `exit_group`(231).
+- **execve**(59) (`exec.c`): replaces the process image inside the one OS process
+  (other threads stopped, guest memory released, CLOEXEC fds closed, handlers reset,
+  new ELF started); `ENOENT`/`ENOEXEC` come back before anything is destroyed. Layer-
+  private `prctl` ops for Wine's in-process server: 0x58524c01 (this thread survives an
+  exec) and 0x58524c02 (the next exec keeps the old image except the given ranges); see
+  decisions.md "Exec handover". Layer-private pseudo syscall 0x10010 (`dbt.asm` asks for
+  the translation of an address, `XRL_DBT`).
 - **Memory:** `mmap`(9), `munmap`(11), `mprotect`(10), `mremap`(25),
   `brk`(12), `madvise`(28). mmap arena lives inside `guest_mem_budget`; honor
   the console's VA hole (decisions.md).
