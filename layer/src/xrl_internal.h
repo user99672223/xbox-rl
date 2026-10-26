@@ -509,6 +509,7 @@ int   xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable 
 void  xrl_dbt_generated(u64 addr, u64 len);   /* a writable+executable anonymous range (generated code) */
 void  xrl_dbt_unmapped(u64 addr, u64 len);    /* a range was unmapped or remapped */
 u64   xrl_dbt_translate(u64 pc);
+u64   xrl_dbt_reverse(u64 ca);            /* cache address → original (for the tracee) */
 slong xrl_dbt_enter_sys(u64 pc);
 void  xrl_dbt_stats(u64 *faults, u64 *translated);
 

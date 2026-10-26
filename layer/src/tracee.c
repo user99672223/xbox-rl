@@ -163,6 +163,10 @@ static void stop_and_serve(CONTEXT *c, xrl_thread *t, int sig)
     r[0] = c->R15; r[1] = c->R14; r[2] = c->R13; r[3] = c->R12; r[4] = c->Rbp; r[5] = c->Rbx; r[6] = c->R11; r[7] = c->R10;
     r[8] = c->R9; r[9] = c->R8; r[10] = c->Rax; r[11] = c->Rcx; r[12] = c->Rdx; r[13] = c->Rsi; r[14] = c->Rdi;
     r[15] = (u64)-1; r[16] = c->Rip + (sig == LX_SIGTRAP ? 1 : 0);   /* after the int3; a fault reports the faulting address */ r[17] = 0x33; r[18] = c->EFlags; r[19] = c->Rsp; r[20] = 0x2b; r[21] = t->guest_tp;
+    {   /* the tracer sees original addresses, not code-cache addresses */
+        u64 rev = xrl_dbt_reverse(r[16]);
+        if (rev) { LOGW("tracee: rip %llx reverse-translated to %llx", r[16], rev); r[16] = rev; }
+    }
     u8 fp[512];
     memcpy(fp, &c->FltSave, sizeof fp);   /* XMM_SAVE_AREA32 is the FXSAVE layout, as Linux's user_fpregs_struct */
     xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);

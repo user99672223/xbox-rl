@@ -425,6 +425,23 @@ u64 xrl_dbt_translate(u64 pc)
     return r;
 }
 
+/* cache address → original address (for the tracee: present the tracer with addresses it recognises) */
+u64 xrl_dbt_reverse(u64 ca)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    dimg *hit = NULL;
+    for (int i = 0; i < g_nimg; i++)
+        if (ca >= g_img[i].cache_va && ca < g_img[i].cache_va + g_img[i].cap) { hit = &g_img[i]; break; }
+    if (!hit) { ReleaseSRWLockExclusive(&g_lock); return 0; }
+    u64 best_o = 0, best_t = 0;
+    for (u32 i = 0; i < (1u << CM_BITS); i++) {
+        u64 o = g_cmap[i].o, t = g_cmap[i].t;
+        if (o && t && o >= hit->lo && o < hit->hi && t <= ca && t > best_t) { best_o = o; best_t = t; }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return best_o;
+}
+
 /* from dbt.asm through the syscall path (a computed jump to an address of an image without a translation) */
 slong xrl_dbt_enter_sys(u64 pc)
 {
