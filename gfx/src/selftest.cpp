@@ -187,6 +187,176 @@ double NowMs() {
     return 1000.0 * (double)c.QuadPart / (double)f.QuadPart;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Native D3D11 mode (XRL_D3D11=native): the guest-style call sequence of d3d11.dll against the real
+// ops table, then the D3D11 swapchain object over a native device, in four shapes (plain BGRA, sRGB,
+// 4x MSAA with resolve, RGBA). Each case clears the game's back buffer with a pure colour, presents,
+// and compares the pixel the desktop shows (DWM composes the flip swapchain; needs the window visible).
+// ---------------------------------------------------------------------------------------------
+struct NativeCase {
+    const char* name;
+    uint32_t fmt, msaa;
+    float colour[4];
+    COLORREF screen;   // 0x00BBGGRR the window must show
+};
+
+bool ScreenPixelIs(HWND hwnd, COLORREF want, COLORREF* got_out) {
+#if XRL_GFX_HAVE_HWND
+    if (!hwnd) return true;
+    RECT rc{};
+    GetClientRect(hwnd, &rc);
+    POINT pt{(rc.right - rc.left) / 2, (rc.bottom - rc.top) / 2};
+    ClientToScreen(hwnd, &pt);
+    HDC dc = GetDC(nullptr);
+    COLORREF got = GetPixel(dc, pt.x, pt.y);
+    ReleaseDC(nullptr, dc);
+    if (got_out) *got_out = got;
+    return got == want;
+#else
+    (void)hwnd; (void)want; (void)got_out;
+    return true;
+#endif
+}
+
+xrl_status NativeSelfTest(uint32_t frames, xrl_gfx_selftest_result* r) {
+    const xrl_gfx_ops* ops = xrl_gfx_get_ops();
+    HWND hwnd = (HWND)GetTestHwnd();
+    const bool have_window = GetCoreWindow() != nullptr || hwnd != nullptr;
+    Log(LOG_INFO, "selftest (native D3D11): begin frames=%u have_window=%d", frames, (int)have_window);
+
+    xrl_handle hdev = 0;
+    r->device = ops->d3d12_create_device(&hdev);
+    Log(LOG_INFO, "selftest: d3d12_create_device (stand-in) -> %d", r->device);
+    if (r->device != XRL_OK) return r->device;
+    ComPtr<ID3D12Device> dev = FromHandle<ID3D12Device>(hdev);
+    D3D12_COMMAND_QUEUE_DESC qd{};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ComPtr<ID3D12CommandQueue> q;
+    HRESULT hr = dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&q));
+    if (FAILED(hr)) {
+        r->device = Fail(hr, "selftest CreateCommandQueue on the stand-in");
+        ops->release(hdev);
+        return r->device;
+    }
+    const xrl_handle hq = (xrl_handle)(uintptr_t)q.Get();
+
+    xrl_handle h11 = 0, hc11 = 0;
+    r->d3d11on12 = ops->d3d11on12_create ? ops->d3d11on12_create(hdev, hq, &h11, &hc11) : XRL_ERR_NOTAVAIL;
+    Log(LOG_INFO, "selftest: d3d11on12_create (native device) -> %d", r->d3d11on12);
+    ComPtr<ID3D11Device> dev11;
+    ComPtr<ID3D11DeviceContext> ctx11;
+    ComPtr<ID3D11On12Device> on12;
+    bool all_ok = true;
+    if (r->d3d11on12 == XRL_OK) {
+        dev11 = FromHandle<ID3D11Device>(h11);
+        ctx11 = FromHandle<ID3D11DeviceContext>(hc11);
+        if (SUCCEEDED(dev11.As(&on12))) {
+            Log(LOG_ERROR, "selftest: the device has ID3D11On12Device: not a native device");
+            r->d3d11on12 = XRL_ERR_GENERIC;
+        } else if (dev11->GetFeatureLevel() != D3D_FEATURE_LEVEL_11_0) {
+            Log(LOG_ERROR, "selftest: native device feature level 0x%X, expected 11_0", (unsigned)dev11->GetFeatureLevel());
+            r->d3d11on12 = XRL_ERR_GENERIC;
+        }
+    }
+
+    r->swapchain = r->d3d11on12_present = r->resize = have_window ? XRL_OK : XRL_ERR_NOTAVAIL;
+    r->d3d12_present = XRL_ERR_NOTAVAIL;   // no D3D12 in this mode
+    if (have_window && r->d3d11on12 == XRL_OK) {
+        const NativeCase cases[] = {
+            {"BGRA8", DXGI_FORMAT_B8G8R8A8_UNORM, 1, {0.f, 1.f, 0.f, 1.f}, RGB(0, 255, 0)},
+            {"BGRA8_SRGB", DXGI_FORMAT_B8G8R8A8_UNORM_SRGB, 1, {1.f, 0.f, 0.f, 1.f}, RGB(255, 0, 0)},
+            {"BGRA8 4xMSAA", DXGI_FORMAT_B8G8R8A8_UNORM, 4, {0.f, 0.f, 1.f, 1.f}, RGB(0, 0, 255)},
+            {"RGBA8", DXGI_FORMAT_R8G8B8A8_UNORM, 1, {1.f, 1.f, 0.f, 1.f}, RGB(255, 255, 0)},
+        };
+        double t0 = NowMs();
+        uint32_t presented = 0;
+        for (const NativeCase& c : cases) {
+            xrl_swapchain_desc d{};
+            d.struct_size = sizeof d;
+            d.buffer_count = 3;
+            d.dxgi_format = c.fmt;
+            d.sample_count = c.msaa;
+            d.buffer_usage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+            d.swap_effect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+            d.windowed = 1;
+            xrl_handle hsc = 0;
+            xrl_status st = ops->d3d11_create_swapchain(h11, hq, &d, &hsc);
+            Log(LOG_INFO, "selftest: d3d11_create_swapchain [%s] -> %d", c.name, st);
+            if (st != XRL_OK) { r->swapchain = st; all_ok = false; continue; }
+            ComPtr<IDXGISwapChain1> sc = FromHandle<IDXGISwapChain1>(hsc);
+            ops->release(hsc);
+            ComPtr<ID3D11Texture2D> bb;
+            ComPtr<ID3D11RenderTargetView> rtv;
+            hr = sc->GetBuffer(0, IID_PPV_ARGS(&bb));
+            if (SUCCEEDED(hr)) hr = dev11->CreateRenderTargetView(bb.Get(), nullptr, &rtv);
+            if (FAILED(hr)) { Fail(hr, "selftest GetBuffer/RTV"); r->d3d11on12_present = HrToStatus(hr); all_ok = false; continue; }
+            D3D11_TEXTURE2D_DESC td{};
+            bb->GetDesc(&td);
+            if (td.Format != (DXGI_FORMAT)c.fmt || td.SampleDesc.Count != c.msaa) {
+                Log(LOG_ERROR, "selftest: [%s] GetBuffer(0) is fmt=%u msaa=%u", c.name, (unsigned)td.Format, td.SampleDesc.Count);
+                r->d3d11on12_present = XRL_ERR_GENERIC; all_ok = false;
+            }
+            static const float other[4] = {0.5f, 0.5f, 0.5f, 1.f};
+            for (uint32_t f = 0; f < frames; ++f) {
+                ctx11->ClearRenderTargetView(rtv.Get(), f == frames - 1 ? c.colour : other);
+                hr = sc->Present(1, 0);
+                if (FAILED(hr)) { Fail(hr, "selftest Present"); r->d3d11on12_present = HrToStatus(hr); all_ok = false; break; }
+                presented++;
+            }
+            if (SUCCEEDED(hr)) {
+                hr = sc->Present(1, DXGI_PRESENT_TEST);   // must not throw nor change the picture
+                Sleep(150);                               // let DWM compose the last frame
+                COLORREF got = 0;
+                if (!ScreenPixelIs(hwnd, c.screen, &got)) {
+                    Log(LOG_ERROR, "selftest: [%s] screen pixel 0x%06lX, expected 0x%06lX", c.name, (unsigned long)got,
+                        (unsigned long)c.screen);
+                    r->d3d11on12_present = XRL_ERR_GENERIC; all_ok = false;
+                } else {
+                    r->d3d11_pixel = 0xFF000000u | (GetRValue(c.screen) << 16) | (GetGValue(c.screen) << 8) | GetBValue(c.screen);
+                    Log(LOG_INFO, "selftest: [%s] presented %u frames, screen pixel OK", c.name, frames);
+                }
+            }
+            // ResizeBuffers (the game releases its view and buffer first)
+            rtv.Reset();
+            bb.Reset();
+            ctx11->ClearState();
+            hr = sc->ResizeBuffers(0, 640, 360, DXGI_FORMAT_UNKNOWN, 0);
+            if (SUCCEEDED(hr)) hr = sc->GetBuffer(0, IID_PPV_ARGS(&bb));
+            if (SUCCEEDED(hr)) {
+                bb->GetDesc(&td);
+                if (td.Width != 640 || td.Height != 360) { Log(LOG_ERROR, "selftest: [%s] resized buffer is %ux%u", c.name, td.Width, td.Height); hr = E_FAIL; }
+            }
+            if (SUCCEEDED(hr)) {   // and it still presents
+                ComPtr<ID3D11RenderTargetView> rtv2;
+                hr = dev11->CreateRenderTargetView(bb.Get(), nullptr, &rtv2);
+                if (SUCCEEDED(hr)) { ctx11->ClearRenderTargetView(rtv2.Get(), c.colour); hr = sc->Present(1, 0); }
+            }
+            if (FAILED(hr)) { Fail(hr, "selftest resize"); r->resize = HrToStatus(hr); all_ok = false; }
+            Log(LOG_INFO, "selftest: [%s] resize -> 0x%08lX", c.name, (unsigned long)hr);
+            bb.Reset();
+            ctx11->Flush();
+        }
+        r->avg_present_ms = presented ? (NowMs() - t0) / presented : 0;
+    }
+
+    if (hc11) ops->release(hc11);
+    if (h11) ops->release(h11);
+    on12.Reset();
+    ctx11.Reset();
+    dev11.Reset();
+    q.Reset();
+    dev.Reset();
+    ops->release(hdev);
+
+    r->pass = (r->device == XRL_OK && r->d3d11on12 == XRL_OK && all_ok &&
+               (!have_window || (r->swapchain == XRL_OK && r->d3d11on12_present == XRL_OK && r->resize == XRL_OK)))
+                  ? 1
+                  : 0;
+    Log(r->pass ? LOG_INFO : LOG_ERROR, "selftest (native D3D11): %s (device=%d native_device=%d swapchain=%d present=%d resize=%d)",
+        r->pass ? "PASS" : "FAIL", r->device, r->d3d11on12, r->swapchain, r->d3d11on12_present, r->resize);
+    return r->pass ? XRL_OK : XRL_ERR_GENERIC;
+}
+
 }  // namespace
 }  // namespace xrl
 
@@ -204,6 +374,7 @@ extern "C" XRL_GFX_API xrl_status xrl_gfx_selftest(uint32_t frames, xrl_gfx_self
         if (!G().inited) return XRL_ERR_GENERIC;
     }
     if (!frames) frames = 60;
+    if (NativeD3D11()) return NativeSelfTest(frames, r);
 
     const xrl_gfx_ops* ops = xrl_gfx_get_ops();
     const bool have_window = GetCoreWindow() != nullptr || GetTestHwnd() != nullptr;
@@ -405,7 +576,7 @@ extern "C" XRL_GFX_API int xrl_gfx_run_probe(const xrl_gfx_config* cfg) {
     xrl_gfx_d3d11_decision dec{};
     xrl_gfx_preflight(&dec);
     Log(LOG_INFO, "probe: d3d11 backend=%s reason=%u hr=0x%08lX \"%s\"",
-        dec.backend == XRL_GFX_D3D11_ON12 ? "D3D11On12" : "DXVK_DOZEN_NEEDED_OR_UNDECIDED", dec.reason,
+        dec.backend == XRL_GFX_D3D11_ON12 ? "D3D11On12" : dec.backend == XRL_GFX_D3D11_NATIVE ? "NativeD3D11" : "DXVK_DOZEN_NEEDED_OR_UNDECIDED", dec.reason,
         (unsigned long)dec.hresult, dec.detail);
 
     xrl_gfx_selftest_result res{};
@@ -423,12 +594,13 @@ extern "C" XRL_GFX_API int xrl_gfx_run_probe(const xrl_gfx_config* cfg) {
         s_ai, ai.vendor_id, ai.device_id, ai.max_feature_level, (unsigned long long)(ai.dedicated_video_memory >> 20),
         (unsigned long long)(ai.shared_system_memory >> 20), ai_name.c_str());
 
-    const bool pass = s_caps == XRL_OK && dec.backend == XRL_GFX_D3D11_ON12 && res.pass && ai_ok;
+    const bool d11_ok = dec.backend == XRL_GFX_D3D11_ON12 || dec.backend == XRL_GFX_D3D11_NATIVE;
+    const bool pass = s_caps == XRL_OK && d11_ok && res.pass && ai_ok;
     Log(pass ? LOG_INFO : LOG_ERROR,
         "=== xrl_gfx probe RESULT: %s | adapter=\"%s\" vendor=0x%04X device=0x%04X FL=0x%X bind_tier=%u heap_tier=%u "
         "d3d11on12=%s present_avg=%.2fms swapchain_stages=%s ===",
         pass ? "PASS" : "FAIL", caps.adapter_name, caps.vendor_id, caps.device_id, caps.max_feature_level,
-        caps.resource_binding_tier, caps.resource_heap_tier, dec.backend == XRL_GFX_D3D11_ON12 ? "OK" : "FAILED",
+        caps.resource_binding_tier, caps.resource_heap_tier, d11_ok ? "OK" : "FAILED",
         res.avg_present_ms, res.swapchain == XRL_ERR_NOTAVAIL ? "SKIPPED(no window)" : "run");
 
     if (did_init) xrl_gfx_shutdown();

@@ -88,6 +88,7 @@ struct State {
     bool have_host = false;
     xrl_gfx_d3d11_decision d11{};
     bool preflight_done = false;
+    bool native_d3d11 = false;  // XRL_D3D11=native in the host environment (read at init)
 };
 State& G();
 
@@ -98,6 +99,8 @@ void GetWindowSize(uint32_t* w, uint32_t* h);
 void* GetTestHwnd();                         // desktop builds only, else NULL
 
 DWORD CreateTimeoutMs();
+// XRL_D3D11=native: the guest's D3D11 device is a native one (d3d11on12.cpp), not D3D11On12.
+bool NativeD3D11();
 bool DebugLayerRequested();
 void WarnIfUiThread(const char* what);       // warns if caller is cfg.ui_thread_id
 
@@ -112,6 +115,9 @@ HRESULT RunOnGfxThread(const char* what, std::function<HRESULT()> fn, DWORD time
 // ---------------------------------------------------------------- dxgi/device.cpp
 // Process-wide DXGI factory, created lazily ON THE GFX THREAD.
 HRESULT GetFactory(ComPtr<IDXGIFactory4>& out);
+// Hardware adapter the guest's devices are made on (gfx-thread side). `d3d12` selects the probe: an
+// adapter that can make a FL11_0 D3D12 device, or (native D3D11 mode) a FL11_0 D3D11 one.
+HRESULT PickAdapter(bool d3d12, ComPtr<IDXGIAdapter1>& out, DXGI_ADAPTER_DESC1* desc_out);
 // Adapter picked + device created at FL 11_0 (gfx-thread side).
 HRESULT CreateDeviceImpl(ComPtr<ID3D12Device>& out, DXGI_ADAPTER_DESC1* desc_out);
 xrl_status DeviceCreateOp(xrl_handle* out_device);
@@ -123,6 +129,10 @@ std::string Narrow(const wchar_t* w);
 // device-removed reason.
 HRESULT WaitQueueIdle(ID3D12Device* dev, ID3D12CommandQueue* q, DWORD timeout_ms);
 
+// Native D3D11 mode: stand-ins for the D3D12 device and queue the guest's d3d11.dll insists on
+// creating first (stub12.cpp): no D3D12 device exists, every method but CreateCommandQueue fails.
+HRESULT CreateStubD3D12Device(ComPtr<ID3D12Device>& out);
+
 // ---------------------------------------------------------------- caps.cpp
 void FillAndLogCaps(ID3D12Device* dev, xrl_gfx_caps* out);
 
@@ -132,6 +142,9 @@ HRESULT CreateD3D11On12Impl(ID3D12Device* dev, ID3D12CommandQueue* q, ComPtr<ID3
 xrl_status D3D11On12CreateOp(xrl_handle d3d12_device, xrl_handle d3d12_queue, xrl_handle* out_dev,
                              xrl_handle* out_ctx);
 void ApplyD3D11Decision(const xrl_gfx_d3d11_decision& d);
+// Native D3D11 mode (gfx-thread side): an ID3D11Device + immediate context made straight on the
+// adapter at FL11_0 with BGRA support.
+HRESULT CreateNativeD3D11Impl(ComPtr<ID3D11Device>& dev, ComPtr<ID3D11DeviceContext>& ctx);
 
 // ---------------------------------------------------------------- swapchain.cpp
 xrl_status SwapchainCreateOp(xrl_handle device, xrl_handle queue, uint32_t w, uint32_t h, uint32_t buffer_count,
@@ -141,6 +154,11 @@ xrl_status SwapchainPresentOp(xrl_handle sc, uint32_t sync, uint32_t flags);
 // The host-window flip swapchain both swapchain kinds are built on (see swapchain.cpp).
 xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h, uint32_t buffer_count,
                                uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format);
+
+// Same for a native D3D11 device (native D3D11 mode): a flip-model swapchain of the host window made
+// from the device itself; the D3D11 buffer 0 of it is the copy target.
+xrl_status HostSwapchainCreate11(ID3D11Device* dev, uint32_t w, uint32_t h, uint32_t buffer_count,
+                                 uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format);
 
 // ---------------------------------------------------------------- d3d11_swapchain.cpp
 xrl_status D3D11SwapchainCreateOp(xrl_handle d3d11_device, xrl_handle d3d12_queue, const xrl_swapchain_desc* desc,

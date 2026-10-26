@@ -37,23 +37,11 @@ HRESULT GetFactory(ComPtr<IDXGIFactory4>& out) {
     return S_OK;
 }
 
-// Gfx-thread side. Picks the first hardware adapter that can make a FL11_0 D3D12
-// device (the AppContainer view caps at 11_0 even though the GPU is higher —
-// decisions.md) and creates the device there.
-HRESULT CreateDeviceImpl(ComPtr<ID3D12Device>& out, DXGI_ADAPTER_DESC1* desc_out) {
-    const bool dbg = DebugLayerRequested();
+// Gfx-thread side. Picks the first hardware adapter that can make a FL11_0 device (the AppContainer
+// view caps at 11_0 even though the GPU is higher - decisions.md): a D3D12 one, or in native D3D11
+// mode a D3D11 one, probed without creating the device (null output pointers).
+HRESULT PickAdapter(bool d3d12, ComPtr<IDXGIAdapter1>& out, DXGI_ADAPTER_DESC1* desc_out) {
     const bool allow_warp = (G().cfg.flags & XRL_GFX_FLAG_ALLOW_WARP) != 0;
-
-    if (dbg) {
-        ComPtr<ID3D12Debug> dc;
-        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dc)))) {
-            dc->EnableDebugLayer();
-            Log(LOG_INFO, "D3D12 debug layer enabled");
-        } else {
-            Log(LOG_WARN, "D3D12 debug layer requested but unavailable (expected on console)");
-        }
-    }
-
     ComPtr<IDXGIFactory4> factory;
     HRESULT hr = GetFactory(factory);
     if (FAILED(hr)) return hr;
@@ -67,13 +55,20 @@ HRESULT CreateDeviceImpl(ComPtr<ID3D12Device>& out, DXGI_ADAPTER_DESC1* desc_out
         DXGI_ADAPTER_DESC1 desc{};
         ad->GetDesc1(&desc);
         const bool soft = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
-        HRESULT probe = D3D12CreateDevice(ad.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr);
+        HRESULT probe;
+        if (d3d12) {
+            probe = D3D12CreateDevice(ad.Get(), D3D_FEATURE_LEVEL_11_0, __uuidof(ID3D12Device), nullptr);
+        } else {
+            const D3D_FEATURE_LEVEL lv = D3D_FEATURE_LEVEL_11_0;
+            probe = D3D11CreateDevice(ad.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, &lv, 1,
+                                      D3D11_SDK_VERSION, nullptr, nullptr, nullptr);
+        }
         Log(LOG_INFO,
             "adapter[%u] \"%s\" vendor=0x%04X device=0x%04X flags=0x%X dedicated=%llu MiB shared=%llu MiB "
-            "d3d12@11_0=%s(0x%08lX)",
+            "d3d1%s@11_0=%s(0x%08lX)",
             i, Narrow(desc.Description).c_str(), desc.VendorId, desc.DeviceId, desc.Flags,
             (unsigned long long)(desc.DedicatedVideoMemory >> 20),
-            (unsigned long long)(desc.SharedSystemMemory >> 20), SUCCEEDED(probe) ? "yes" : "no",
+            (unsigned long long)(desc.SharedSystemMemory >> 20), d3d12 ? "2" : "1", SUCCEEDED(probe) ? "yes" : "no",
             (unsigned long)probe);
         if (FAILED(probe)) continue;
         if (!soft && !pick) {
@@ -90,9 +85,31 @@ HRESULT CreateDeviceImpl(ComPtr<ID3D12Device>& out, DXGI_ADAPTER_DESC1* desc_out
         Log(LOG_WARN, "no hardware adapter; using software adapter (XRL_GFX_FLAG_ALLOW_WARP)");
     }
     if (!pick) {
-        Log(LOG_ERROR, "no D3D12-capable adapter at FL11_0");
+        Log(LOG_ERROR, "no D3D1%s-capable adapter at FL11_0", d3d12 ? "2" : "1");
         return DXGI_ERROR_UNSUPPORTED;
     }
+    out = pick;
+    if (desc_out) *desc_out = pick_desc;
+    return S_OK;
+}
+
+HRESULT CreateDeviceImpl(ComPtr<ID3D12Device>& out, DXGI_ADAPTER_DESC1* desc_out) {
+    const bool dbg = DebugLayerRequested();
+
+    if (dbg) {
+        ComPtr<ID3D12Debug> dc;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dc)))) {
+            dc->EnableDebugLayer();
+            Log(LOG_INFO, "D3D12 debug layer enabled");
+        } else {
+            Log(LOG_WARN, "D3D12 debug layer requested but unavailable (expected on console)");
+        }
+    }
+
+    ComPtr<IDXGIAdapter1> pick;
+    DXGI_ADAPTER_DESC1 pick_desc{};
+    HRESULT hr = PickAdapter(true, pick, &pick_desc);
+    if (FAILED(hr)) return hr;
 
     ComPtr<ID3D12Device> dev;
     hr = D3D12CreateDevice(pick.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));
@@ -114,6 +131,17 @@ xrl_status DeviceCreateOp(xrl_handle* out_device) {
         ComPtr<ID3D12Device> dev;
     };
     auto res = std::make_shared<Res>();
+    if (NativeD3D11()) {
+        // Native D3D11 mode: the guest's d3d11.dll still wants a "D3D12 device" to make its queue on.
+        // Hand it a stand-in (no D3D12 device is created, no memory spent); the native D3D11 device
+        // comes with d3d11on12_create. A D3D12 game gets nothing usable in this mode.
+        HRESULT hs = CreateStubD3D12Device(res->dev);
+        if (FAILED(hs)) return Fail(hs, "d3d12_create_device (stub)");
+        ID3D12Device* stub = res->dev.Get();
+        *out_device = ToHandle(res->dev);
+        Log(LOG_INFO, "d3d12_create_device -> %p (native D3D11 mode: stand-in, no D3D12 device)", stub);
+        return XRL_OK;
+    }
     HRESULT hr = RunOnGfxThread("d3d12_create_device", [res] { return CreateDeviceImpl(res->dev, nullptr); });
     if (FAILED(hr)) return Fail(hr, "d3d12_create_device");
     ID3D12Device* raw = res->dev.Get();
@@ -131,10 +159,13 @@ xrl_status AdapterInfoOp(xrl_adapter_info* out) {
         xrl_adapter_info info{};
     };
     auto res = std::make_shared<Res>();
-    HRESULT hr = RunOnGfxThread("get_adapter_info", [res]() -> HRESULT {
+    const bool native = NativeD3D11();
+    HRESULT hr = RunOnGfxThread("get_adapter_info", [res, native]() -> HRESULT {
         ComPtr<ID3D12Device> dev;
         DXGI_ADAPTER_DESC1 d{};
-        HRESULT h = CreateDeviceImpl(dev, &d);
+        ComPtr<IDXGIAdapter1> ad;
+        // native D3D11 mode creates no D3D12 device: adapter identity from DXGI, level from a D3D11 probe
+        HRESULT h = native ? PickAdapter(false, ad, &d) : CreateDeviceImpl(dev, &d);
         if (FAILED(h)) return h;
         xrl_adapter_info& i = res->info;
         i.vendor_id = d.VendorId;
@@ -150,6 +181,16 @@ xrl_status AdapterInfoOp(xrl_adapter_info* out) {
         for (; n + 1 < _countof(i.description) && n < _countof(d.Description) && d.Description[n]; n++)
             i.description[n] = (uint16_t)d.Description[n];
         i.description[n] = 0;
+        if (native) {
+            static const D3D_FEATURE_LEVEL l11[] = {D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0, D3D_FEATURE_LEVEL_11_1,
+                                                    D3D_FEATURE_LEVEL_11_0};
+            D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_11_0;
+            if (FAILED(D3D11CreateDevice(ad.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, l11, _countof(l11), D3D11_SDK_VERSION,
+                                         nullptr, &got, nullptr)))
+                got = D3D_FEATURE_LEVEL_11_0;   // older runtime: the list itself is rejected
+            i.max_feature_level = (uint32_t)got;
+            return S_OK;
+        }
         static const D3D_FEATURE_LEVEL lv[] = {D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0,
                                                D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
         D3D12_FEATURE_DATA_FEATURE_LEVELS fl{};

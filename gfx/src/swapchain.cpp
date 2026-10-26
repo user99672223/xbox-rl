@@ -35,23 +35,19 @@ DXGI_FORMAT FlipFormat(DXGI_FORMAT f, bool* was_srgb) {
 
 }  // namespace
 
-// Flip-model swapchain of the host window (CoreWindow on the console, the test HWND on the
-// desktop) for `q`, made on the gfx thread. `dxgi_format` is the guest's; the format actually
-// created (sRGB -> UNORM) is returned in *out_format. Shared by the D3D12 path below and by
-// the D3D11 swapchain object (d3d11_swapchain.cpp).
-xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h, uint32_t buffer_count,
-                               uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format) {
-    ComPtr<ID3D12CommandQueue> q = queue;   // own a reference across the (possibly abandoned) job
-
-    void* core = GetCoreWindow();
-    void* hwnd = GetTestHwnd();
+// What both host swapchain kinds are made from: the window (CoreWindow, or the desktop test HWND),
+// the flip-model-legal format (sRGB -> UNORM), clamped buffer count and size.
+static xrl_status PrepareHostSwapchainDesc(uint32_t w, uint32_t h, uint32_t buffer_count, uint32_t dxgi_format, bool d3d11,
+                                    DXGI_SWAP_CHAIN_DESC1& desc, void*& core, void*& hwnd, DXGI_FORMAT& fmt) {
+    core = GetCoreWindow();
+    hwnd = GetTestHwnd();
     if (!core && !hwnd) {
         Log(LOG_ERROR, "create_swapchain: no CoreWindow yet (host->get_core_window returned NULL)");
         return XRL_ERR_NOTAVAIL;
     }
 
     bool srgb = false;
-    DXGI_FORMAT fmt = FlipFormat((DXGI_FORMAT)dxgi_format, &srgb);
+    fmt = FlipFormat((DXGI_FORMAT)dxgi_format, &srgb);
     if (fmt == DXGI_FORMAT_UNKNOWN) {
         Log(LOG_ERROR, "create_swapchain: DXGI format %u is not valid for a flip-model swapchain", dxgi_format);
         SetLastHr(DXGI_ERROR_INVALID_CALL);
@@ -79,7 +75,7 @@ xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h
         Log(LOG_WARN, "create_swapchain: no size from guest or host; defaulting to %ux%u", w, h);
     }
 
-    DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc = {};
     desc.Width = w;
     desc.Height = h;
     desc.Format = fmt;
@@ -93,9 +89,26 @@ xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h
     desc.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
     desc.Flags = 0;
 
-    Log(LOG_INFO, "create_swapchain: %ux%u fmt=%u buffers=%u flip_discard stretch via %s window=%p", w, h,
+    Log(LOG_INFO, "create_swapchain: %ux%u fmt=%u buffers=%u flip_discard stretch via %s window=%p%s", w, h,
         (unsigned)fmt, bc, core ? "CreateSwapChainForCoreWindow" : "CreateSwapChainForHwnd (desktop test)",
-        core ? core : hwnd);
+        core ? core : hwnd, d3d11 ? " (native D3D11 device)" : "");
+    return XRL_OK;
+}
+
+// Flip-model swapchain of the host window (CoreWindow on the console, the test HWND on the
+// desktop) for `q`, made on the gfx thread. `dxgi_format` is the guest's; the format actually
+// created (sRGB -> UNORM) is returned in *out_format. Shared by the D3D12 path below and by
+// the D3D11 swapchain object (d3d11_swapchain.cpp).
+xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h, uint32_t buffer_count,
+                               uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format) {
+    ComPtr<ID3D12CommandQueue> q = queue;   // own a reference across the (possibly abandoned) job
+
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    void* core = nullptr;
+    void* hwnd = nullptr;
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+    xrl_status pst = PrepareHostSwapchainDesc(w, h, buffer_count, dxgi_format, false, desc, core, hwnd, fmt);
+    if (pst != XRL_OK) return pst;
 
     struct Res {
         ComPtr<IDXGISwapChain1> sc;
@@ -127,6 +140,59 @@ xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h
         hr = RunOnGfxThread("create_swapchain_for_corewindow", make);
     }
     if (FAILED(hr)) return Fail(hr, core ? "CreateSwapChainForCoreWindow" : "CreateSwapChainForHwnd");
+
+    if (FAILED(res->sc.As(&out))) return Fail(E_NOINTERFACE, "swapchain QI IDXGISwapChain3");
+    if (out_format) *out_format = fmt;
+    return XRL_OK;
+}
+
+// The same swapchain made from a native D3D11 device (native D3D11 mode): the factory is the
+// device's own, the swapchain's buffer 0 is an ID3D11Texture2D on that device.
+xrl_status HostSwapchainCreate11(ID3D11Device* dev11, uint32_t w, uint32_t h, uint32_t buffer_count,
+                                 uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format) {
+    ComPtr<ID3D11Device> dev = dev11;   // own a reference across the (possibly abandoned) job
+
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    void* core = nullptr;
+    void* hwnd = nullptr;
+    DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
+    xrl_status pst = PrepareHostSwapchainDesc(w, h, buffer_count, dxgi_format, true, desc, core, hwnd, fmt);
+    if (pst != XRL_OK) return pst;
+
+    struct Res {
+        ComPtr<IDXGISwapChain1> sc;
+    };
+    auto res = std::make_shared<Res>();
+    auto make = [res, dev, desc, core, hwnd]() -> HRESULT {
+        ComPtr<IDXGIDevice> dxgi_dev;
+        ComPtr<IDXGIAdapter> adapter;
+        ComPtr<IDXGIFactory2> factory;
+        HRESULT hr = dev.As(&dxgi_dev);
+        if (SUCCEEDED(hr)) hr = dxgi_dev->GetAdapter(&adapter);
+        if (SUCCEEDED(hr)) hr = adapter->GetParent(IID_PPV_ARGS(&factory));
+        if (FAILED(hr)) return hr;
+        if (core)
+            return factory->CreateSwapChainForCoreWindow(dev.Get(), static_cast<IUnknown*>(core), &desc, nullptr,
+                                                         res->sc.GetAddressOf());
+#if XRL_GFX_HAVE_HWND
+        hr = factory->CreateSwapChainForHwnd(dev.Get(), (HWND)hwnd, &desc, nullptr, nullptr, res->sc.GetAddressOf());
+        if (SUCCEEDED(hr)) factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
+        return hr;
+#else
+        (void)hwnd;
+        return E_NOTIMPL;
+#endif
+    };
+
+    HRESULT hr;
+    if (G().cfg.flags & XRL_GFX_FLAG_SWAPCHAIN_INLINE) {
+        Log(LOG_INFO, "create_swapchain: INLINE on caller thread %lu", (unsigned long)GetCurrentThreadId());
+        hr = make();
+    } else {
+        WarnIfUiThread("create_swapchain_for_corewindow");
+        hr = RunOnGfxThread("create_swapchain_for_corewindow", make);
+    }
+    if (FAILED(hr)) return Fail(hr, core ? "CreateSwapChainForCoreWindow (D3D11 device)" : "CreateSwapChainForHwnd (D3D11 device)");
 
     if (FAILED(res->sc.As(&out))) return Fail(E_NOINTERFACE, "swapchain QI IDXGISwapChain3");
     if (out_format) *out_format = fmt;

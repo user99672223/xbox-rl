@@ -44,6 +44,32 @@ HRESULT CreateD3D11On12Impl(ID3D12Device* dev12, ID3D12CommandQueue* q, ComPtr<I
     return S_OK;
 }
 
+HRESULT CreateNativeD3D11Impl(ComPtr<ID3D11Device>& dev, ComPtr<ID3D11DeviceContext>& ctx) {
+    ComPtr<IDXGIAdapter1> ad;
+    DXGI_ADAPTER_DESC1 desc{};
+    HRESULT hr = PickAdapter(false, ad, &desc);
+    if (FAILED(hr)) return hr;
+    const D3D_FEATURE_LEVEL lv[1] = {D3D_FEATURE_LEVEL_11_0};   // the console caps at 11_0
+    D3D_FEATURE_LEVEL chosen = {};
+    UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;   // the swapchain's buffers are BGRA
+    if (DebugLayerRequested()) flags |= D3D11_CREATE_DEVICE_DEBUG;
+    hr = D3D11CreateDevice(ad.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags, lv, 1, D3D11_SDK_VERSION, &dev, &chosen, &ctx);
+    if (FAILED(hr) && (flags & D3D11_CREATE_DEVICE_DEBUG)) {
+        Log(LOG_WARN, "D3D11CreateDevice(DEBUG) failed hr=0x%08lX; retrying without debug", (unsigned long)hr);
+        dev.Reset();
+        ctx.Reset();
+        hr = D3D11CreateDevice(ad.Get(), D3D_DRIVER_TYPE_UNKNOWN, nullptr, flags & ~D3D11_CREATE_DEVICE_DEBUG, lv, 1,
+                               D3D11_SDK_VERSION, &dev, &chosen, &ctx);
+    }
+    if (FAILED(hr)) {
+        Log(LOG_ERROR, "native D3D11CreateDevice failed hr=0x%08lX", (unsigned long)hr);
+        return hr;
+    }
+    Log(LOG_INFO, "native D3D11CreateDevice ok on \"%s\": ID3D11Device=%p ctx=%p chosen_fl=0x%X",
+        Narrow(desc.Description).c_str(), dev.Get(), ctx.Get(), (unsigned)chosen);
+    return S_OK;
+}
+
 void ApplyD3D11Decision(const xrl_gfx_d3d11_decision& dec_in) {
     xrl_gfx_d3d11_decision dec = dec_in;
     if (dec.reason == XRL_GFX_REASON_NO_DEVICE) {
@@ -205,6 +231,60 @@ void SmokeTest(ID3D12Device* dev12, std::atomic<int>& stage, xrl_gfx_d3d11_decis
     SetDetail(out, "create + d3d11 clear + wrapped d3d12 RT clear + fence drain all OK");
 }
 
+// Native D3D11 mode: device + a render-target clear + flush + event query, no D3D12 involved.
+void NativeSmokeTest(xrl_gfx_d3d11_decision& out) {
+    out = xrl_gfx_d3d11_decision{};
+    out.struct_size = sizeof out;
+    out.backend = XRL_GFX_D3D11_UNDECIDED;
+    ComPtr<ID3D11Device> dev;
+    ComPtr<ID3D11DeviceContext> ctx;
+    HRESULT hr = CreateNativeD3D11Impl(dev, ctx);
+    if (FAILED(hr)) {
+        out.reason = XRL_GFX_REASON_CREATE_FAILED;
+        out.hresult = hr;
+        SetDetail(out, "native D3D11CreateDevice failed");
+        return;
+    }
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = td.Height = 64;
+    td.MipLevels = td.ArraySize = 1;
+    td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    ComPtr<ID3D11Texture2D> tex;
+    ComPtr<ID3D11RenderTargetView> rtv;
+    hr = dev->CreateTexture2D(&td, nullptr, &tex);
+    if (SUCCEEDED(hr)) hr = dev->CreateRenderTargetView(tex.Get(), nullptr, &rtv);
+    D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+    ComPtr<ID3D11Query> q;
+    if (SUCCEEDED(hr)) hr = dev->CreateQuery(&qd, &q);
+    if (FAILED(hr)) {
+        out.reason = XRL_GFX_REASON_SMOKE_FAILED;
+        out.hresult = hr;
+        SetDetail(out, "native d3d11 CreateTexture2D/RTV/Query failed");
+        return;
+    }
+    const float c[4] = {0.f, 0.5f, 1.f, 1.f};
+    ctx->ClearRenderTargetView(rtv.Get(), c);
+    ctx->End(q.Get());
+    ctx->Flush();
+    BOOL done = FALSE;
+    for (int i = 0; i < 5000 && !done; i++) {
+        if (ctx->GetData(q.Get(), &done, sizeof done, 0) != S_OK) done = FALSE;
+        if (!done) Sleep(1);
+    }
+    if (!done) {
+        out.reason = XRL_GFX_REASON_SMOKE_FAILED;
+        out.hresult = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+        SetDetail(out, "native d3d11 queue did not drain");
+        return;
+    }
+    out.backend = XRL_GFX_D3D11_NATIVE;
+    out.reason = XRL_GFX_REASON_NONE;
+    SetDetail(out, "native create + clear + flush + event query OK");
+}
+
 struct SmokeShared {
     std::atomic<int> stage{0};
     xrl_gfx_d3d11_decision dec{};
@@ -217,6 +297,34 @@ xrl_status D3D11On12CreateOp(xrl_handle d3d12_device, xrl_handle d3d12_queue, xr
     if (!out_dev || !out_ctx) return XRL_ERR_GENERIC;
     *out_dev = *out_ctx = XRL_INVALID_HANDLE;
     SetLastHr(S_OK);
+
+    if (NativeD3D11()) {
+        // Native D3D11 mode: the "D3D12 device" and "queue" the guest passes are the stand-ins of
+        // stub12.cpp and are not used; the device is made straight on the adapter.
+        WarnIfUiThread("d3d11on12_create (native)");
+        struct NRes {
+            ComPtr<ID3D11Device> dev;
+            ComPtr<ID3D11DeviceContext> ctx;
+        };
+        auto nres = std::make_shared<NRes>();
+        HRESULT nhr = RunOnGfxThread("d3d11 native create", [nres] { return CreateNativeD3D11Impl(nres->dev, nres->ctx); });
+        if (FAILED(nhr)) return Fail(nhr, "d3d11on12_create (native)");
+        ID3D11Device* nd = nres->dev.Get();
+        ID3D11DeviceContext* nc = nres->ctx.Get();
+        *out_dev = ToHandle(nres->dev);
+        *out_ctx = ToHandle(nres->ctx);
+        xrl_gfx_d3d11_decision dec{};
+        dec.struct_size = sizeof dec;
+        dec.backend = XRL_GFX_D3D11_NATIVE;
+        dec.reason = XRL_GFX_REASON_NONE;
+        {
+            std::lock_guard<std::mutex> l(G().mu);
+            G().d11 = dec;
+            G().preflight_done = true;
+        }
+        Log(LOG_INFO, "d3d11on12_create -> NATIVE device %p ctx %p (no D3D11On12, no D3D12 device)", nd, nc);
+        return XRL_OK;
+    }
 
     xrl_gfx_d3d11_decision cur;
     xrl_gfx_get_d3d11_decision(&cur);
@@ -279,8 +387,33 @@ extern "C" XRL_GFX_API xrl_status xrl_gfx_preflight(xrl_gfx_d3d11_decision* out)
         std::lock_guard<std::mutex> l(G().mu);
         if (G().preflight_done) {
             if (out) *out = G().d11;
-            return G().d11.backend == XRL_GFX_D3D11_ON12 ? XRL_OK : XRL_ERR_NOTAVAIL;
+            return G().d11.backend == XRL_GFX_D3D11_ON12 || G().d11.backend == XRL_GFX_D3D11_NATIVE ? XRL_OK : XRL_ERR_NOTAVAIL;
         }
+    }
+    if (NativeD3D11()) {
+        auto sh = std::make_shared<SmokeShared>();
+        HRESULT nhr = RunOnGfxThread("preflight: native d3d11 smoke test", [sh] {
+            NativeSmokeTest(sh->dec);
+            return S_OK;
+        });
+        xrl_gfx_d3d11_decision nd = sh->dec;
+        if (FAILED(nhr)) {
+            nd = xrl_gfx_d3d11_decision{};
+            nd.struct_size = sizeof nd;
+            nd.reason = XRL_GFX_REASON_CREATE_TIMEOUT;
+            nd.hresult = nhr;
+            SetDetail(nd, "native d3d11 smoke test did not finish");
+        }
+        {
+            std::lock_guard<std::mutex> l(G().mu);
+            G().d11 = nd;
+            G().d11.struct_size = sizeof G().d11;
+            G().preflight_done = nd.backend == XRL_GFX_D3D11_NATIVE;
+        }
+        Log(nd.backend == XRL_GFX_D3D11_NATIVE ? LOG_INFO : LOG_ERROR, "D3D11 DECISION: native D3D11 %s (\"%s\")",
+            nd.backend == XRL_GFX_D3D11_NATIVE ? "viable" : "NOT viable", nd.detail);
+        if (out) *out = nd;
+        return nd.backend == XRL_GFX_D3D11_NATIVE ? XRL_OK : XRL_ERR_NOTAVAIL;
     }
     xrl_gfx_d3d11_decision dec{};
     dec.struct_size = sizeof dec;
