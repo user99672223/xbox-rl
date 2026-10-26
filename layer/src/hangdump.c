@@ -146,12 +146,18 @@ static void dump_once(void)
                                 memcpy(d->gstk, gf + 7, sizeof d->gstk); d->ngstk = HD_GSTK;
                             } __except (EXCEPTION_EXECUTE_HANDLER) { d->ngstk = 0; }
                             /* Wine's Unix side runs on its own stack; the Windows-side (PE) stack is the
-                             * guest TEB view's StackLimit..StackBase (swap rows 0/1), and Wine's syscall
-                             * frame on the Unix stack holds the PE rsp: the lowest value in that range */
+                             * guest TEB view's StackLimit..StackBase (swap rows 0/1). Wine's x86-64
+                             * syscall frame on the Unix stack holds rip, cs (0x33), eflags, rsp in a row:
+                             * that rsp is where the PE side stopped. Without such a frame (a Unix-only
+                             * thread), the lowest value in the range. */
                             d->pe_hi = t->teb_guest[0]; d->pe_lo = t->teb_guest[1];
-                            for (int k = 0; k < d->ngstk; k++)
-                                if (d->gstk[k] >= d->pe_lo && d->gstk[k] < d->pe_hi && !(d->gstk[k] & 7) &&
-                                    (!d->pe_rsp || d->gstk[k] < d->pe_rsp)) d->pe_rsp = d->gstk[k];
+                            for (int k = 0; k + 3 < d->ngstk && !d->pe_rsp; k++)
+                                if (d->gstk[k + 1] == 0x33 && (d->gstk[k + 2] & 0x2) && d->gstk[k + 2] < 0x400000 &&
+                                    d->gstk[k + 3] >= d->pe_lo && d->gstk[k + 3] < d->pe_hi) d->pe_rsp = d->gstk[k + 3];
+                            if (!d->pe_rsp)
+                                for (int k = 0; k < d->ngstk; k++)
+                                    if (d->gstk[k] >= d->pe_lo && d->gstk[k] < d->pe_hi && !(d->gstk[k] & 7) &&
+                                        (!d->pe_rsp || d->gstk[k] < d->pe_rsp)) d->pe_rsp = d->gstk[k];
                             if (d->pe_rsp) {
                                 u64 nq = (d->pe_hi - d->pe_rsp) / 8;
                                 if (nq > HD_GSTK) nq = HD_GSTK;
@@ -193,8 +199,9 @@ static void dump_once(void)
         int shown = 0;
         for (int k = 0; k < d->nstk && shown < 12; k++) {
             name_of(d->stk[k], b, sizeof b);
-            if (!b[0] || !strncmp(b, "guest:anon", 10)) continue;
-            out("[hang]     [rsp+%03x] %s", k * 8, b);
+            /* anonymous guest memory: only code (a game's own image is mapped anonymously) */
+            if (!b[0] || (!strncmp(b, "guest:anon", 10) && xrl_mem_is_exec(d->stk[k]) != 1)) continue;
+            out("[hang]     [rsp+%03x] %016llx %s", k * 8, d->stk[k], b);
             shown++;
         }
         if (!d->grip) continue;

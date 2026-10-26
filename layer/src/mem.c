@@ -24,7 +24,7 @@
  *     "commit" far more than they touch; committing up front ran past the
  *     console's ceiling. Exceptions, which must be committed before use because
  *     the kernel (not user code) writes them: stacks (MAP_STACK, and
- *     MADV_POPULATE_WRITE/WILLNEED, which Wine issues for its thread stacks:
+ *     MADV_POPULATE_WRITE, which Wine issues for its thread stacks:
  *     the kernel pushes exception frames there), and buffers the layer hands to
  *     Win32 I/O (xrl_mem_populate before ReadFile/WriteFile). Nothing in this
  *     file touches guest memory while holding g_lock, because a lazy fault
@@ -1549,11 +1549,14 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
         ReleaseSRWLockExclusive(&g_lock);
         return 0;
     }
-    case LX_MADV_WILLNEED:
     case LX_MADV_POPULATE_READ:
     case LX_MADV_POPULATE_WRITE:
         /* "commit now": Wine issues this for thread stacks (see header) */
         return populate_from(addr, len, CS_MADVISE);
+    case LX_MADV_WILLNEED:
+        /* read-ahead hint, as on Linux. Wine sends a game's PrefetchVirtualMemory here;
+         * committing (and pinning) it made prefetched data unevictable for good. */
+        return 0;
     default:
         return 0;   /* hints (NORMAL, HUGEPAGE, DONTFORK, ...) are no-ops */
     }
@@ -1604,9 +1607,16 @@ static void mem_breakdown_locked(void)
          lazy >> 20, nlazy, big_c >> 20, big_v, eager >> 20, file >> 20, stack >> 20);
     for (int k = 0; k < CS_N; k++)
         if (g_cs_bytes[k]) LOGE("mem:   lazy commits by %s: %llu MiB", cs_names[k], (u64)g_cs_bytes[k] >> 20);
-    LOGE("mem:   swap %s: %llu MiB in the file, %llu MiB written, %llu MiB read back, %llu MiB evicted again clean, %u spans tracked",
+    u32 npin = 0, nout = 0;
+    for (u32 i = 0; i < g_nsp; i++) {
+        if (g_sp[i].state == SP_FREE) continue;
+        if (g_sp[i].pinned) npin++;
+        if (g_sp[i].state == SP_OUT) nout++;
+    }
+    LOGE("mem:   swap %s: %llu MiB in the file, %llu MiB written, %llu MiB read back, %llu MiB evicted again clean, %u spans tracked "
+         "(%u MiB pinned, never evicted; %u MiB out)",
          g_swap ? "on" : "off", (u64)g_swap_now >> 20, (u64)g_swap_out >> 20, (u64)g_swap_in >> 20, (u64)g_swap_clean >> 20,
-         g_nsp - g_nspfree);
+         g_nsp - g_nspfree, npin >> 4, nout >> 4);
     /* the biggest lazy mappings (ten passes over the list; this runs once) */
     u64 last = ~0ull;
     for (int n = 0; n < 10; n++) {

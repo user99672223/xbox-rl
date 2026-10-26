@@ -16,7 +16,11 @@ fi
 echo "run-rl.sh (main checkout) $(date -Iseconds)" > "$lock"
 trap 'rm -f "$lock"' EXIT INT TERM
 args="$HOME/xrl-work/epic-launch/launch-args.json"
-pwsh -NoProfile -File tools/epic-capture.ps1 -Out "$(cygpath -w "$args")" || exit 1
+# XRL_RL_REUSE_ARGS=1: the last captured arguments (their login code is used up, so the
+# Epic login fails; enough for anything before the online subsystem, e.g. package loading)
+if [ "${XRL_RL_REUSE_ARGS:-0}" != 1 ] || [ ! -f "$args" ]; then
+    pwsh -NoProfile -File tools/epic-capture.ps1 -Out "$(cygpath -w "$args")" || exit 1
+fi
 exe="${XRL_RL_EXE:-RocketLeague.exe}"
 # the arguments as a NUL-separated list, read back without echoing them
 tmp="$(mktemp)"

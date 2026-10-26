@@ -30,17 +30,20 @@ static xrl_status host_swapchain(xrl_handle d, xrl_handle q, uint32_t w, uint32_
     *out = d ^ q ^ ((uint64_t)w << 32 | h) ^ ((uint64_t)n << 8) ^ fmt;
     return XRL_OK;
 }
-/* Pad 0: connected, idle. XRL_PAD_SCRIPT="130:A,135:DOWN,140:0x1000" presses that
- * button (XInput name or mask) N seconds after start, for 200 ms: a scripted player
- * for menus ("press any button"). Pads 1..3 are absent. */
-static struct { double at; uint32_t mask; } g_pad_steps[64];
+/* Pad 0: connected, idle. XRL_PAD_SCRIPT="130:A,135:DOWN,140:0x1000,150:RT:3" presses
+ * that button (XInput name or mask; LT/RT are the triggers) N seconds after start, for
+ * 200 ms or the given seconds: a scripted player for menus and a drive. Pads 1..3 are absent. */
+#define PAD_LT 0x10000000u   /* script-only bits: the analog triggers, fully pressed */
+#define PAD_RT 0x20000000u
+static struct { double at, len; uint32_t mask; } g_pad_steps[64];
 static int g_pad_nsteps;
 static ULONGLONG g_pad_t0;
 static void pad_script_init(void)
 {
     static const struct { const char *n; uint32_t m; } names[] = {
         { "UP", 0x1 }, { "DOWN", 0x2 }, { "LEFT", 0x4 }, { "RIGHT", 0x8 }, { "START", 0x10 }, { "BACK", 0x20 },
-        { "LB", 0x100 }, { "RB", 0x200 }, { "A", 0x1000 }, { "B", 0x2000 }, { "X", 0x4000 }, { "Y", 0x8000 } };
+        { "LB", 0x100 }, { "RB", 0x200 }, { "A", 0x1000 }, { "B", 0x2000 }, { "X", 0x4000 }, { "Y", 0x8000 },
+        { "LT", PAD_LT }, { "RT", PAD_RT } };
     char s[1024];
     g_pad_t0 = GetTickCount64();
     if (!GetEnvironmentVariableA("XRL_PAD_SCRIPT", s, sizeof s)) return;
@@ -48,9 +51,12 @@ static void pad_script_init(void)
         char *c = strchr(tok, ':');
         if (!c) continue;
         *c++ = 0;
+        char *d = strchr(c, ':');
+        if (d) *d++ = 0;
         uint32_t m = (uint32_t)strtoul(c, NULL, 0);
         for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) if (!_stricmp(c, names[i].n)) m = names[i].m;
         g_pad_steps[g_pad_nsteps].at = atof(tok);
+        g_pad_steps[g_pad_nsteps].len = d ? atof(d) : 0.2;
         g_pad_steps[g_pad_nsteps++].mask = m;
     }
     printf("[host] pad script: %d presses\n", g_pad_nsteps);
@@ -61,8 +67,12 @@ static xrl_status host_pad(uint32_t slot, xrl_pad_state *o)
     if (slot) return XRL_ERR_NOTAVAIL;
     o->connected = 1;
     double t = (double)(GetTickCount64() - g_pad_t0) / 1000.0;
+    uint32_t m = 0;
     for (int i = 0; i < g_pad_nsteps; i++)
-        if (t >= g_pad_steps[i].at && t < g_pad_steps[i].at + 0.2) o->buttons |= g_pad_steps[i].mask;
+        if (t >= g_pad_steps[i].at && t < g_pad_steps[i].at + g_pad_steps[i].len) m |= g_pad_steps[i].mask;
+    o->buttons = m & 0xffff;
+    if (m & PAD_LT) o->left_trigger = 255;
+    if (m & PAD_RT) o->right_trigger = 255;
     return XRL_OK;
 }
 static xrl_status host_xaudio_create(xrl_handle *o) { *o = 0xA0D10ull; return XRL_OK; }
