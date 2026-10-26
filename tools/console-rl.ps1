@@ -18,20 +18,24 @@
 .PARAMETER Rootfs     Staged guest tree (default: ~\xrl-work\rootfs, the one tools/run-rl.sh uses).
 .PARAMETER SkipGame   Do not (re)check the game upload (it is already there).
 .PARAMETER NoLogin    Start Rocket League without Epic arguments.
+.PARAMETER SkipDeploy Keep the installed app (the loose-file install keeps the game in its install folder).
 .EXAMPLE
   pwsh tools/build.ps1 -Mode Full -LayerLib layer/build/uwp/xrl_layer.lib -GfxLib gfx/build-uwp/Release/xrl_gfx.lib
   pwsh tools/console-rl.ps1
 #>
 [CmdletBinding()]
-param([string]$Rootfs = (Join-Path $HOME 'xrl-work\rootfs'), [switch]$SkipGame, [switch]$NoLogin)
+param([string]$Rootfs = (Join-Path $HOME 'xrl-work\rootfs'), [switch]$SkipGame, [switch]$NoLogin, [switch]$SkipDeploy)
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\_common.ps1"
 
 function Step($n, $what) { Write-Host "`n[console-rl] ($n/5) $what" -ForegroundColor Cyan; $global:LASTEXITCODE = 0 }
 
-Step 1 'install the host package'
-& "$PSScriptRoot\deploy.ps1"
-if ($LASTEXITCODE) { throw "deploy failed ($LASTEXITCODE)" }
+if ($SkipDeploy) { Step 1 'install skipped (-SkipDeploy: e.g. the loose install from tools/console-loose.ps1)' }
+else {
+    Step 1 'install the host package'
+    & "$PSScriptRoot\deploy.ps1"
+    if ($LASTEXITCODE) { throw "deploy failed ($LASTEXITCODE)" }
+}
 
 Step 2 "upload the guest tree $Rootfs"
 & "$PSScriptRoot\push-game.ps1" -Source $Rootfs -Dest 'rootfs' -Exclude 'game', 'game\*', 'tmp\*' -Yes
