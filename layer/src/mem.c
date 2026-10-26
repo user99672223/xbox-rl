@@ -47,6 +47,8 @@ typedef struct vma {
     int shared;             /* MAP_SHARED */
     xfile *file;            /* write-back target for shared writable file maps */
     s64 foff;
+    u64 mid;                /* the mmap that made it: separate mappings never merge, so
+                             * "the mapping containing X" (a new thread's stack) stays its own */
     char name[40];
 } vma;
 
@@ -273,7 +275,7 @@ static int vma_insert_at(size_t i, const vma *v)
 static int vma_mergeable(const vma *a, const vma *b)
 {
     return a->end == b->start && a->prot == b->prot && a->committed == b->committed && a->lazy == b->lazy &&
-           a->shared == b->shared && !a->file && !b->file && !strcmp(a->name, b->name);
+           a->shared == b->shared && a->mid == b->mid && !a->file && !b->file && !strcmp(a->name, b->name);
 }
 
 static void vma_try_merge(size_t i)
@@ -436,6 +438,15 @@ static slong commit_account(u64 len)
     return 0;
 }
 
+/* Who commits lazy memory (the out-of-memory breakdown): the thread sets
+ * t_commit_src around the call. */
+enum { CS_WRITE_FAULT, CS_READ_FAULT, CS_EXEC_FAULT, CS_MADVISE, CS_STACK, CS_IO, CS_MINCORE, CS_MREMAP, CS_N };
+static const char *const cs_names[CS_N] = { "write faults", "read faults", "exec faults", "madvise populate",
+                                            "new-thread stacks", "read/write buffers", "mincore", "mremap" };
+static volatile LONG64 g_cs_bytes[CS_N];
+static __declspec(thread) int t_commit_src = CS_IO;   /* the default: vfs.c's populate calls */
+static slong populate_from(u64 addr, u64 len, int src);
+
 /* Commit the reserved parts of [s,e) with `prot`, charging the budget. Lock held. */
 static slong commit_lazy_locked(u64 s, u64 e, int prot)
 {
@@ -453,6 +464,7 @@ static slong commit_lazy_locked(u64 s, u64 e, int prot)
                 InterlockedAdd64(&g_committed, -(LONG64)(re - s));
                 return -LX_ENOMEM;
             }
+            InterlockedAdd64(&g_cs_bytes[t_commit_src], (LONG64)(re - s));
         }
         s = re;
     }
@@ -466,7 +478,10 @@ static int op_copy_committed(u64 s, u64 e, DWORD state, void *ctx)
     mremap_copy *c = (mremap_copy *)ctx;
     if (state != MEM_COMMIT) return 0;
     u64 d = c->dst + (s - c->src);
+    int src = t_commit_src;
+    t_commit_src = CS_MREMAP;
     slong r = commit_lazy_locked(d, d + (e - s), LX_PROT_READ | LX_PROT_WRITE);
+    t_commit_src = src;
     if (r) { c->err = r; return 1; }
     memcpy((void *)d, (const void *)s, (size_t)(e - s));
     return 0;
@@ -517,7 +532,9 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
     }
     {
         vma v; memset(&v, 0, sizeof v);
+        static u64 next_mid;   /* g_lock held */
         v.start = addr; v.end = end; v.prot = prot; v.committed = committed; v.lazy = lazy; v.shared = shared;
+        v.mid = ++next_mid;
         vma_name(&v, name);
         if (file && shared && (prot & LX_PROT_WRITE)) { v.file = file; xfile_ref(file); v.foff = off; }
         size_t i = vma_lower(addr);
@@ -568,6 +585,9 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
 
     if (fixed) {
         if ((flags & LX_MAP_FIXED_NOREPLACE) && !(flags & LX_MAP_FIXED) && !range_free(addr, addr + len)) { res = -LX_EEXIST; goto out; }
+        /* range held by the host (a DLL, KUSER_SHARED_DATA at 0x7ffe0000): to the guest
+         * that is "already mapped", which Wine's free-area search steps over */
+        if ((flags & LX_MAP_FIXED_NOREPLACE) && !(flags & LX_MAP_FIXED) && ensure_reserved(addr, addr + len)) { res = -LX_EEXIST; goto out; }
         target = addr;
         if (target < g_mmap_floor && in_arena(target, target + len) && target + len > g_arena_base) {
             /* do not let the guest stomp the brk region by accident unless it owns it */
@@ -756,7 +776,7 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
     case LX_MADV_POPULATE_READ:
     case LX_MADV_POPULATE_WRITE:
         /* "commit now": Wine issues this for thread stacks (see header) */
-        return xrl_mem_populate(addr, len);
+        return populate_from(addr, len, CS_MADVISE);
     default:
         return 0;   /* hints (NORMAL, HUGEPAGE, DONTFORK, ...) are no-ops */
     }
@@ -764,6 +784,14 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
 
 /* Commit the lazy (reserved) parts of [addr, addr+len): before handing guest
  * memory to Win32 I/O, which fails instead of faulting on reserved pages. */
+static slong populate_from(u64 addr, u64 len, int src)
+{
+    t_commit_src = src;
+    slong r = xrl_mem_populate(addr, len);
+    t_commit_src = CS_IO;
+    return r;
+}
+
 slong xrl_mem_populate(u64 addr, u64 len)
 {
     if (!len || t_mem_locked) return 0;
@@ -797,6 +825,22 @@ static void mem_breakdown_locked(void)
     LOGE("mem: breakdown: lazy-touched %llu MiB in %zu mappings (largest %llu MiB at %llx), "
          "eager anonymous %llu MiB, file copies %llu MiB, layer stacks %llu MiB",
          lazy >> 20, nlazy, big_c >> 20, big_v, eager >> 20, file >> 20, stack >> 20);
+    for (int k = 0; k < CS_N; k++)
+        if (g_cs_bytes[k]) LOGE("mem:   lazy commits by %s: %llu MiB", cs_names[k], (u64)g_cs_bytes[k] >> 20);
+    /* the biggest lazy mappings (ten passes over the list; this runs once) */
+    u64 last = ~0ull;
+    for (int n = 0; n < 10; n++) {
+        u64 best = 0; size_t bi = 0;
+        for (size_t i = 0; i < g_n; i++) {
+            if (!g_v[i].lazy) continue;
+            u64 c = committed_bytes(g_v[i].start, g_v[i].end);
+            if (c > best && c < last) { best = c; bi = i; }
+        }
+        if (!best) break;
+        LOGE("mem:   %llx-%llx (%llu MiB) touched %llu MiB prot %d mapping #%llu", g_v[bi].start, g_v[bi].end,
+             (g_v[bi].end - g_v[bi].start) >> 20, best >> 20, g_v[bi].prot, g_v[bi].mid);
+        last = best;
+    }
 }
 
 /* Commit the whole lazy mapping containing `addr` (a new thread's stack). */
@@ -807,7 +851,7 @@ slong xrl_mem_populate_containing(u64 addr)
     size_t i = vma_lower(addr);
     if (i < g_n && g_v[i].start <= addr && g_v[i].lazy) { s = g_v[i].start; e = g_v[i].end; }
     ReleaseSRWLockShared(&g_lock);
-    return e ? xrl_mem_populate(s, e - s) : 0;
+    return e ? populate_from(s, e - s, CS_STACK) : 0;
 }
 
 /* VEH: a fault at `addr` (access 0 read, 1 write, 8 execute). Commits the
@@ -841,7 +885,9 @@ static int lazy_fault_locked_entry(u64 addr, int access)
             u64 s = ALIGN_DOWN(addr, g_lazy_chunk), e = s + g_lazy_chunk;
             if (s < v->start) s = v->start;
             if (e > v->end) e = v->end;
+            t_commit_src = access == 1 ? CS_WRITE_FAULT : access == 8 ? CS_EXEC_FAULT : CS_READ_FAULT;
             slong r = commit_lazy_locked(s, e, v->prot);
+            t_commit_src = CS_IO;
             ok = r == 0;
             if (r) {
                 LOGE("mem: out of memory: cannot commit the page at %llx (%llu MiB committed, budget %llu MiB)",
@@ -871,7 +917,7 @@ slong xrl_mem_mincore(u64 addr, u64 len, u64 vec)
 {
     if (addr & (LX_PAGE - 1)) return -LX_EINVAL;
     u64 pages = ALIGN_UP(len, LX_PAGE) / LX_PAGE;
-    slong r = xrl_mem_populate(vec, pages);   /* vec is written under g_lock: must not fault */
+    slong r = populate_from(vec, pages, CS_MINCORE);   /* vec is written under g_lock: must not fault */
     if (r) return r;
     AcquireSRWLockShared(&g_lock);
     for (u64 p = 0; p < pages; p++) {

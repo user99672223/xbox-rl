@@ -274,6 +274,7 @@ slong   xrl_fd_dup(int oldfd, int newfd, int flags, int use_min);
 int    xrl_fd_getfd(int fd);                                /* cloexec flag or -EBADF */
 slong   xrl_fd_setfd(int fd, int cloexec);
 void   xrl_fd_init(void);
+xfile *xrl_dev_ntsync(int flags);                           /* ntsync.c: /dev/ntsync */
 
 slong xrl_vfs_init(const char *root);
 slong xrl_vfs_resolve(int dirfd, const char *path, int follow, char *out_guest, size_t cap);
@@ -341,6 +342,12 @@ slong xrl_sys_prctl(int op, u64 a2, u64 a3, u64 a4, u64 a5);
 slong xrl_sys_prlimit(int pid, int res, u64 newp, u64 oldp);
 slong xrl_sys_sched_getaffinity(int pid, u64 size, u64 mask);
 int  xrl_nprocs(void);
+const char *xrl_hostname(void);
+/* cpuinfo.c: the real CPU (CPUID) and topology */
+char *xrl_cpuinfo_text(size_t *len);
+int  xrl_cpu_core_id(int cpu);
+int  xrl_cpu_ncores(void);
+void xrl_cpu_siblings_list(int cpu, char *out, size_t cap);
 
 /* ----------------------------------------------------------- guest ctx */
 /*

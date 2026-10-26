@@ -168,6 +168,157 @@ static void test_threads(void)
     }
 }
 
+/* /dev/ntsync (Linux ntsync uapi, Wine's fast sync path) */
+#define NIOC(dir, nr, sz) (((unsigned long)(dir) << 30) | ((unsigned long)(sz) << 16) | ('N' << 8) | (nr))
+#define N_CREATE_SEM   NIOC(1, 0x80, 8)
+#define N_SEM_RELEASE  NIOC(3, 0x81, 4)
+#define N_WAIT_ANY     NIOC(3, 0x82, 40)
+#define N_WAIT_ALL     NIOC(3, 0x83, 40)
+#define N_CREATE_MUTEX NIOC(1, 0x84, 8)
+#define N_MUTEX_UNLOCK NIOC(3, 0x85, 8)
+#define N_MUTEX_KILL   NIOC(1, 0x86, 4)
+#define N_CREATE_EVENT NIOC(1, 0x87, 8)
+#define N_EVENT_SET    NIOC(2, 0x88, 4)
+#define N_EVENT_READ   NIOC(2, 0x8d, 8)
+struct nwait { u64 timeout, objs; unsigned count, index, flags, owner, alert, pad; };
+static volatile int ns_ev_fd, ns_go;
+
+static int ns_setter(void *arg)
+{
+    (void)arg;
+    struct { long s, n; } ts = { 0, 50000000 };
+    sc4(35, &ts, 0, 0, 0);
+    unsigned prev;
+    sc3(16, ns_ev_fd, N_EVENT_SET, &prev);
+    return 0;
+}
+
+static long ns_wait(int dev, int all, unsigned *fds, unsigned n, unsigned owner, u64 timeout, unsigned *index)
+{
+    struct nwait w = { timeout, (u64)(unsigned long)fds, n, ~0u, 0, owner, 0, 0 };
+    /* pass the request sign-extended, as musl's ioctl(int fd, int req, ...) does */
+    long r = sc3(16, dev, (long)(int)(all ? N_WAIT_ALL : N_WAIT_ANY), &w);
+    if (index) *index = w.index;
+    return r;
+}
+
+static void test_ntsync(void)
+{
+    out("ntsync:\n");
+    int dev = (int)sc4(257, -100, "/dev/ntsync", 0x80000, 0);
+    CHECK(dev >= 0, "open /dev/ntsync");
+    if (dev < 0) return;
+    unsigned a2[2];
+    a2[0] = 0; a2[1] = 2;  /* sem count 0, max 2 */
+    int sem = (int)sc3(16, dev, N_CREATE_SEM, a2);
+    a2[0] = 0; a2[1] = 0;  /* manual 0, signaled 0 */
+    int ev = (int)sc3(16, dev, N_CREATE_EVENT, a2);
+    a2[0] = 0; a2[1] = 0;  /* unowned */
+    int mtx = (int)sc3(16, dev, N_CREATE_MUTEX, a2);
+    CHECK(sem >= 0 && ev >= 0 && mtx >= 0, "create semaphore, event, mutex");
+
+    unsigned fds[2] = { (unsigned)sem, (unsigned)ev }, idx = 99;
+    u64 now = mono_ns();
+    CHECK(ns_wait(dev, 0, fds, 2, 7, now + 20000000ull, 0) == -110 && mono_ns() - now >= 18000000ull,
+          "wait-any on unsignaled objects times out (-ETIMEDOUT)");
+    unsigned v = 1;
+    CHECK(sc3(16, sem, N_SEM_RELEASE, &v) == 0 && v == 0, "semaphore release returns previous count");
+    CHECK(ns_wait(dev, 0, fds, 2, 7, ~0ull, &idx) == 0 && idx == 0, "wait-any takes the semaphore (index 0)");
+    v = 3;
+    CHECK(sc3(16, sem, N_SEM_RELEASE, &v) == -75, "release past max -> -EOVERFLOW");
+
+    /* cross-thread wake: a thread sets the auto-reset event after 50 ms */
+    ns_ev_fd = ev;
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+    u8 *stk = mmap_anon(256 * 1024, 3);
+    struct tls *t = mmap_anon(4096, 3); t->self = t;
+    volatile int c = -1;
+    xclone(ns_setter, stk + 256 * 1024 - 64, flags, 0, 0, t, (void *)&c);
+    now = mono_ns();
+    long r = ns_wait(dev, 0, fds, 2, 7, ~0ull, &idx);
+    u64 dt = mono_ns() - now;
+    CHECK(r == 0 && idx == 1 && dt >= 40000000ull && dt < 2000000000ull, "event set by another thread wakes the waiter");
+    wait_eq(&c, 0);
+    CHECK(sc3(16, ev, N_EVENT_READ, a2) == 0 && a2[1] == 0, "auto-reset event is reset by the wait");
+
+    /* mutex: recursion, owner checks, abandonment */
+    unsigned m1[1] = { (unsigned)mtx };
+    CHECK(ns_wait(dev, 0, m1, 1, 7, ~0ull, 0) == 0 && ns_wait(dev, 0, m1, 1, 7, ~0ull, 0) == 0, "mutex acquired twice by owner 7");
+    CHECK(ns_wait(dev, 0, m1, 1, 8, mono_ns() + 1000000ull, 0) == -110, "owner 8 cannot take it");
+    a2[0] = 8; a2[1] = 0;
+    CHECK(sc3(16, mtx, N_MUTEX_UNLOCK, a2) == -1, "unlock by non-owner -> -EPERM");
+    a2[0] = 7;
+    CHECK(sc3(16, mtx, N_MUTEX_UNLOCK, a2) == 0 && a2[1] == 2, "unlock returns previous recursion count");
+    v = 7;
+    CHECK(sc3(16, mtx, N_MUTEX_KILL, &v) == 0, "kill by owner");
+    CHECK(ns_wait(dev, 0, m1, 1, 8, ~0ull, 0) == -130, "next acquire reports abandonment (-EOWNERDEAD)");
+
+    /* wait-all: needs every object at once */
+    a2[0] = 1; a2[1] = 1;  /* manual, signaled */
+    int ev2 = (int)sc3(16, dev, N_CREATE_EVENT, a2);
+    unsigned all2[2] = { (unsigned)ev2, (unsigned)sem };
+    CHECK(ns_wait(dev, 1, all2, 2, 7, mono_ns() + 1000000ull, 0) == -110, "wait-all blocks while one object is unsignaled");
+    v = 1; sc3(16, sem, N_SEM_RELEASE, &v);
+    CHECK(ns_wait(dev, 1, all2, 2, 7, ~0ull, 0) == 0, "wait-all succeeds once all are signaled");
+    CHECK(sc3(16, ev2, N_EVENT_READ, a2) == 0 && a2[1] == 1, "manual event stays signaled");
+    sc1(3, sem); sc1(3, ev); sc1(3, mtx); sc1(3, ev2); sc1(3, dev);
+}
+
+/* /proc/cpuinfo must agree with what CPUID says about the CPU */
+static const char *find(const char *h, const char *n)
+{
+    unsigned long l = slen(n);
+    for (; *h; h++) if (!memcmp(h, n, l)) return h;
+    return 0;
+}
+static int has_flag(const char *flags, const char *f)   /* whole word on the first flags line */
+{
+    char w[40]; unsigned long l = slen(f);
+    w[0] = ' '; memcpy(w + 1, f, l); w[l + 1] = 0;
+    for (const char *p = flags; *p && *p != '\n'; p++) {
+        if (!memcmp(p, w, l + 1) && (p[l + 1] == ' ' || p[l + 1] == '\n')) return 1;
+    }
+    return 0;
+}
+static void cpuid(u32 leaf, u32 sub, u32 r[4])
+{
+    __asm__ volatile("cpuid" : "=a"(r[0]), "=b"(r[1]), "=c"(r[2]), "=d"(r[3]) : "a"(leaf), "c"(sub));
+}
+static char cpubuf[1 << 16];
+static void test_cpuinfo(void)
+{
+    long fd = sc3(2, "/proc/cpuinfo", 0, 0), n = 0, r;
+    while (fd >= 0 && n < (long)sizeof cpubuf - 1 && (r = sc3(0, fd, cpubuf + n, sizeof cpubuf - 1 - n)) > 0) n += r;
+    if (fd >= 0) sc1(3, fd);
+    cpubuf[n > 0 ? n : 0] = 0;
+    CHECK(n > 0, "read /proc/cpuinfo");
+    u32 v[4], l1[4], l7[4];
+    cpuid(0, 0, v);
+    char vendor[13]; memcpy(vendor, &v[1], 4); memcpy(vendor + 4, &v[3], 4); memcpy(vendor + 8, &v[2], 4); vendor[12] = 0;
+    const char *vl = find(cpubuf, "vendor_id\t: ");
+    CHECK(vl && !memcmp(vl + 12, vendor, 12), "cpuinfo vendor_id = CPUID vendor");
+    cpuid(1, 0, l1);
+    cpuid(7, 0, l7);
+    u32 fam = (l1[0] >> 8) & 15; if (fam == 15) fam += (l1[0] >> 20) & 255;
+    const char *fl = find(cpubuf, "cpu family\t: ");
+    long cf = 0; if (fl) for (const char *p = fl + 13; *p >= '0' && *p <= '9'; p++) cf = cf * 10 + (*p - '0');
+    CHECK(fl && cf == (long)fam, "cpuinfo cpu family = CPUID family");
+    const char *flags = find(cpubuf, "flags\t\t: ");
+    CHECK(flags != 0, "cpuinfo has a flags line");
+    if (!flags) return;
+    flags += 8;   /* the space before the first flag stays: has_flag matches " name" */
+    CHECK(has_flag(flags, "sse2") == (int)((l1[3] >> 26) & 1), "flag sse2 matches CPUID");
+    CHECK(has_flag(flags, "fsgsbase") == (int)(l7[1] & 1), "flag fsgsbase matches CPUID (hidden on the console)");
+    CHECK(has_flag(flags, "hypervisor") == (int)(l1[2] >> 31), "flag hypervisor matches CPUID");
+    CHECK(has_flag(flags, "rdrand") == (int)((l1[2] >> 30) & 1), "flag rdrand matches CPUID");
+    long procs = 0;
+    for (const char *p = cpubuf; (p = find(p, "processor\t: ")); p++) procs++;
+    u64 mask[16]; memset(mask, 0, sizeof mask);
+    long ab = sc3(204, 0, sizeof mask, mask), bits = 0;   /* sched_getaffinity */
+    for (long i = 0; ab > 0 && i < ab / 8; i++) for (u64 m = mask[i]; m; m &= m - 1) bits++;
+    CHECK(procs > 0 && procs == bits, "one cpuinfo entry per CPU in the affinity mask");
+}
+
 static void test_fs(void)
 {
     out("file/VFS:\n");
@@ -449,7 +600,9 @@ void cstart(u64 *sp)
     test_misc();
     test_mem();
     test_fs();
+    test_cpuinfo();
     test_threads();
+    test_ntsync();
     test_v2();
     test_teb();
     outn("TOTAL FAILS", fails);

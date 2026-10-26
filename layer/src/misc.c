@@ -2,6 +2,7 @@
  * misc.c - uname, sysinfo, getrandom, rlimits, affinity, clocks, sleeps.
  */
 #include "xrl_internal.h"
+#include <ctype.h>
 
 int xrl_nprocs(void)
 {
@@ -15,12 +16,26 @@ int xrl_nprocs(void)
     return n;
 }
 
+/* The machine's own name (what Linux's hostname would be), not a made-up one. */
+const char *xrl_hostname(void)
+{
+    static char name[65];
+    if (!name[0]) {
+        char b[256]; DWORD n = sizeof b;
+        if (GetComputerNameExA(ComputerNameDnsHostname, b, &n) && n && n < sizeof name) {
+            for (DWORD i = 0; i < n; i++) b[i] = (char)tolower((unsigned char)b[i]);
+            memcpy(name, b, n + 1);
+        } else strcpy_s(name, sizeof name, "localhost");
+    }
+    return name;
+}
+
 slong xrl_sys_uname(u64 ubuf)
 {
     lx_utsname u;
     memset(&u, 0, sizeof u);
     strcpy_s(u.sysname, sizeof u.sysname, "Linux");
-    strcpy_s(u.nodename, sizeof u.nodename, "xbox");
+    strcpy_s(u.nodename, sizeof u.nodename, xrl_hostname());
     strcpy_s(u.release, sizeof u.release, "6.1.0-xrl");
     strcpy_s(u.version, sizeof u.version, "#1 SMP xbox-rl layer " XRL_LAYER_VERSION);
     strcpy_s(u.machine, sizeof u.machine, "x86_64");

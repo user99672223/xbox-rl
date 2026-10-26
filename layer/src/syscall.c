@@ -176,7 +176,9 @@ SYS(ioctl)
     UNUSED6;
     xfile *f = xrl_fd_get((int)a1);
     if (!f) return -LX_EBADF;
-    slong r = f->ops->ioctl ? f->ops->ioctl(f, (u64)a2, (u64)a3) : -LX_ENOTTY;
+    /* The kernel's cmd is an unsigned int: libcs that pass it as int sign-extend
+     * _IOR/_IOWR numbers (bit 31) into the upper half, which Linux ignores. */
+    slong r = f->ops->ioctl ? f->ops->ioctl(f, (u64)(u32)a2, (u64)a3) : -LX_ENOTTY;
     xfile_unref(f);
     return r;
 }

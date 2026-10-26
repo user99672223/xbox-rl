@@ -602,6 +602,7 @@ static slong open_special(const char *gabs, int flags, int *handled)
     else if (!strcmp(gabs, "/dev/urandom") || !strcmp(gabs, "/dev/random")) f = xrl_dev_urandom(flags);
     else if (!strcmp(gabs, "/dev/tty") || !strcmp(gabs, "/dev/console") || !strcmp(gabs, "/dev/ptmx")) f = xrl_dev_tty(flags);
     else if (!strcmp(gabs, "/dev/full")) f = xrl_dev_null(flags);
+    else if (!strcmp(gabs, "/dev/ntsync")) f = xrl_dev_ntsync(flags);
     if (f) {
         f->gpath = _strdup(gabs);
         int fd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);

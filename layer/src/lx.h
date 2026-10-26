@@ -272,6 +272,7 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define LX_EAFNOSUPPORT 97
 #define LX_ENOTCONN 107
 #define LX_ETIMEDOUT 110
+#define LX_EOWNERDEAD 130
 #define LX_ECONNREFUSED 111
 #define LX_EINPROGRESS 115
 

@@ -1,0 +1,21 @@
+diff --git a/dlls/ntdll/unix/xrl.c b/dlls/ntdll/unix/xrl.c
+index 23ec09f..9945a08 100644
+--- a/dlls/ntdll/unix/xrl.c
++++ b/dlls/ntdll/unix/xrl.c
+@@ -52,11 +52,13 @@ void xrl_init_flags(void)
+     xrl_no_spawn      = env_flag( "XRL_NO_SPAWN" );
+     xrl_skip_wineboot = env_flag( "XRL_SKIP_WINEBOOT" );
+ 
+-    /* Valve/Proton's esync/fsync/ntsync paths need futex_waitv, /dev/ntsync or
+-     * /dev/shm.  None exist on the console; force the plain server-side sync. */
++    /* Valve/Proton's esync/fsync paths need futex_waitv or /dev/shm, which the layer does
++     * not provide; force them off.  ntsync is on: the layer implements /dev/ntsync
++     * (layer/src/ntsync.c), which keeps waits out of the wineserver thread.
++     * XRL_NO_NTSYNC=1 falls back to server-side sync. */
+     setenv( "WINEFSYNC", "0", 1 );
+     setenv( "WINEESYNC", "0", 1 );
+-    setenv( "PROTON_NO_NTSYNC", "1", 1 );
++    if (env_flag( "XRL_NO_NTSYNC" )) setenv( "PROTON_NO_NTSYNC", "1", 1 );
+ }
+ 
+ /* Separate from xrl_init_flags(): that runs before the first TEB exists (the

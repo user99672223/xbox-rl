@@ -107,7 +107,6 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     LOGI("boot: stack sp=%llx", sp);
     xrl_thread *mt = NULL;
     if (xrl_threads_start_main(img.entry, sp, &mt)) { LOGE("boot: cannot create main thread"); return XRL_ERR_GENERIC; }
-    G.pid = mt->tid;
     mt->guest_stack_lo = slo; mt->guest_stack_hi = shi;
     LOGI("boot: guest main thread tid=%d entry=%llx sp=%llx", mt->tid, img.entry, sp);
 

@@ -121,27 +121,7 @@ static char *g_limits(const char *p, size_t *len)
 }
 static char *g_mounts(const char *p, size_t *len) { (void)p; return dupfmt(len, "rootfs / rootfs rw 0 0\nproc /proc proc rw 0 0\n"); }
 static char *g_mountinfo(const char *p, size_t *len) { (void)p; return dupfmt(len, "1 1 0:1 / / rw - rootfs rootfs rw\n"); }
-static char *g_cpuinfo(const char *p, size_t *len)
-{
-    (void)p;
-    int n = xrl_nprocs();
-    char *b = (char *)malloc(n * 1400 + 16), *w = b;
-    for (int i = 0; i < n; i++) {
-        w += sprintf(w,
-            "processor\t: %d\nvendor_id\t: AuthenticAMD\ncpu family\t: 23\nmodel\t\t: 71\nmodel name\t: AMD Custom APU 0405 (Zen 2)\n"
-            "stepping\t: 0\nmicrocode\t: 0x8000000\ncpu MHz\t\t: 3400.000\ncache size\t: 512 KB\nphysical id\t: 0\n"
-            "siblings\t: %d\ncore id\t\t: %d\ncpu cores\t: %d\napicid\t\t: %d\ninitial apicid\t: %d\nfpu\t\t: yes\nfpu_exception\t: yes\n"
-            "cpuid level\t: 16\nwp\t\t: yes\n"
-            "flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush mmx fxsr sse sse2 ht syscall nx mmxext fxsr_opt pdpe1gb rdtscp lm "
-            "constant_tsc rep_good nopl xtopology nonstop_tsc cpuid extd_apicid aperfmperf pni pclmulqdq monitor ssse3 fma cx16 sse4_1 sse4_2 movbe popcnt aes xsave avx f16c "
-            "lahf_lm cmp_legacy svm extapic cr8_legacy abm sse4a misalignsse 3dnowprefetch osvw ibs skinit wdt tce topoext perfctr_core perfctr_nb bpext perfctr_llc mwaitx "
-            "cpb hw_pstate ssbd ibpb stibp vmmcall fsgsbase bmi1 avx2 smep bmi2 cqm rdt_a rdseed adx smap clflushopt clwb sha_ni xsaveopt xsavec xgetbv1 xsaves clzero\n"
-            "bogomips\t: 6800.00\nTLB size\t: 3072 4K pages\nclflush size\t: 64\ncache_alignment\t: 64\naddress sizes\t: 43 bits physical, 48 bits virtual\n\n",
-            i, n, i / 2, n / 2, i, i);
-    }
-    *len = (size_t)(w - b);
-    return b;
-}
+static char *g_cpuinfo(const char *p, size_t *len) { (void)p; return xrl_cpuinfo_text(len); }
 static char *g_meminfo(const char *p, size_t *len)
 {
     (void)p;
@@ -172,7 +152,7 @@ static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len,
 static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\tproc\nnodev\ttmpfs\n\text4\n"); }
 static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-xrl\n"); }
 static char *g_ostype(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux\n"); }
-static char *g_hostname(const char *p, size_t *len) { (void)p; return dupfmt(len, "xbox\n"); }
+static char *g_hostname(const char *p, size_t *len) { (void)p; return dupfmt(len, "%s\n", xrl_hostname()); }
 static char *g_pidmax(const char *p, size_t *len) { (void)p; return dupfmt(len, "4194304\n"); }
 static char *g_bootid(const char *p, size_t *len) { (void)p; return dupfmt(len, "5a1b0000-0000-4000-8000-0000000b00c1\n"); }
 static char *g_zero(const char *p, size_t *len) { (void)p; return dupfmt(len, "0\n"); }
@@ -188,9 +168,13 @@ static char *g_cpuid_n(const char *p, size_t *len)
     /* /sys/devices/system/cpu/cpuN/topology/<leaf> */
     int n = 0; sscanf(p, "/sys/devices/system/cpu/cpu%d", &n);
     const char *leaf = strrchr(p, '/') + 1;
-    if (!strcmp(leaf, "core_id")) return dupfmt(len, "%d\n", n / 2);
+    if (!strcmp(leaf, "core_id")) return dupfmt(len, "%d\n", xrl_cpu_core_id(n));
     if (!strcmp(leaf, "physical_package_id") || !strcmp(leaf, "die_id")) return dupfmt(len, "0\n");
-    if (!strcmp(leaf, "thread_siblings_list") || !strcmp(leaf, "core_cpus_list")) return dupfmt(len, "%d-%d\n", (n / 2) * 2, (n / 2) * 2 + 1);
+    if (!strcmp(leaf, "thread_siblings_list") || !strcmp(leaf, "core_cpus_list")) {
+        char l[300];
+        xrl_cpu_siblings_list(n, l, sizeof l);
+        return dupfmt(len, "%s", l);
+    }
     return dupfmt(len, "0-%d\n", xrl_nprocs() - 1);   /* core_siblings_list / package_cpus_list */
 }
 

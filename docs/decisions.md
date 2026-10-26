@@ -144,6 +144,44 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Rocket League loads past the shader cache; its own peak is
+  6.4 GiB.** With a 12 GiB test budget it gets through script packages, audio
+  init (no driver), display modes and a second D3D11 device, then hangs: Wine
+  suspends a thread with SIGUSR1 (tgkill) and the layer cannot yet deliver a
+  signal to a running thread. The stack walk (`dbghelp`) just before looks like
+  RL's crash-dump path; most likely the Epic login critical error that RL also
+  hits natively without the launcher (not confirmed). What it took:
+  - **ntsync (Wine 0017, `layer/src/ntsync.c`).** The layer implements
+    `/dev/ntsync` (Linux 6.14 uapi: semaphores, mutexes with abandonment,
+    events, wait-any/all with alert), so Wine's waits no longer queue on the
+    wineserver thread: startup to the game window went 141 s -> 60 s.
+    `XRL_NO_NTSYNC=1` falls back. ioctl requests are now taken as unsigned
+    32-bit (musl passes an `int`; bit 31 of `_IOR` sign-extended).
+  - **Host thread ids (Wine 0018).** Wine's tids/pid are the real Windows ids
+    (the layer's Linux tids are `GetThreadId`, pid `GetCurrentProcessId`), so
+    the TEB's ClientId is the same in the guest and host views. With mismatched
+    ids the host exception dispatcher lost wake-ups (an ntsync mutex owned by
+    one id, released by another) and RL deadlocked while loading.
+  - **Lazy mappings keep their identity.** A new thread commits the whole
+    mapping holding its stack (the kernel pushes exception frames there), but
+    adjacent anonymous mappings had been merged, so every thread start
+    committed RL's 1.6 GiB heap neighbour. VMAs now carry the id of the mmap
+    that made them and only merge within it.
+  - **MAP_FIXED_NOREPLACE over host memory -> EEXIST** (was ENOMEM): Wine's
+    free-area search stopped at KUSER_SHARED_DATA (0x7ffe0000) instead of
+    stepping over it.
+  - **Measured natively on the laptop** (same exe, Windows): private bytes
+    3.3 GB at 5 s, **6.5 GB peak** during the shader-cache load (464 k shaders),
+    ~4-5 GB after. The layer's 6.4 GiB matches: RL really writes that much
+    (write faults 3.8 GiB of the first 4.2). The console's ~4.5 GiB commit
+    wall therefore needs swap in the layer (next), not tighter accounting.
+  - **`/proc/cpuinfo` from the real CPU (`layer/src/cpuinfo.c`).** It was a
+    fixed "AMD Custom APU 0405" text whose flags disagreed with CPUID (listed
+    fsgsbase, svm). Guests execute CPUID directly, so the file must say the
+    same: built from CPUID/XGETBV with Linux's flag names, Windows topology for
+    core ids and `/sys/.../topology`. Hostname is the machine's own name.
+    Nothing about the CPU or the hypervisor is added or hidden.
+
 - **2026-10-26 — Rocket League starts on the laptop through the whole stack**
   (console Wine build, real layer, gfx/ on the laptop GPU via
   `XRL_REAL_GFX=1`): it reports "Host OS: Linux (Wine 11.0)", creates its
