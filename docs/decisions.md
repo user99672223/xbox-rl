@@ -144,6 +144,34 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Swap for lazy memory (`layer/src/mem.c`).** Rocket League
+  writes 6.4 GiB while loading (natively too); the console's commit wall is
+  ~4.5 GiB, the laptop's free commit ~2 GB. Cold 64 KiB spans of lazy
+  anonymous memory go to a swap file in TEMP and are decommitted; a touch, or
+  a layer path handing memory to the kernel (`xrl_mem_populate`), brings them
+  back. Choices, each from a measurement:
+  - **Clock with probing** for coldness (PAGE_NOACCESS keeps the data; a touch
+    faults and marks it hot). No accessed bits on Windows; QueryWorkingSetEx /
+    write watch were rejected as uncertain on the console.
+  - **Pinned**: stacks and MADV_POPULATE memory (the kernel writes exception
+    frames there) are never probed or evicted.
+  - **Clean spans**: a span read back on a read fault keeps its record and stays
+    read-only; evicting it again needs no write (shader data is read-mostly).
+  - **Batching**: every protection change/decommit flushes the TLB on all cores;
+    per-span calls made an eviction 1.3 ms against a 0.3 ms write. Address-sorted
+    runs cut it to ~0.25 ms. Read-ahead pulls up to 7 following spans stored in
+    consecutive slots in one read.
+  - **Compression + sparse file**: each slot holds the span's XPRESS-compressed
+    image (Windows Compression API, available to app/games partitions); the file
+    is sparse and freed slots are punched out, so disk use is the compressed size.
+  - **Disk guard**: the file grows only while `XRL_SWAP_RESERVE_MB` (1 GiB) stays
+    free; past it eviction fails like a full swap partition.
+  - Bug found by the guest suite: a span queued twice in one clock pass lost its
+    record (its data came back as zeros); queued spans have their own state.
+  Laptop: Rocket League ran under a 1.5 GiB budget (thrashing at that size,
+  before batching/compression). Not yet run on the console (sparse files and the
+  Compression API there are unverified; both fall back cleanly).
+
 - **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
   ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
   where Rocket League hung after loading. Now real rt_sigframes (ucontext,

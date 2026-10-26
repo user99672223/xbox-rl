@@ -35,6 +35,9 @@
  *     sections; true coherent shared file mappings are NOT implemented.
  */
 #include "xrl_internal.h"
+#include <compressapi.h>
+#include <winioctl.h>
+#pragma comment(lib, "cabinet.lib")   /* Compression API (swap) */
 
 #define GRAN 0x10000ull
 static u64 LAZY_MIN = 0x40000ull;   /* smaller anonymous mmaps are committed at once (XRL_LAZY_MIN_KB) */
@@ -485,7 +488,7 @@ enum { SP_FREE, SP_HOT, SP_PROBE, SP_OUT, SP_QUEUED };   /* QUEUED: picked for t
 /* mask: pages whose copy in `slot` is valid: all of them when OUT; when HOT/PROBE
  * and `clean`, a span read back and not written since (its pages stay read-only,
  * so the first write faults and drops the copy) */
-typedef struct span { u64 base; u32 slot; u16 mask; u8 state, pinned, clean; } span;
+typedef struct span { u64 base; u32 slot; u16 mask, csz; u8 state, pinned, clean; } span;   /* csz: see store_span */
 static span *g_sp;
 static u32 g_nsp, g_capsp, g_hand;
 static u32 *g_spfree, g_nspfree, g_capspfree;
@@ -553,13 +556,15 @@ static int sp_get(u64 base)
         }
         idx = g_nsp++;
     }
-    g_sp[idx].base = base; g_sp[idx].slot = 0; g_sp[idx].mask = 0; g_sp[idx].state = SP_HOT; g_sp[idx].pinned = 0; g_sp[idx].clean = 0;
+    g_sp[idx].base = base; g_sp[idx].slot = 0; g_sp[idx].mask = 0; g_sp[idx].csz = 0; g_sp[idx].state = SP_HOT; g_sp[idx].pinned = 0; g_sp[idx].clean = 0;
     sph_put(idx);
     return (int)idx;
 }
 
+static int g_sparse_hole(u32 s);
 static void slot_free(u32 s)
 {
+    g_sparse_hole(s);
     if (g_nslotfree == g_capslotfree) {
         u32 c = g_capslotfree ? g_capslotfree * 2 : 1024;
         u32 *n = (u32 *)realloc(g_slotfree, (size_t)c * sizeof(u32));
@@ -615,6 +620,19 @@ static void sp_drop(u32 idx)
     g_spfree[g_nspfree++] = idx;
 }
 
+/* The swap file holds one 64 KiB slot per evicted span. A span's image (its
+ * committed lazy pages at their offsets, zeros elsewhere) is compressed with
+ * XPRESS (Windows' Compression API, also in the app/games partitions) and
+ * only the compressed blocks are written; the file is sparse, so a slot costs
+ * the disk what its data compresses to, and freeing a slot releases it.
+ * Spans that do not compress are stored as they are (csz = 0). */
+static COMPRESSOR_HANDLE g_cmp;
+static DECOMPRESSOR_HANDLE g_dcmp;
+static u8 *g_img, *g_cbuf, *g_rbuf;          /* span image, one record, read-ahead extent (8 slots) */
+static int g_sparse;
+static volatile LONG64 g_swap_disk;           /* bytes written to the file (compressed) */
+#define RA_MAX 8
+
 static int swap_open(void)
 {
     if (g_swapf != INVALID_HANDLE_VALUE) return 0;
@@ -623,11 +641,15 @@ static int swap_open(void)
     if (!n || n >= MAX_PATH - 40) { g_swap = 0; return -1; }
     wcscpy_s(g_swap_dir, MAX_PATH, dir);
     swprintf_s(path, MAX_PATH, L"%sxrl-swap-%lu.bin", dir, GetCurrentProcessId());
+    g_img = (u8 *)w_alloc(NULL, SPAN * (2 + RA_MAX), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!g_img) { LOGE("mem: no buffers for swap: swap off"); g_swap = 0; return -1; }
+    g_cbuf = g_img + SPAN;
+    g_rbuf = g_img + 2 * SPAN;
     CREATEFILE2_EXTENDED_PARAMETERS p;
     memset(&p, 0, sizeof p);
     p.dwSize = sizeof p;
     p.dwFileAttributes = FILE_ATTRIBUTE_TEMPORARY;
-    /* unbuffered: the pages go straight to the disk, not into file cache that
+    /* unbuffered: the data goes straight to the disk, not into file cache that
      * would eat the memory we are trying to free */
     p.dwFileFlags = FILE_FLAG_DELETE_ON_CLOSE | FILE_FLAG_NO_BUFFERING;
     g_swapf = CreateFile2(path, GENERIC_READ | GENERIC_WRITE, 0, CREATE_ALWAYS, &p);
@@ -636,7 +658,13 @@ static int swap_open(void)
         g_swap = 0;
         return -1;
     }
-    LOGI("mem: swap file %ls", path);
+    DWORD got;
+    g_sparse = DeviceIoControl(g_swapf, FSCTL_SET_SPARSE, NULL, 0, NULL, 0, &got, NULL) != 0;
+    if (!CreateCompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_cmp) ||
+        !CreateDecompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_dcmp)) {
+        g_cmp = NULL; g_dcmp = NULL;
+    }
+    LOGI("mem: swap file %ls (%s, %s)", path, g_sparse ? "sparse" : "not sparse", g_cmp ? "XPRESS-compressed" : "uncompressed");
     return 0;
 }
 
@@ -672,6 +700,23 @@ static int part_unprobe(u64 s, u64 e, vma *v, void *ctx)
     each_region(s, e, op_protect, &p);
     return 0;
 }
+static int part_readonly(u64 s, u64 e, vma *v, void *ctx)
+{
+    (void)v; (void)ctx;
+    DWORD p = PAGE_READONLY;   /* store_span reads it; a guest write waits on g_lock */
+    each_region(s, e, op_protect, &p);
+    return 0;
+}
+typedef struct dc_ctx { u64 bytes; } dc_ctx;
+static int op_dc(u64 s, u64 e, DWORD state, void *ctx)
+{
+    if (state != MEM_COMMIT) return 0;
+    VirtualFree((void *)s, (SIZE_T)(e - s), MEM_DECOMMIT);
+    ((dc_ctx *)ctx)->bytes += e - s;
+    return 0;
+}
+static int part_decommit(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_dc, ctx); }
+
 static void span_unprobe(u32 idx)
 {
     span_parts(g_sp[idx].base, part_unprobe, g_sp[idx].clean ? (void *)1 : NULL);
@@ -687,28 +732,6 @@ static void span_dirty(u32 idx)
     span_parts(p->base, part_unprobe, NULL);
 }
 
-typedef struct ev_ctx { u64 base; u32 slot; u32 mask; u64 bytes; DWORD err; } ev_ctx;
-static int op_ev_write(u64 s, u64 e, DWORD state, void *ctx)
-{
-    ev_ctx *c = (ev_ctx *)ctx;
-    if (state != MEM_COMMIT) return 0;
-    DWORD old;
-    w_protect((void *)s, e - s, PAGE_READONLY, &old);   /* the kernel reads it; a guest write waits on g_lock */
-    u64 off = (u64)c->slot * SPAN + (s - c->base);
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof ov);
-    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
-    DWORD w = 0;
-    u64 t0 = qpc();
-    BOOL wok = WriteFile(g_swapf, (void *)s, (DWORD)(e - s), &w, &ov);
-    g_io_wt += qpc() - t0; g_io_w++;
-    if (!wok || w != e - s) { c->err = GetLastError() ? GetLastError() : 1; return 1; }
-    for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
-    c->bytes += e - s;
-    return 0;
-}
-static int part_evict(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_ev_write, ctx); }
-
 typedef struct cm_ctx { u64 base; u32 mask; } cm_ctx;
 static int op_cmask(u64 s, u64 e, DWORD state, void *ctx)
 {
@@ -718,6 +741,50 @@ static int op_cmask(u64 s, u64 e, DWORD state, void *ctx)
 }
 static int part_cmask(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_cmask, ctx); }
 
+typedef struct img_ctx { u64 base; u32 mask; u64 bytes; } img_ctx;
+static int op_img(u64 s, u64 e, DWORD state, void *ctx)
+{
+    img_ctx *c = (img_ctx *)ctx;
+    if (state != MEM_COMMIT) return 0;
+    memcpy(g_img + (s - c->base), (const void *)s, (size_t)(e - s));
+    for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
+    c->bytes += e - s;
+    return 0;
+}
+static int part_img(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_img, ctx); }
+
+/* Write the span at `base` (its lazy parts readable) into `slot`: *mask = the
+ * pages saved, *csz = compressed size (0: stored raw). 0 ok, else a Win32 error. */
+static DWORD store_span(u64 base, u32 slot, u32 *mask, u16 *csz)
+{
+    memset(g_img, 0, SPAN);
+    img_ctx c = { base, 0, 0 };
+    span_parts(base, part_img, &c);
+    *mask = c.mask;
+    *csz = 0;
+    if (!c.mask) return 0;
+    const u8 *buf = g_img;
+    u32 len = (u32)SPAN;
+    SIZE_T n = 0;
+    if (g_cmp && Compress(g_cmp, g_img, SPAN, g_cbuf, SPAN, &n) && n && ALIGN_UP(n, LX_PAGE) < SPAN) {
+        memset(g_cbuf + n, 0, (size_t)(ALIGN_UP(n, LX_PAGE) - n));
+        buf = g_cbuf;
+        len = (u32)ALIGN_UP(n, LX_PAGE);
+        *csz = (u16)n;
+    }
+    u64 off = (u64)slot * SPAN;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD w = 0;
+    u64 t0 = qpc();
+    BOOL ok = WriteFile(g_swapf, buf, len, &w, &ov);
+    g_io_wt += qpc() - t0; g_io_w++;
+    if (!ok || w != len) return GetLastError() ? GetLastError() : 1;
+    InterlockedAdd64(&g_swap_disk, (LONG64)len);
+    return 0;
+}
+
 static u64 evict(u32 idx)
 {
     span *p = &g_sp[idx];
@@ -726,102 +793,118 @@ static u64 evict(u32 idx)
         cm_ctx cm = { p->base, 0 };
         span_parts(p->base, part_cmask, &cm);
         if (cm.mask && !(cm.mask & ~(u32)p->mask)) {   /* nothing new since it was read back: no write */
-            u64 bytes = 0;
-            for (u32 a = 0; a < 16;) {
-                if (!((cm.mask >> a) & 1)) { a++; continue; }
-                u32 b = a;
-                while (b < 16 && ((cm.mask >> b) & 1)) b++;
-                VirtualFree((void *)(p->base + (u64)a * LX_PAGE), (SIZE_T)(b - a) * LX_PAGE, MEM_DECOMMIT);
-                bytes += (u64)(b - a) * LX_PAGE;
-                a = b;
-            }
-            InterlockedAdd64(&g_committed, -(LONG64)bytes);
-            InterlockedAdd64(&g_swap_now, (LONG64)bytes);
-            InterlockedAdd64(&g_swap_clean, (LONG64)bytes);
+            dc_ctx d = { 0 };
+            span_parts(p->base, part_decommit, &d);
+            InterlockedAdd64(&g_committed, -(LONG64)d.bytes);
+            InterlockedAdd64(&g_swap_now, (LONG64)d.bytes);
+            InterlockedAdd64(&g_swap_clean, (LONG64)d.bytes);
             p->state = SP_OUT; p->mask = (u16)cm.mask; p->clean = 0;
-            return bytes;
+            return d.bytes;
         }
         span_dirty(idx);   /* new pages as well: write the whole span again */
-        span_parts(p->base, part_probe, NULL);
     }
     u32 slot = slot_alloc();
     if (slot == SLOT_NONE) { span_unprobe(idx); return 0; }   /* swap full: stays */
-    ev_ctx c = { p->base, slot, 0, 0, 0 };
-    span_parts(p->base, part_evict, &c);
-    if (c.err) {
+    span_parts(p->base, part_readonly, NULL);
+    u32 mask;
+    u16 csz;
+    DWORD err = store_span(p->base, slot, &mask, &csz);
+    if (err) {
         static volatile LONG once;
-        if (!InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): span kept in memory", c.err);
+        if (!InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): span kept in memory", err);
         span_parts(p->base, part_unprobe, NULL);
-        slot_free(c.slot);
+        slot_free(slot);
         p->state = SP_HOT;
         return 0;
     }
-    if (!c.mask) { slot_free(c.slot); sp_drop(idx); return 0; }
-    for (u32 a = 0; a < 16;) {
-        if (!((c.mask >> a) & 1)) { a++; continue; }
-        u32 b = a;
-        while (b < 16 && ((c.mask >> b) & 1)) b++;
-        VirtualFree((void *)(p->base + (u64)a * LX_PAGE), (SIZE_T)(b - a) * LX_PAGE, MEM_DECOMMIT);
-        a = b;
-    }
-    InterlockedAdd64(&g_committed, -(LONG64)c.bytes);
-    InterlockedAdd64(&g_swap_out, (LONG64)c.bytes);
-    InterlockedAdd64(&g_swap_now, (LONG64)c.bytes);
-    p->state = SP_OUT; p->slot = c.slot; p->mask = (u16)c.mask;
-    return c.bytes;
+    if (!mask) { slot_free(slot); sp_drop(idx); return 0; }
+    dc_ctx d = { 0 };
+    span_parts(p->base, part_decommit, &d);
+    InterlockedAdd64(&g_committed, -(LONG64)d.bytes);
+    InterlockedAdd64(&g_swap_out, (LONG64)d.bytes);
+    InterlockedAdd64(&g_swap_now, (LONG64)d.bytes);
+    p->state = SP_OUT; p->slot = slot; p->mask = (u16)mask; p->csz = csz;
+    return d.bytes;
 }
 
 static slong commit_account_ex(u64 len, u64 xs, u64 xe);
 
-/* Read an evicted span back (commit, fill, the mappings' protections). With
- * `keep_clean` (a read fault) the copy in the file stays valid and writable
- * mappings come back read-only. */
-static slong swapin(u32 idx, int keep_clean)
+/* Protection for read-back pages in [s,e): the mappings' own, minus write when clean. */
+static void protect_back(u64 s, u64 e, int clean)
+{
+    for (size_t i = vma_lower(s); i < g_n && g_v[i].start < e; i++) {
+        int pr = g_v[i].prot;
+        if (clean) pr &= ~LX_PROT_WRITE;
+        if (pr == (LX_PROT_READ | LX_PROT_WRITE)) continue;
+        u64 ps = g_v[i].start > s ? g_v[i].start : s, pe = g_v[i].end < e ? g_v[i].end : e;
+        DWORD old;
+        w_protect((void *)ps, pe - ps, pr ? winprot(pr, NULL) : PAGE_NOACCESS, &old);
+    }
+}
+
+/* Bring an evicted span back from its record `rec` (NULL: read it from the
+ * file). Commits its valid pages, fills them, sets the mappings' protections;
+ * with `keep_clean` (a read fault) the record stays valid and writable
+ * mappings come back read-only. [xs,xe) is never evicted to make room. */
+static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
 {
     span *p = &g_sp[idx];
     u64 base = p->base;
     u32 m = p->mask;
-    slong r = commit_account_ex((u64)popcnt16(m) * LX_PAGE, base, base + SPAN);   /* may evict others, never this one */
+    u64 bytes = (u64)popcnt16(m) * LX_PAGE;
+    slong r = commit_account_ex(bytes, xs, xe);   /* may evict others (and reuse g_img/g_cbuf): before any of that */
     if (r) return r;
     p = &g_sp[idx];
-    for (u32 a = 0; a < 16 && !r;) {
-        if (!((m >> a) & 1)) { a++; continue; }
-        u32 b = a;
-        while (b < 16 && ((m >> b) & 1)) b++;
-        u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;   /* (one run of saved pages) */
-        if (!w_alloc((void *)s, e - s, MEM_COMMIT, PAGE_READWRITE)) { r = -LX_ENOMEM; break; }
-        u64 off = (u64)p->slot * SPAN + (u64)a * LX_PAGE;
+    if (!rec) {
+        u32 len = p->csz ? (u32)ALIGN_UP(p->csz, LX_PAGE) : (u32)SPAN;
+        u64 off = (u64)p->slot * SPAN;
         OVERLAPPED ov;
         memset(&ov, 0, sizeof ov);
         ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
         DWORD got = 0;
         u64 t0 = qpc();
-        BOOL rok = ReadFile(g_swapf, (void *)s, (DWORD)(e - s), &got, &ov);
+        BOOL ok = ReadFile(g_swapf, g_cbuf, len, &got, &ov);
         g_io_rt += qpc() - t0; g_io_r++;
-        if (!rok || got != e - s) {
-            LOGE("mem: swap read of %llx failed (%lu)", s, GetLastError());
-            r = -LX_EIO;
-            break;
+        if (!ok || got != len) {
+            LOGE("mem: swap read of %llx failed (%lu)", base, GetLastError());
+            InterlockedAdd64(&g_committed, -(LONG64)bytes);
+            return -LX_EIO;
         }
-        for (size_t i = vma_lower(s); i < g_n && g_v[i].start < e; i++) {
-            int pr = g_v[i].prot;
-            if (keep_clean) pr &= ~LX_PROT_WRITE;
-            if (pr == (LX_PROT_READ | LX_PROT_WRITE)) continue;
-            u64 ps = g_v[i].start > s ? g_v[i].start : s, pe = g_v[i].end < e ? g_v[i].end : e;
-            DWORD old;
-            w_protect((void *)ps, pe - ps, pr ? winprot(pr, NULL) : PAGE_NOACCESS, &old);
+        rec = g_cbuf;
+    }
+    const u8 *img = rec;
+    if (p->csz) {
+        SIZE_T out = 0;
+        if (!Decompress(g_dcmp, rec, p->csz, g_img, SPAN, &out) || out != SPAN) {
+            LOGE("mem: swap record of %llx does not decompress (%lu)", base, GetLastError());
+            InterlockedAdd64(&g_committed, -(LONG64)bytes);
+            return -LX_EIO;
         }
+        img = g_img;
+    }
+    for (u32 a = 0; a < 16;) {
+        if (!((m >> a) & 1)) { a++; continue; }
+        u32 b = a;
+        while (b < 16 && ((m >> b) & 1)) b++;
+        u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;
+        if (!w_alloc((void *)s, e - s, MEM_COMMIT, PAGE_READWRITE)) {
+            LOGE("mem: cannot commit %llx to read it back", s);
+            InterlockedAdd64(&g_committed, -(LONG64)bytes);
+            return -LX_ENOMEM;   /* the record stays: the span is still OUT */
+        }
+        memcpy((void *)s, img + (s - base), (size_t)(e - s));
+        protect_back(s, e, keep_clean);
         a = b;
     }
-    u64 bytes = (u64)popcnt16(m) * LX_PAGE;
-    if (r) { InterlockedAdd64(&g_committed, -(LONG64)bytes); return r; }   /* partly read: the span stays OUT */
     InterlockedAdd64(&g_swap_in, (LONG64)bytes);
     InterlockedAdd64(&g_swap_now, -(LONG64)bytes);
     p->state = SP_HOT;
-    if (keep_clean) p->clean = 1;   /* slot and mask stay: the copy is still good */
+    if (keep_clean) p->clean = 1;   /* slot, mask and csz stay: the record is still good */
     else { slot_free(p->slot); p->mask = 0; p->clean = 0; }
     return 0;
 }
+
+static slong swapin(u32 idx, int keep_clean) { return load_span(idx, NULL, keep_clean, g_sp[idx].base, g_sp[idx].base + SPAN); }
 
 /* Visit the spans overlapping [s,e) (stepping by span, or over the table when
  * the range is much larger than what is tracked). */
@@ -838,67 +921,37 @@ static void spans_in(u64 s, u64 e, span_visit fn)
     }
 }
 
-/* Protection for read-back pages in [s,e): the mappings' own, minus write when clean. */
-static void protect_back(u64 s, u64 e, int clean)
-{
-    for (size_t i = vma_lower(s); i < g_n && g_v[i].start < e; i++) {
-        int pr = g_v[i].prot;
-        if (clean) pr &= ~LX_PROT_WRITE;
-        if (pr == (LX_PROT_READ | LX_PROT_WRITE)) continue;
-        u64 ps = g_v[i].start > s ? g_v[i].start : s, pe = g_v[i].end < e ? g_v[i].end : e;
-        DWORD old;
-        w_protect((void *)ps, pe - ps, pr ? winprot(pr, NULL) : PAGE_NOACCESS, &old);
-    }
-}
-
-/* A fault in an evicted span: read it and up to 7 following spans that were
- * written to consecutive slots in one read (loading is mostly sequential);
- * the extra ones come back clean. */
+/* A fault in an evicted span: read it and up to RA_MAX-1 following spans
+ * whose records sit in consecutive slots in one read (loading is mostly
+ * sequential; holes of the sparse file cost nothing); the extra ones come
+ * back clean. */
 static slong swapin_ahead(u32 idx, int keep_clean)
 {
     span *p = &g_sp[idx];
-    if (g_swap_nora || p->mask != 0xffff || g_swapf == INVALID_HANDLE_VALUE) return swapin(idx, keep_clean);
-    u32 run[8];
+    if (g_swap_nora || g_swapf == INVALID_HANDLE_VALUE) return swapin(idx, keep_clean);
+    u32 run[RA_MAX];
     int k = 1;
     run[0] = idx;
-    while (k < 8) {
+    while (k < RA_MAX) {
         int j = sp_find(p->base + (u64)k * SPAN);
-        if (j < 0 || g_sp[j].state != SP_OUT || g_sp[j].mask != 0xffff || g_sp[j].slot != p->slot + (u32)k) break;
+        if (j < 0 || g_sp[j].state != SP_OUT || g_sp[j].slot != p->slot + (u32)k) break;
         run[k++] = (u32)j;
     }
     if (k == 1) return swapin(idx, keep_clean);
-    u64 a = p->base, b = a + (u64)k * SPAN, bytes = b - a;
-    if (commit_account_ex(bytes, a, b)) return swapin(idx, keep_clean);   /* tight: just this one */
-    p = &g_sp[idx];
-    if (!w_alloc((void *)a, bytes, MEM_COMMIT, PAGE_READWRITE)) {
-        InterlockedAdd64(&g_committed, -(LONG64)bytes);
-        return swapin(idx, keep_clean);
-    }
+    u64 a = p->base, b = a + (u64)k * SPAN;
     u64 off = (u64)p->slot * SPAN;
     OVERLAPPED ov;
     memset(&ov, 0, sizeof ov);
     ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
     DWORD got = 0;
     u64 t0 = qpc();
-    BOOL ok = ReadFile(g_swapf, (void *)a, (DWORD)bytes, &got, &ov);
+    BOOL ok = ReadFile(g_swapf, g_rbuf, (DWORD)(k * SPAN), &got, &ov);
     g_io_rt += qpc() - t0; g_io_r++;
-    if (!ok || got != bytes) {
-        LOGE("mem: swap read of %llx (+%llu KiB) failed (%lu)", a, bytes >> 10, GetLastError());
-        VirtualFree((void *)a, (SIZE_T)bytes, MEM_DECOMMIT);
-        InterlockedAdd64(&g_committed, -(LONG64)bytes);
-        return -LX_EIO;
-    }
-    protect_back(a, a + SPAN, keep_clean);
-    protect_back(a + SPAN, b, 1);
-    InterlockedAdd64(&g_swap_in, (LONG64)bytes);
-    InterlockedAdd64(&g_swap_now, -(LONG64)bytes);
-    for (int q = 0; q < k; q++) {
-        span *r = &g_sp[run[q]];
-        r->state = SP_HOT;
-        if (q == 0 && !keep_clean) { slot_free(r->slot); r->mask = 0; r->clean = 0; }
-        else r->clean = 1;   /* copy in the file still good */
-    }
-    g_ra_spans += (u64)(k - 1);
+    if (!ok || got != (DWORD)(k * SPAN)) return swapin(idx, keep_clean);
+    slong r = load_span(idx, g_rbuf, keep_clean, a, b);
+    if (r) return r;
+    for (int q = 1; q < k; q++)
+        if (g_sp[run[q]].state == SP_OUT && !load_span(run[q], g_rbuf + (u64)q * SPAN, 1, a, b)) g_ra_spans++;
     return 0;
 }
 
@@ -986,42 +1039,6 @@ static void probe_batch(u32 *v, int n)
     }
 }
 
-typedef struct evb_ctx { u64 base; u32 slot; u32 mask; u64 bytes; DWORD err; } evb_ctx;
-static int op_evb_write(u64 s, u64 e, DWORD state, void *ctx)
-{
-    evb_ctx *c = (evb_ctx *)ctx;
-    if (state != MEM_COMMIT) return 0;
-    u64 off = (u64)c->slot * SPAN + (s - c->base);
-    OVERLAPPED ov;
-    memset(&ov, 0, sizeof ov);
-    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
-    DWORD w = 0;
-    u64 t0 = qpc();
-    BOOL ok = WriteFile(g_swapf, (void *)s, (DWORD)(e - s), &w, &ov);
-    g_io_wt += qpc() - t0; g_io_w++;
-    if (!ok || w != e - s) { c->err = GetLastError() ? GetLastError() : 1; return 1; }
-    for (u64 q = s; q < e; q += LX_PAGE) c->mask |= 1u << ((q - c->base) >> 12);
-    c->bytes += e - s;
-    return 0;
-}
-static int part_evb_write(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_evb_write, ctx); }
-static int part_readonly(u64 s, u64 e, vma *v, void *ctx)
-{
-    (void)v; (void)ctx;
-    DWORD p = PAGE_READONLY;   /* the kernel reads it for WriteFile; a guest write waits on g_lock */
-    each_region(s, e, op_protect, &p);
-    return 0;
-}
-typedef struct dc_ctx { u64 bytes; } dc_ctx;
-static int op_dc(u64 s, u64 e, DWORD state, void *ctx)
-{
-    if (state != MEM_COMMIT) return 0;
-    VirtualFree((void *)s, (SIZE_T)(e - s), MEM_DECOMMIT);
-    ((dc_ctx *)ctx)->bytes += e - s;
-    return 0;
-}
-static int part_decommit(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_dc, ctx); }
-
 /* Write out the probed, dirty spans v[0..n): per run, one read-only pass,
  * one write per span (into its own slot), one decommit pass. */
 static u64 evict_batch(u32 *v, int n)
@@ -1035,15 +1052,17 @@ static u64 evict_batch(u32 *v, int n)
         u64 a = g_sp[v[i]].base, b = a + (u64)k * SPAN;
         range_parts(a, b, part_readonly, NULL);
         u32 slots[64], masks[64];
+        u16 cszs[64];
         int bad = 0;
         for (int q = 0; q < k && !bad; q++) {
-            evb_ctx c = { g_sp[v[i + q]].base, slot_alloc(), 0, 0, 0 };
-            if (c.slot == SLOT_NONE) c.err = ERROR_DISK_FULL;
-            else span_parts(c.base, part_evb_write, &c);
-            slots[q] = c.slot; masks[q] = c.mask;
-            if (c.err) {
+            u32 slot = slot_alloc();
+            u32 mask = 0;
+            u16 csz = 0;
+            DWORD err = slot == SLOT_NONE ? ERROR_DISK_FULL : store_span(g_sp[v[i + q]].base, slot, &mask, &csz);
+            slots[q] = slot; masks[q] = mask; cszs[q] = csz;
+            if (err) {
                 static volatile LONG once;
-                if (c.err != ERROR_DISK_FULL && !InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): spans kept in memory", c.err);
+                if (err != ERROR_DISK_FULL && !InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): spans kept in memory", err);
                 for (int z = 0; z <= q; z++) if (slots[z] != SLOT_NONE) slot_free(slots[z]);
                 range_parts(a, b, part_unprobe, NULL);
                 for (int z = 0; z < k; z++) g_sp[v[i + z]].state = SP_HOT;
@@ -1061,7 +1080,7 @@ static u64 evict_batch(u32 *v, int n)
                 u32 idx = v[i + q];
                 if (!masks[q]) { slot_free(slots[q]); sp_drop(idx); g_clk_empty++; continue; }
                 span *p = &g_sp[idx];
-                p->state = SP_OUT; p->slot = slots[q]; p->mask = (u16)masks[q]; p->clean = 0;
+                p->state = SP_OUT; p->slot = slots[q]; p->mask = (u16)masks[q]; p->csz = cszs[q]; p->clean = 0;
                 g_clk_evicts++;
             }
         }
@@ -1120,6 +1139,16 @@ static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
 /* Before committing `len` more bytes: probe ahead above 80% of the budget,
  * evict when the commit would come within 16 MiB of it. */
 static void swap_disable(void) { g_swap = 0; }
+/* a freed slot gives its blocks back to the disk */
+static int g_sparse_hole(u32 slot)
+{
+    if (!g_sparse) return 0;
+    FILE_ZERO_DATA_INFORMATION z;
+    z.FileOffset.QuadPart = (LONGLONG)slot * (LONGLONG)SPAN;
+    z.BeyondFinalZero.QuadPart = z.FileOffset.QuadPart + (LONGLONG)SPAN;
+    DWORD got;
+    return DeviceIoControl(g_swapf, FSCTL_SET_ZERO_DATA, &z, sizeof z, NULL, 0, &got, NULL) ? 0 : -1;
+}
 static void swap_reserve(u64 bytes) { g_swap_reserve = bytes; }
 static void swap_knobs(void)
 {
@@ -1134,12 +1163,13 @@ void xrl_mem_clock_stats(char *b, size_t n)
     LARGE_INTEGER f; QueryPerformanceFrequency(&f);
     double us = 1e6 / (double)f.QuadPart;
     snprintf(b, n, "clock: %lld eviction runs, %lld steps, %lld probes, %lld evictions (%.0f us each), %lld empty; "
-             "writes %lld (%.0f us avg), reads %lld (%.0f us avg), %lld spans read ahead; %u spans, %u slots",
+             "writes %lld (%.0f us avg), reads %lld (%.0f us avg), %lld spans read ahead; %u spans, %u slots; "
+             "%llu MiB stored as %llu MiB on disk",
              (long long)g_clk_runs, (long long)g_clk_steps, (long long)g_clk_probes, (long long)g_clk_evicts,
              g_clk_evicts ? (double)g_ev_t * us / (double)g_clk_evicts : 0.0, (long long)g_clk_empty,
              (long long)g_io_w, g_io_w ? (double)g_io_wt * us / (double)g_io_w : 0.0,
              (long long)g_io_r, g_io_r ? (double)g_io_rt * us / (double)g_io_r : 0.0, (long long)g_ra_spans,
-             g_nsp - g_nspfree, g_nslots);
+             g_nsp - g_nspfree, g_nslots, (u64)g_swap_out >> 20, (u64)g_swap_disk >> 20);
 }
 
 static void swap_room(u64 len, u64 xs, u64 xe)
