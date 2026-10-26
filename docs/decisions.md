@@ -144,6 +144,51 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Keyboard, mouse and a framebuffer for a Linux desktop: ABI v3, evdev devices, `/dev/fb0`.**
+  Branch `claude/linux-display`. The spec for the guest-visible parts is in `docs/syscall-abi.md` ("ABI v3").
+  - **Events speak Linux.** `xrl_input_event` uses evdev's types and codes (`KEY_*`/`BTN_*`, `REL_*`, `ABS_*`) rather
+    than SDL scancodes or Win32 virtual keys: the layer's `/dev/input/event*` then pass them through almost
+    verbatim, Wine's xrlhost needs one table (Linux key -> PS/2 scancode) for `SendInput`, and each front-end
+    needs one table into the common vocabulary (SDL: `host/src/input_keymap.h`, USB HID usage -> Linux key, which
+    is positional like the codes; Win32 test window: set-1 scancode, identical to Linux below 0x59, a short table
+    for the E0 keys). Text (`XRL_IEV_TEXT`) is separate because Linux guests have their own keymap (X) and Wine makes
+    `WM_CHAR` itself. SDL text input is not started on the console (it would raise the on-screen keyboard);
+    TEXT events appear only if a front-end sends them.
+  - **A queue with one consumer, and the state kept in the queue.** Key repeat, held-key release on focus loss and
+    motion coalescing/dropping live in `input_queue.cpp`, once, so every front-end and consumer gets the same
+    behaviour. `wait_events` gives the guest something to block on without the host knowing about guest threads;
+    the layer's pump thread turns it into `xrl_io_notify()` so `poll`/`epoll` on the evdev fds work. The cost of a
+    single consumer is that evdev and Wine's xrlhost cannot both be live; Wine on the same desktop as Linux apps
+    would need the layer to be the one consumer and Wine to read evdev too (not needed yet).
+  - **Two pointer devices, mode chosen by who is listening.** A relative mouse (`event1`) needs the host to capture
+    the cursor; an absolute pointer (`event2`, a VM tablet's shape) follows the host cursor and is what a desktop
+    wants. The layer puts the host in relative mode only while `event1` is open and `event2` is not; opening
+    `event2` (or neither) keeps the cursor free. Left Ctrl+Left Alt releases a capture so the user can leave the
+    window. Absolute positions are normalized over the aspect-fitted picture (`set_content_size`), so the guest sees
+    pixel-exact pointing whatever the window size or letterboxing.
+  - **`/dev/fb0` as live memory, presented by polling.** The layer's file mmaps are copies (read at map time,
+    written back at unmap), useless for a framebuffer. Two small hooks (`xfile_ops.mapped/unmapped`, called from
+    `map_range`/`vma_unmap_range` under the memory lock) tell the device where the guest's mapping is, and a
+    presenter thread then reads that memory directly. There is no scan-out to ask about dirty pixels (Windows'
+    write-watch needs memory allocated with a flag; ours is the layer's arena), so the thread compares the visible
+    rows with its last snapshot (8 MB of reads per 8 ms at 1080p while the picture is idle) and presents only on a
+    change; `present_framebuffer` waits for vblank, so a moving picture is paced at the refresh rate. The snapshot is
+    taken under the device lock so `munmap` never frees pixels the presenter is reading, then the lock is released
+    before the vblank wait. Read faults (the guest `mprotect`ed the mapping) are caught and drop the mapping.
+  - **The host blit is a native D3D11 fullscreen triangle** (`gfx/src/fbpresent.cpp`, two shader-model-4.0 blobs
+    compiled offline with fxc and embedded, `gfx/src/fb_shaders.h`): same swapchain code as the guest's native
+    D3D11 path (`HostSwapchainCreate11`, CoreWindow on the console, the test HWND on the laptop), bilinear, black
+    bars computed in the viewport. Chosen over D3D12 (needs queues, fences, root signatures for the same result) and
+    over `DXGI_SCALING_ASPECT_RATIO_STRETCH` (CoreWindow only; the laptop path would differ). The window has one
+    swapchain: a Windows game's own swapchain and this cannot share a window.
+  - **Verified on the laptop (not on the console):** `layer/tests/fbdemo-test.sh` (XRL_REAL_GFX=1 window; the fbdemo
+    guest checks the device ioctls, mmap/pread/pwrite coherence, and the exact event sequences injected through
+    `XRL_INPUT_SCRIPT`) passes with TOTAL FAILS=0, and a screenshot of the window shows the picture with the pointer
+    where the events put it (`results/display-fbdemo.png`); `xrl_inq_test` covers the queue and the HID map; the
+    layer's regression suite stays at 0 fails; the UWP builds of the layer and gfx compile and link; `sdl_main.cpp`
+    compiles against the vendored SDL headers. The console path (SDL input, CoreWindow swapchain for the blit) has
+    not been run.
+
 - **2026-10-26 — `XRL_D3D11=native`: the game's D3D11 can run on a native D3D11 device instead of D3D11On12;
   measured on the laptop at RL's title menu it halves the render thread's CPU and cuts Present ~4x. Opt-in; the
   default (D3D11On12) is unchanged.** Branch `claude/d3d11-native` (gfx commit da923fc).
