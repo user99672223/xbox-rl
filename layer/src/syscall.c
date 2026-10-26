@@ -899,6 +899,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         const slong args[6] = { a1, a2, a3, a4, a5, a6 };
         xrl_sig_at_return(t, nr, args, (const u64 *)frame, r, NULL);
     }
+    if (t && t->restore_sigmask) xrl_sig_after_syscall(t);
     if (t) t->in_sys--;
     xrl_teb_restore(t, was_guest);
     return r;

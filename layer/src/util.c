@@ -304,7 +304,7 @@ u64 xrl_ts_to_ns(const lx_timespec *ts)
     return (u64)ts->tv_sec * 1000000000ull + (u64)ts->tv_nsec;
 }
 
-int xrl_wait_addr(volatile void *addr, void *cmp, size_t sz, u64 ns)
+static int wait_addr_raw(volatile void *addr, void *cmp, size_t sz, u64 ns)
 {
     for (;;) {
         DWORD ms;
@@ -325,7 +325,25 @@ int xrl_wait_addr(volatile void *addr, void *cmp, size_t sz, u64 ns)
     }
 }
 
+/* Blocking in the layer lets another member of a fork group run (proc.c, "fork groups"). */
+int xrl_wait_addr(volatile void *addr, void *cmp, size_t sz, u64 ns)
+{
+    int rel = xrl_swap_block();
+    int r = wait_addr_raw(addr, cmp, sz, ns);
+    if (rel) xrl_swap_resume();
+    return r;
+}
+
+static slong sleep_ns_raw(u64 ns, int *interrupted);
 slong xrl_sleep_ns(u64 ns, int *interrupted)
+{
+    int rel = ns ? xrl_swap_block() : 0;
+    slong r = sleep_ns_raw(ns, interrupted);
+    if (rel) xrl_swap_resume();
+    return r;
+}
+
+static slong sleep_ns_raw(u64 ns, int *interrupted)
 {
     xrl_thread *t = xrl_cur();
     if (interrupted) *interrupted = 0;

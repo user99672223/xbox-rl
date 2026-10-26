@@ -124,6 +124,8 @@ struct xrl_thread {
     volatile LONG suspended; /* SuspendThread'ed by xrl_proc_freeze while in guest code */
     int  leader;           /* first thread of a forked process (signals to the process prefer it) */
     int  sig_sender;       /* pid of the last process that signalled this thread (si_pid) */
+    int  restore_sigmask;  /* rt_sigsuspend: sigmask is the temporary one; saved_sigmask comes back after the handler (or at once) */
+    u64  saved_sigmask;
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
@@ -203,7 +205,8 @@ void xrl_futex_interrupt(xrl_thread *t);
  * cwd, umask, handlers, argv, pid) is per process and found through the calling thread (xrl_cur()->proc).
  */
 typedef struct xrl_files xrl_files;               /* fd.c: a refcounted fd table */
-typedef struct xrl_mm { u32 id; volatile LONG refs; } xrl_mm;   /* owner tag of the VMAs it maps (mem.c) */
+struct swapgrp;
+typedef struct xrl_mm { u32 id; volatile LONG refs; struct swapgrp *grp; } xrl_mm;   /* owner tag of the VMAs it maps (mem.c); grp: fork group (proc.c) */
 typedef struct xrl_msnap xrl_msnap;               /* mem.c: snapshot of an mm's writable private memory */
 
 #define XRL_CWD_MAX 1024
@@ -240,6 +243,8 @@ struct xrl_proc {
     size_t vfork_len;
     xrl_msnap *snap;                /* fork(): put the parent's memory back when the child leaves it */
     u32 snap_mm;
+    struct swapgrp *grp;            /* the fork group this process shares its address space with (NULL: none) */
+    xrl_msnap *saved;               /* its memory while another member's image is in the address space */
 };
 
 void xrl_proc_init(void);                       /* boot: create the init process (pid = Windows pid) */
@@ -258,6 +263,8 @@ void  xrl_proc_kill_threads(xrl_proc *p, xrl_thread *self, int keep_daemons);   
 void  xrl_proc_freeze(xrl_proc *p, xrl_thread *self);
 void  xrl_proc_thaw(xrl_proc *p);
 void  xrl_proc_park(xrl_thread *t);             /* syscall return: a frozen or stopped process waits here */
+int   xrl_swap_block(void);                     /* about to block in the layer: let another fork-group member run (1: released) */
+void  xrl_swap_resume(void);                    /* the wait is over: get the address space back */
 void  xrl_proc_exec_done(xrl_proc *p);          /* execve loaded the new image: release a vfork parent */
 void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its own (in place when it is the only user) */
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */
@@ -486,6 +493,7 @@ slong xrl_sys_sigaltstack(u64 ss, u64 oss);
 slong xrl_sys_tgkill(int tgid, int tid, int sig);
 slong xrl_sys_rt_sigreturn(void);
 slong xrl_sys_rt_sigsuspend(u64 mask, u64 size);
+void xrl_sig_after_syscall(xrl_thread *t);
 slong xrl_sys_rt_sigtimedwait(u64 set, u64 info, u64 ts, u64 size);
 int  xrl_sig_pending_for(xrl_thread *t);       /* unblocked pending bitmask nonzero? */
 void xrl_sig_install_veh(void);

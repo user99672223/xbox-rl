@@ -281,9 +281,10 @@ static int build_frame(xrl_thread *t, int sig, const lx_ksigaction *a, const lx_
     f.uc.uc_mcontext.trapno = r->pad[0];
     f.uc.uc_mcontext.err = r->pad[1];
     f.uc.uc_mcontext.cr2 = r->pad[2];
-    f.uc.uc_mcontext.oldmask = t->sigmask;
+    u64 interrupted_mask = t->restore_sigmask ? t->saved_sigmask : t->sigmask;   /* sigsuspend: the mask from before it */
+    f.uc.uc_mcontext.oldmask = interrupted_mask;
     f.uc.uc_mcontext.fpstate = fp;
-    f.uc.uc_sigmask = t->sigmask;
+    f.uc.uc_sigmask = interrupted_mask;
     f.info = *si;
     if (xrl_ctu(frame, &f, sizeof f)) return -1;
     sigpriv p;
@@ -595,8 +596,75 @@ slong xrl_sys_rt_sigreturn(void)
     return -LX_ENOSYS;
 }
 
-slong xrl_sys_rt_sigsuspend(u64 mask, u64 size) { (void)mask; (void)size; return -LX_ENOSYS; }
-slong xrl_sys_rt_sigtimedwait(u64 set, u64 info, u64 ts, u64 size) { (void)set; (void)info; (void)ts; (void)size; return -LX_ENOSYS; }
+/* sigsuspend: the temporary mask is in force while waiting and while the handler is being set up; the mask from
+ * before the call is what the handler's frame records, so rt_sigreturn puts it back (Linux's
+ * TIF_RESTORE_SIGMASK). If no handler runs, xrl_sig_after_syscall puts it back. */
+slong xrl_sys_rt_sigsuspend(u64 umask, u64 size)
+{
+    xrl_thread *t = xrl_cur();
+    u64 mask;
+    if (size != 8 || !t) return -LX_EINVAL;
+    if (xrl_cfu(&mask, umask, 8)) return -LX_EFAULT;
+    t->saved_sigmask = t->sigmask;
+    t->restore_sigmask = 1;
+    t->sigmask = mask & ~(SIGBIT(LX_SIGKILL) | SIGBIT(LX_SIGSTOP));
+    for (;;) {
+        LONG seen = xrl_io_epoch;
+        if (xrl_sig_pending_for(t)) break;
+        xrl_io_wait(seen, -1);
+    }
+    return -LX_EINTR;
+}
+
+void xrl_sig_after_syscall(xrl_thread *t)
+{
+    if (!t->restore_sigmask) return;
+    t->restore_sigmask = 0;
+    if (!t->sig_jump) t->sigmask = t->saved_sigmask;   /* a handler frame restores it through rt_sigreturn instead */
+}
+
+/* sigtimedwait: a signal of `set` (normally blocked, so it was queued without waking anyone: poll) */
+slong xrl_sys_rt_sigtimedwait(u64 uset, u64 uinfo, u64 uts, u64 size)
+{
+    xrl_thread *t = xrl_cur();
+    u64 set;
+    s64 tmo = -1;
+    if (size != 8 || !t) return -LX_EINVAL;
+    if (xrl_cfu(&set, uset, 8)) return -LX_EFAULT;
+    if (uts) {
+        lx_timespec ts;
+        if (xrl_cfu(&ts, uts, sizeof ts)) return -LX_EFAULT;
+        u64 ns = xrl_ts_to_ns(&ts);
+        if (ns == ~0ull) return -LX_EINVAL;
+        tmo = (s64)ns;
+    }
+    u64 deadline = tmo < 0 ? ~0ull : xrl_mono_ns() + (u64)tmo;
+    for (;;) {
+        u64 hit = t->sigpending & set;
+        if (hit) {
+            unsigned long b;
+            _BitScanForward64(&b, hit);
+            InterlockedAnd64((volatile LONG64 *)&t->sigpending, ~(1ll << b));
+            if (uinfo) {
+                lx_siginfo si;
+                memset(&si, 0, sizeof si);
+                si.si_signo = (int)b + 1;
+                si.si_code = SI_USER;
+                si.u.kill.si_pid = t->sig_sender;
+                si.u.kill.si_uid = t->proc->uid;
+                if (xrl_ctu(uinfo, &si, sizeof si)) return -LX_EFAULT;
+            }
+            return (slong)b + 1;
+        }
+        if (xrl_sig_pending_for(t)) return -LX_EINTR;
+        u64 now = xrl_mono_ns();
+        if (now >= deadline) return -LX_EAGAIN;
+        LONG seen = xrl_io_epoch;
+        u64 step = 5000000ull;
+        if (deadline != ~0ull && deadline - now < step) step = deadline - now;
+        xrl_io_wait(seen, (s64)step);
+    }
+}
 
 /* =============================================================== VEH */
 static const char *exc_name(DWORD c)

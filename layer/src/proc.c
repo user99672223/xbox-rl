@@ -39,9 +39,10 @@ static xrl_mm *mm_new(void)
     return m;
 }
 static void mm_ref(xrl_mm *m) { InterlockedIncrement(&m->refs); }
+static void mm_free(xrl_mm *m) { xrl_mm_release(m->id); free(m->grp); free(m); }
 static void mm_put(xrl_mm *m)
 {
-    if (m && InterlockedDecrement(&m->refs) == 0) { xrl_mm_release(m->id); free(m); }
+    if (m && InterlockedDecrement(&m->refs) == 0) mm_free(m);
 }
 
 /* -------------------------------------------------------- string vectors */
@@ -168,6 +169,94 @@ static xrl_proc *proc_dup(xrl_proc *pp, u64 flags)
     return c;
 }
 
+/* ----------------------------------------------------------- fork groups
+ * A fork() child that does not exec runs at the same addresses as its parent. Processes that share an address
+ * this way form a group: exactly one of them (the holder) runs guest code at a time, and the memory in the
+ * address space is the image of one member. A member about to block in the layer (wait4, a pipe read, a sleep,
+ * a futex) lets go of the baton (xrl_swap_block); when its wait ends it takes the baton back (xrl_swap_resume),
+ * and if another member's image is in memory by then, that image is snapshotted into the member and this one's
+ * is restored (the same snapshot code fork() uses). So a forked subshell and its parent both make progress
+ * while each sees its own memory: `(sleep 1; echo x) & echo y` prints y first, as a real fork does. A member
+ * that execs or exits leaves the group. Only single-threaded members take part (a thread that blocks cannot
+ * stop its siblings); a multi-threaded parent keeps the child-runs-to-completion schedule. */
+typedef struct swapgrp {
+    SRWLOCK lock;
+    CONDITION_VARIABLE cv;
+    xrl_proc *holder;     /* runs guest code now; NULL: nobody (everyone is blocked or waiting) */
+    xrl_proc *image;      /* whose memory is in the address space */
+    int image_valid;      /* 0: that process left, the memory is leftovers */
+} swapgrp;
+
+static int swap_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) { char v[4]; on = !(GetEnvironmentVariableA("XRL_FORK_SWAP", v, sizeof v) && v[0] == '0'); }
+    return on;
+}
+
+static void swap_in(swapgrp *g, xrl_proc *p)   /* p is the holder; the lock is not held (copying takes milliseconds) */
+{
+    if (g->image == p) return;
+    xrl_proc *old = g->image;
+    if (old && g->image_valid && p->mm) {
+        xrl_msnap *s = xrl_mem_snapshot(p->mm->id, fork_snapshot_cap());
+        if (s) { xrl_mem_snap_free(old->saved); old->saved = s; }
+        else LOGE("fork group: cannot save the memory of process %d (over XRL_FORK_SNAPSHOT_MB or out of memory); it will see process %d's data", old->pid, p->pid);
+    }
+    if (p->saved) { xrl_mem_snap_restore(p->saved); xrl_mem_snap_free(p->saved); p->saved = NULL; }
+    g->image = p;
+    g->image_valid = 1;
+}
+
+static void swap_acquire(swapgrp *g, xrl_proc *p, xrl_thread *t)
+{
+    AcquireSRWLockExclusive(&g->lock);
+    while (g->holder && g->holder != p) {
+        if (p->dying || (t && t->exec_kill)) break;   /* being killed: do not wait for anybody */
+        SleepConditionVariableSRW(&g->cv, &g->lock, 50, 0);
+    }
+    if (!g->holder) g->holder = p;
+    int mine = g->holder == p;
+    ReleaseSRWLockExclusive(&g->lock);
+    if (mine) swap_in(g, p);
+}
+
+int xrl_swap_block(void)
+{
+    xrl_thread *t = xrl_cur();
+    if (!t || !t->proc || !t->proc->grp) return 0;
+    xrl_proc *p = t->proc;
+    swapgrp *g = p->grp;
+    if (p->nthreads - p->ndaemons != 1) return 0;
+    int rel;
+    AcquireSRWLockExclusive(&g->lock);
+    rel = g->holder == p;
+    if (rel) { g->holder = NULL; WakeAllConditionVariable(&g->cv); }
+    ReleaseSRWLockExclusive(&g->lock);
+    return rel;
+}
+
+void xrl_swap_resume(void)
+{
+    xrl_thread *t = xrl_cur();
+    if (t && t->proc && t->proc->grp) swap_acquire(t->proc->grp, t->proc, t);
+}
+
+/* p ends or execs: it leaves the group. */
+static void swap_leave(xrl_proc *p)
+{
+    swapgrp *g = p->grp;
+    if (!g) return;
+    AcquireSRWLockExclusive(&g->lock);
+    if (g->holder == p) g->holder = NULL;
+    if (g->image == p) g->image_valid = 0;
+    p->grp = NULL;
+    WakeAllConditionVariable(&g->cv);
+    ReleaseSRWLockExclusive(&g->lock);
+    xrl_mem_snap_free(p->saved);
+    p->saved = NULL;
+}
+
 /* ------------------------------------------------------- fork / clone */
 /* Another process (flags have no CLONE_THREAD): see the file comment. */
 slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc)
@@ -192,6 +281,7 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
     np->ppid = np->parent->pid;
 
     int frozen = 0;
+    swapgrp *grp = NULL;
     if (sync) {
         np->vfork_ev = CreateEventW(NULL, TRUE, FALSE, NULL);
         np->vfork_parent = p;
@@ -202,7 +292,8 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
         np->vfork_len = (size_t)len;
         xrl_cfu(np->vfork_frame, fr, (size_t)len);
         if (snapshot_fork) {
-            if (pp->nthreads - pp->ndaemons > 1) { xrl_proc_freeze(pp, p); frozen = 1; }
+            int single = pp->nthreads - pp->ndaemons == 1;
+            if (!single) { xrl_proc_freeze(pp, p); frozen = 1; }
             LARGE_INTEGER q0, q1, f;
             QueryPerformanceCounter(&q0);
             np->snap = xrl_mem_snapshot(pp->mm->id, fork_snapshot_cap());
@@ -213,6 +304,23 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
             else
                 LOGW("fork: pid %d -> child %d: writable memory above XRL_FORK_SNAPSHOT_MB or out of memory; the child shares the "
                      "parent's memory (vfork semantics, what the child writes the parent sees)", pp->pid, np->pid);
+            if (np->snap && single && swap_enabled()) {   /* a fork group: the parent's image is saved, the child holds the baton */
+                if (!pp->mm->grp) {
+                    swapgrp *ng = (swapgrp *)calloc(1, sizeof *ng);
+                    InitializeSRWLock(&ng->lock);
+                    InitializeConditionVariable(&ng->cv);
+                    pp->mm->grp = ng;
+                }
+                grp = pp->mm->grp;
+                AcquireSRWLockExclusive(&grp->lock);
+                if (!pp->grp) { pp->grp = grp; if (!grp->holder) { grp->holder = pp; grp->image = pp; grp->image_valid = 1; } }
+                np->grp = grp;
+                xrl_mem_snap_free(pp->saved);
+                pp->saved = np->snap; np->snap = NULL;
+                grp->holder = np; grp->image = np; grp->image_valid = 1;
+                ReleaseSRWLockExclusive(&grp->lock);
+                CloseHandle(np->vfork_ev); np->vfork_ev = NULL; np->vfork_parent = NULL;
+            }
         }
     }
     if (flags & LX_CLONE_CHILD_SETTID) xrl_ctu(ctid, &t->tid, 4);
@@ -222,7 +330,11 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
     LOGI("%s: pid %d -> new process %d (flags 0x%llx%s)", vfork ? "vfork" : snapshot_fork ? "fork" : "clone", pp->pid, np->pid, flags,
          share_mm ? ", shared mm" : "");
     xrl_thread_start(t);
-    if (sync) {
+    if (grp) {
+        /* until the child execs, exits or blocks, the parent has nothing to run on: it takes the baton back then
+         * (and its own memory, if the child's image is in the address space) */
+        swap_acquire(grp, pp, p);
+    } else if (sync) {
         HANDLE ev = np->vfork_ev;
         WaitForSingleObject(ev, INFINITE);
         AcquireSRWLockExclusive(&g_proc_lock);   /* the child's release has finished with the event */
@@ -255,6 +367,7 @@ void xrl_proc_exec_done(xrl_proc *p) { xrl_proc_vfork_release(p); }
 void xrl_proc_exec_mm(xrl_proc *p)
 {
     xrl_mm *old = p->mm;
+    swap_leave(p);
     if (old->refs > 1) {
         p->mm = mm_new();
         mm_put(old);
@@ -411,7 +524,8 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
     if (reap) proc_unlink(p);
     ReleaseSRWLockExclusive(&g_proc_lock);
     LOGI("proc %d ended (wait status 0x%x)%s", p->pid, wstatus, reap ? ", reaped (SIGCHLD ignored)" : "");
-    if (mm && InterlockedDecrement(&mm->refs) == 0) { xrl_mm_release(mm->id); free(mm); }
+    if (mm && InterlockedDecrement(&mm->refs) == 0) mm_free(mm);
+    swap_leave(p);
     xrl_proc_vfork_release(p);
     if (par && !reap) xrl_proc_signal(par, p->exit_signal ? p->exit_signal : LX_SIGCHLD, 0);
     xrl_io_notify();
