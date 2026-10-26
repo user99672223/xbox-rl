@@ -1075,9 +1075,42 @@ static void test_fs(void)
     CHECK(sc3(1, rcm.fd, "q", 1) == 1, "received fd is a live duplicate of the pipe write end");
 }
 
+/* Linux keeps top-down mmaps below mmap_base, >= 128 MiB under the stack: the space right above a process's
+ * highest mapping is free, MAP_FIXED_NOREPLACE there gets exactly that address. The layer used to start its
+ * top-down mmaps at its arena's very end, with host (Windows) allocations right above. */
+static char mapsbuf[1 << 18];
+static void test_mmap_above_top(void)
+{
+    mmap_anon(4096, 3);   /* the newest top-down mapping */
+    long fd = sc3(2, "/proc/self/maps", 0, 0), n = 0, r;
+    while (fd >= 0 && n < (long)sizeof mapsbuf - 1 && (r = sc3(0, fd, mapsbuf + n, sizeof mapsbuf - 1 - n)) > 0) n += r;
+    if (fd >= 0) sc1(3, fd);
+    mapsbuf[n > 0 ? n : 0] = 0;
+    u64 top = 0;
+    for (char *p = mapsbuf; *p;) {
+        char *nl = p; while (*nl && *nl != '\n') nl++;
+        u64 s = 0, e = 0; char *q = p;
+        while (*q && *q != '-') { s = s * 16 + (u64)(*q <= '9' ? *q - '0' : *q - 'a' + 10); q++; }
+        if (*q == '-') q++;
+        while (*q && *q != ' ') { e = e * 16 + (u64)(*q <= '9' ? *q - '0' : *q - 'a' + 10); q++; }
+        char save = *nl; *nl = 0;
+        int special = find(p, "[stack]") || find(p, "[vdso]") || find(p, "[vvar]") || find(p, "[vsyscall]");
+        *nl = save;
+        if (!special && e > top) top = e;
+        p = *nl ? nl + 1 : nl;
+    }
+    CHECK(top != 0, "maps: the highest mapping");
+    u64 want = top + (16ull << 20);
+    long m = sc(9, want, 4096, 3, 0x100022 /* PRIVATE|ANON|FIXED_NOREPLACE */, -1, 0);
+    CHECK(m == (long)want, "MAP_FIXED_NOREPLACE 16 MiB above the highest mapping gets that address (free, as on Linux)");
+    if (m == (long)want) { *(volatile u64 *)want = 5; sc2(11, want, 4096); }
+    CHECK(sc(9, top - 4096, 4096, 3, 0x100022, -1, 0) == -17, "MAP_FIXED_NOREPLACE over the highest mapping -> -EEXIST");
+}
+
 static void test_mem(void)
 {
     out("memory:\n");
+    test_mmap_above_top();
     u8 *p = mmap_anon(1 << 20, 3);
     CHECK((long)p > 0x10000, "mmap anon 1MiB");
     p[0] = 1; p[(1 << 20) - 1] = 2;

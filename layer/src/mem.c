@@ -67,6 +67,7 @@ static int g_lazy = 1;   /* XRL_NO_LAZY=1: commit everything at mmap/mprotect ti
  * TEB view live (docs/gs-teb.md), so fewer is also safer. */
 static u64 g_lazy_chunk = 1ull << 20;
 static u64 g_arena_base, g_arena_size, g_arena_end;
+static u64 g_mmap_top;   /* where top-down mmaps start: below it, as Linux keeps mmap_base below the stack gap (xrl_mem_init) */
 static u64 g_brk_base, g_brk_limit, g_brk_cur;
 static u64 g_budget;
 static volatile LONG64 g_committed;
@@ -421,6 +422,12 @@ int xrl_mem_init(u64 budget)
     }
     if (!g_arena_base) { LOGE("mem: cannot reserve any arena"); return -1; }
     g_arena_end = g_arena_base + g_arena_size;
+    /* Linux puts mmap_base at least 128 MiB (MIN_GAP, the stack gap) below the top of the user address space, so
+     * the space right above a process's highest mapping is free: MAP_FIXED_NOREPLACE there succeeds. Starting
+     * top-down mmaps at the arena's very end put the highest image (the main program) directly under whatever
+     * Windows had placed above the arena, and every request just above it was answered EEXIST for a range the
+     * guest's own maps show as free. The gap stays inside the arena: guest space, free until asked for. */
+    { u64 gap = 128ull << 20; if (gap > g_arena_size / 64) gap = g_arena_size / 64; g_mmap_top = g_arena_end - gap; }
     /* brk heap: low 1/16 of the arena capped at 1 GiB */
     u64 brk_sz = g_arena_size / 16;
     if (brk_sz > (1ull << 30)) brk_sz = 1ull << 30;
@@ -1382,7 +1389,7 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
             if (!ensure_reserved(addr, addr + len)) target = addr;
         }
         if (!target) {
-            target = find_gap(len, g_arena_end);
+            target = find_gap(len, g_mmap_top);
             if (!target) { res = -LX_ENOMEM; goto out; }
         }
     }
@@ -1485,7 +1492,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
             target = new_addr;
             if (vma_unmap_range(target, target + new_len, 0)) { res = -LX_ENOMEM; goto out; }
         } else {
-            target = find_gap(new_len, g_arena_end);
+            target = find_gap(new_len, g_mmap_top);
             if (!target) { res = -LX_ENOMEM; goto out; }
         }
         res = map_range(target, new_len, prot == LX_PROT_NONE ? LX_PROT_NONE : (LX_PROT_READ | LX_PROT_WRITE), shared, NULL, 0, name, 1);
