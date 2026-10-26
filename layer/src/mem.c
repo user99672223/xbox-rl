@@ -864,6 +864,13 @@ static void protect_back(u64 s, u64 e, int clean)
     }
 }
 
+static int commit_or_evict(u64 s, u64 len, DWORD wp, u64 xs, u64 xe);
+static void decommit_mask(u64 base, u32 m)
+{
+    for (u32 a = 0; a < 16; a++)
+        if ((m >> a) & 1) VirtualFree((void *)(base + (u64)a * LX_PAGE), LX_PAGE, MEM_DECOMMIT);
+}
+
 /* Bring an evicted span back from its record `rec` (NULL: read it from the
  * file). Commits its valid pages, fills them, sets the mappings' protections;
  * with `keep_clean` (a read fault) the record stays valid and writable
@@ -876,6 +883,21 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
     u64 bytes = (u64)popcnt16(m) * LX_PAGE;
     slong r = commit_account_ex(bytes, xs, xe);   /* may evict others (and reuse g_img/g_cbuf): before any of that */
     if (r) return r;
+    /* commit (no access yet) before the record is read and decompressed: making room at
+     * Windows' commit limit evicts others through g_img/g_cbuf too */
+    for (u32 a = 0; a < 16;) {
+        if (!((m >> a) & 1)) { a++; continue; }
+        u32 b = a;
+        while (b < 16 && ((m >> b) & 1)) b++;
+        u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;
+        if (!commit_or_evict(s, e - s, PAGE_NOACCESS, xs, xe)) {
+            LOGE("mem: cannot commit %llx to read it back (win err %lu)", s, GetLastError());
+            decommit_mask(base, m);
+            InterlockedAdd64(&g_committed, -(LONG64)bytes);
+            return -LX_ENOMEM;   /* the record stays: the span is still OUT */
+        }
+        a = b;
+    }
     p = &g_sp[idx];
     if (!rec) {
         u32 len = (u32)p->nblk * BLK;
@@ -889,6 +911,7 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
         g_io_rt += qpc() - t0; g_io_r++;
         if (!ok || got != len) {
             LOGE("mem: swap read of %llx failed (%lu)", base, GetLastError());
+            decommit_mask(base, m);
             InterlockedAdd64(&g_committed, -(LONG64)bytes);
             return -LX_EIO;
         }
@@ -899,6 +922,7 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
         SIZE_T out = 0;
         if (!Decompress(g_dcmp, rec, p->csz, g_img, SPAN, &out) || out != SPAN) {
             LOGE("mem: swap record of %llx does not decompress (%lu)", base, GetLastError());
+            decommit_mask(base, m);
             InterlockedAdd64(&g_committed, -(LONG64)bytes);
             return -LX_EIO;
         }
@@ -909,7 +933,7 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
         u32 b = a;
         while (b < 16 && ((m >> b) & 1)) b++;
         u64 s = base + (u64)a * LX_PAGE, e = base + (u64)b * LX_PAGE;
-        if (!w_alloc((void *)s, e - s, MEM_COMMIT, PAGE_READWRITE)) {
+        if (!w_alloc((void *)s, e - s, MEM_COMMIT, PAGE_READWRITE)) {   /* committed above: only makes it writable */
             LOGE("mem: cannot commit %llx to read it back", s);
             InterlockedAdd64(&g_committed, -(LONG64)bytes);
             return -LX_ENOMEM;   /* the record stays: the span is still OUT */
@@ -1188,10 +1212,39 @@ void xrl_mem_clock_stats(char *b, size_t n)
              g_nsp - g_nspfree, g_nblocks >> 8, g_freeblk >> 8, (u64)g_swap_out >> 20, (u64)g_swap_disk >> 20);
 }
 
+/* The budget swap works to: g_budget, or less while Windows has under XRL_COMMIT_RESERVE_MB
+ * (default 512) of commit left. On the console the GPU and the host draw on the same limit,
+ * and the game's graphics grow in bursts (an arena load, a settings change): those
+ * allocations are not the guest's and fail outright, so the guest makes way beforehand.
+ * Looked at no more than every 50 ms. */
+static u64 swap_target(void)
+{
+    static u64 reserve = ~0ull, last, target = ~0ull;
+    if (reserve == ~0ull) {
+        char v[16];
+        reserve = (GetEnvironmentVariableA("XRL_COMMIT_RESERVE_MB", v, sizeof v) ? strtoull(v, NULL, 10) : 512ull) << 20;
+    }
+    u64 t = GetTickCount64();
+    if (reserve && t - last >= 50) {
+        last = t;
+        MEMORYSTATUSEX ms = { sizeof ms };
+        if (GlobalMemoryStatusEx(&ms)) {
+            u64 now = (u64)g_committed, avail = ms.ullAvailPageFile, floor = 512ull << 20, nt;
+            if (avail >= reserve) nt = now + (avail - reserve);
+            else nt = now > floor + (reserve - avail) ? now - (reserve - avail) : floor;
+            if (nt < g_budget && (target >= g_budget || (nt >> 28) != (target >> 28)))
+                LOGI("mem: %llu MiB of Windows commit left: swapping toward %llu MiB (budget %llu)",
+                     avail >> 20, nt >> 20, g_budget >> 20);
+            target = nt;
+        }
+    }
+    return target < g_budget ? target : g_budget;
+}
+
 static void swap_room(u64 len, u64 xs, u64 xe)
 {
     if (!g_swap || !g_nsp) return;
-    u64 now = (u64)g_committed, b = g_budget;
+    u64 now = (u64)g_committed, b = swap_target();
     u64 high = b > (64ull << 20) ? b - (16ull << 20) : b;
     if (now + len <= b / 10 * 8) return;
     if (now + len <= high) { clock_run(0, 2, 0, xs, xe); return; }
@@ -1218,6 +1271,27 @@ static void swap_room(u64 len, u64 xs, u64 xe)
     clock_run(want, (u64)g_nsp * 3 + 16, 1, xs, xe);
 }
 
+/* Windows' commit limit can come before the budget: the console's GPU memory and the host
+ * process share it, and the game's graphics grow while it runs (a settings change rebuilds
+ * its render targets). On ERROR_COMMITMENT_LIMIT, lower the budget to what fits now and
+ * evict cold memory outside [xs,xe), then try again. Lock held. */
+static int commit_or_evict(u64 s, u64 len, DWORD wp, u64 xs, u64 xe)
+{
+    for (int tries = 0;; tries++) {
+        if (w_alloc((void *)s, len, MEM_COMMIT, wp)) return 1;
+        if (GetLastError() != ERROR_COMMITMENT_LIMIT || !g_swap || !g_nsp || tries == 4) return 0;
+        u64 now = (u64)g_committed, floor = 1ull << 30;
+        u64 nb = now > floor + (64ull << 20) ? now - (64ull << 20) : floor;
+        if (nb < g_budget) {
+            LOGW("mem: Windows' commit limit reached at %llu MiB committed: budget %llu -> %llu MiB",
+                 now >> 20, g_budget >> 20, nb >> 20);
+            g_budget = nb;
+        }
+        g_clk_runs++;
+        if (!clock_run(len + (64ull << 20), (u64)g_nsp * 3 + 16, 1, xs, xe)) return 0;
+    }
+}
+
 /* Commit the reserved parts of [s,e) with `prot`, charging the budget; evicted
  * or probed spans in the range are restored first. Lock held. */
 static slong commit_lazy_locked(u64 s, u64 e, int prot)
@@ -1235,7 +1309,7 @@ static slong commit_lazy_locked(u64 s, u64 e, int prot)
         if (mbi.State != MEM_COMMIT) {
             slong r = commit_account_ex(re - s, s0, e0);
             if (r) return r;
-            if (!w_alloc((void *)s, re - s, MEM_COMMIT, wp)) {
+            if (!commit_or_evict(s, re - s, wp, s0, e0)) {
                 InterlockedAdd64(&g_committed, -(LONG64)(re - s));
                 return -LX_ENOMEM;
             }

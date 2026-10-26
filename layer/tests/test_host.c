@@ -154,6 +154,17 @@ int main(int argc, char **argv)
         ctx.audio = xrl_host_audio_ops();
     }
     ctx.guest_mem_budget = (GetEnvironmentVariableA("XRL_TEST_BUDGET_MB", mb, sizeof mb) ? strtoull(mb, NULL, 10) : 1024ull) << 20;
+    /* XRL_TEST_JOB_MB=N: a process commit limit below the budget, as on the console, where the
+     * GPU and the host share Windows' limit with the guest (commits fail with ERROR_COMMITMENT_LIMIT) */
+    if (GetEnvironmentVariableA("XRL_TEST_JOB_MB", mb, sizeof mb)) {
+        HANDLE job = CreateJobObjectA(NULL, NULL);
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {0};
+        li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+        li.ProcessMemoryLimit = (SIZE_T)strtoull(mb, NULL, 10) << 20;
+        if (!job || !SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li) ||
+            !AssignProcessToJobObject(job, GetCurrentProcess()))
+            printf("XRL_TEST_JOB_MB: job limit not applied (err %lu)\n", GetLastError());
+    }
     int rc = xrl_layer_boot(&ctx);
     printf("xrl_layer_boot returned %d\n", rc);
     return rc;
