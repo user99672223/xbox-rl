@@ -161,6 +161,9 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   and keeps the slot equal to SET_FS/CLONE_SETTLS. Cost: zero per access (one
   gs-relative load, no faults). Wine's PE TlsAlloc must reserve index 63.
   `XRL_NO_FSGSBASE=1` makes the desktop suite behave like the console.
+  **Verified on the console** (results/console-layer-test-2.txt): 94 checks,
+  0 failures; 6 cloned threads keep their TP across preemption; futex
+  ping-pong 1.25 M round trips/s (≈10x the laptop); clean self-exit.
   Rejected: trap-and-emulate of %fs faults (µs per access, needs a decoder);
   hash lookup via gs:[0x30] (slower, same rebuild cost).
 
