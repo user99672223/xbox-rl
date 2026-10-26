@@ -197,7 +197,9 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
   once, and reads a pixel back each frame. Under Wine on the layer with `XRL_REAL_GFX=1` all of them
   work, and `tools/test-present.sh` screenshots the host window for each and finds the colour the
   program last presented (51,153,255) in the centre (`results/present-N.png`,
-  `results/desktop-wine-present-1.txt`). What was missing and is now there:
+  `results/desktop-wine-present-1.txt`); with `PATTERN=1` the program holds four quadrants
+  (red, green / blue, yellow) and the screenshot has them in the right places and channel order for
+  both RGBA and BGRA (`results/present-pattern-N.png`). What was missing and is now there:
   - **A D3D11 swapchain object (`gfx/src/d3d11_swapchain.cpp`, ABI v2 append
     `xrl_gfx_ops.d3d11_create_swapchain` + `xrl_swapchain_desc`).** Wine's dxgi used to return the host's
     raw `IDXGISwapChain3`, whose `GetBuffer(IID_ID3D11Texture2D)` fails (`E_NOINTERFACE`), so no D3D11

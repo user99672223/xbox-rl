@@ -8,7 +8,10 @@
  * a new colour each frame and presents it, reads one pixel back through D3D11 each time, resizes
  * the buffers once, and prints what it did.  The last frames of every configuration are one fixed
  * colour (FINAL_*), so a screenshot of the host window can be compared with it.  `--only N` runs
- * configuration N alone and `--hold` keeps presenting that colour for that many seconds.
+ * configuration N alone and `--hold` keeps presenting that colour for that many seconds; with
+ * `--pattern` the held picture is four quadrants instead (top-left red, top-right green,
+ * bottom-left blue, bottom-right yellow, uploaded with UpdateSubresource in the buffer's own channel
+ * order) so a screenshot also shows that nothing is flipped or channel-swapped.
  *
  * Exit code: 0 when every required configuration worked.  Configuration 3 asks for the factory
  * through the device (IDXGIDevice -> adapter -> parent): on a D3D11On12 device that yields the
@@ -20,6 +23,7 @@
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define FINAL_R 51
@@ -54,6 +58,7 @@ static const struct config configs[] =
 #define NCONFIG (sizeof(configs) / sizeof(configs[0]))
 
 static int frames_per_config = 40;
+static int pattern;
 static HWND window;
 
 #define STEP(...) do { printf("  " __VA_ARGS__); printf("\n"); fflush(stdout); } while (0)
@@ -142,6 +147,26 @@ static void frame_color(int i, int total, float c[4])
     c[1] = (float)((i * 91 + 60) % 256) / 255.0f;
     c[2] = (float)((i * 13 + 120) % 256) / 255.0f;
     c[3] = 1.0f;
+}
+
+/* four quadrants, as R,G,B logical colours, laid out in the swapchain format's byte order */
+static void upload_pattern(struct frame_state *f, UINT w, UINT h)
+{
+    static const BYTE colors[4][3] = { { 255, 0, 0 }, { 0, 255, 0 }, { 0, 0, 255 }, { 255, 255, 0 } };
+    BYTE *px = malloc((size_t)w * h * 4);
+    UINT x, y;
+
+    for (y = 0; y < h; y++)
+        for (x = 0; x < w; x++)
+        {
+            const BYTE *c = colors[(y >= h / 2) * 2 + (x >= w / 2)];
+            BYTE *d = px + ((size_t)y * w + x) * 4;
+            if (f->format == DXGI_FORMAT_B8G8R8A8_UNORM) { d[0] = c[2]; d[1] = c[1]; d[2] = c[0]; }
+            else { d[0] = c[0]; d[1] = c[1]; d[2] = c[2]; }
+            d[3] = 255;
+        }
+    ID3D11DeviceContext_UpdateSubresource(f->ctx, (ID3D11Resource *)f->back, 0, NULL, px, w * 4, 0);
+    free(px);
 }
 
 static int run_frames(struct frame_state *f, UINT *w, UINT *h, int count, int *bad_pixels)
@@ -270,8 +295,12 @@ static int run_config(int index, ID3D11Device *shared_dev, ID3D11DeviceContext *
         fflush(stdout);
         while ((LONG)(end - GetTickCount()) > 0)
         {
-            ID3D11DeviceContext_OMSetRenderTargets(f.ctx, 1, &f.rtv, NULL);
-            ID3D11DeviceContext_ClearRenderTargetView(f.ctx, f.rtv, c);
+            if (pattern) upload_pattern(&f, w, h);
+            else
+            {
+                ID3D11DeviceContext_OMSetRenderTargets(f.ctx, 1, &f.rtv, NULL);
+                ID3D11DeviceContext_ClearRenderTargetView(f.ctx, f.rtv, c);
+            }
             if (FAILED(hr = IDXGISwapChain_Present(f.sc, 1, 0))) FAILED_STEP("Present while holding", hr);
             pump();
         }
@@ -308,6 +337,7 @@ int main(int argc, char **argv)
         if (!strcmp(argv[i], "--only") && i + 1 < argc) only = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--hold") && i + 1 < argc) hold = atof(argv[++i]);
         else if (!strcmp(argv[i], "--frames") && i + 1 < argc) frames_per_config = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--pattern")) pattern = 1;
         else if (!strcmp(argv[i], "--list"))
         {
             for (i = 0; i < (int)NCONFIG; i++) printf("%d %s\n", i, configs[i].name);

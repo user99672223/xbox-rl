@@ -12,7 +12,8 @@ param(
     [string]$Title = "xbox-rl (desktop host)",
     [string]$CommandLineMatch,     # pick the xrl_test_host whose command line contains this (several may run)
     [Parameter(Mandatory)][string]$Out,
-    [string]$Expect,               # "R,G,B"
+    [string]$Expect,               # "R,G,B" expected at the centre
+    [string]$Points,               # or several: "0.25,0.25:255,0,0;0.75,0.25:0,255,0" (x,y as fractions of the client area)
     [int]$Tolerance = 3,
     [int]$WaitSeconds = 20
 )
@@ -53,10 +54,19 @@ if ($h -eq [IntPtr]::Zero) { Write-Host "window '$Title' not found"; exit 2 }
 [void][XrlWin]::SetWindowPos($h, [IntPtr](-1), 0, 0, 0, 0, 0x0043)
 [void][XrlWin]::SetForegroundWindow($h)
 
-$want = if ($Expect) { @($Expect -split '[,\s]+' | ForEach-Object { [int]$_ }) } else { $null }
+$checks = @()
+if ($Points) {
+    foreach ($item in ($Points -split ';')) {
+        $xy, $rgb = $item -split ':'
+        $f = @($xy -split ',' | ForEach-Object { [double]::Parse($_, [Globalization.CultureInfo]::InvariantCulture) })
+        $checks += , @($f[0], $f[1], @($rgb -split ',' | ForEach-Object { [int]$_ }))
+    }
+} elseif ($Expect) {
+    $checks += , @(0.5, 0.5, @($Expect -split '[,\s]+' | ForEach-Object { [int]$_ }))
+}
 $dir = Split-Path -Parent $Out
 if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Force $dir | Out-Null }
-# The program is still starting up when the window appears: capture until the colour shows (or time runs out).
+# The program is still starting up when the window appears: capture until the colours show (or time runs out).
 $matched = $false
 do {
     Start-Sleep -Milliseconds 700   # let DWM compose a few presented frames
@@ -69,17 +79,23 @@ do {
     $g = [System.Drawing.Graphics]::FromImage($bmp)
     $g.CopyFromScreen($p.X, $p.Y, 0, 0, (New-Object System.Drawing.Size $w, $ht))
     $g.Dispose()
-    $px = $bmp.GetPixel([int]($w / 2), [int]($ht / 2))
-    if ($want) {
+    $matched = $true
+    $report = @()
+    foreach ($c in $checks) {
+        $px = $bmp.GetPixel([int]($w * $c[0]), [int]($ht * $c[1]))
+        $want = $c[2]
         $d = @([math]::Abs($px.R - $want[0]), [math]::Abs($px.G - $want[1]), [math]::Abs($px.B - $want[2]))
-        $matched = (($d | Measure-Object -Maximum).Maximum -le $Tolerance)
+        $ok = (($d | Measure-Object -Maximum).Maximum -le $Tolerance)
+        if (-not $ok) { $matched = $false }
+        $report += ("({0:0.##},{1:0.##}) R={2} G={3} B={4} {5} expected {6}" -f $c[0], $c[1], $px.R, $px.G, $px.B, $(if ($ok) { 'ok' } else { 'WRONG' }), ($want -join ','))
     }
-    if ($matched -or -not $want -or (Get-Date) -ge $deadline) { $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png) }
+    if ($matched -or -not $checks -or (Get-Date) -ge $deadline) { $bmp.Save($Out, [System.Drawing.Imaging.ImageFormat]::Png) }
     $bmp.Dispose()
-} while ($want -and -not $matched -and (Get-Date) -lt $deadline)
-Write-Host ("client {0}x{1} at ({2},{3}); centre pixel R={4} G={5} B={6}" -f $w, $ht, $p.X, $p.Y, $px.R, $px.G, $px.B)
-if ($want) {
-    if ($matched) { Write-Host "MATCH expected $($want -join ',')"; exit 0 }
-    Write-Host "MISMATCH expected $($want -join ',')"; exit 1
+} while ($checks -and -not $matched -and (Get-Date) -lt $deadline)
+Write-Host ("client {0}x{1} at ({2},{3})" -f $w, $ht, $p.X, $p.Y)
+$report | ForEach-Object { Write-Host "  $_" }
+if ($checks) {
+    if ($matched) { Write-Host "MATCH"; exit 0 }
+    Write-Host "MISMATCH"; exit 1
 }
 exit 0
