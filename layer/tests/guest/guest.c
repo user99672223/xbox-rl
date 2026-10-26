@@ -688,6 +688,8 @@ static int spawned_main(long argc, u64 *sp)
         blob[0x40] = 0x48; blob[0x41] = 0x8b; blob[0x42] = 0x07;                /* mov rax, [rdi] */
         blob[0x43] = 0x48; blob[0x44] = 0x83; blob[0x45] = 0xc0; blob[0x46] = 1; /* add rax, 1   */
         blob[0x47] = 0xc3;                                                      /* ret            */
+        blob[0x50] = 0x0f; blob[0x51] = 0xae; blob[0x52] = 0x1f; blob[0x53] = 0xc3;   /* +0x50: stmxcsr [rdi]; ret */
+        blob[0x58] = 0x9c; blob[0x59] = 0x58; blob[0x5a] = 0xc3;                      /* +0x58: pushfq; pop rax; ret */
         long mfd = sc2(319, "xrl_inject_test", 0);
         sc3(1, mfd, blob, 4096);
         void *code = (void *)sc(9, 0, 4096, 5 /*READ|EXEC*/, 2 /*PRIVATE*/, mfd, 0);
@@ -825,6 +827,80 @@ static void test_traced_exec(void)
  * parent PEEKDATA/GETREGS/POKEDATA(fake retaddr)/SETREGS(rip=target,rsp=scratch)/CONT -> the child stops again
  * with SIGSEGV, rip == the fake return address exactly, GETSIGINFO si_signo == SIGSEGV. See
  * docs/eac-trace/ptrace-request-sequence.md. */
+/* One more injected call from the SIGSEGV stop at the fake return address: `nq` qwords of an argument block
+ * POKEd directly below the stop's rsp (the real injection's shape: its third call put 0x328 bytes there),
+ * rsp = the block's start - 8 with the fake return address, rip = fn, rdi = the block. On Linux a stopped
+ * tracee keeps nothing of its own below its rsp, so the call runs and stops at 9 again with the block intact.
+ * Returns the wait4 status; *regs = the registers at the new stop. */
+static int inject_block_call(long pid, u64 regs[27], u64 fn, long nq, u64 seed, const char *what)
+{
+    u64 top = regs[19], base = (top - (u64)nq * 8 - 8) & ~15ull;
+    int bad = 0, st = 0;
+    if (sc4(101, 5, pid, base, 9) != 0) bad++;
+    for (long i = 0; i < nq; i++) if (sc4(101, 5, pid, base + 8 + (u64)i * 8, seed ^ (u64)i) != 0) bad++;
+    regs[16] = fn; regs[19] = base; regs[14] = base + 8;
+    if (sc4(101, 13, pid, 0, regs) != 0) bad++;
+    if (sc4(101, 7, pid, 0, 0) != 0 || sc4(61, pid, &st, 0, 0) != pid) { out("    "); out(what); out(": no stop\n"); return -1; }
+    if (bad) { out("    "); out(what); outn(": failed requests", bad); }
+    if ((st & 0xff) != 0x7f) { out("    "); out(what); outn(": wait4 status", st); return st; }
+    sc4(101, 12, pid, 0, regs);
+    long intact = 0;
+    for (long i = 0; i < nq; i++) { u64 w = 0; if (sc4(101, 2, pid, base + 8 + (u64)i * 8, &w) == 0 && w == (seed ^ (u64)i)) intact++; }
+    if (intact != nq) { out("    "); out(what); outn(": block qwords intact", intact); }
+    return intact == nq && !bad ? st : -2;
+}
+
+static void inject_more(long pid, u64 regs[27], u64 target)
+{
+    u64 f_stmxcsr = target + 0x10, f_flags = target + 0x18;
+    /* (1) the real injection's third call: a 0x328-byte block right below the stop's rsp. The layer used to
+     * keep the exception dispatcher's CONTEXT (and its XSTATE area) there, so the block overwrote it and
+     * NtContinue refused the context: the process ended with 0xc000000d. */
+    int st = inject_block_call(pid, regs, target, 0x328 / 8, 0x5a5a5a5a00000000ull, "inject block 0x328");
+    CHECK(st == ((11 << 8) | 0x7f) && regs[16] == 9 && regs[10] == (0x5a5a5a5a00000000ull + 1),
+          "inject: a 0x328-byte argument block right below rsp, call runs, block intact, SIGSEGV at the fake return");
+    if (st != ((11 << 8) | 0x7f)) return;
+    /* (2) a block 16 KiB deep: nothing of the layer may live anywhere below a stopped tracee's rsp */
+    st = inject_block_call(pid, regs, target, 0x4000 / 8, 0xa5a5a5a500000000ull, "inject block 16K");
+    CHECK(st == ((11 << 8) | 0x7f) && regs[16] == 9 && regs[10] == (0xa5a5a5a500000000ull + 1),
+          "inject: a 16 KiB block below rsp, call runs, block intact, SIGSEGV at the fake return");
+    if (st != ((11 << 8) | 0x7f)) return;
+    /* (3) eflags as Linux's putreg applies them: only CF PF AF ZF SF TF DF OF NT RF AC come from the tracer */
+    u64 old = regs[18], v = 0xffffffff00000000ull | 0x200000 | 0x8 | 0xcd5;   /* ID, a reserved bit, CF PF AF ZF SF DF OF */
+    regs[18] = v;
+    CHECK(sc4(101, 13, pid, 0, regs) == 0 && sc4(101, 12, pid, 0, regs) == 0 && regs[18] == ((old & ~0x54dd5ull) | 0xcd5),
+          "inject: SETREGS eflags: only the user-settable flags change (Linux FLAG_MASK)");
+    st = inject_block_call(pid, regs, f_flags, 4, 0x1111, "inject flags");
+    CHECK(st == ((11 << 8) | 0x7f) && (regs[10] & 0xcd5) == 0xcd5 && (regs[10] & 0x200) && !(regs[10] & 0x200000),
+          "inject: the called code runs with exactly those flags (pushfq)");
+    if (st != ((11 << 8) | 0x7f)) return;
+    regs[18] &= ~0x400ull;   /* DF back to 0 for the rest */
+    u64 bad_cs = regs[17]; regs[17] = 0;
+    CHECK(sc4(101, 13, pid, 0, regs) == -5, "inject: SETREGS with cs = 0 -> -EIO");
+    regs[17] = bad_cs; regs[21] = 0x800000000000ull;
+    CHECK(sc4(101, 13, pid, 0, regs) == -5, "inject: SETREGS with fs_base >= TASK_SIZE_MAX -> -EIO");
+    CHECK(sc4(101, 12, pid, 0, regs) == 0, "inject: GETREGS after the refused SETREGS");
+    /* (4) MXCSR: Linux refuses reserved bits (EINVAL), applies a valid one to the thread */
+    u8 fp[512];
+    CHECK(sc4(101, 14, pid, 0, fp) == 0, "inject: GETFPREGS");
+    u32 mx0 = *(u32 *)(fp + 24);
+    *(u32 *)(fp + 24) = 0x1f80 | 0x10000000;
+    CHECK(sc4(101, 15, pid, 0, fp) == -22, "inject: SETFPREGS with a reserved MXCSR bit -> -EINVAL");
+    *(u32 *)(fp + 24) = 0x7f80;   /* round toward zero */
+    CHECK(sc4(101, 15, pid, 0, fp) == 0, "inject: SETFPREGS with a valid MXCSR");
+    u64 w0 = 0;
+    sc4(101, 5, pid, 0x700000000018ull, 0);
+    regs[16] = f_stmxcsr; regs[14] = 0x700000000018ull;
+    u64 base = (regs[19] - 64) & ~15ull;
+    sc4(101, 5, pid, base, 9); regs[19] = base;
+    sc4(101, 13, pid, 0, regs);
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((11 << 8) | 0x7f) &&
+          sc4(101, 2, pid, 0x700000000018ull, &w0) == 0 && (u32)w0 == 0x7f80,
+          "inject: the called code sees the MXCSR the tracer set (stmxcsr)");
+    *(u32 *)(fp + 24) = mx0;
+    sc4(101, 15, pid, 0, fp);
+}
+
 static void test_inject_call(void)
 {
     long pid = sc(57, 0, 0, 0, 0, 0, 0);
@@ -863,7 +939,9 @@ static void test_inject_call(void)
         CHECK(sc4(101, 12, pid, 0, regs) == 0 && regs[16] == 9, "inject: GETREGS: rip is exactly the fake return address");
         u32 si[32]; memset(si, 0, sizeof si);
         CHECK(sc4(101, 0x4202, pid, 0, si) == 0 && si[0] == 11, "inject: GETSIGINFO: si_signo is SIGSEGV");
+        inject_more(pid, regs, target);
         sc4(101, 8, pid, 0, 0);
+        sc4(61, pid, &st, 0, 0);
     } else {
         outn("    inject: layer wait4 status", st);
     }

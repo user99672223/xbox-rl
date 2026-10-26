@@ -68,6 +68,33 @@ static int poke(u64 addr, const void *src, size_t n)
     return r;
 }
 
+/* SETREGS as Linux's genregs_set/putreg (arch/x86/kernel/ptrace.c) apply it to a 64-bit tracee: field by field
+ * in user_regs_struct order, the first refused field ends the request with -EIO (the ones before it stay set);
+ * selectors are u16 and must be 0 or RPL 3 (cs/ss not 0); eflags takes only FLAG_MASK (CF PF AF ZF SF TF DF OF
+ * NT RF AC) from the tracer, the rest (IF, the reserved bit 1, ID, ...) stays the thread's; fs_base/gs_base
+ * below TASK_SIZE_MAX. */
+#define LX_FLAG_MASK 0x54dd5ull
+#define LX_TASK_SIZE_MAX 0x7ffffffff000ull
+static int bad_sel(u64 v) { return v != 0 && (v & 3) != 3; }
+static slong set_regs(u64 regs[27], const u64 *n)
+{
+    for (int i = 0; i < 27; i++) {
+        u64 v = n[i];
+        switch (i) {
+        case 17: case 20: v &= 0xffff; if (bad_sel(v) || v == 0) return -LX_EIO; break;            /* cs, ss */
+        case 23: case 24: case 25: case 26: v &= 0xffff; if (bad_sel(v)) return -LX_EIO; break;   /* ds es fs gs */
+        case 18: v = (regs[18] & ~LX_FLAG_MASK) | (v & LX_FLAG_MASK); break;
+        case 21: case 22: if (v >= LX_TASK_SIZE_MAX) return -LX_EIO; break;
+        }
+        regs[i] = v;
+    }
+    return 0;
+}
+
+/* SETFPREGS as Linux's xfpregs_set: an MXCSR with a bit outside the CPU's MXCSR mask is refused (-EINVAL),
+ * otherwise the 512 bytes are taken as they are. */
+static u32 g_mxcsr_mask = 0xffbf;   /* the FXSAVE default when the CPU reports 0; set from the first stop's state */
+
 /* answer requests until the tracer continues (or detaches/kills) the tracee. regs: user_regs_struct */
 static void serve(u64 regs[27], u8 fp[512])
 {
@@ -84,9 +111,13 @@ static void serve(u64 regs[27], u8 fp[512])
             break; }
         case TR_POKE: xrl_tr_send(g_tr, TR_RESP, (u64)(s64)poke(a, p, len), 0, NULL, 0); break;
         case TR_GETREGS: xrl_tr_send(g_tr, TR_RESP, 0, 0, regs, 27 * 8); break;
-        case TR_SETREGS: if (len == 27 * 8) { memcpy(regs, p, len); xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); } else xrl_tr_send(g_tr, TR_RESP, (u64)(s64)-LX_EINVAL, 0, NULL, 0); break;
+        case TR_SETREGS: xrl_tr_send(g_tr, TR_RESP, (u64)(len == 27 * 8 ? set_regs(regs, (const u64 *)p) : -LX_EINVAL), 0, NULL, 0); break;
         case TR_GETFP: xrl_tr_send(g_tr, TR_RESP, 0, 0, fp, 512); break;
-        case TR_SETFP: if (len == 512) { memcpy(fp, p, 512); xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); } else xrl_tr_send(g_tr, TR_RESP, (u64)(s64)-LX_EINVAL, 0, NULL, 0); break;
+        case TR_SETFP: {
+            slong e = len != 512 ? -LX_EINVAL : (*(u32 *)((u8 *)p + 24) & ~g_mxcsr_mask) ? -LX_EINVAL : 0;
+            if (!e) memcpy(fp, p, 512);
+            xrl_tr_send(g_tr, TR_RESP, (u64)e, 0, NULL, 0);
+            break; }
         case TR_MAPS: {
             size_t cap = 1 << 20; char *t = (char *)malloc(cap);
             size_t n = xrl_mem_format_maps(t, cap);
@@ -124,11 +155,11 @@ void xrl_tracee_boot(u64 *entry, u64 *sp)
     LOGW("tracee: continues at %llx, stack %llx", *entry, *sp);
 }
 
-/* signal.c: an int3 in guest code of a traced process. The CONTEXT is the faulting thread's; the tracer sees
- * the registers as Linux reports them (rip after the int3) and may change them before it continues. */
-void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
+/* The stop itself: report it, serve the tracer, write what it set back into c (the thread's saved CONTEXT). */
+static void stop_and_serve(CONTEXT *c, xrl_thread *t, int sig)
 {
     u64 r[27] = { 0 };
+    if (c->FltSave.MxCsr_Mask) g_mxcsr_mask = c->FltSave.MxCsr_Mask;
     r[0] = c->R15; r[1] = c->R14; r[2] = c->R13; r[3] = c->R12; r[4] = c->Rbp; r[5] = c->Rbx; r[6] = c->R11; r[7] = c->R10;
     r[8] = c->R9; r[9] = c->R8; r[10] = c->Rax; r[11] = c->Rcx; r[12] = c->Rdx; r[13] = c->Rsi; r[14] = c->Rdi;
     r[15] = (u64)-1; r[16] = c->Rip + (sig == LX_SIGTRAP ? 1 : 0);   /* after the int3; a fault reports the faulting address */ r[17] = 0x33; r[18] = c->EFlags; r[19] = c->Rsp; r[20] = 0x2b; r[21] = t->guest_tp;
@@ -137,6 +168,8 @@ void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
     xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);
     serve(r, fp);
     memcpy(&c->FltSave, fp, sizeof fp);
+    c->MxCsr = c->FltSave.MxCsr;   /* the CONTEXT has two copies; NtContinue loads this one */
+    if (r[17] != 0x33 || r[20] != 0x2b) LOGW("tracee: the tracer set cs=%llx ss=%llx: kept 0x33/0x2b (only 64-bit code runs here)", r[17], r[20]);
     c->R15 = r[0]; c->R14 = r[1]; c->R13 = r[2]; c->R12 = r[3]; c->Rbp = r[4]; c->Rbx = r[5]; c->R11 = r[6]; c->R10 = r[7];
     c->R9 = r[8]; c->R8 = r[9]; c->Rax = r[10]; c->Rcx = r[11]; c->Rdx = r[12]; c->Rsi = r[13]; c->Rdi = r[14];
     c->Rip = r[16]; c->EFlags = (DWORD)r[18]; c->Rsp = r[19];
@@ -152,4 +185,60 @@ void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
              c->ContextFlags, c->SegCs, c->SegSs, c->SegDs, c->SegEs, c->SegFs, c->SegGs, c->EFlags, c->MxCsr, c->FltSave.MxCsr, mi.Protect, mi.State, ms.Protect, ms.State, c->Rax, c->Rcx, c->Rdx, c->Rbx, c->Rbp, c->R8);
     }
     if (r[21] != t->guest_tp) t->guest_tp = r[21];
+}
+
+/* Where a stopped tracee waits for its tracer. On Linux a ptrace-stopped thread keeps its registers in the
+ * kernel: nothing of it lives in its user stack, so a tracer may write anything below the stopped rsp (an
+ * injected call's argument block and fake return address go exactly there). On Windows the exception that
+ * makes the stop is dispatched ON that stack: the CONTEXT, its CONTEXT_EX and XSAVE area, the
+ * EXCEPTION_RECORD and the dispatcher's and the VEH's frames all sit in the 0x700+ bytes below the faulting
+ * rsp. Serving the tracer there let its POKEDATAs overwrite the CONTEXT_EX/XSAVE header NtContinue was going
+ * to load (it refused the context: STATUS_INVALID_PARAMETER 0xc000000d, the process ended -- the EAC
+ * launch's third injected call, a 0x328-byte block right below rsp) or the VEH's own frames.
+ * So: copy the CONTEXT (with its XSTATE) out of the stack, leave the exception dispatch at once into
+ * tr_park_main on this thread's host stack (unused while the thread is in guest code), serve the tracer there
+ * and resume the guest from the copy with NtContinue. The guest stack is the tracer's alone. */
+typedef struct tr_park { xrl_thread *t; int sig; CONTEXT *c; void *buf; DWORD cap; } tr_park;
+typedef LONG (NTAPI *nt_continue_fn)(CONTEXT *, BOOLEAN);
+static nt_continue_fn p_NtContinue;
+
+static __declspec(noreturn) void tr_park_main(tr_park *pk)
+{
+    xrl_thread *t = pk->t;
+    int g = xrl_teb_enter_host(t);
+    stop_and_serve(pk->c, t, pk->sig);
+    xrl_teb_restore(t, g);
+    LONG s = p_NtContinue(pk->c, FALSE);
+    xrl_teb_enter_host(t);
+    LOGE("tracee: NtContinue refused the registers the tracer left: %08lx", (unsigned long)s);
+    ExitProcess((UINT)s);
+}
+
+/* signal.c: an int3 or a fault in guest code of a traced process, from the VEH (host TEB view, on the guest
+ * stack). c is the faulting thread's CONTEXT; the tracer sees the registers as Linux reports them (rip after
+ * an int3) and may change them before it continues. */
+void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
+{
+    if (!p_NtContinue) p_NtContinue = (nt_continue_fn)(void *)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtContinue");
+    DWORD flags = c->ContextFlags & (CONTEXT_ALL | CONTEXT_XSTATE), len = 0;
+    tr_park *pk = (tr_park *)t->tr_park;
+    if (!pk) t->tr_park = pk = (tr_park *)calloc(1, sizeof *pk);
+    InitializeContext(NULL, flags, NULL, &len);   /* the size, for the features this CPU has */
+    if (pk && len > pk->cap) { free(pk->buf); pk->buf = malloc(len); pk->cap = pk->buf ? len : 0; }
+    CONTEXT *dc = NULL;
+    DWORD l2 = pk ? pk->cap : 0;
+    BOOL ok = pk && pk->buf && p_NtContinue && t->host_rsp && InitializeContext(pk->buf, flags, &dc, &l2);
+    if (ok && (flags & CONTEXT_XSTATE) == CONTEXT_XSTATE) { DWORD64 m = 0; ok = GetXStateFeaturesMask(c, &m) && SetXStateFeaturesMask(dc, m); }
+    if (ok) ok = CopyContext(dc, flags, c);
+    if (!ok) {
+        LOGW("tracee: cannot copy the CONTEXT (error %lu): stopped on the guest stack, the tracer must not write below rsp", GetLastError());
+        stop_and_serve(c, t, sig);
+        return;
+    }
+    pk->t = t; pk->sig = sig; pk->c = dc;
+    u64 sp = (t->host_rsp & ~15ull) - 0x48;   /* as after a call: a return address slot (0) and 32 bytes of home space above */
+    *(u64 *)sp = 0;
+    c->Rsp = sp; c->Rip = (u64)(uintptr_t)tr_park_main; c->Rcx = (u64)(uintptr_t)pk;
+    c->EFlags &= ~(0x100u | 0x400u | 0x40000u);   /* TF DF AC: what the guest had is in the copy */
+    c->MxCsr = 0x1f80; c->FltSave.MxCsr = 0x1f80; c->FltSave.ControlWord = 0x27f;
 }

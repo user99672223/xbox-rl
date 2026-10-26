@@ -126,6 +126,7 @@ struct xrl_thread {
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
     struct xrl_task *task; /* non-NULL: the body of a fork()ed task (task.c, XRL_FORK_TASKS=1) */
     void *fdt;             /* its fd table (fd.c); NULL: the process's */
+    void *tr_park;         /* tracee.c: this thread's copy of its CONTEXT while a tracer has it stopped */
 };
 
 /* teb.c: guest/host views of the shared TEB (docs/gs-teb.md) */
