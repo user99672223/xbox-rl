@@ -1,0 +1,39 @@
+diff --git a/src/time/clock_gettime.c b/src/time/clock_gettime.c
+index 4d2ec22..798ede9 100644
+--- a/src/time/clock_gettime.c
++++ b/src/time/clock_gettime.c
+@@ -56,10 +56,34 @@ static void *volatile vdso_func = (void *)cgt_init;
+ 
+ #endif
+ 
++/* xbox-rl: there is no kernel vDSO (arch/x86_64/syscall_arch.h); the layer hands out a function
++ * with the vDSO's contract (include/xrl_abi.h XRL_SYS_GET_VCLOCK: 0, -EINVAL, or -ENOSYS for a
++ * clock it does not serve), called without entering the layer. An older layer answers -ENOSYS
++ * and the syscall stays. */
++#define XRL_SYS_GET_VCLOCK 0x10005
++
++static int xrl_vclock_init(clockid_t, struct timespec *);
++static void *volatile xrl_vclock = (void *)xrl_vclock_init;
++
++static int xrl_vclock_init(clockid_t clk, struct timespec *ts)
++{
++	long q = __syscall(XRL_SYS_GET_VCLOCK);
++	int (*f)(clockid_t, struct timespec *) = q > 0 ? (int (*)(clockid_t, struct timespec *))q : 0;
++	a_cas_p(&xrl_vclock, (void *)xrl_vclock_init, (void *)f);
++	return f ? f(clk, ts) : -ENOSYS;
++}
++
+ int __clock_gettime(clockid_t clk, struct timespec *ts)
+ {
+ 	int r;
+ 
++	int (*xf)(clockid_t, struct timespec *) = (int (*)(clockid_t, struct timespec *))xrl_vclock;
++	if (xf) {
++		r = xf(clk, ts);
++		if (!r) return r;
++		if (r == -EINVAL) return __syscall_ret(r);
++	}
++
+ #ifdef VDSO_CGT_SYM
+ 	int (*f)(clockid_t, struct timespec *) =
+ 		(int (*)(clockid_t, struct timespec *))vdso_func;

@@ -32,6 +32,7 @@ EXTERN xrl_teb_enter_host:PROC
 EXTERN xrl_teb_restore:PROC
 EXTERN xrl_com_scan:PROC
 EXTERN xrl_com_after:PROC
+EXTERN xrl_vclock_c:PROC
 EXTERN xrl_ttab:BYTE
 EXTERN xrl_asm_fsb_flag:QWORD
 
@@ -272,6 +273,25 @@ xrl_downcall_tramp ENDP
 ;   +E0 rax result  +F0 xmm0 result
 ; Guest frame: rbp -> saved rbp; +08 r13, +10 r12, +18 return, +40 arg 5.
 ; --------------------------------------------------------------------------
+; --------------------------------------------------------------------------
+; xrl_vclock: SysV int (clockid_t edi, struct timespec *rsi) -> xrl_vclock_c (Win64), on the
+; caller's (guest) stack, nothing swapped (XRL_SYS_GET_VCLOCK). Win64 keeps rdi/rsi and
+; xmm6-15; everything it may clobber is caller-saved in SysV too.
+; --------------------------------------------------------------------------
+PUBLIC xrl_vclock
+xrl_vclock PROC
+    push    rbp
+    mov     rbp, rsp
+    and     rsp, -16
+    sub     rsp, 20h
+    mov     ecx, edi
+    mov     rdx, rsi
+    call    xrl_vclock_c
+    mov     rsp, rbp
+    pop     rbp
+    ret
+xrl_vclock ENDP
+
 PUBLIC xrl_com_tramp
 xrl_com_tramp PROC
     push    r12
