@@ -467,6 +467,7 @@ void xrl_rewrite_fd_mapped(int fd, u64 addr, u64 len, s64 off, int prot);
 /* dbt.c: run an image byte-identical (translation into a code cache), selected by XRL_DBT */
 #define XRL_SYS_DBT_ENTER 0x10010      /* layer-private: dbt.asm asks for the translation of rdi */
 int   xrl_dbt_wanted(const char *path);
+int   xrl_dbt_wanted_file(const char *gpath);   /* ... or code from a memfd, in a program the policy selects */
 int   xrl_dbt_attach(const char *name, u64 addr, u64 len);
 void  xrl_dbt_attach_pe(const char *name, u64 addr, u64 len);
 int   xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable (mprotect); 1: it is part of a Windows image */

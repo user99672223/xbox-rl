@@ -630,6 +630,8 @@ static slong open_special(const char *gabs, int flags, int *handled)
     return 0;
 }
 
+static slong memfd_reopen(const char *gabs, int flags);
+
 static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
 {
     (void)mode;
@@ -640,6 +642,7 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
     if ((flags & LX_O_TMPFILE) == LX_O_TMPFILE) return -LX_EOPNOTSUPP;
 
     /* /proc symlinks (exe, cwd, fd/N) open their target */
+    if (!strncmp(gabs, "/proc/", 6) && follow) { slong mfd = memfd_reopen(gabs, flags); if (mfd != -1) return mfd; }
     if (!strncmp(gabs, "/proc/", 6)) {
         char tgt[PATHBUF];
         slong n = xrl_proc_readlink(gabs, tgt, sizeof tgt - 1);
@@ -703,21 +706,58 @@ slong xrl_vfs_open(int dirfd, const char *path, int flags, int mode)
     return r;
 }
 
+/* memfd: a host temp file (deleted on close) that shows up as Linux shows one: /proc/self/fd/N and
+ * /proc/self/maps say "/memfd:NAME (deleted)". f->priv holds its number; opening /proc/self/fd/N reopens it
+ * (the new description shares the contents, like on Linux). */
+static slong memfd_host_path(unsigned n, char *g, size_t cap, wchar_t *hp, size_t hpcap)
+{
+    snprintf(g, cap, "/tmp/.memfd-%d-%u", G.pid, n);
+    return xrl_vfs_host_path(g, hp, hpcap);
+}
+
 slong xrl_memfd_create(const char *name, unsigned flags)
 {
-    (void)name;
     static volatile LONG ctr;
-    char g[128];
-    snprintf(g, sizeof g, "/tmp/.memfd-%d-%d", G.pid, (int)InterlockedIncrement(&ctr));
+    unsigned n = (unsigned)InterlockedIncrement(&ctr);
+    char g[128], disp[300];
     wchar_t hp[PATHBUF];
-    slong r = xrl_vfs_host_path(g, hp, ARRAY_LEN(hp));
+    slong r = memfd_host_path(n, g, sizeof g, hp, ARRAY_LEN(hp));
     if (r) return r;
     HANDLE h = hopen(hp, GENERIC_READ | GENERIC_WRITE | DELETE, CREATE_NEW, FILE_FLAG_DELETE_ON_CLOSE);
     if (h == INVALID_HANDLE_VALUE) return xrl_lasterr();
-    xfile *f = wrap_handle(h, LX_O_RDWR, g, 0, hp);
+    snprintf(disp, sizeof disp, "/memfd:%.249s (deleted)", name ? name : "");
+    xfile *f = wrap_handle(h, LX_O_RDWR, disp, 0, hp);
+    f->priv = (void *)(uintptr_t)n;
     int fd = xrl_fd_install(f, (flags & 1) != 0, 0);
     xfile_unref(f);
     return fd;
+}
+
+/* open("/proc/self/fd/N") where N is a memfd: a new open file description of the same memfd, or <0 if it is not one */
+static slong memfd_reopen(const char *gabs, int flags)
+{
+    int fd = -1;
+    char pre[40];
+    snprintf(pre, sizeof pre, "/proc/%d/fd/", G.pid);
+    if (!strncmp(gabs, "/proc/self/fd/", 14)) fd = atoi(gabs + 14);
+    else if (!strncmp(gabs, pre, strlen(pre))) fd = atoi(gabs + strlen(pre));
+    if (fd < 0) return -1;
+    xfile *of = xrl_fd_get(fd);
+    if (!of) return -1;
+    if (of->ops != &g_file_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) { xfile_unref(of); return -1; }
+    char g[128];
+    wchar_t hp[PATHBUF];
+    slong r = memfd_host_path((unsigned)(uintptr_t)of->priv, g, sizeof g, hp, ARRAY_LEN(hp));
+    if (r) { xfile_unref(of); return r; }
+    int acc = flags & LX_O_ACCMODE;
+    HANDLE h = hopen(hp, acc == LX_O_RDONLY ? GENERIC_READ : acc == LX_O_WRONLY ? GENERIC_WRITE : (GENERIC_READ | GENERIC_WRITE), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);
+    if (h == INVALID_HANDLE_VALUE) { xfile_unref(of); return xrl_lasterr(); }
+    xfile *f = wrap_handle(h, flags & ~(LX_O_CREAT | LX_O_EXCL | LX_O_TRUNC), of->gpath, 0, hp);
+    f->priv = of->priv;
+    xfile_unref(of);
+    int nfd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
+    xfile_unref(f);
+    return nfd;
 }
 
 /* ================================================================ stat */

@@ -1,0 +1,39 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 08aee7a..fa3adba 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -2893,6 +2893,8 @@ static void check_command_line( int argc, char *argv[] )
+ }
+ 
+ 
++extern void xrl_load_glibc_compat( const char *unix_lib_path );
++
+ /***********************************************************************
+  *           __wine_main
+  *
+@@ -2904,6 +2906,7 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
+     main_argv = argv;
+ 
+     init_paths();
++    xrl_load_glibc_compat( "" );
+     if (!getenv( "WINELOADERNOEXEC" ) || argc <= 1) check_command_line( argc, argv );
+     unsetenv( "WINELOADERNOEXEC" );
+ 
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index d53c549..cb816b6 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -975,8 +975,11 @@ void *get_builtin_so_handle( void *module )
+  * DT_NEEDED libc.so.6 into itself, so the glibc-ABI shim (wine/glibc-compat, shipped as
+  * /lib/libgcompat.so.0) cannot be a dependency: load it RTLD_GLOBAL once, before the first unix
+  * library that is not Wine's own (those live next to ntdll.so and never need it).
+- * XRL_GLIBC_COMPAT overrides the path, set empty to disable. A missing file is fine. */
+-static void xrl_load_glibc_compat( const char *unix_lib_path )
++ * XRL_GLIBC_COMPAT overrides the path, set empty to disable. A missing file is fine.
++ * Also called once at start-up (__wine_main): a Windows program that dlopen()s a glibc-built module itself
++ * (the EAC bootstrapper maps its anti-cheat module that way) needs the shim loaded before that, and the
++ * shim relocates libc's .dynamic the way glibc's ld.so leaves it (see glibc_compat.c). */
++void xrl_load_glibc_compat( const char *unix_lib_path )
+ {
+     static int done;
+     const char *path, *slash;

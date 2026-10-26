@@ -38,9 +38,9 @@ extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_raws
 
 #define TAB_N 262144u
 u64 xrl_dbt_tab[(TAB_N + 4) * 2];        /* {original, translated}: read by dbt.asm */
-u64 xrl_dbt_rng[8];                      /* {lo, size} x 4: read by dbt.asm */
+u64 xrl_dbt_rng[32];                     /* {lo, size} x 16 (MAX_IMG = DBT_NRNG in dbt.asm): read by dbt.asm */
 
-#define MAX_IMG 4
+#define MAX_IMG 16
 typedef struct dimg {
     u64 lo, hi;                          /* the mapping that is translated */
     u8 *cache; u64 cache_va, cap, used;
@@ -485,6 +485,15 @@ int xrl_dbt_wanted(const char *path)
         (void)tok;
     }
     return 0;
+}
+
+/* Code mapped from a file: translated if the policy selects its path, or if it comes from a memfd while the
+ * program being run is one the policy selects (the EAC bootstrapper stores the module it downloaded in a memfd
+ * and dlopen()s it: the module is the anti-cheat's own code and must stay byte-identical). */
+static int policy_on(void);
+int xrl_dbt_wanted_file(const char *gpath)
+{
+    return xrl_dbt_wanted(gpath) || (gpath && !strncmp(gpath, "/memfd:", 7) && policy_on());
 }
 
 /* A Windows PE image (the EAC bootstrapper): Windows code executes `syscall` as a Windows system call, but

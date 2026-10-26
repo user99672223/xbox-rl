@@ -7,7 +7,7 @@ cd "$(dirname "$0")/../.."
 root="${XRL_ROOTFS:-$(cygpath -w "$HOME/xrl-work/rootfs")}"
 rootu=$(cygpath -u "$root")
 mkdir -p "$rootu/exectest" results
-cp layer/tests/rawsys-win/out/rawsys_eac.exe "$rootu/exectest"/
+cp layer/tests/rawsys-win/out/rawsys_eac.exe layer/tests/rawsys-win/out/xrl_mod.so "$rootu/exectest"/
 WINEDEBUG="${WINEDEBUG:-err+all}" XRL_ROOTFS="$root" XRL_TIMEOUT="${XRL_TIMEOUT:-170}" \
     tools/run-desktop-wine.sh 'Z:\exectest\rawsys_eac.exe' > results/rawsys-win.txt 2>&1
 rc=$?
