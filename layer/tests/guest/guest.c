@@ -649,9 +649,39 @@ static void test_fs(void)
     CHECK(sc3(1, rcm.fd, "q", 1) == 1, "received fd is a live duplicate of the pipe write end");
 }
 
+/* rz_probe(page): fills the x86-64 red zone (the 128 bytes below rsp, which a leaf function may use
+ * without moving rsp) with a pattern, writes one byte to `page`, and returns how many of the 16
+ * qwords changed. On Linux a page fault there (lazy commit, swap-in) is handled by the kernel and the
+ * user stack is never written; on the layer the fault is a Windows exception on this thread. */
+__asm__(".text\n.globl rz_probe\nrz_probe:\n"
+        "  movabs $0x5a5a5a5a5a5a5a00, %rdx\n"
+        "  mov $1, %rcx\n"
+        "1:\n  lea (%rdx,%rcx), %rax\n  mov %rcx, %r8\n  neg %r8\n  mov %rax, (%rsp,%r8,8)\n"
+        "  inc %rcx\n  cmp $16, %rcx\n  jbe 1b\n"
+        "  movb $1, (%rdi)\n"
+        "  xor %eax, %eax\n  mov $1, %rcx\n"
+        "2:\n  lea (%rdx,%rcx), %r9\n  mov %rcx, %r8\n  neg %r8\n  cmp %r9, (%rsp,%r8,8)\n  setne %r10b\n"
+        "  movzbl %r10b, %r10d\n  add %r10, %rax\n  inc %rcx\n  cmp $16, %rcx\n  jbe 2b\n"
+        "  ret\n");
+long rz_probe(volatile u8 *page);
+
+static void test_redzone(void)
+{
+    /* large enough to be committed lazily, so each first touch is a fault the layer handles */
+    u8 *lz = mmap_anon(8 << 20, 3);
+    CHECK((long)lz > 0x10000, "red zone: an 8 MiB lazily committed mapping");
+    if ((long)lz <= 0x10000) return;
+    long bad = 0;
+    for (int i = 0; i < 64; i++) bad += rz_probe(lz + (u64)i * 65536 + 123);
+    CHECK(bad == 0, "the 128-byte red zone below rsp survives first-touch faults (64 faults, as on Linux)");
+    if (bad) outn("  red-zone qwords changed", bad);
+    sc2(11, lz, 8 << 20);
+}
+
 static void test_mem(void)
 {
     out("memory:\n");
+    test_redzone();
     u8 *p = mmap_anon(1 << 20, 3);
     CHECK((long)p > 0x10000, "mmap anon 1MiB");
     p[0] = 1; p[(1 << 20) - 1] = 2;
