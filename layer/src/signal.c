@@ -85,7 +85,7 @@ slong xrl_sys_sigaltstack(u64 uss, u64 uoss)
 
 int xrl_sig_pending_for(xrl_thread *t)
 {
-    return (t->sigpending & ~t->sigmask) != 0;
+    return (t->sigpending & ~t->sigmask) != 0 || t->exec_kill;
 }
 
 extern void xrl_futex_interrupt(xrl_thread *t);

@@ -597,7 +597,7 @@ SYS(fork)
     LOGE("fork/vfork called: the layer is single-process; use posix_spawn-free paths (-ENOSYS)");
     return -LX_ENOSYS;
 }
-SYS(execve) { UNUSED6; LOGE("execve called: not supported (in-process exec is handled by Wine, not the kernel)"); return -LX_ENOSYS; }
+SYS(execve) { UNUSED6; return xrl_sys_execve((u64)a1, (u64)a2, (u64)a3); }
 /* exit(status, base, size): B's musl __unmapself passes the dying thread's own
  * stack; unmapped in xrl_do_exit once we are off it (on the host stack). */
 SYS(exit)
@@ -866,6 +866,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
     }
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
+    if (t && t->exec_kill) xrl_thread_die(t);   /* execve is replacing the image (exec.c) */
     if (t && !t->sig_jump && (t->sigpending & ~t->sigmask)) {
         const slong args[6] = { a1, a2, a3, a4, a5, a6 };
         xrl_sig_at_return(t, nr, args, (const u64 *)frame, r, NULL);

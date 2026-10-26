@@ -1500,3 +1500,26 @@ int xrl_host_protect(void *p, size_t n, DWORD prot, DWORD *old)
 {
     return w_protect(p, n, prot, old) ? 0 : (int)GetLastError();
 }
+
+/* execve without a kept image: every guest mapping goes (the caller runs on its host stack, so its
+ * own guest stack may go too), and the program break starts over. */
+void xrl_mem_release_all(void)
+{
+    u64 *rg = NULL;
+    size_t n = 0, cap = 0;
+    AcquireSRWLockShared(&g_lock);
+    for (size_t i = 0; i < g_n; i++) {
+        if (n + 2 > cap) {
+            u64 *nr = (u64 *)realloc(rg, (cap ? cap * 2 : 256) * sizeof(u64));
+            if (!nr) break;
+            rg = nr; cap = cap ? cap * 2 : 256;
+        }
+        rg[n++] = g_v[i].start; rg[n++] = g_v[i].end;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    for (size_t i = 0; i + 1 < n; i += 2) xrl_mem_munmap(rg[i], rg[i + 1] - rg[i]);
+    free(rg);
+    AcquireSRWLockExclusive(&g_lock);
+    g_brk_cur = g_brk_base;
+    ReleaseSRWLockExclusive(&g_lock);
+}

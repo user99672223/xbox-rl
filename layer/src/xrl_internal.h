@@ -114,6 +114,9 @@ struct xrl_thread {
     HANDLE sig_ev;         /* auto-reset: set when a signal is queued (interruptible waits) */
     struct xrl_sigregs *sig_regs;   /* per-thread buffer behind sig_jump (signal.c) */
     u64 sig_from_kill;     /* pending signals sent by kill() rather than tgkill (si_code) */
+    volatile LONG exec_kill; /* execve is replacing the image: this thread ends at its next syscall return (exec.c) */
+    int  daemon;           /* survives an execve that keeps the old image (the wineserver thread) */
+    u64  host_teb;         /* this thread's host TEB (key of its xrl_ttab entry) */
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
@@ -149,6 +152,13 @@ slong xrl_do_exit(int code, int group);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);
 void xrl_threads_terminate_all(void);
+void xrl_thread_reap(xrl_thread *t);       /* drop the record of a thread that was terminated from outside */
+void xrl_thread_die(xrl_thread *t);        /* the calling thread ends quietly (execve, exec kill); no return */
+/* exec.c */
+slong xrl_sys_execve(u64 path, u64 argv, u64 envp);
+slong xrl_exec_prctl(int op, u64 a2, u64 a3);
+void xrl_mem_release_all(void);            /* mem.c: unmap every guest mapping (plain execve) */
+void xrl_fd_close_on_exec(void);           /* fd.c: close every fd with FD_CLOEXEC */
 
 /* asm entry points (thunks.asm) */
 void xrl_enter_guest(u64 entry, u64 guest_rsp, xrl_thread *t);        /* Win64 */
@@ -192,6 +202,7 @@ typedef struct xrl_global {
     SRWLOCK thread_lock;
     xrl_thread *threads;
     volatile LONG nthreads;
+    volatile LONG ndaemons;        /* of nthreads: threads that do not count as "the last one" */
     u64   boot_qpc, qpc_freq;
     u64   boot_time_100ns;         /* FILETIME at boot                   */
     char  cwd[1024];               /* guest cwd                          */
