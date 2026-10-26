@@ -221,6 +221,17 @@ static int ends_flow(const uint8_t *code, const rgn *r, size_t i)
 {
     x86i t;
     if (x86_decode(code + r->off[i], r->len[i], &t) != r->len[i] || t.vex) return 0;
+    if (t.map == 1 && t.opcode == 0x05) {
+        /* syscall right after `mov $15/$60/$231, %eax|%rax`: rt_sigreturn (musl's __restore_rt) and exit never return, and
+         * the next bytes are another function (musl puts __sigsetjmp there: its first instruction was overwritten). */
+        if (i == 0 || r->off[i - 1] + r->len[i - 1] != r->off[i]) return 0;
+        const uint8_t *p = code + r->off[i - 1];
+        uint32_t nr;
+        if (r->len[i - 1] == 7 && p[0] == 0x48 && p[1] == 0xc7 && p[2] == 0xc0) memcpy(&nr, p + 3, 4);
+        else if (r->len[i - 1] == 5 && p[0] == 0xb8) memcpy(&nr, p + 1, 4);
+        else return 0;
+        return nr == 15 || nr == 60 || nr == 231;
+    }
     if (t.map == 1) return t.opcode == 0x0b;                                                         /* ud2 */
     if (t.map != 0) return 0;
     switch (t.opcode) {
