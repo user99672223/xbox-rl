@@ -202,8 +202,8 @@ static slong sa_to_win(netsock *n, const void *lx, u32 len, SOCKADDR_STORAGE *ou
         memcpy(&s->sin6_flowinfo, b + 4, 4);
         memcpy(&s->sin6_addr, b + 8, 16);
         memcpy(&s->sin6_scope_id, b + 24, 4);
-        static const u8 any6[16] = { 0 };
-        if (for_connect && !memcmp(&s->sin6_addr, any6, 16)) s->sin6_addr = in6addr_loopback;
+        static const u8 any6[16] = { 0 }, loop6[16] = { [15] = 1 };   /* ::1 (in6addr_loopback is not in the UWP link set) */
+        if (for_connect && !memcmp(&s->sin6_addr, any6, 16)) memcpy(&s->sin6_addr, loop6, 16);
         *outlen = sizeof *s;
         return 0;
     }
