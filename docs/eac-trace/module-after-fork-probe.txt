@@ -1,7 +1,7 @@
-# The same, AFTER /proc/1 exists (the layer as committed in f5a7d2d, plus XRL_FORK_TASKS=1 and
-# XRL_EXPERIMENT_TRACEME=1 from the fork-task experiment, see docs/decisions.md; neither is in the tree).
-# The module now forks a child (tid 23904 below, run as a task on the parent's stack): the child closes every
-# descriptor from 3 up (about 65500 close calls, left out), prctl(PR_SET_DUMPABLE, 0), ptrace(PTRACE_TRACEME), raises SIGSTOP.
+# The same, AFTER /proc/1 exists, with the fork child run as a task (XRL_FORK_TASKS=1, layer/src/task.c) and ptrace(TRACEME)
+# accepted as an experiment (an early version of task.c; the committed one implements ptrace for the child).
+# The module forks a child (tid 23904 below): the child closes every descriptor from 3 up (about 65500 close calls,
+# left out), prctl(PR_SET_DUMPABLE, 0), ptrace(PTRACE_TRACEME), raises SIGSTOP; the parent waits, SETOPTIONS, SYSCALL.
 [23984] memfd_create("c3ca429f-533a-a9ff-3edb-e74b2174b40c", 0x2) = 204
 [23984] write(204 (/memfd), len 12081735) = 12081735 "<the module image>"
 [23984] getpid(f, 0, 14022581f) = 10872

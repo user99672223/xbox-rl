@@ -24,7 +24,8 @@ typedef struct xrl_task {
     HANDLE parent_go, child_go;
     u8 *snapP, *snapC;
     u64 lo_p, lo_c, hi;
-    int exited, killed, reaped, sigdeath, status;
+    int exited, killed, reaped, sigdeath, execd, status;
+    HANDLE proc;                               /* the host process an exec started */
     int traced, opts, resumed, mode;          /* mode: 0 PTRACE_CONT, 1 PTRACE_SYSCALL */
     int stopped, reported, entry_stopped;
     int s_kind, s_sig;                         /* 0 signal-delivery-stop, 1 syscall entry, 2 syscall exit, 3 exec */
@@ -122,8 +123,10 @@ slong xrl_do_fork(void)
 void xrl_task_on_exit(xrl_thread *t, int code)
 {
     xrl_task *k = t->task;
-    if (!k->sigdeath && !k->exited) k->status = (code & 0xff) << 8;
-    k->exited = 1;
+    if (!k->execd) {
+        if (!k->sigdeath && !k->exited) k->status = (code & 0xff) << 8;
+        k->exited = 1;
+    }
     xrl_ctu(k->lo_p, k->snapP, (size_t)(k->hi - k->lo_p));
     xrl_fd_table_free(k->fdt);
     k->fdt = NULL;
@@ -166,6 +169,153 @@ static void print_arg(const char *s)   /* login codes, account names and ids mus
     LOGW("exec:   %s", buf);
 }
 
+
+/* ---- execve in an untraced task: the program runs as a second layer process --------------------------------
+ * The host executable is started again (same file, same root) with the program's path and arguments; the
+ * guest environment travels as XRL_ENV_<name>=<value> (what the test host turns back into the guest's
+ * environment). Open files other than the standard streams are not inherited yet. The task ends and the
+ * parent goes on; wait4 then waits for the host process and reports its exit code. On the console the same
+ * step would start the package's own executable as a child process of the app (see docs/decisions.md). */
+static void quote_arg(wchar_t *out, size_t cap, const wchar_t *a, size_t *w)
+{
+    size_t n = *w;
+    int q = !*a || wcspbrk(a, L" \t\"") != NULL;
+    if (q && n + 1 < cap) out[n++] = L'"';
+    for (const wchar_t *p = a; *p && n + 4 < cap; p++) {
+        size_t bs = 0;
+        while (*p == L'\\') { bs++; p++; }
+        if (!*p) { for (size_t i = 0; i < bs * (q ? 2 : 1) && n + 2 < cap; i++) out[n++] = L'\\'; break; }
+        if (*p == L'"') { for (size_t i = 0; i < bs * 2 + 1 && n + 2 < cap; i++) out[n++] = L'\\'; out[n++] = L'"'; }
+        else { for (size_t i = 0; i < bs && n + 2 < cap; i++) out[n++] = L'\\'; out[n++] = *p; }
+    }
+    if (q && n + 1 < cap) out[n++] = L'"';
+    out[n++] = L' ';
+    *w = n;
+}
+
+static wchar_t *widen(const char *s)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t *w = (wchar_t *)malloc((size_t)(n + 1) * sizeof(wchar_t));
+    MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n + 1);
+    return w;
+}
+
+
+/* ---- a hard cap on the processes a layer process may start --------------------------------------------------
+ * A spawn path that creates OS processes must not be able to loop (a test that spawned itself once started
+ * 85 host processes and used up the laptop's commit). Two limits, both refused with EAGAIN as a full process
+ * table is on Linux:
+ *   - a group-wide count of live spawned processes (a named semaphore shared by the first process and every
+ *     descendant; XRL_MAX_CHILDREN, default 4, never above 16); a slot is given back when wait4 reaps the child
+ *   - a nesting depth (XRL_SPAWN_DEPTH travels in the environment; XRL_MAX_SPAWN_DEPTH, default 2).
+ * XRL_SPAWN_KILL_ON_EXIT=1 additionally puts the process and its descendants into a job object that kills
+ * them when the first process ends (the tests set it; a launcher whose child must outlive it does not). */
+static HANDLE g_spawn_sem;
+static char g_spawn_group[64];
+static int g_spawn_depth;
+
+static int env_int(const char *name, int dflt)
+{
+    char v[16];
+    return GetEnvironmentVariableA(name, v, sizeof v) ? atoi(v) : dflt;
+}
+
+static int spawn_slot_take(void)
+{
+    static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
+    BOOL CALLBACK init(PINIT_ONCE io, PVOID p, PVOID *c);
+    InitOnceExecuteOnce(&once, init, NULL, NULL);
+    if (!g_spawn_sem) return -LX_EAGAIN;
+    if (g_spawn_depth >= env_int("XRL_MAX_SPAWN_DEPTH", 2)) { LOGE("exec: spawn depth %d reached (XRL_MAX_SPAWN_DEPTH): EAGAIN", g_spawn_depth); return -LX_EAGAIN; }
+    if (WaitForSingleObject(g_spawn_sem, 0) != WAIT_OBJECT_0) { LOGE("exec: too many live child processes (XRL_MAX_CHILDREN): EAGAIN"); return -LX_EAGAIN; }
+    return 0;
+}
+static void spawn_slot_give(void) { if (g_spawn_sem) ReleaseSemaphore(g_spawn_sem, 1, NULL); }
+
+BOOL CALLBACK init(PINIT_ONCE io, PVOID p, PVOID *c)
+{
+    (void)io; (void)p; (void)c;
+    int cap = env_int("XRL_MAX_CHILDREN", 4);
+    if (cap < 1) cap = 1;
+    if (cap > 16) cap = 16;
+    g_spawn_depth = env_int("XRL_SPAWN_DEPTH", 0);
+    if (!GetEnvironmentVariableA("XRL_SPAWN_GROUP", g_spawn_group, sizeof g_spawn_group)) {
+        snprintf(g_spawn_group, sizeof g_spawn_group, "xrl-spawn-%lu-%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
+        SetEnvironmentVariableA("XRL_SPAWN_GROUP", g_spawn_group);
+        if (env_int("XRL_SPAWN_KILL_ON_EXIT", 0)) {   /* only the first process of a group makes the job; children are in it already */
+            HANDLE job = CreateJobObjectW(NULL, NULL);
+            if (job) {
+                JOBOBJECT_EXTENDED_LIMIT_INFORMATION li; memset(&li, 0, sizeof li);
+                li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+                SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li);
+                if (!AssignProcessToJobObject(job, GetCurrentProcess())) LOGW("exec: could not put this process into a job (%lu); children are not killed with it", GetLastError());
+            }
+        }
+    }
+    g_spawn_sem = CreateSemaphoreA(NULL, cap, cap, g_spawn_group);
+    return TRUE;
+}
+
+static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp)
+{
+    /* the program must exist and be an x86-64 ELF: the errors a caller of execve expects come before anything starts */
+    char gpath[1024]; slong r;
+    if ((r = xrl_vfs_resolve(LX_AT_FDCWD, path, 1, gpath, sizeof gpath)) < 0) return r;
+    {
+        u8 hdr[64];
+        slong fd = xrl_vfs_open(LX_AT_FDCWD, gpath, LX_O_RDONLY | LX_O_CLOEXEC, 0);
+        if (fd < 0) return fd;
+        xfile *f = xrl_fd_get((int)fd);
+        slong got = f && f->ops->read ? f->ops->read(f, hdr, sizeof hdr, 0) : -LX_EACCES;
+        xfile_unref(f);
+        xrl_fd_close((int)fd);
+        if (got < 0) return got;
+        if (got < 20 || hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' || hdr[4] != 2 || *(u16 *)(hdr + 18) != 62) return -LX_ENOEXEC;
+    }
+    if ((r = spawn_slot_take()) < 0) return r;
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    const wchar_t *root = G.vfs_root_w;
+    if (!wcsncmp(root, L"\\\\?\\", 4)) root += 4;
+    static wchar_t cmd[32768];
+    size_t w = 0;
+    quote_arg(cmd, ARRAY_LEN(cmd), exe, &w);
+    quote_arg(cmd, ARRAY_LEN(cmd), root, &w);
+    wchar_t *wp = widen(path);
+    quote_arg(cmd, ARRAY_LEN(cmd), wp, &w); free(wp);
+    for (int i = 1; i < 64; i++) {   /* argv[1..]; argv[0] is the program's own name for itself */
+        u64 sp; char s[2048];
+        if (xrl_cfu(&sp, uargv + 8ull * i, 8) || !sp || xrl_strfu(s, sp, sizeof s)) break;
+        wchar_t *a = widen(s); quote_arg(cmd, ARRAY_LEN(cmd), a, &w); free(a);
+    }
+    for (int i = 0; i < G.argc; i++) if (!strcmp(G.argv[i], "--fake-host")) { quote_arg(cmd, ARRAY_LEN(cmd), L"--fake-host", &w); break; }
+    cmd[w - 1] = 0;
+    /* environment: this process's, without its XRL_ENV_ lines, plus the guest's as XRL_ENV_ lines */
+    wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
+    wchar_t *cur = GetEnvironmentStringsW();
+    for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
+    FreeEnvironmentStringsW(cur);
+    for (int i = 0; i < 256; i++) {
+        u64 sp; char s[4096];
+        if (xrl_cfu(&sp, uenvp + 8ull * i, 8) || !sp || xrl_strfu(s, sp, sizeof s)) break;
+        wchar_t *a = widen(s); size_t l = wcslen(a);
+        if ((size_t)(o - blk) + l + 16 < (1u << 19)) { memcpy(o, L"XRL_ENV_", 8 * sizeof(wchar_t)); o += 8; memcpy(o, a, (l + 1) * sizeof(wchar_t)); o += l + 1; }
+        free(a);
+    }
+    { wchar_t dv[40]; swprintf(dv, 40, L"XRL_SPAWN_DEPTH=%d", g_spawn_depth + 1); size_t l = wcslen(dv) + 1; memcpy(o, dv, l * sizeof(wchar_t)); o += l; }
+    *o++ = 0;
+    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, blk, NULL, &si, &pi);
+    free(blk);
+    if (!ok) { LOGE("exec: CreateProcess failed: %lu", GetLastError()); spawn_slot_give(); return -LX_EAGAIN; }
+    CloseHandle(pi.hThread);
+    k->proc = pi.hProcess;
+    LOGW("exec: task %d runs \"%s\" as host process %lu", k->pid, path, pi.dwProcessId);
+    return 0;
+}
+
 /* execve in a task: what the child asks to run, then the stop a tracer expects; the image is not run */
 slong xrl_task_exec(xrl_thread *t, const char *path, u64 uargv, u64 uenvp)
 {
@@ -190,7 +340,13 @@ slong xrl_task_exec(xrl_thread *t, const char *path, u64 uargv, u64 uenvp)
         save_regs(k, t, 3, SIGTRAP_, 59, NULL, 0);
         stop(k, t, ((k->opts & 0x10) ? (SIGTRAP_ | (4 << 8)) : SIGTRAP_) << 8 | 0x7f);
     }
-    xrl_do_exit(0, 1);   /* the new image would run now; it cannot in this model */
+    if (!k->traced) {
+        slong r = spawn_process(k, path, uargv, uenvp);
+        if (r < 0) return r;                         /* execve fails in the child, as on Linux */
+        k->execd = 1;                                 /* the task ends here; its process goes on elsewhere */
+        xrl_do_exit(0, 1);
+    }
+    xrl_do_exit(0, 1);   /* a traced exec: the stop above was the end of what this model can show */
     return 0;
 }
 
@@ -214,6 +370,15 @@ slong xrl_task_wait(int pid, u64 ustatus, int options)
     xrl_task *k = find_child(pid);
     if (!k) return -LX_ECHILD;
     for (;;) {
+        if (k->proc) {   /* it exec'd: a host process now */
+            DWORD wr = WaitForSingleObject(k->proc, (options & 1) ? 0 : INFINITE), ec = 0;
+            if (wr == WAIT_TIMEOUT) return 0;
+            GetExitCodeProcess(k->proc, &ec);
+            CloseHandle(k->proc); k->proc = NULL;
+            spawn_slot_give();
+            if (!k->killed) k->status = (int)(ec & 0xff) << 8;
+            k->exited = 1;
+        }
         if (k->exited || (k->stopped && !k->reported && k->traced)) {
             int st = k->status, r = k->pid;
             if (ustatus && xrl_ctu(ustatus, &st, 4)) return -LX_EFAULT;
@@ -239,7 +404,8 @@ int xrl_task_kill(int pid, int sig, slong *res)
     if (!k) return 0;
     *res = 0;
     if (sig == 0) return 1;
-    if (sig == LX_SIGKILL) { k->killed = 1; k->exited = 1; k->status = 9; k->resumed = 0; xrl_fd_table_free(k->fdt); k->fdt = NULL; SetEvent(k->child_go); LOGW("task %d killed", k->pid); }
+    if (sig == LX_SIGKILL && k->proc) { k->killed = 1; k->status = 9; TerminateProcess(k->proc, 137); LOGW("task %d: its host process killed", k->pid); }
+    else if (sig == LX_SIGKILL) { k->killed = 1; k->exited = 1; k->status = 9; k->resumed = 0; xrl_fd_table_free(k->fdt); k->fdt = NULL; SetEvent(k->child_go); LOGW("task %d killed", k->pid); }
     else LOGW("kill(%d, %d): signal to a task that is not running is dropped", pid, sig);
     return 1;
 }

@@ -663,6 +663,73 @@ static void test_fork_tasks(void)
     CHECK(sc4(61, pid, &st, 0, 0) == -10, "wait4 again: no more children");
 }
 
+/* execve in a fork()ed task starts a second layer process (host process). The program is this guest in
+ * "--spawned" mode: it records its argv, one environment variable and its pid in a file and exits with 33. */
+static int spawned_main(long argc, u64 *sp)
+{
+    char buf[512]; int n = 0;
+    u64 *env = sp + 1 + argc + 1;
+    if (argc > 2 && !memcmp((const char *)sp[3], "sleep", 5)) { long ts[2] = { 4, 0 }; sc2(35, ts, 0); return 0; }   /* holds a process slot for a while */
+    const char *want = "XRL_SPAWN_ENV=";
+    for (long i = 2; i < argc; i++) { const char *a = (const char *)sp[1 + i]; while (*a && n < 400) buf[n++] = *a++; buf[n++] = '|'; }
+    for (; *env; env++) { const char *e = (const char *)*env; unsigned long l = slen(want); if (!memcmp(e, want, l)) { while (e[l] && n < 480) buf[n++] = e[l++]; buf[n++] = '|'; } }
+    char d[12]; int nd = 0; long v = sc1(39, 0);
+    do d[nd++] = (char)('0' + v % 10); while ((v /= 10));
+    buf[n++] = 'p'; while (nd) buf[n++] = d[--nd];
+    buf[n++] = '\n';
+    long fd = sc4(257, -100, "/tmp/xrl_spawned.txt", 0102 | 01000, 0644);
+    if (fd >= 0) { sc3(1, fd, buf, n); sc1(3, fd); }
+    return 33;
+}
+static void test_spawn(void)
+{
+    sc1(87, "/tmp/xrl_spawned.txt");
+    long me = sc1(39, 0);
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip exec in a forked task (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {
+        const char *av[] = { "/bin/guest.elf", "--spawned", "hello world", "x\"y", 0 };
+        const char *ev[] = { "XRL_SPAWN_ENV=abc", 0 };
+        sc3(59, "/bin/guest.elf", av, ev);
+        sc1(60, 99);                                    /* execve failed */
+        for (;;) sc1(60, 99);
+    }
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid, "wait4 for the exec'd child");
+    CHECK(st == (33 << 8), "its exit status reaches the parent (33)");
+    char b[512]; memset(b, 0, sizeof b);
+    long fd = sc3(2, "/tmp/xrl_spawned.txt", 0, 0), n = fd >= 0 ? sc3(0, fd, b, 500) : -1;
+    if (fd >= 0) sc1(3, fd);
+    CHECK(n > 0 && find(b, "hello world|x\"y|") && find(b, "|abc|p"), "the program ran with its arguments (quoting kept) and its environment");   /* the test host adds --fake-host to a child's argv */
+    const char *pp = find(b, "|p");
+    long cp = 0; for (pp = pp ? pp + 2 : ""; *pp >= '0' && *pp <= '9'; pp++) cp = cp * 10 + (*pp - '0');
+    CHECK(cp > 0 && cp != me, "... as a process of its own (pid differs)");
+    long pid2 = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid2 == 0) {
+        const char *av[] = { "/bin/nope", 0 }, *ev[] = { 0 };
+        long r = sc3(59, "/bin/nope", av, ev);
+        sc1(60, r == -2 ? 44 : 45);
+        for (;;) sc1(60, 45);
+    }
+    CHECK(sc4(61, pid2, &st, 0, 0) == pid2 && st == (44 << 8), "execve of a missing program fails with ENOENT in the child");
+    /* the cap: with XRL_MAX_CHILDREN=2 a third live child is refused (EAGAIN), never started */
+    {
+        long a = sc(57, 0, 0, 0, 0, 0, 0), b = 0, c = 0;
+        const char *av[] = { "/bin/guest.elf", "--spawned", "sleep", 0 }, *ev[] = { 0 };
+        if (a == 0) { sc3(59, "/bin/guest.elf", av, ev); sc1(60, 46); for (;;) sc1(60, 46); }
+        b = sc(57, 0, 0, 0, 0, 0, 0);
+        if (b == 0) { sc3(59, "/bin/guest.elf", av, ev); sc1(60, 46); for (;;) sc1(60, 46); }
+        c = sc(57, 0, 0, 0, 0, 0, 0);
+        if (c == 0) { long r = sc3(59, "/bin/guest.elf", av, ev); sc1(60, r == -11 ? 47 : 48); for (;;) sc1(60, 48); }
+        int sa = 0, sb = 0, sc_ = 0;
+        long rc = sc4(61, c, &sc_, 0, 0);
+        sc2(62, a, 9); sc2(62, b, 9);
+        sc4(61, a, &sa, 0, 0); sc4(61, b, &sb, 0, 0);
+        CHECK(rc == c && sc_ == (47 << 8), "the third live child is refused with EAGAIN (XRL_MAX_CHILDREN)");
+        CHECK(sa == 9 && sb == 9, "kill(SIGKILL) ends a task's host process");
+    }
+}
+
 static char cpubuf[1 << 16];
 static void test_cpuinfo(void)
 {
@@ -1309,6 +1376,7 @@ void cstart(u64 *sp)
         k = 0; while (a[k] && a[k] == g[k]) k++;
         if (!a[k] && !g[k]) no_swap = 1;
     }
+    for (long i = 1; i < argc; i++) { const char *a = (const char *)sp[1 + i]; if (!memcmp(a, "--spawned", 9)) sc1(231, spawned_main(argc, sp)); }   /* the program test_spawn starts */
     out("xrl guest test start\n");
     outn("argc", argc);
     test_misc();
@@ -1317,6 +1385,7 @@ void cstart(u64 *sp)
     test_cpuinfo();
     test_procfs_rlimits();
     test_fork_tasks();
+    test_spawn();
     test_threads();
     test_net();
     test_ntsync();
