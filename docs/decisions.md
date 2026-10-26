@@ -312,6 +312,19 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     and the bootstrapper still logs `210, 'Unexpected error. (#2) (0)'`. Not followed further: the next question
     is what the module decides from those answers, which is outside what this work looks at. A next layer-side
     step would be to log the mmap flags in systrace and compare those answers (EEXIST for address hints) with Linux.
+  - **mmap answers in the traced game process (commits 4093584, 96fdf0e).** systrace now logs mmap with every
+    argument and flag by name, and for an EEXIST what the guest's maps and the host hold over the range. run27:
+    175232 `MAP_FIXED_NOREPLACE` requests of one page answered EEXIST. 90841 were over the process's own
+    `libc.so`/`wine64` mappings: the answer Linux gives too. 84391 were just above the main program's image, where
+    the guest's maps show nothing: the layer started top-down mmaps at the very end of its arena, so `wine64` ended
+    exactly there and Windows had a mapped view and a private reservation right above. Linux keeps mmap_base at least
+    128 MiB below the stack, so that space is free and the request gets its address. Fix: top-down mmaps (mmap,
+    mremap) start 128 MiB below the arena end (at most arena/64); the gap stays inside the arena. Test
+    `test_mmap_above_top` (failed before). run28: 1 such request succeeds, 83 EEXIST, all over the process's own
+    mappings, none over free space. The bootstrapper still logs `210, 'Unexpected error. (#2) (0)'`; the tracee
+    later stops about 1000 times with SIGSEGV at one address until its tracer kills it. Not followed further here.
+    Also seen, not changed: a non-fixed mmap with a free hint address inside the arena gets another address
+    (Linux gives the hint).
 
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
