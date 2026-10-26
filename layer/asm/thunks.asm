@@ -30,6 +30,8 @@ OPTION CASEMAP:NONE
 EXTERN xrl_syscall_dispatch:PROC
 EXTERN xrl_teb_enter_host:PROC
 EXTERN xrl_teb_restore:PROC
+EXTERN xrl_com_scan:PROC
+EXTERN xrl_com_after:PROC
 EXTERN xrl_ttab:BYTE
 EXTERN xrl_asm_fsb_flag:QWORD
 
@@ -38,6 +40,7 @@ T_GUEST_TP   EQU 08h
 T_FRAME      EQU 10h
 T_RESUME     EQU 20h
 T_CHILD_RSP  EQU 60h
+T_GUEST_LIVE EQU 70h
 
 ; FIND_THREAD: rax = xrl_thread* (0 if unknown). Clobbers r12, r13, r10.
 FIND_THREAD MACRO
@@ -155,36 +158,44 @@ xrl_downcall_tramp PROC
 dc_havestack:
     and     r10, -16
     mov     rsp, r10
-    sub     rsp, 60h                       ; 20h shadow, 20h stack args, 20h saved SysV args
+    sub     rsp, 0A0h                      ; 20h shadow, 20h stack args, 40h SysV args, 20h result
     ; Host code runs below: swap the host TEB view in (docs/gs-teb.md). The Win64
     ; helper may clobber rcx/rdx/r8/r9, which still hold SysV args 4/3/5/6.
-    mov     [rsp+40h], rcx
-    mov     [rsp+48h], rdx
-    mov     [rsp+50h], r8
-    mov     [rsp+58h], r9
+    ; All eight SysV args are kept at [rsp+40h] in order, for the COM scan.
+    mov     [rsp+40h], rdi
+    mov     [rsp+48h], rsi
+    mov     [rsp+50h], rdx
+    mov     [rsp+58h], rcx
+    mov     [rsp+60h], r8
+    mov     [rsp+68h], r9
+    mov     rax, [rbp+16]                  ; sysv arg7
+    mov     r10, [rbp+24]                  ; sysv arg8
+    mov     [rsp+70h], rax
+    mov     [rsp+78h], r10
     mov     rcx, r12
     call    xrl_teb_enter_host             ; eax = 1 if the guest view was live
     mov     r13d, eax                      ; restore flag (callee-saved)
-    mov     rcx, [rsp+40h]
-    mov     rdx, [rsp+48h]
-    mov     r8,  [rsp+50h]
-    mov     r9,  [rsp+58h]
-    mov     rax, [rbp+16]                  ; sysv arg7
-    mov     r10, [rbp+24]                  ; sysv arg8
+    mov     rax, [rsp+70h]
+    mov     r10, [rsp+78h]
     mov     [rsp+30h], rax
     mov     [rsp+38h], r10
-    mov     [rsp+20h], r8                  ; arg5
-    mov     [rsp+28h], r9                  ; arg6
-    mov     r9, rcx
-    mov     r8, rdx
-    mov     rdx, rsi
-    mov     rcx, rdi
+    mov     rax, [rsp+60h]
+    mov     [rsp+20h], rax                 ; arg5
+    mov     rax, [rsp+68h]
+    mov     [rsp+28h], rax                 ; arg6
+    mov     r9, [rsp+58h]
+    mov     r8, [rsp+50h]
+    mov     rdx, [rsp+48h]
+    mov     rcx, [rsp+40h]
     call    rbx
-    mov     [rsp+40h], rax                 ; native return value
+    mov     [rsp+80h], rax                 ; native return value
+    lea     rcx, [rsp+40h]                 ; out-params may carry host COM objects
+    mov     edx, 8
+    call    xrl_com_scan
     mov     rcx, r12
     mov     edx, r13d
     call    xrl_teb_restore                ; guest view back if it was live
-    mov     rax, [rsp+40h]
+    mov     rax, [rsp+80h]
     lea     rsp, [rbp-24]
     pop     r13
     pop     r12
@@ -192,6 +203,91 @@ dc_havestack:
     pop     rbp
     ret
 xrl_downcall_tramp ENDP
+
+; --------------------------------------------------------------------------
+; xrl_com_tramp: Win64 -> Win64, reached from the per-vtable-entry stubs of
+; com.c with r11 = the real method. Arguments are untouched Win64 ones.
+;   - thread unknown, or host TEB view live: jump straight to the method.
+;   - guest view live (called from guest code): host stack, host TEB view,
+;     call, scan the arguments for new host COM objects, guest view back.
+; Copies 12 stack arguments (methods with up to 16 arguments); xmm0-3 are
+; preserved for float arguments, and xmm0 for a float result.
+; Host frame (rsp 16-aligned):
+;   +00 shadow  +20 stack args 5..16  +80 rcx rdx r8 r9  +A0 xmm0-3
+;   +E0 rax result  +F0 xmm0 result
+; Guest frame: rbp -> saved rbp; +08 r13, +10 r12, +18 return, +40 arg 5.
+; --------------------------------------------------------------------------
+PUBLIC xrl_com_tramp
+xrl_com_tramp PROC
+    push    r12
+    push    r13
+    FIND_THREAD                            ; rax = thread* (clobbers r10 r12 r13)
+    test    rax, rax
+    jz      ct_fast
+    cmp     dword ptr [rax+T_GUEST_LIVE], 0
+    je      ct_fast
+    push    rbp
+    mov     rbp, rsp
+    push    rbx
+    push    r14
+    push    r15
+    mov     rbx, r11                       ; target
+    mov     r12, rax                       ; thread
+    mov     r10, [rax+T_HOST_RSP]
+    and     r10, -16
+    mov     rsp, r10                       ; ---- now on the host stack ----
+    sub     rsp, 100h
+    mov     [rsp+80h], rcx
+    mov     [rsp+88h], rdx
+    mov     [rsp+90h], r8
+    mov     [rsp+98h], r9
+    movdqu  [rsp+0A0h], xmm0
+    movdqu  [rsp+0B0h], xmm1
+    movdqu  [rsp+0C0h], xmm2
+    movdqu  [rsp+0D0h], xmm3
+    xor     ecx, ecx
+ct_copy:
+    mov     rax, [rbp+40h+rcx*8]
+    mov     [rsp+20h+rcx*8], rax
+    inc     ecx
+    cmp     ecx, 12
+    jb      ct_copy
+    mov     rcx, r12
+    call    xrl_teb_enter_host             ; eax = 1 if the guest view was live
+    mov     r15d, eax
+    mov     rcx, [rsp+80h]
+    mov     rdx, [rsp+88h]
+    mov     r8,  [rsp+90h]
+    mov     r9,  [rsp+98h]
+    movdqu  xmm0, [rsp+0A0h]
+    movdqu  xmm1, [rsp+0B0h]
+    movdqu  xmm2, [rsp+0C0h]
+    movdqu  xmm3, [rsp+0D0h]
+    call    rbx
+    mov     [rsp+0E0h], rax
+    movdqu  [rsp+0F0h], xmm0
+    lea     rcx, [rsp+80h]                 ; regs as passed
+    lea     rdx, [rbp+40h]                 ; stack args as passed (guest copy)
+    mov     r8, rax
+    call    xrl_com_after
+    mov     rcx, r12
+    mov     edx, r15d
+    call    xrl_teb_restore
+    mov     rax, [rsp+0E0h]
+    movdqu  xmm0, [rsp+0F0h]
+    lea     rsp, [rbp-24]                  ; ---- back on the guest stack ----
+    pop     r15
+    pop     r14
+    pop     rbx
+    pop     rbp
+    pop     r13
+    pop     r12
+    ret
+ct_fast:
+    pop     r13
+    pop     r12
+    jmp     r11
+xrl_com_tramp ENDP
 
 ; --------------------------------------------------------------------------
 ; void xrl_enter_guest(u64 entry /*rcx*/, u64 guest_rsp /*rdx*/, xrl_thread *t /*r8*/)

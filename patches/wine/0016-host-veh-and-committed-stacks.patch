@@ -1,0 +1,30 @@
+diff --git a/dlls/ntdll/unix/virtual.c b/dlls/ntdll/unix/virtual.c
+index 1a4aede..707bea2 100644
+--- a/dlls/ntdll/unix/virtual.c
++++ b/dlls/ntdll/unix/virtual.c
+@@ -4388,6 +4388,15 @@ TEB *virtual_alloc_first_teb(void)
+     data_size = 2 * block_size;
+     NtAllocateVirtualMemory( NtCurrentProcess(), (void **)&ptr, 0, &data_size, MEM_COMMIT, PAGE_READWRITE );
+     peb = (PEB *)((char *)teb_block + 31 * block_size + (is_win64 ? 0 : page_size));
++    /* xbox-rl: the host's exception dispatcher reads this PEB (it is the TEB's PEB while guest
++     * code runs); a fault there cannot be handled, so commit it now (the layer is lazy). */
++    if (xrl_inproc_server) madvise( (char *)teb_block + 31 * block_size, block_size, 23 /* MADV_POPULATE_WRITE */ );
++    /* xbox-rl (docs/gs-teb.md): while guest code runs, the TEB's PEB pointer is this PEB,
++     * and the host ntdll's exception dispatcher only calls vectored handlers (the layer's
++     * fault handler, which also commits lazy memory) when the PEB says the process has some.
++     * Set before the TEB points here. Wine itself ignores the bits. */
++    peb->ProcessUsingVEH = 1;
++    peb->ProcessUsingVCH = 1;
+     teb = xrl_adopt_teb( init_teb( ptr, FALSE ));
+     pthread_key_create( &teb_key, NULL );
+     pthread_setspecific( teb_key, teb );
+@@ -4799,6 +4808,9 @@ NTSTATUS virtual_alloc_thread_stack( INITIAL_TEB *stack, ULONG_PTR limit_low, UL
+         mprotect_range( view->base, kernel_stack_guard_size, 0, 0 );
+     }
+     VIRTUAL_DEBUG_DUMP_VIEW( view );
++    /* xbox-rl: the layer commits anonymous memory on first touch, but the host kernel pushes
++     * exception frames onto a stack itself, so stacks must be committed up front. */
++    if (xrl_inproc_server) madvise( view->base, view->size, 23 /* MADV_POPULATE_WRITE */ );
+ 
+     /* note: limit is lower than base since the stack grows down */
+     stack->OldStackBase = 0;

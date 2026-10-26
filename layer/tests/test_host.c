@@ -4,7 +4,8 @@
  *
  *   xrl_test_host.exe <rootfs_dir> <guest_elf_path_inside_rootfs> [guest args...]
  *
- * Env: XRL_TRACE=1 traces every syscall. Exit code = guest exit code.
+ * Env: XRL_TRACE=1 traces every syscall. XRL_REAL_GFX=1 replaces the stub gfx
+ * table with gfx/'s real one on a desktop window. Exit code = guest exit code.
  */
 #include <windows.h>
 #include <stdio.h>
@@ -30,6 +31,8 @@ static xrl_status host_swapchain(xrl_handle d, xrl_handle q, uint32_t w, uint32_
 }
 static xrl_status host_pad(uint32_t slot, xrl_pad_state *o) { memset(o, 0, sizeof *o); o->buttons = 0x1000 | slot; o->connected = 1; return XRL_OK; }
 static xrl_status host_xaudio_create(xrl_handle *o) { *o = 0xA0D10ull; return XRL_OK; }
+
+const xrl_gfx_ops *xrl_desktop_gfx(void (*log)(int, const char *, const char *));   /* desktop_gfx.cpp */
 
 int main(int argc, char **argv)
 {
@@ -59,6 +62,12 @@ int main(int argc, char **argv)
     ctx.argv = gargv; ctx.envp = envp; ctx.log = log_cb;
     ctx.gfx = &gfx; ctx.audio = &audio; ctx.input = &input;
     char mb[16];
+    /* XRL_REAL_GFX=1: gfx/'s real op table on a desktop window (laptop GPU) */
+    if (GetEnvironmentVariableA("XRL_REAL_GFX", mb, sizeof mb) && mb[0] == '1') {
+        const xrl_gfx_ops *real = xrl_desktop_gfx(log_cb);
+        if (!real) return 3;
+        ctx.gfx = real;
+    }
     ctx.guest_mem_budget = (GetEnvironmentVariableA("XRL_TEST_BUDGET_MB", mb, sizeof mb) ? strtoull(mb, NULL, 10) : 1024ull) << 20;
     int rc = xrl_layer_boot(&ctx);
     printf("xrl_layer_boot returned %d\n", rc);

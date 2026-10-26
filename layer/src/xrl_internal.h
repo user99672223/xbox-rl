@@ -70,6 +70,8 @@ struct xrl_thread {
     u64 resume[8];         /* 0x20 clone child: r15 r14 r13 r12 rbx rbp rip rsp  */
     u64 child_rsp;         /* 0x60 clone child: initial guest rsp                */
     u64 fsb_enabled;       /* 0x68 per-thread copy of global FSGSBASE flag       */
+    int teb_guest_live;    /* 0x70 the guest TEB view is live (teb.c; com tramp) */
+    int pad0;
     /* --- C-only --- */
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
@@ -96,7 +98,6 @@ struct xrl_thread {
     u64 defer_unmap_addr, defer_unmap_len;
     u32 sig_in_handler;
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
-    int teb_guest_live;
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
 };
@@ -107,6 +108,11 @@ void xrl_teb_thread_init(xrl_thread *t);
 int  xrl_teb_enter_host(xrl_thread *t);       /* returns 1 if the guest view was live */
 void xrl_teb_enter_guest(xrl_thread *t);
 void xrl_teb_restore(xrl_thread *t, int was_guest);
+
+/* com.c: host COM objects called directly by the guest (docs/gs-teb.md Stage 2) */
+void xrl_com_scan(const u64 *v, int n);
+void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret);   /* from xrl_com_tramp */
+extern void xrl_com_tramp(void);                                        /* Win64, r11 = target */
 
 /* Thread lookup: hash of the host TEB Self pointer (gs:[30h]) -> xrl_thread*.
  * Table is read lock-free by the asm thunks. See thunks.asm. */
@@ -137,6 +143,10 @@ void xrl_threads_init(void);
 int  xrl_threads_start_fn(u64 fn, const char *name);
 u64  xrl_exit_stub_addr(void);
 void *xrl_exec_alloc(size_t n);
+int xrl_host_protect(void *p, size_t n, DWORD prot, DWORD *old);   /* VirtualProtect on host memory */
+slong xrl_mem_populate(u64 addr, u64 len);    /* commit lazy pages before Win32 I/O on guest memory */
+slong xrl_mem_populate_containing(u64 addr);  /* commit the whole lazy mapping holding addr */
+int xrl_mem_lazy_fault(u64 addr, int access); /* VEH: 1 = committed, retry */
 int  xrl_fd_list(int *out, int cap);
 slong xrl_fd_close_range(unsigned first, unsigned last, unsigned flags);
 slong xrl_memfd_create(const char *name, unsigned flags);

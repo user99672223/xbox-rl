@@ -1,0 +1,31 @@
+diff --git a/dlls/ntdll/thread.c b/dlls/ntdll/thread.c
+index 0869b3b..b77ac92 100644
+--- a/dlls/ntdll/thread.c
++++ b/dlls/ntdll/thread.c
+@@ -55,7 +55,12 @@ static struct __wine_debug_channel *debug_options;
+ static inline struct debug_info *get_info(void)
+ {
+ #ifdef _WIN64
+-    return (struct debug_info *)((TEB32 *)((char *)NtCurrentTeb() + 0x2000) + 1);
++    /* xbox-rl: the debug info sits in Wine's block, which is not the TEB when the TEB is
++     * the host's (docs/gs-teb.md); the unix side keeps the block at TEB+0x3e0
++     * (ntdll_thread_data.xrl_block, asserted in unix_private.h). */
++    char *block = *(char **)((char *)NtCurrentTeb() + 0x3e0);
++    if (!block) block = (char *)NtCurrentTeb();
++    return (struct debug_info *)((TEB32 *)(block + 0x2000) + 1);
+ #else
+     return (struct debug_info *)(NtCurrentTeb() + 1);
+ #endif
+diff --git a/dlls/ntdll/unix/unix_private.h b/dlls/ntdll/unix/unix_private.h
+index 9f56e25..734f486 100644
+--- a/dlls/ntdll/unix/unix_private.h
++++ b/dlls/ntdll/unix/unix_private.h
+@@ -126,6 +126,8 @@ C_ASSERT( sizeof(struct ntdll_thread_data) <= sizeof(((TEB *)0)->GdiTebBatch) );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_table ) == 0x370 );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_frame ) == 0x378 );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_trace ) == 0x380 );
++/* xbox-rl: PE ntdll reads the block at this offset (dlls/ntdll/thread.c get_info) */
++C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, xrl_block ) == 0x3e0 );
+ #else
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_table ) == 0x214 );
+ C_ASSERT( offsetof( TEB, GdiTebBatch ) + offsetof( struct ntdll_thread_data, syscall_frame ) == 0x218 );

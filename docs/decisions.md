@@ -144,6 +144,49 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Rocket League starts on the laptop through the whole stack**
+  (console Wine build, real layer, gfx/ on the laptop GPU via
+  `XRL_REAL_GFX=1`): it reports "Host OS: Linux (Wine 11.0)", creates its
+  D3D11 device (D3D11On12 over D3D12), loads global shaders and script
+  packages. Open: loading is ~20x slow, commit grows past the console budget
+  (6.6 GiB at 5 min, still rising), no swapchain yet, no audio driver. What it
+  took:
+  - **Wine 0014, session shared memory.** win32u maps the server's session
+    section to read window/class/desktop objects; the layer's MAP_SHARED is
+    copy-in, so the client saw a stale copy ("Failed to get shared session
+    object", no desktop window). The server is a thread of this process, so
+    it publishes its session blocks (`xrl_server_session_block`, append-only
+    array) and win32u reads them through ntdll's `xrl_session_block`.
+    Chosen over coherent shared file mappings in the layer (placeholders +
+    `MapViewOfFile3` restructure the whole memory manager and are unverified
+    on the console); that work is still needed for the general Linux layer.
+  - **Wine 0015, PE-side debug buffer.** The PE ntdll had the same
+    `TEB+0x2000` debug-buffer arithmetic as the unix side (fixed in 0013):
+    reading past the host TEB. It now reads the block from TEB+0x3e0
+    (`ntdll_thread_data.xrl_block`, offset asserted on the unix side).
+  - **Layer: guest->host COM calls (gs-teb Stage 2), `layer/src/com.c`.**
+    The guest calls D3D methods directly; they ran on the guest stack with
+    the guest TEB view live, so D3D12 `CreateCommandQueue` saw Wine's PEB
+    heap and returned E_OUTOFMEMORY (the game then fell back to an older API
+    and crashed). Every vtable entry of a host COM object that reaches the
+    guest is patched in place to `mov r11, orig; jmp xrl_com_tramp`; the
+    tramp switches to the host stack + host view only when the guest view is
+    live, so host code (D3D11On12 calling D3D12) passes straight through.
+    Discovery scans downcall and COM-call arguments after return for
+    pointers to objects whose vtable is outside guest memory and starts with
+    three host-image code pointers. Heap vtables included: D3D11 builds its
+    context dispatch table at run time. Chosen over IDL-generated wrapper
+    objects: no unwrapping of in-parameters, no per-interface code, and
+    over-hooking is harmless. Not handled: host code calling back into guest.
+  - **Layer: select/pselect6** over the poll core (Wine's desktop wait spun on
+    ENOSYS).
+  - Tooling: `layer/tests/catch.c` (debugger wrapper, `XRL_CATCH=1`) sees
+    faults the VEH never gets; `XRL_TRACE_FAULTS`, `XRL_COM_TRACE`,
+    `XRL_PROFILE`; commit high-water lines in the log.
+  - Seen, not yet understood: a hardware fault in guest code on a Wine
+    thread never reaches the layer's VEH (the kernel goes straight to second
+    chance). Must be solved before SEH-using game code can fault safely.
+
 - **2026-10-26 — First Windows program runs: `cmd /c ver` -> "Microsoft
   Windows 10.0.19045"** (laptop, console conditions emulated: no FSGSBASE,
   3.5 GiB budget; results/desktop-wine-cmd-ver-1.txt). Took, in order:

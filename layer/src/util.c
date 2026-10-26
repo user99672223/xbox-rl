@@ -21,9 +21,13 @@ void xrl_logf(int level, const char *tag, const char *fmt, ...)
     if (n < 0) n = (int)strlen(buf);
     xrl_log_fn fn = G.ctx.log;
     if (fn) {
-        AcquireSRWLockExclusive(&g_log_lock);
+        /* Never block for long: a fault inside a log call (or a crash report from
+         * a thread that already holds the lock) would otherwise hang the process
+         * silently. After ~250 ms, log without the lock (lines may interleave). */
+        int locked = 0;
+        for (int i = 0; i < 250 && !(locked = TryAcquireSRWLockExclusive(&g_log_lock)); i++) Sleep(1);
         fn(level, tag, buf);
-        ReleaseSRWLockExclusive(&g_log_lock);
+        if (locked) ReleaseSRWLockExclusive(&g_log_lock);
     } else {
         OutputDebugStringA(buf);
         OutputDebugStringA("\n");

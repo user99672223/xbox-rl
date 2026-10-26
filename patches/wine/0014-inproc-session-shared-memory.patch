@@ -1,0 +1,138 @@
+diff --git a/dlls/ntdll/unix/loader.c b/dlls/ntdll/unix/loader.c
+index 3e05d4d..6e79d92 100644
+--- a/dlls/ntdll/unix/loader.c
++++ b/dlls/ntdll/unix/loader.c
+@@ -637,6 +637,8 @@ static int exec_wineserver( pid_t *pid, char **argv )
+  * xbox-rl: load wineserver.so, start the server thread, return the client end of
+  * the connection socket (or -1).  See server/main.c: xrl_wineserver_start().
+  */
++static int (*xrl_server_session_block)( ULONGLONG, const char **, ULONGLONG *, ULONGLONG * );
++
+ int xrl_start_wineserver(void)
+ {
+     int (*start)(const char *);
+@@ -659,6 +661,7 @@ int xrl_start_wineserver(void)
+         fprintf( stderr, "wine: xrl_wineserver_start not found in wineserver.so\n" );
+         return -1;
+     }
++    xrl_server_session_block = dlsym( handle, "xrl_server_session_block" );
+     path = build_dir ? build_path( build_dir, "nls" ) : build_path( data_dir, "nls" );
+     ret = start( path );
+     free( path );
+@@ -666,6 +669,21 @@ int xrl_start_wineserver(void)
+ }
+ 
+ 
++/***********************************************************************
++ *           xrl_session_block
++ *
++ * xbox-rl: find the server's own mapping of the session block holding `offset`.  The
++ * server is a thread of this process and the layer has no coherent MAP_SHARED file
++ * mappings, so win32u reads session objects through the server's pointer instead of
++ * mapping its own (stale) copy.  Returns 0 when there is no in-process server.
++ */
++__attribute__((visibility("default")))
++int xrl_session_block( ULONGLONG offset, const char **data, ULONGLONG *base, ULONGLONG *size )
++{
++    return xrl_server_session_block ? xrl_server_session_block( offset, data, base, size ) : 0;
++}
++
++
+ /***********************************************************************
+  *           start_server
+  *
+diff --git a/dlls/win32u/winstation.c b/dlls/win32u/winstation.c
+index 508ecbc..66acb1c 100644
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -45,6 +45,9 @@ WINE_DECLARE_DEBUG_CHANNEL(win);
+ 
+ #define DESKTOP_ALL_ACCESS 0x01ff
+ 
++/* xbox-rl: exported by ntdll.so */
++extern int xrl_session_block( ULONGLONG offset, const char **data, ULONGLONG *base, ULONGLONG *size );
++
+ struct shared_input_cache
+ {
+     const shared_object_t *object;
+@@ -121,6 +124,19 @@ static NTSTATUS map_shared_session_block( SIZE_T offset, SIZE_T size, struct ses
+ 
+     if (!(block = calloc( 1, sizeof(*block) ))) return STATUS_NO_MEMORY;
+ 
++    /* xbox-rl: in-process server; read its block directly (see ntdll xrl_session_block) */
++    {
++        ULONGLONG base, bsize;
++        if (xrl_session_block( offset, &block->data, &base, &bsize ))
++        {
++            block->offset = base;
++            block->size = bsize;
++            list_add_tail( &session_blocks, &block->entry );
++            *ret = block;
++            return STATUS_SUCCESS;
++        }
++    }
++
+     InitializeObjectAttributes( &attr, &name, 0, NULL, NULL );
+     if ((status = NtOpenSection( &handle, SECTION_MAP_READ, &attr )))
+         WARN( "Failed to open shared session section, status %#x\n", status );
+diff --git a/server/mapping.c b/server/mapping.c
+index ba25b2a..591a31c 100644
+--- a/server/mapping.c
++++ b/server/mapping.c
+@@ -1372,6 +1372,8 @@ struct mapping *create_session_mapping( struct object *root, const struct unicod
+     return create_mapping( root, name, attr, size, SEC_COMMIT, 0, access, sd );
+ }
+ 
++static void xrl_publish_block( const struct session_block *block );
++
+ void set_session_mapping( struct mapping *mapping )
+ {
+     int unix_fd = get_unix_fd( mapping->fd );
+@@ -1394,6 +1396,39 @@ void set_session_mapping( struct mapping *mapping )
+     shared_session = tmp;
+     session_mapping = mapping;
+     list_add_tail( &session.blocks, &block->entry );
++    xrl_publish_block( block );
++}
++
++/* xbox-rl: session blocks published for in-process clients (see xrl_server_session_block).
++ * Blocks are never unmapped and the mapping grows by 3/2, so a small array is plenty. */
++static struct { const char *data; mem_size_t offset, size; } xrl_blocks[64];
++static unsigned int xrl_nblocks;
++
++static void xrl_publish_block( const struct session_block *block )
++{
++    unsigned int n = xrl_nblocks;
++    if (n >= sizeof(xrl_blocks) / sizeof(xrl_blocks[0])) return;
++    xrl_blocks[n].data   = block->data;
++    xrl_blocks[n].offset = block->offset;
++    xrl_blocks[n].size   = block->block_size;
++    __atomic_store_n( &xrl_nblocks, n + 1, __ATOMIC_RELEASE );
++}
++
++/* Called from client threads: the server thread only ever appends to xrl_blocks. */
++__attribute__((visibility("default")))
++int xrl_server_session_block( mem_size_t offset, const char **data, mem_size_t *base, mem_size_t *size )
++{
++    unsigned int i, n = __atomic_load_n( &xrl_nblocks, __ATOMIC_ACQUIRE );
++
++    for (i = 0; i < n; i++)
++    {
++        if (offset < xrl_blocks[i].offset || offset - xrl_blocks[i].offset >= xrl_blocks[i].size) continue;
++        *data = xrl_blocks[i].data;
++        *base = xrl_blocks[i].offset;
++        *size = xrl_blocks[i].size;
++        return 1;
++    }
++    return 0;
+ }
+ 
+ static struct session_block *grow_session_mapping( mem_size_t needed )
+@@ -1425,6 +1460,7 @@ static struct session_block *grow_session_mapping( mem_size_t needed )
+ 
+     session_mapping->size = new_size;
+     list_add_tail( &session.blocks, &block->entry );
++    xrl_publish_block( block );
+ 
+     return block;
+ }

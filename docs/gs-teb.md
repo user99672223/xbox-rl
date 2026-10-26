@@ -85,21 +85,33 @@ callbacks, `TlsLinks`, `ActiveFrame`, `WaitingOnLoaderLock`, ...).
   exercise Win32 (files, threads, heap, errors), verify host APIs work and the
   guest values survive.
 
-## Stage 2: direct COM calls
+## Stage 2: direct COM calls (built: layer/src/com.c)
 
 The game calls methods on native D3D/DXGI/XAudio2 objects from PE code with the
 guest view live; those methods need the host view (they allocate from the
-process heap via the PEB, use TLS/FLS, set LastError). Options, in order of
-preference, to decide when Stage 1 runs on the console:
-1. **Generated wrappers from Wine's IDLs** (d3d11, d3d12, dxgi, d3d11on12,
-   xaudio2): each method swaps to host, calls the native method, swaps back,
-   and wraps interface pointers in `[out]` parameters (known from the IDL).
-   Mechanical, complete, ~600 methods of generated code. Floats and stack
-   arguments are untouched because the wrapper stays on the same stack.
-2. Vtable patching of native objects with return-address trampolines: no
-   codegen, but objects first seen through an out-parameter would be missed.
-3. Forwarding each call to a host worker thread: correct but microseconds per
-   call; too slow at thousands of D3D calls per frame.
+process heap via the PEB, use TLS/FLS, set LastError) and a host stack.
+Observed: D3D12 `CreateCommandQueue` from Wine's d3d11 returned E_OUTOFMEMORY.
+
+Built: **in-place vtable patching with a conditional trampoline.** Each entry
+of a host COM vtable that reaches the guest becomes `mov r11, orig; jmp
+xrl_com_tramp`. The tramp looks the thread up (gs:[30h] hash, as the other
+thunks) and, only if the guest view is live, switches to the host stack, swaps
+the host view in, copies 12 stack arguments, preserves xmm0-3 / the xmm0
+result, calls, scans the arguments for new objects, and swaps back. From host
+code it is a jump. Out-parameter objects are found by scanning every downcall's
+and COM call's arguments after return (pointer -> pointer -> object whose
+vtable is outside guest memory and starts with three host-image code
+pointers); vtables in host images and on the host heap (D3D11's per-device
+context dispatch table) both qualify. Over-hooking only costs a few
+instructions, so the heuristics err on the side of hooking.
+
+Rejected: IDL-generated wrapper objects (in-parameters would need unwrapping,
+~600 methods of code, wrappers break identity comparisons); forwarding calls
+to a host worker thread (microseconds per call).
+
+Known gaps: host code calling back into guest code (would run with the host
+view on the host stack; D3D does not); every guest COM call pays the full
+91-qword swap twice (a smaller set for COM calls is a possible optimisation).
 
 ## Alternative considered: no Wine for the game
 

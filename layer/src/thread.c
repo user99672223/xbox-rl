@@ -45,6 +45,7 @@ C_ASSERT(FIELD_OFFSET(xrl_thread, frame) == 0x10);
 C_ASSERT(FIELD_OFFSET(xrl_thread, self) == 0x18);
 C_ASSERT(FIELD_OFFSET(xrl_thread, resume) == 0x20);
 C_ASSERT(FIELD_OFFSET(xrl_thread, child_rsp) == 0x60);
+C_ASSERT(FIELD_OFFSET(xrl_thread, teb_guest_live) == 0x70);
 
 /* ------------------------------------------------------------ thread table */
 static SRWLOCK g_ttab_lock = SRWLOCK_INIT;
@@ -235,6 +236,10 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
         t->resume[6] = resume_pc;
     }
     t->child_rsp = child_stack ? child_stack : (p->frame + 56);
+    /* The child's stack is an ordinary (lazy) mmap to us (musl's pthread stacks
+     * carry no MAP_STACK). The host kernel pushes exception frames there, which
+     * a lazy page cannot take, so commit the whole mapping now (mem.c). */
+    if (child_stack) xrl_mem_populate_containing(child_stack - 1);
     t->guest_tp = (flags & LX_CLONE_SETTLS) ? tls : p->guest_tp;
     t->sigmask = p->sigmask;
     t->clone_flags = (u32)flags;

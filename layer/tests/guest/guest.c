@@ -274,8 +274,17 @@ static void test_mem(void)
     CHECK(sc3(28, q, 4096 * 4, 4) == 0, "madvise(DONTNEED)");
     CHECK(q[100] == 0, "DONTNEED zeroes pages");
     u64 budget = *(u64 *)(xctx + 64);     /* xrl_guest_ctx.guest_mem_budget */
-    long big = sc(9, 0, budget + (1ull << 30), 3, 0x22, -1, 0);
-    CHECK(big == -12, "mmap beyond guest_mem_budget -> -ENOMEM");
+    /* commit is lazy (Linux overcommit): only MAP_POPULATE commits at mmap time */
+    long big = sc(9, 0, budget + (1ull << 30), 3, 0x22 | 0x8000, -1, 0);
+    CHECK(big == -12, "mmap(MAP_POPULATE) beyond guest_mem_budget -> -ENOMEM");
+    long lz = sc(9, 0, 64ull << 20, 3, 0x22, -1, 0);
+    CHECK(lz > 0, "64 MiB anonymous mmap (lazy)");
+    if (lz > 0) {
+        volatile char *pz = (volatile char *)lz;
+        pz[0] = 1; pz[(64 << 20) - 1] = 2;
+        CHECK(pz[0] == 1 && pz[(64 << 20) - 1] == 2 && pz[32 << 20] == 0, "lazy pages commit on first touch, zero-filled");
+        CHECK(sc2(11, lz, 64ull << 20) == 0, "munmap lazy mapping");
+    }
 }
 
 static void test_misc(void)

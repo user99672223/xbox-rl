@@ -492,6 +492,9 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_MADV_NORMAL 0
 #define LX_MADV_DONTNEED 4
 #define LX_MADV_FREE 8
+#define LX_MADV_WILLNEED 3
+#define LX_MADV_POPULATE_READ 22
+#define LX_MADV_POPULATE_WRITE 23
 #define LX_MS_ASYNC 1
 #define LX_MS_INVALIDATE 2
 #define LX_MS_SYNC 4

@@ -20,7 +20,9 @@ export XRL_ENV_WINEPREFIX=/prefix XRL_ENV_WINEARCH=win64 XRL_ENV_USER=steamuser 
        XRL_ENV_XRL_HOST_USD=1 XRL_ENV_XRL_NO_SPAWN=1 XRL_ENV_XRL_SKIP_WINEBOOT=1 \
        XRL_ENV_WINEDEBUG="${WINEDEBUG:-err+all}" XRL_ENV_WINEDLLOVERRIDES=winemenubuilder.exe=d
 mkdir -p results
-MSYS_NO_PATHCONV=1 timeout "${XRL_TIMEOUT:-120}" "$host" "$root" /usr/lib/wine/x86_64-unix/wine64 "$@" \
+# XRL_CATCH=1: run under layer/tests/catch.c to see faults the VEH never gets
+catch=; [ "${XRL_CATCH:-0}" = 1 ] && { catch=layer/build/desktop/xrl_catch.exe; host=$(cygpath -w "$host"); }
+MSYS_NO_PATHCONV=1 timeout "${XRL_TIMEOUT:-120}" $catch "$host" "$root" /usr/lib/wine/x86_64-unix/wine64 "$@" \
     > results/desktop-wine-latest.txt 2>&1
 rc=$?
 cat results/desktop-wine-latest.txt

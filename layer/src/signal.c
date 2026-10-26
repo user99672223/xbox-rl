@@ -143,11 +143,32 @@ static int host_stack_fault(const CONTEXT *c)
     return c->Rsp >= limit && c->Rsp < base;
 }
 
+/* Crash-path logging: no CRT stream, no log lock (the faulting thread may hold
+ * either). One WriteFile per line to the process's stderr and the debugger. */
+static void emerg(const char *fmt, ...)
+{
+    char line[600];
+    va_list ap; va_start(ap, fmt);
+    int n = _vsnprintf_s(line, sizeof line, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = (int)strlen(line);
+    line[n++] = '\n';
+    DWORD w;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, NULL);
+    line[n - 1] = 0;
+    OutputDebugStringA(line);
+}
+#undef LOGE
+#define LOGE(...) emerg("[E layer    ] " __VA_ARGS__)
+
 static void crash_report(PEXCEPTION_POINTERS ep, xrl_thread *t)
 {
     CONTEXT *c = ep->ContextRecord;
     EXCEPTION_RECORD *r = ep->ExceptionRecord;
-    LOGE("=== UNHANDLED GUEST FAULT (tid %d '%s') ===", t->tid, t->name);
+    /* everything essential in the first line: the rest may not make it (stack) */
+    LOGE("=== UNHANDLED GUEST FAULT tid %d code %08lx rip %016llx addr %016llx (%llu) rsp %016llx teb-stack [%016llx,%016llx) ===",
+         t->tid, r->ExceptionCode, c->Rip, r->NumberParameters >= 2 ? (u64)r->ExceptionInformation[1] : 0ull,
+         r->NumberParameters >= 1 ? (u64)r->ExceptionInformation[0] : 0ull, c->Rsp, __readgsqword(0x10), __readgsqword(0x08));
     LOGE("%s (0x%08lx) at rip=%016llx  fault_addr=%016llx (%s)", exc_name(r->ExceptionCode), r->ExceptionCode, c->Rip,
          r->NumberParameters >= 2 ? (u64)r->ExceptionInformation[1] : 0ull,
          r->NumberParameters >= 1 ? (r->ExceptionInformation[0] == 0 ? "read" : r->ExceptionInformation[0] == 1 ? "write" : "exec") : "-");
@@ -188,6 +209,28 @@ static void crash_report(PEXCEPTION_POINTERS ep, xrl_thread *t)
     }
 }
 
+/* XRL_TRACE_FAULTS=1: one line per hardware exception, including the ones in
+ * layer/host code that are left to SEH (expected for xrl_cfu probes; fatal
+ * and otherwise silent when no __try covers them). */
+static int g_trace_faults;
+static void trace_fault(PEXCEPTION_POINTERS ep, xrl_thread *t)
+{
+    CONTEXT *c = ep->ContextRecord;
+    EXCEPTION_RECORD *r = ep->ExceptionRecord;
+    HMODULE mod = NULL;
+    char name[MAX_PATH] = "?";
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)c->Rip, &mod) && mod) {
+        GetModuleFileNameA(mod, name, sizeof name);
+        const char *b = strrchr(name, '\\');
+        if (b) memmove(name, b + 1, strlen(b));
+    }
+    LOGW("veh: %s rip=%016llx (%s+%llx) addr=%016llx tid=%d in_sys=%d host_stack=%d rsp=%016llx",
+         exc_name(r->ExceptionCode), c->Rip, name, mod ? c->Rip - (u64)mod : 0ull,
+         r->NumberParameters >= 2 ? (u64)r->ExceptionInformation[1] : 0ull,
+         t ? t->tid : -1, t ? t->in_sys : -1, host_stack_fault(c), c->Rsp);
+}
+
 static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
 {
     EXCEPTION_RECORD *r = ep->ExceptionRecord;
@@ -203,6 +246,16 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         return EXCEPTION_CONTINUE_SEARCH;
     }
     xrl_thread *t = xrl_cur();
+    /* Lazy commit (mem.c): first touch of a reserved page in a lazy mapping, from
+     * any thread or code (guest, layer, D3D reading a guest buffer). Host view
+     * while we take locks and call VirtualAlloc. */
+    if (code == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {
+        int g = xrl_teb_enter_host(t);
+        int ok = xrl_mem_lazy_fault((u64)r->ExceptionInformation[1], (int)r->ExceptionInformation[0]);
+        xrl_teb_restore(t, g);
+        if (ok) return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    if (g_trace_faults) trace_fault(ep, t);
     if (!t) return EXCEPTION_CONTINUE_SEARCH;
     if (t->in_sys > 0 || host_stack_fault(ep->ContextRecord)) return EXCEPTION_CONTINUE_SEARCH;   /* layer/host code: SEH handles it */
     /* A guest fault: the guest TEB view is live; the handler below is host code. */
@@ -230,6 +283,8 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
 
 void xrl_sig_install_veh(void)
 {
+    char v[8];
+    g_trace_faults = GetEnvironmentVariableA("XRL_TRACE_FAULTS", v, sizeof v) && v[0] == '1';
     g_veh = AddVectoredExceptionHandler(1, xrl_veh);
     LOGI("signal: VEH %s", g_veh ? "installed" : "FAILED");
 }

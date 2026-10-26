@@ -14,7 +14,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")   # /MD (UWP requires the dynamic CRT)
 
 set(XRL_SRC
-    src/boot.c src/elf.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c
+    src/boot.c src/com.c src/elf.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c
     src/procfs.c src/signal.c src/syscall.c src/sysnames.c src/teb.c src/thread.c src/util.c src/vfs.c
     )
 
@@ -37,8 +37,14 @@ else()
 endif()
 
 if(XRL_BUILD_TESTS AND NOT XRL_UWP)
-    add_executable(xrl_test_host tests/test_host.c)
+    # gfx/ in its desktop mode, for XRL_REAL_GFX=1 (tests/desktop_gfx.cpp)
+    enable_language(CXX)
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../gfx ${CMAKE_CURRENT_BINARY_DIR}/gfx EXCLUDE_FROM_ALL)
+    add_executable(xrl_test_host tests/test_host.c tests/desktop_gfx.cpp)
     target_include_directories(xrl_test_host PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../include)
     target_compile_definitions(xrl_test_host PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_link_libraries(xrl_test_host PRIVATE xrl_layer)
+    target_link_libraries(xrl_test_host PRIVATE xrl_layer xrl_gfx user32)
+    add_executable(xrl_catch tests/catch.c)
+    target_compile_definitions(xrl_catch PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_link_libraries(xrl_catch PRIVATE dbghelp)
 endif()

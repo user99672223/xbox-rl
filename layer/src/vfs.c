@@ -376,6 +376,8 @@ static slong dfile_read(xfile *f, void *buf, u64 n, s64 off)
 {
     if (f->h == INVALID_HANDLE_VALUE || !(f->mode == 0)) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_WRONLY) return -LX_EBADF;
+    slong pr = xrl_mem_populate((u64)(uintptr_t)buf, n);   /* the kernel writes buf: no lazy pages */
+    if (pr) return pr;
     int use_pos = off < 0;
     if (use_pos) { AcquireSRWLockExclusive(&f->lock); off = f->pos; }
     u64 total = 0;
@@ -403,6 +405,8 @@ static slong dfile_write(xfile *f, const void *buf, u64 n, s64 off)
 {
     if (f->h == INVALID_HANDLE_VALUE || f->mode != 0) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EBADF;
+    slong pr = xrl_mem_populate((u64)(uintptr_t)buf, n);   /* the kernel reads buf: no lazy pages */
+    if (pr) return pr;
     int use_pos = off < 0;
     if (use_pos) {
         AcquireSRWLockExclusive(&f->lock);

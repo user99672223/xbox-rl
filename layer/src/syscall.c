@@ -445,6 +445,70 @@ SYS(ppoll)
     }
     return xrl_poll((u64)a1, (u64)a2, to, (u64)a4);
 }
+/* select/pselect6 over xrl_poll: fd_sets -> pollfd[] and back. The remaining
+ * time is not written back (Linux does; nothing we run depends on it). */
+static slong do_select(slong n, u64 rp, u64 wp, u64 ep, s64 to_ns, u64 sigmask)
+{
+    static const s16 want[3] = { LX_POLLIN, LX_POLLOUT, LX_POLLPRI };
+    static const s16 hit[3] = { LX_POLLIN | LX_POLLHUP | LX_POLLERR, LX_POLLOUT | LX_POLLERR, LX_POLLPRI };
+    u64 set[3][16], out[3][16], ptr[3] = { rp, wp, ep };
+    if (n < 0 || n > 1024) return -LX_EINVAL;
+    size_t bytes = (size_t)((n + 63) / 64) * 8;
+    memset(set, 0, sizeof set); memset(out, 0, sizeof out);
+    for (int k = 0; k < 3; k++) if (ptr[k] && bytes && xrl_cfu(set[k], ptr[k], bytes)) return -LX_EFAULT;
+    lx_pollfd *pf = (lx_pollfd *)malloc(sizeof(lx_pollfd) * (size_t)(n ? n : 1));
+    if (!pf) return -LX_ENOMEM;
+    u64 cnt = 0;
+    for (slong fd = 0; fd < n; fd++) {
+        s16 ev = 0;
+        for (int k = 0; k < 3; k++) if (set[k][fd / 64] >> (fd % 64) & 1) ev |= want[k];
+        if (ev) { pf[cnt].fd = (s32)fd; pf[cnt].events = ev; pf[cnt].revents = 0; cnt++; }
+    }
+    slong r = xrl_poll((u64)pf, cnt, to_ns, sigmask);
+    if (r > 0) {
+        r = 0;
+        for (u64 i = 0; i < cnt && r >= 0; i++) {
+            if (pf[i].revents & LX_POLLNVAL) { r = -LX_EBADF; break; }
+            for (int k = 0; k < 3; k++)
+                if ((pf[i].events & want[k]) && (pf[i].revents & hit[k])) { out[k][pf[i].fd / 64] |= 1ull << (pf[i].fd % 64); r++; }
+        }
+    }
+    free(pf);
+    if (r < 0) return r;
+    for (int k = 0; k < 3; k++) if (ptr[k] && bytes && xrl_ctu(ptr[k], out[k], bytes)) return -LX_EFAULT;
+    return r;
+}
+SYS(select)
+{
+    UNUSED6;
+    s64 to = -1;
+    if (a5) {
+        lx_timeval tv;
+        if (xrl_cfu(&tv, (u64)a5, sizeof tv)) return -LX_EFAULT;
+        if (tv.tv_sec < 0 || tv.tv_usec < 0 || tv.tv_usec >= 1000000) return -LX_EINVAL;
+        to = tv.tv_sec * 1000000000ll + tv.tv_usec * 1000ll;
+    }
+    return do_select(a1, (u64)a2, (u64)a3, (u64)a4, to, 0);
+}
+SYS(pselect6)
+{
+    UNUSED6;
+    s64 to = -1;
+    u64 mask = 0;
+    if (a5) {
+        lx_timespec ts;
+        if (xrl_cfu(&ts, (u64)a5, sizeof ts)) return -LX_EFAULT;
+        u64 ns = xrl_ts_to_ns(&ts);
+        if (ns == ~0ull) return -LX_EINVAL;
+        to = (s64)ns;
+    }
+    if (a6) {   /* { const sigset_t *ss; size_t ss_len; } */
+        u64 sig[2];
+        if (xrl_cfu(sig, (u64)a6, sizeof sig)) return -LX_EFAULT;
+        mask = sig[0];
+    }
+    return do_select(a1, (u64)a2, (u64)a3, (u64)a4, to, mask);
+}
 SYS(epoll_create1) { UNUSED6; return xrl_epoll_create((int)a1); }
 SYS(epoll_create) { UNUSED6; if (a1 <= 0) return -LX_EINVAL; return xrl_epoll_create(0); }
 SYS(epoll_ctl) { UNUSED6; return xrl_epoll_ctl((int)a1, (int)a2, (int)a3, (u64)a4); }
@@ -625,7 +689,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_chown, zero_ok), T(NR_fchown, zero_ok), T(NR_lchown, zero_ok), T(NR_umask, umask),
     T(NR_utimensat, utimensat), T(NR_utimes, utimes), T(NR_statfs, statfs), T(NR_fstatfs, fstatfs),
     /* poll / sockets */
-    T(NR_poll, poll), T(NR_ppoll, ppoll), T(NR_epoll_create, epoll_create), T(NR_epoll_create1, epoll_create1),
+    T(NR_poll, poll), T(NR_ppoll, ppoll), T(NR_select, select), T(NR_pselect6, pselect6),T(NR_epoll_create, epoll_create), T(NR_epoll_create1, epoll_create1),
     T(NR_epoll_ctl, epoll_ctl), T(NR_epoll_wait, epoll_wait), T(NR_epoll_pwait, epoll_pwait),
     T(NR_socketpair, socketpair), T(NR_sendmsg, sendmsg), T(NR_recvmsg, recvmsg), T(NR_shutdown, shutdown),
     T(NR_sendto, sendto), T(NR_recvfrom, recvfrom), T(NR_socket, socket),
@@ -688,6 +752,29 @@ static slong xrl_pseudo(slong nr)
     return p ? (slong)(uintptr_t)p : -LX_ENOSYS;
 }
 
+/* XRL_PROFILE=1: per-syscall call counts and time, the top entries logged every
+ * 30 s. Blocking calls (futex, poll, nanosleep...) naturally dominate the time
+ * column; the count column is what shows a hot path. */
+static int g_prof = -1;
+static volatile LONG64 g_prof_n[XRL_NR_MAX], g_prof_t[XRL_NR_MAX];
+static volatile LONG64 g_prof_next;
+
+static void prof_dump(void)
+{
+    LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+    int idx[XRL_NR_MAX], n = 0;
+    for (int i = 0; i < XRL_NR_MAX; i++) if (g_prof_n[i]) idx[n++] = i;
+    for (int i = 0; i < n; i++)   /* by count, descending */
+        for (int j = i + 1; j < n; j++) if (g_prof_n[idx[j]] > g_prof_n[idx[i]]) { int x = idx[i]; idx[i] = idx[j]; idx[j] = x; }
+    extern volatile LONG64 xrl_com_calls;
+    LOGI("profile: %lld guest->host COM calls so far; top syscalls (count, total ms, us/call)", (long long)xrl_com_calls);
+    for (int i = 0; i < n && i < 20; i++) {
+        double ms = (double)g_prof_t[idx[i]] * 1000.0 / (double)f.QuadPart;
+        LOGI("profile: %-18s %10lld %10.0f %8.1f", xrl_sysname(idx[i]), (long long)g_prof_n[idx[i]], ms,
+             ms * 1000.0 / (double)g_prof_n[idx[i]]);
+    }
+}
+
 slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slong a5, slong a6, void *frame)
 {
     (void)frame;
@@ -695,9 +782,20 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     slong r;
     int was_guest = xrl_teb_enter_host(t);
     if (t) t->in_sys++;
+    if (g_prof < 0) { char v[4]; g_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
+    LARGE_INTEGER t0 = {0}, t1;
+    if (g_prof) QueryPerformanceCounter(&t0);
     if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
     else r = enosys(nr, a1, a2, a3);
+    if (g_prof && (u64)nr < XRL_NR_MAX) {
+        QueryPerformanceCounter(&t1);
+        InterlockedIncrement64(&g_prof_n[nr]);
+        InterlockedAdd64(&g_prof_t[nr], t1.QuadPart - t0.QuadPart);
+        LONG64 now = (LONG64)GetTickCount64(), next = g_prof_next;
+        if (now >= next && InterlockedCompareExchange64(&g_prof_next, now + 30000, next) == next && next) prof_dump();
+        else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
+    }
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
     if (t) t->in_sys--;
     xrl_teb_restore(t, was_guest);

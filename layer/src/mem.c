@@ -17,6 +17,18 @@
  *     on committed pages keeps them committed (data survives, as on Linux).
  *   * guest_mem_budget bounds the *committed* bytes (the Windows commit
  *     charge). Exceeding it returns -ENOMEM.
+ *   * Lazy commit (like Linux overcommit): accessible anonymous mappings of at
+ *     least LAZY_MIN bytes, and reserved ranges later mprotect'ed accessible,
+ *     stay reserved; the first touch faults and the VEH commits the 64 KiB
+ *     around it (xrl_mem_lazy_fault). Windows games and Wine reserve and
+ *     "commit" far more than they touch; committing up front ran past the
+ *     console's ceiling. Exceptions, which must be committed before use because
+ *     the kernel (not user code) writes them: stacks (MAP_STACK, and
+ *     MADV_POPULATE_WRITE/WILLNEED, which Wine issues for its thread stacks:
+ *     the kernel pushes exception frames there), and buffers the layer hands to
+ *     Win32 I/O (xrl_mem_populate before ReadFile/WriteFile). Nothing in this
+ *     file touches guest memory while holding g_lock, because a lazy fault
+ *     there would need g_lock in the VEH.
  *   * File mappings are copy-in: contents are read() into committed anonymous
  *     pages. MAP_SHARED|PROT_WRITE file mappings are written back on
  *     munmap/msync. This is sufficient for Wine's PE mapping and read-only
@@ -25,11 +37,13 @@
 #include "xrl_internal.h"
 
 #define GRAN 0x10000ull
+static u64 LAZY_MIN = 0x40000ull;   /* smaller anonymous mmaps are committed at once (XRL_LAZY_MIN_KB) */
 
 typedef struct vma {
     u64 start, end;
     int prot;               /* LX_PROT_* */
-    int committed;          /* Windows pages are committed */
+    int committed;          /* Windows pages are committed (all of them) */
+    int lazy;               /* pages commit on first touch; any mix of states */
     int shared;             /* MAP_SHARED */
     xfile *file;            /* write-back target for shared writable file maps */
     s64 foff;
@@ -40,6 +54,11 @@ static SRWLOCK g_lock = SRWLOCK_INIT;
 static vma *g_v;
 static size_t g_n, g_cap;
 
+static int g_lazy = 1;   /* XRL_NO_LAZY=1: commit everything at mmap/mprotect time */
+/* Bytes committed per lazy fault (XRL_LAZY_CHUNK_KB). Bigger = fewer faults; each
+ * fault runs the host exception dispatcher, part of which runs with the guest
+ * TEB view live (docs/gs-teb.md), so fewer is also safer. */
+static u64 g_lazy_chunk = 1ull << 20;
 static u64 g_arena_base, g_arena_size, g_arena_end;
 static u64 g_brk_base, g_brk_limit, g_brk_cur;
 static u64 g_budget;
@@ -96,40 +115,58 @@ static BOOL w_protect(void *addr, u64 len, DWORD prot, DWORD *old)
 #endif
 }
 
-/* Apply `op` over [s,e) split on Windows allocation boundaries. */
-typedef int (*region_fn)(u64 s, u64 e, void *ctx);
+/* Apply `op` over [s,e) split on Windows region boundaries; `state` is the
+ * region's MEM_COMMIT / MEM_RESERVE / MEM_FREE (0 if the query failed). */
+typedef int (*region_fn)(u64 s, u64 e, DWORD state, void *ctx);
 static int each_region(u64 s, u64 e, region_fn fn, void *ctx)
 {
     while (s < e) {
         MEMORY_BASIC_INFORMATION mbi;
         u64 ce = e;
+        DWORD state = 0;
         if (VirtualQuery((void *)s, &mbi, sizeof mbi)) {
             u64 rend = (u64)mbi.BaseAddress + mbi.RegionSize;
             if (rend < ce) ce = rend;
             if (ce <= s) ce = e;
+            state = mbi.State;
         }
-        int r = fn(s, ce, ctx);
+        int r = fn(s, ce, state, ctx);
         if (r) return r;
         s = ce;
     }
     return 0;
 }
 
-static int op_commit(u64 s, u64 e, void *ctx)
+static int op_commit(u64 s, u64 e, DWORD state, void *ctx)
 {
     DWORD p = *(DWORD *)ctx;
+    (void)state;
     return w_alloc((void *)s, e - s, MEM_COMMIT, p) ? 0 : (int)GetLastError();
 }
-static int op_protect(u64 s, u64 e, void *ctx)
+static int op_protect(u64 s, u64 e, DWORD state, void *ctx)
 {
     DWORD p = *(DWORD *)ctx, old;
+    if (state != MEM_COMMIT) return 0;   /* lazy: reserved pages take the VMA prot when committed */
     return w_protect((void *)s, e - s, p, &old) ? 0 : (int)GetLastError();
 }
-static int op_decommit(u64 s, u64 e, void *ctx)
+static int op_decommit(u64 s, u64 e, DWORD state, void *ctx)
 {
     (void)ctx;
-    VirtualFree((void *)s, (SIZE_T)(e - s), MEM_DECOMMIT);
+    if (state == MEM_COMMIT) VirtualFree((void *)s, (SIZE_T)(e - s), MEM_DECOMMIT);
     return 0;
+}
+static int op_count(u64 s, u64 e, DWORD state, void *ctx)
+{
+    if (state == MEM_COMMIT) *(u64 *)ctx += e - s;
+    return 0;
+}
+
+/* bytes of [s,e) committed in Windows (lazy VMAs are any mix) */
+static u64 committed_bytes(u64 s, u64 e)
+{
+    u64 n = 0;
+    each_region(s, e, op_count, &n);
+    return n;
 }
 
 static slong win_commit(u64 s, u64 e, int prot)
@@ -235,7 +272,7 @@ static int vma_insert_at(size_t i, const vma *v)
 
 static int vma_mergeable(const vma *a, const vma *b)
 {
-    return a->end == b->start && a->prot == b->prot && a->committed == b->committed &&
+    return a->end == b->start && a->prot == b->prot && a->committed == b->committed && a->lazy == b->lazy &&
            a->shared == b->shared && !a->file && !b->file && !strcmp(a->name, b->name);
 }
 
@@ -287,6 +324,10 @@ static slong vma_unmap_range(u64 s, u64 e, int release_granules)
             vma_flush_shared(v, v->start, v->end);
             win_decommit(v->start, v->end);
             InterlockedAdd64(&g_committed, -(LONG64)(v->end - v->start));
+        } else if (v->lazy) {
+            u64 c = committed_bytes(v->start, v->end);
+            win_decommit(v->start, v->end);
+            InterlockedAdd64(&g_committed, -(LONG64)c);
         } else {
             win_decommit(v->start, v->end);   /* harmless for reserved-only */
         }
@@ -345,6 +386,15 @@ int xrl_mem_init(u64 budget)
     SYSTEM_INFO si;
     GetNativeSystemInfo(&si);
     g_budget = budget ? budget : (3ull << 30);
+    char lz[4];
+    /* XRL_NO_LAZY=1 off; =2 only fresh mmaps lazy; =3 only reserved->accessible lazy */
+    if (GetEnvironmentVariableA("XRL_NO_LAZY", lz, sizeof lz)) g_lazy = lz[0] == '1' ? 0 : lz[0] == '2' ? 2 : lz[0] == '3' ? 3 : 1;
+    char lm[24];
+    if (GetEnvironmentVariableA("XRL_LAZY_MIN_KB", lm, sizeof lm)) LAZY_MIN = strtoull(lm, NULL, 10) << 10;
+    if (GetEnvironmentVariableA("XRL_LAZY_CHUNK_KB", lm, sizeof lm)) {
+        u64 c = strtoull(lm, NULL, 10) << 10;
+        if (c >= GRAN && !(c & (c - 1))) g_lazy_chunk = c;   /* power of two, >= 64 KiB */
+    }
     static const u64 tries[] = { 1ull << 40, 1ull << 38, 1ull << 36, 1ull << 34, 1ull << 32, 1ull << 31 };
     for (size_t i = 0; i < ARRAY_LEN(tries); i++) {
         void *p = XRL_VIRTUAL_ALLOC(NULL, (SIZE_T)tries[i], MEM_RESERVE | MEM_TOP_DOWN, PAGE_NOACCESS);
@@ -370,35 +420,86 @@ u64 xrl_mem_arena_size(void) { return g_arena_size; }
 /* ---------------------------------------------------------------- mmap */
 static slong commit_account(u64 len)
 {
+    static volatile LONG64 high_mark, refusals;
     LONG64 now = InterlockedAdd64(&g_committed, (LONG64)len);
     if ((u64)now > g_budget) {
         InterlockedAdd64(&g_committed, -(LONG64)len);
+        if (InterlockedIncrement64(&refusals) <= 8)
+            LOGW("mem: commit budget exhausted: %llu MiB committed + %llu KiB requested > %llu MiB",
+                 (u64)(now - (LONG64)len) >> 20, len >> 10, g_budget >> 20);
         return -LX_ENOMEM;
+    }
+    /* one line per new 256 MiB high-water mark: how much the guest really commits */
+    LONG64 mark = now >> 28, old = high_mark;
+    if (mark > old && InterlockedCompareExchange64(&high_mark, mark, old) == old)
+        LOGI("mem: committed %llu MiB (high-water)", (u64)now >> 20);
+    return 0;
+}
+
+/* Commit the reserved parts of [s,e) with `prot`, charging the budget. Lock held. */
+static slong commit_lazy_locked(u64 s, u64 e, int prot)
+{
+    DWORD wp = winprot(prot, NULL);
+    while (s < e) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)s, &mbi, sizeof mbi)) return -LX_EFAULT;
+        u64 re = (u64)mbi.BaseAddress + mbi.RegionSize;
+        if (re > e) re = e;
+        if (re <= s) return -LX_EFAULT;
+        if (mbi.State != MEM_COMMIT) {
+            slong r = commit_account(re - s);
+            if (r) return r;
+            if (!w_alloc((void *)s, re - s, MEM_COMMIT, wp)) {
+                InterlockedAdd64(&g_committed, -(LONG64)(re - s));
+                return -LX_ENOMEM;
+            }
+        }
+        s = re;
     }
     return 0;
 }
 
+/* mremap: copy the committed regions of the source to the same offsets of dst */
+typedef struct mremap_copy { u64 dst, src; slong err; } mremap_copy;
+static int op_copy_committed(u64 s, u64 e, DWORD state, void *ctx)
+{
+    mremap_copy *c = (mremap_copy *)ctx;
+    if (state != MEM_COMMIT) return 0;
+    u64 d = c->dst + (s - c->src);
+    slong r = commit_lazy_locked(d, d + (e - s), LX_PROT_READ | LX_PROT_WRITE);
+    if (r) { c->err = r; return 1; }
+    memcpy((void *)d, (const void *)s, (size_t)(e - s));
+    return 0;
+}
+
+static __declspec(thread) int t_mem_locked;   /* this thread holds g_lock (file_fill) */
+
 static slong file_fill(xfile *f, u64 dst, u64 len, s64 off)
 {
     u64 done = 0;
+    t_mem_locked = 1;   /* dst is committed: the read path must not populate (needs g_lock) */
     while (done < len) {
         slong n = f->ops->read(f, (void *)(dst + done), len - done, off + (s64)done);
-        if (n < 0) return n;
+        if (n < 0) { t_mem_locked = 0; return n; }
         if (n == 0) break;
         done += (u64)n;
     }
+    t_mem_locked = 0;
     return 0;   /* tail already zero (fresh commit) */
 }
 
 /* core: map [addr,addr+len) with given attributes; lock held; range must be
- * already unmapped in the VMA list. */
-static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64 off, const char *name)
+ * already unmapped in the VMA list. `lazy_ok`: an anonymous mapping may stay
+ * reserved and commit on first touch. */
+static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64 off, const char *name, int lazy_ok)
 {
     u64 end = addr + len;
-    int committed = 0;
+    int committed = 0, lazy = 0;
     slong r;
     if (ensure_reserved(addr, end)) return -LX_ENOMEM;
-    if (prot != LX_PROT_NONE || file) {
+    if (!file && lazy_ok && g_lazy && g_lazy != 3 && prot != LX_PROT_NONE) {
+        lazy = 1;
+    } else if (prot != LX_PROT_NONE || file) {
         r = commit_account(len);
         if (r) goto fail_rel;
         int cprot = file ? (LX_PROT_READ | LX_PROT_WRITE) : prot;   /* writable while filling */
@@ -416,7 +517,7 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
     }
     {
         vma v; memset(&v, 0, sizeof v);
-        v.start = addr; v.end = end; v.prot = prot; v.committed = committed; v.shared = shared;
+        v.start = addr; v.end = end; v.prot = prot; v.committed = committed; v.lazy = lazy; v.shared = shared;
         vma_name(&v, name);
         if (file && shared && (prot & LX_PROT_WRITE)) { v.file = file; xfile_ref(file); v.foff = off; }
         size_t i = vma_lower(addr);
@@ -482,7 +583,8 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
             if (!target) { res = -LX_ENOMEM; goto out; }
         }
     }
-    res = map_range(target, len, prot, shared, f, off, name);
+    res = map_range(target, len, prot, shared, f, off, name,
+                    !(flags & (LX_MAP_STACK | LX_MAP_POPULATE)) && len >= LAZY_MIN);
 out:
     ReleaseSRWLockExclusive(&g_lock);
     if (f) xfile_unref(f);
@@ -521,8 +623,11 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
         vma *v = &g_v[i];
         if (v->prot == prot) continue;
         if (prot == LX_PROT_NONE) {
-            if (v->committed) { r = win_protect(v->start, v->end, LX_PROT_NONE); if (r) goto out; }
-        } else if (!v->committed) {
+            if (v->committed || v->lazy) { r = win_protect(v->start, v->end, LX_PROT_NONE); if (r) goto out; }
+        } else if (!v->committed && !v->lazy && g_lazy && g_lazy != 2) {
+            /* reserved -> accessible (Wine's MEM_COMMIT): commit on first touch */
+            v->lazy = 1;
+        } else if (!v->committed && !v->lazy) {
             r = commit_account(v->end - v->start);
             if (r) goto out;
             r = win_commit(v->start, v->end, prot);
@@ -564,7 +669,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
     if (!(flags & LX_MREMAP_FIXED)) {
         u64 ext_s = old_addr + old_len, ext_e = old_addr + new_len;
         if (range_free(ext_s, ext_e) && (in_arena(ext_s, ext_e) || !ensure_reserved(ext_s, ext_e))) {
-            slong m = map_range(ext_s, ext_e - ext_s, prot, shared, NULL, 0, name);
+            slong m = map_range(ext_s, ext_e - ext_s, prot, shared, NULL, 0, name, 1);
             if (m >= 0) { res = (slong)old_addr; goto out; }
         }
     }
@@ -579,10 +684,16 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
             target = find_gap(new_len, g_arena_end);
             if (!target) { res = -LX_ENOMEM; goto out; }
         }
-        res = map_range(target, new_len, prot == LX_PROT_NONE ? LX_PROT_NONE : (LX_PROT_READ | LX_PROT_WRITE), shared, NULL, 0, name);
+        res = map_range(target, new_len, prot == LX_PROT_NONE ? LX_PROT_NONE : (LX_PROT_READ | LX_PROT_WRITE), shared, NULL, 0, name, 1);
         if (res < 0) goto out;
         u64 cp = old_len < new_len ? old_len : new_len;
-        if (prot != LX_PROT_NONE) memcpy((void *)target, (void *)old_addr, cp);
+        if (prot != LX_PROT_NONE) {
+            /* copy only what is committed (the rest stays lazy); commit the
+             * destination first, as no guest page may fault under g_lock */
+            mremap_copy c = { target, old_addr, 0 };
+            each_region(old_addr, old_addr + cp, op_copy_committed, &c);
+            if (c.err) { res = c.err; goto out; }
+        }
         if (prot != (LX_PROT_READ | LX_PROT_WRITE) && prot != LX_PROT_NONE) {
             /* restore requested protection via the normal path */
             ReleaseSRWLockExclusive(&g_lock);
@@ -606,7 +717,7 @@ slong xrl_mem_brk(u64 addr)
     u64 want = ALIGN_UP(addr, LX_PAGE), have = ALIGN_UP(g_brk_cur, LX_PAGE);
     if (want > have) {
         if (vma_unmap_range(have, want, 0)) { res = (slong)g_brk_cur; goto out; }
-        if (map_range(have, want - have, LX_PROT_READ | LX_PROT_WRITE, 0, NULL, 0, "[heap]") < 0) { res = (slong)g_brk_cur; goto out; }
+        if (map_range(have, want - have, LX_PROT_READ | LX_PROT_WRITE, 0, NULL, 0, "[heap]", 1) < 0) { res = (slong)g_brk_cur; goto out; }
     } else if (want < have) {
         vma_unmap_range(want, have, 0);
     }
@@ -624,26 +735,88 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
     switch (advice) {
     case LX_MADV_DONTNEED:
     case LX_MADV_FREE: {
-        AcquireSRWLockShared(&g_lock);
-        /* zero committed, writable anonymous pages; decommit+recommit when big */
+        AcquireSRWLockExclusive(&g_lock);
+        /* anonymous pages: decommit (zero-filled on the next touch, which commits
+         * lazily) and give the commit charge back */
         for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < addr + len; i++) {
             vma *v = &g_v[i];
-            if (!v->committed || v->file || !(v->prot & LX_PROT_WRITE)) continue;
+            if (v->file || (!v->committed && !v->lazy)) continue;
             u64 s = v->start > addr ? v->start : addr;
             u64 e = v->end < addr + len ? v->end : addr + len;
-            if (e - s >= 0x10000) {
-                win_decommit(s, e);
-                win_commit(s, e, v->prot);
-            } else {
-                __try { memset((void *)s, 0, (size_t)(e - s)); } __except (EXCEPTION_EXECUTE_HANDLER) {}
-            }
+            u64 c = v->committed ? e - s : committed_bytes(s, e);
+            win_decommit(s, e);
+            InterlockedAdd64(&g_committed, -(LONG64)c);
+            v->committed = 0;
+            v->lazy = 1;
         }
-        ReleaseSRWLockShared(&g_lock);
+        ReleaseSRWLockExclusive(&g_lock);
         return 0;
     }
+    case LX_MADV_WILLNEED:
+    case LX_MADV_POPULATE_READ:
+    case LX_MADV_POPULATE_WRITE:
+        /* "commit now": Wine issues this for thread stacks (see header) */
+        return xrl_mem_populate(addr, len);
     default:
-        return 0;   /* hints (NORMAL, WILLNEED, HUGEPAGE, DONTFORK, ...) are no-ops */
+        return 0;   /* hints (NORMAL, HUGEPAGE, DONTFORK, ...) are no-ops */
     }
+}
+
+/* Commit the lazy (reserved) parts of [addr, addr+len): before handing guest
+ * memory to Win32 I/O, which fails instead of faulting on reserved pages. */
+slong xrl_mem_populate(u64 addr, u64 len)
+{
+    if (!len || t_mem_locked) return 0;
+    u64 end = ALIGN_UP(addr + len, LX_PAGE);
+    addr = ALIGN_DOWN(addr, LX_PAGE);
+    slong r = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < end && !r; i++) {
+        vma *v = &g_v[i];
+        if (!v->lazy) continue;
+        r = commit_lazy_locked(v->start > addr ? v->start : addr, v->end < end ? v->end : end, v->prot);
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return r;
+}
+
+/* Commit the whole lazy mapping containing `addr` (a new thread's stack). */
+slong xrl_mem_populate_containing(u64 addr)
+{
+    u64 s = 0, e = 0;
+    AcquireSRWLockShared(&g_lock);
+    size_t i = vma_lower(addr);
+    if (i < g_n && g_v[i].start <= addr && g_v[i].lazy) { s = g_v[i].start; e = g_v[i].end; }
+    ReleaseSRWLockShared(&g_lock);
+    return e ? xrl_mem_populate(s, e - s) : 0;
+}
+
+/* VEH: a fault at `addr` (access 0 read, 1 write, 8 execute). Commits the
+ * 64 KiB around it if it lies in a lazy VMA that permits the access. Returns
+ * 1 to retry the instruction, 0 for a real fault. */
+int xrl_mem_lazy_fault(u64 addr, int access)
+{
+    int ok = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    size_t i = vma_lower(addr);
+    if (i < g_n && g_v[i].start <= addr && g_v[i].lazy) {
+        vma *v = &g_v[i];
+        int need = access == 1 ? LX_PROT_WRITE : access == 8 ? LX_PROT_EXEC : LX_PROT_READ;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!(v->prot & need)) ok = 0;
+        else if (VirtualQuery((void *)addr, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT) ok = 1;   /* another thread won */
+        else {
+            u64 s = ALIGN_DOWN(addr, g_lazy_chunk), e = s + g_lazy_chunk;
+            if (s < v->start) s = v->start;
+            if (e > v->end) e = v->end;
+            slong r = commit_lazy_locked(s, e, v->prot);
+            ok = r == 0;
+            if (r) LOGE("mem: out of memory: cannot commit the page at %llx (%llu MiB committed, budget %llu MiB)",
+                        addr, (u64)g_committed >> 20, g_budget >> 20);
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return ok;
 }
 
 slong xrl_mem_msync(u64 addr, u64 len, int flags)
@@ -662,12 +835,13 @@ slong xrl_mem_mincore(u64 addr, u64 len, u64 vec)
 {
     if (addr & (LX_PAGE - 1)) return -LX_EINVAL;
     u64 pages = ALIGN_UP(len, LX_PAGE) / LX_PAGE;
-    slong r = 0;
+    slong r = xrl_mem_populate(vec, pages);   /* vec is written under g_lock: must not fault */
+    if (r) return r;
     AcquireSRWLockShared(&g_lock);
     for (u64 p = 0; p < pages; p++) {
         size_t i = vma_lower(addr + p * LX_PAGE);
         if (i >= g_n || g_v[i].start > addr + p * LX_PAGE) { r = -LX_ENOMEM; break; }
-        u8 b = g_v[i].committed ? 1 : 0;
+        u8 b = g_v[i].committed ? 1 : g_v[i].lazy ? (u8)(committed_bytes(addr + p * LX_PAGE, addr + (p + 1) * LX_PAGE) != 0) : 0;
         if (xrl_ctu(vec + p, &b, 1)) { r = -LX_EFAULT; break; }
     }
     ReleaseSRWLockShared(&g_lock);
@@ -719,4 +893,11 @@ size_t xrl_mem_format_maps(char *buf, size_t cap)
 void *xrl_exec_alloc(size_t n)
 {
     return w_alloc(NULL, n, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+}
+
+/* Protection change on host-owned memory outside the VMA list (com.c patches
+ * vtables in host DLL images). */
+int xrl_host_protect(void *p, size_t n, DWORD prot, DWORD *old)
+{
+    return w_protect(p, n, prot, old) ? 0 : (int)GetLastError();
 }
