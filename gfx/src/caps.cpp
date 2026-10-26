@@ -201,6 +201,7 @@ void FillAndLogCaps(ID3D12Device* dev, xrl_gfx_caps* out_opt) {
 
     Log(LOG_INFO, "gfx caps: D3D11On12 verdict=%s (see xrl_gfx_preflight)",
         G().d11.backend == XRL_GFX_D3D11_ON12          ? "ON12 OK"
+        : G().d11.backend == XRL_GFX_D3D11_NATIVE     ? "NATIVE D3D11 (XRL_D3D11=native)"
         : G().d11.backend == XRL_GFX_D3D11_DXVK_DOZEN ? "FAILED -> DXVK/Dozen"
                                                       : "not yet probed");
 

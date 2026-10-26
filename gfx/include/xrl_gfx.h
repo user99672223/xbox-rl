@@ -186,6 +186,7 @@ enum {
     XRL_GFX_D3D11_UNDECIDED   = 0,
     XRL_GFX_D3D11_ON12        = 1,   /* native D3D11On12 works: ship this path        */
     XRL_GFX_D3D11_DXVK_DOZEN  = 2,   /* D3D11On12 failed: fallback needed (NOT BUILT) */
+    XRL_GFX_D3D11_NATIVE      = 3,   /* XRL_D3D11=native: a native D3D11 device, no D3D11On12 */
 };
 enum {
     XRL_GFX_REASON_NONE = 0,

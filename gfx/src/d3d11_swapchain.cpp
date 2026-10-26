@@ -12,6 +12,10 @@
 //     (done once per buffer), copies/resolves `back_` into it, releases it back to D3D12 in the
 //     PRESENT state, flushes, and presents on the host swapchain.
 //
+// Native D3D11 mode (XRL_D3D11=native, the device has no ID3D11On12Device): the same object, but the
+// host swapchain is a D3D11 flip swapchain made from the game's own device, and Present copies/resolves
+// `back_` into its buffer 0 on that device (no wrapped resources, no D3D12 queue).
+//
 // The object is an IDXGISwapChain1 with a native vtable, handed to the guest as a handle like every
 // other host COM object (the layer routes the guest's calls through the host-view thunk).
 // It is deliberately not IDXGISwapChain2+: GetFrameLatencyWaitableObject would return a native
@@ -38,6 +42,7 @@ public:
         Drain();
         wrapped_.clear();
         bufs_.clear();
+        hostbuf_.Reset();
         back_.Reset();
         host_.Reset();
         Log(LOG_INFO, "d3d11 swapchain %p destroyed (%llu frames presented)", static_cast<void*>(this),
@@ -46,14 +51,13 @@ public:
 
     HRESULT Init() {
         Log(LOG_TRACE, "d3d11 swapchain: Init");
-        if (FAILED(dev_.As(&on12_))) {
-            Log(LOG_ERROR, "d3d11 swapchain: the device is not a D3D11On12 device (no ID3D11On12Device)");
-            return E_NOINTERFACE;
-        }
-        Log(LOG_TRACE, "d3d11 swapchain: have on12 %p", (void*)on12_.Get());
+        // A D3D11On12 device has ID3D11On12Device; a native one does not (the queue the guest passed is then
+        // the stand-in of stub12.cpp and unused).
+        native_ = FAILED(dev_.As(&on12_));
+        Log(LOG_TRACE, "d3d11 swapchain: %s device, on12 %p", native_ ? "native" : "D3D11On12", (void*)on12_.Get());
         dev_->GetImmediateContext(&ctx_);
         Log(LOG_TRACE, "d3d11 swapchain: ctx %p", (void*)ctx_.Get());
-        if (FAILED(queue_->GetDevice(IID_PPV_ARGS(&dev12_)))) return E_FAIL;
+        if (!native_ && FAILED(queue_->GetDevice(IID_PPV_ARGS(&dev12_)))) return E_FAIL;
         if (app_.flags & ~kAcceptedFlags) {
             Log(LOG_ERROR, "d3d11 swapchain: unsupported swapchain flags 0x%X", app_.flags & ~kAcceptedFlags);
             return DXGI_ERROR_UNSUPPORTED;
@@ -72,15 +76,17 @@ public:
             if (!app_.height) app_.height = h ? h : 1080;
         }
         Log(LOG_TRACE, "d3d11 swapchain: dev12 %p", (void*)dev12_.Get());
-        xrl_status st = HostSwapchainCreate(queue_.Get(), app_.width, app_.height, app_.buffer_count,
-                                            app_.dxgi_format, host_, &host_format_);
+        xrl_status st = native_ ? HostSwapchainCreate11(dev_.Get(), app_.width, app_.height, app_.buffer_count,
+                                                        app_.dxgi_format, host_, &host_format_)
+                                : HostSwapchainCreate(queue_.Get(), app_.width, app_.height, app_.buffer_count,
+                                                      app_.dxgi_format, host_, &host_format_);
         if (st != XRL_OK) return st == XRL_ERR_NOTAVAIL ? DXGI_ERROR_UNSUPPORTED : E_FAIL;
         Log(LOG_TRACE, "d3d11 swapchain: host swapchain %p", (void*)host_.Get());
         HRESULT hr = BuildBuffers();
         if (FAILED(hr)) return hr;
-        Log(LOG_INFO, "d3d11 swapchain %p: %ux%u fmt=%u msaa=%u buffers=%u effect=%u %s hwnd=%llx", static_cast<void*>(this),
+        Log(LOG_INFO, "d3d11 swapchain %p: %ux%u fmt=%u msaa=%u buffers=%u effect=%u %s hwnd=%llx (%s)", static_cast<void*>(this),
             app_.width, app_.height, app_.dxgi_format, app_.sample_count, app_.buffer_count, app_.swap_effect,
-            fullscreen_ ? "fullscreen" : "windowed", (unsigned long long)app_.hwnd);
+            fullscreen_ ? "fullscreen" : "windowed", (unsigned long long)app_.hwnd, native_ ? "native D3D11" : "D3D11On12");
         return S_OK;
     }
 
@@ -246,16 +252,22 @@ private:
         DXGI_SWAP_CHAIN_DESC1 hd{};
         HRESULT hr = host_->GetDesc1(&hd);
         if (FAILED(hr)) return hr;
-        bufs_.assign(hd.BufferCount, nullptr);
-        wrapped_.assign(hd.BufferCount, nullptr);
-        for (UINT i = 0; i < hd.BufferCount; i++) {
-            if (FAILED(hr = host_->GetBuffer(i, IID_PPV_ARGS(&bufs_[i])))) return hr;
-            D3D11_RESOURCE_FLAGS rf{};
-            rf.BindFlags = D3D11_BIND_RENDER_TARGET;
-            // The wrapped buffer is only a copy destination here; it rests in PRESENT between frames.
-            if (FAILED(hr = on12_->CreateWrappedResource(bufs_[i].Get(), &rf, D3D12_RESOURCE_STATE_PRESENT,
-                                                         D3D12_RESOURCE_STATE_PRESENT, IID_PPV_ARGS(&wrapped_[i]))))
-                return hr;
+        if (native_) {
+            // A D3D11 flip swapchain: buffer 0 is the one the runtime rotates behind; it stays the
+            // copy target for the life of the swapchain (or until ResizeBuffers).
+            if (FAILED(hr = host_->GetBuffer(0, IID_PPV_ARGS(&hostbuf_)))) return hr;
+        } else {
+            bufs_.assign(hd.BufferCount, nullptr);
+            wrapped_.assign(hd.BufferCount, nullptr);
+            for (UINT i = 0; i < hd.BufferCount; i++) {
+                if (FAILED(hr = host_->GetBuffer(i, IID_PPV_ARGS(&bufs_[i])))) return hr;
+                D3D11_RESOURCE_FLAGS rf{};
+                rf.BindFlags = D3D11_BIND_RENDER_TARGET;
+                // The wrapped buffer is only a copy destination here; it rests in PRESENT between frames.
+                if (FAILED(hr = on12_->CreateWrappedResource(bufs_[i].Get(), &rf, D3D12_RESOURCE_STATE_PRESENT,
+                                                             D3D12_RESOURCE_STATE_PRESENT, IID_PPV_ARGS(&wrapped_[i]))))
+                    return hr;
+            }
         }
         D3D11_TEXTURE2D_DESC td{};
         td.Width = app_.width;
@@ -305,9 +317,29 @@ private:
 
     // Wait until the GPU is done with everything submitted so far (buffers are about to go away).
     HRESULT Drain() {
+        if (native_) return DrainNative();
         if (!ctx_ || !queue_ || !dev12_) return S_OK;
         ctx_->Flush();
         return WaitQueueIdle(dev12_.Get(), queue_.Get(), 10000);
+    }
+
+    // Native: no queue to signal; an event query tells when the GPU has reached this point.
+    HRESULT DrainNative() {
+        if (!ctx_ || !dev_) return S_OK;
+        D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
+        ComPtr<ID3D11Query> q;
+        if (FAILED(dev_->CreateQuery(&qd, &q))) { ctx_->Flush(); return S_OK; }
+        ctx_->End(q.Get());
+        ctx_->Flush();
+        const ULONGLONG t0 = GetTickCount64();
+        for (;;) {
+            BOOL done = FALSE;
+            HRESULT hr = ctx_->GetData(q.Get(), &done, sizeof done, 0);
+            if (hr == S_OK && done) return S_OK;
+            if (FAILED(hr)) return hr;
+            if (GetTickCount64() - t0 > 10000) return HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+            Sleep(0);
+        }
     }
 
     HRESULT DoPresent(UINT sync, UINT flags) {
@@ -323,21 +355,30 @@ private:
         }
         std::lock_guard<std::mutex> l(mu_);
         LARGE_INTEGER q0; QueryPerformanceCounter(&q0);
-        UINT idx = host_->GetCurrentBackBufferIndex();
-        ID3D11Resource* dst = wrapped_[idx].Get();
-        on12_->AcquireWrappedResources(&dst, 1);
-        if (app_.sample_count > 1)
-            ctx_->ResolveSubresource(dst, 0, back_.Get(), 0, host_format_);
-        else
-            ctx_->CopyResource(dst, back_.Get());
-        on12_->ReleaseWrappedResources(&dst, 1);
-        ctx_->Flush();   // submits the copy to the queue the host Present below is ordered after
+        if (native_) {
+            // buffer 0 of the host swapchain is always the next one to present; Present flushes
+            ID3D11Resource* dst = hostbuf_.Get();
+            if (app_.sample_count > 1)
+                ctx_->ResolveSubresource(dst, 0, back_.Get(), 0, host_format_);
+            else
+                ctx_->CopyResource(dst, back_.Get());
+        } else {
+            UINT idx = host_->GetCurrentBackBufferIndex();
+            ID3D11Resource* dst = wrapped_[idx].Get();
+            on12_->AcquireWrappedResources(&dst, 1);
+            if (app_.sample_count > 1)
+                ctx_->ResolveSubresource(dst, 0, back_.Get(), 0, host_format_);
+            else
+                ctx_->CopyResource(dst, back_.Get());
+            on12_->ReleaseWrappedResources(&dst, 1);
+            ctx_->Flush();   // submits the copy to the queue the host Present below is ordered after
+        }
         HRESULT hr = host_->Present(sync, hf);
         if (FAILED(hr)) {
             Log(LOG_ERROR, "d3d11 swapchain: host Present failed: hr=0x%08lX", (unsigned long)hr);
             if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
                 Log(LOG_ERROR, "d3d11 swapchain: device removed, reason 0x%08lX",
-                    (unsigned long)dev12_->GetDeviceRemovedReason());
+                    (unsigned long)(native_ ? dev_->GetDeviceRemovedReason() : dev12_->GetDeviceRemovedReason()));
             return hr;
         }
         presents_++;
@@ -360,6 +401,7 @@ private:
         // wrapped views, flush D3D11On12's deferred destruction, and wait again.
         wrapped_.clear();
         bufs_.clear();
+        hostbuf_.Reset();
         ctx_->Flush();
         Drain();
         DXGI_FORMAT hf = host_format_;
@@ -398,8 +440,10 @@ private:
     DXGI_FORMAT host_format_ = DXGI_FORMAT_UNKNOWN;
     std::vector<ComPtr<ID3D12Resource>> bufs_;
     std::vector<ComPtr<ID3D11Resource>> wrapped_;
+    ComPtr<ID3D11Texture2D> hostbuf_;   // native D3D11 mode: buffer 0 of host_
     ComPtr<ID3D11Texture2D> back_;
     xrl_swapchain_desc app_;
+    bool native_ = false;   // the device is a native D3D11 one (no ID3D11On12Device, no D3D12 queue)
     bool fullscreen_ = false;
     uint64_t presents_ = 0;
     int64_t qf_ = 0, win_start_ = 0, last_present_ = 0, win_max_gap_ = 0, win_present_ = 0;

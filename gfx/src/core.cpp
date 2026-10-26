@@ -20,6 +20,11 @@ DWORD CreateTimeoutMs() {
     return t ? t : 60000;  // matches the host's own create timeout
 }
 
+bool NativeD3D11() {
+    std::lock_guard<std::mutex> l(G().mu);
+    return G().native_d3d11;
+}
+
 bool DebugLayerRequested() { return (G().cfg.flags & XRL_GFX_FLAG_DEBUG_LAYER) != 0; }
 
 void WarnIfUiThread(const char* what) {
@@ -321,6 +326,11 @@ extern "C" XRL_GFX_API xrl_status xrl_gfx_init(const xrl_gfx_config* cfg) {
         s.d11 = xrl_gfx_d3d11_decision{};
         s.d11.struct_size = sizeof s.d11;
         s.preflight_done = false;
+        {   // XRL_D3D11=native in the HOST process (laptop: env var; console: launch.cfg host_env=)
+            char v[16] = {};
+            DWORD vn = GetEnvironmentVariableA("XRL_D3D11", v, sizeof v);
+            s.native_d3d11 = vn > 0 && vn < sizeof v && !_stricmp(v, "native");
+        }
         s.inited = true;
         xrl_log_fn lf = (s.have_host && s.host.log) ? s.host.log : s.cfg.log;
         g_log.store(lf, std::memory_order_release);
@@ -328,6 +338,8 @@ extern "C" XRL_GFX_API xrl_status xrl_gfx_init(const xrl_gfx_config* cfg) {
     }
     ResetOps();
     if (need_worker) WorkerStart();
+    Log(LOG_INFO, "xrl_gfx init: D3D11 device path = %s (XRL_D3D11=native selects a native D3D11 device)",
+        NativeD3D11() ? "NATIVE" : "D3D11On12");
     Log(LOG_INFO,
         "xrl_gfx init: api=%u abi=%u gfx_thread=%s core_window=%p test_hwnd=%p ui_tid=%u timeout=%lums flags=0x%X "
         "caller_tid=%lu",

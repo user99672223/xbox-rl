@@ -24,6 +24,7 @@ set(XRL_GFX_SOURCES
     src/swapchain.cpp
     src/d3d11_swapchain.cpp
     src/d3d11on12.cpp
+    src/stub12.cpp
     src/ops.cpp
     src/selftest.cpp)
 
