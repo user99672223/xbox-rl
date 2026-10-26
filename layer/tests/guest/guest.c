@@ -1714,6 +1714,92 @@ static void test_pty(void)
     CHECK(sc3(2, path, 02, 0) == -2, "after both closed the pty is gone: open -> -ENOENT");
 }
 
+/* ---- timerfd, itimers, inotify, copy_file_range/splice (layer/src/timers.c, syscall.c) --- */
+static void test_timers(void)
+{
+    out("timers and file copying:\n");
+    char buf[64];
+    long tf = sc3(283 /*timerfd_create*/, 1 /*CLOCK_MONOTONIC*/, 04000, 0);
+    CHECK(tf >= 3, "timerfd_create(MONOTONIC, NONBLOCK)");
+    u64 cnt = 0;
+    CHECK(sc3(0, tf, &cnt, 8) == -11, "read of an unarmed timerfd -> -EAGAIN");
+    long its[4] = { 0, 0, 0, 50000000 };   /* one shot, 50 ms */
+    u64 t0 = mono_ns();
+    CHECK(sc4(286 /*timerfd_settime*/, tf, 0, its, 0) == 0, "timerfd_settime(50 ms one-shot)");
+    long cur[4]; memset(cur, 0xff, sizeof cur);
+    CHECK(sc2(287 /*timerfd_gettime*/, tf, cur) == 0 && cur[2] == 0 && cur[3] > 0 && cur[3] <= 50000000 && cur[0] == 0 && cur[1] == 0, "timerfd_gettime: the time left, no interval");
+    struct pfd pp = { (int)tf, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 0, "poll: not yet");
+    CHECK(sc3(7, &pp, 1, 2000) == 1 && (pp.rev & 1), "poll(POLLIN) wakes when it expires");
+    u64 dt = mono_ns() - t0;
+    CHECK(dt >= 45000000ull && dt < 1000000000ull, "...after about 50 ms");
+    CHECK(sc3(0, tf, &cnt, 8) == 8 && cnt == 1, "read -> 1 expiration");
+    CHECK(sc3(0, tf, &cnt, 8) == -11, "...and it is consumed (a one-shot does not repeat)");
+    long iv[4] = { 0, 20000000, 0, 20000000 };   /* every 20 ms */
+    sc4(286, tf, 0, iv, 0);
+    nap_ms(130);
+    CHECK(sc3(0, tf, &cnt, 8) == 8 && cnt >= 4 && cnt <= 8, "an interval timer counts the expirations it missed (130 ms / 20 ms)");
+    long ep = sc1(291, 0);
+    struct { u32 e; u64 d; } __attribute__((packed)) ev = { 1, 0x7f }, evo;
+    sc4(233, ep, 1, tf, &ev);
+    CHECK(sc4(232, ep, &evo, 1, 1000) == 1 && evo.d == 0x7f, "epoll_wait wakes on the timerfd");
+    long off[4] = { 0, 0, 0, 0 };
+    CHECK(sc4(286, tf, 0, off, cur) == 0 && cur[1] == 20000000, "settime(0) disarms and returns the old setting");
+    sc3(0, tf, &cnt, 8);
+    nap_ms(60);
+    CHECK(sc3(0, tf, &cnt, 8) == -11, "a disarmed timer stays quiet");
+    long abs_[4] = { 0, 0, 0, 0 };
+    { long ts[2]; sc2(228, 1, ts); u64 nowns = (u64)ts[0] * 1000000000ull + (u64)ts[1] + 30000000ull; abs_[2] = (long)(nowns / 1000000000ull); abs_[3] = (long)(nowns % 1000000000ull); }
+    sc4(286, tf, 1 /*TIMER_ABSTIME*/, abs_, 0);
+    pp.rev = 0;
+    CHECK(sc3(7, &pp, 1, 2000) == 1 && (pp.rev & 1), "TFD_TIMER_ABSTIME on the monotonic clock");
+    CHECK(sc2(287, 99, cur) == -9 && sc4(286, 0, 0, off, 0) == -22, "timerfd calls on a bad fd / a non-timerfd");
+    sc1(3, tf); sc1(3, ep);
+
+    /* setitimer/alarm: SIGALRM runs a handler */
+    sigact(14, h_info, 0);
+    h_count = 0; h_sig = 0;
+    long itv[4] = { 0, 0, 0, 30000 };   /* 30 ms */
+    CHECK(sc3(38 /*setitimer*/, 0, itv, 0) == 0, "setitimer(ITIMER_REAL, 30 ms)");
+    long cv[4]; memset(cv, 0xff, sizeof cv);
+    CHECK(sc2(36 /*getitimer*/, 0, cv) == 0 && cv[0] == 0 && cv[3] > 0 && cv[3] <= 30000, "getitimer: time left");
+    for (int i = 0; i < 200 && !h_count; i++) nap_ms(10);
+    CHECK(h_count == 1 && h_sig == 14, "SIGALRM ran the handler once (one-shot)");
+    CHECK(sc1(37 /*alarm*/, 5) == 0, "alarm(5): nothing was pending");
+    CHECK(sc1(37, 0) == 5, "alarm(0) returns the 5 seconds that were left (rounded up)");
+
+    /* inotify: descriptors that never report */
+    long in_ = sc1(294 /*inotify_init1*/, 04000);
+    CHECK(in_ >= 3, "inotify_init1");
+    CHECK(sc3(254 /*add_watch*/, in_, "/tmp", 0x2 | 0x100) >= 1, "inotify_add_watch(/tmp) -> a watch number");
+    CHECK(sc3(254, in_, "/tmp/xrl_no_such_dir", 0x2) == -2, "...of a missing path -> -ENOENT");
+    CHECK(sc3(0, in_, buf, 64) == -11, "read: no events -> -EAGAIN");
+    pp = (struct pfd){ (int)in_, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 20) == 0, "poll: never readable");
+    CHECK(sc2(255 /*rm_watch*/, in_, 1) == 0, "inotify_rm_watch");
+    sc1(3, in_);
+
+    /* copy_file_range / splice / sendfile with offsets */
+    long a = sc3(2, "/tmp/xrl_cfr_a", 0102, 0600);
+    sc3(1, a, "0123456789abcdef", 16);
+    long b = sc3(2, "/tmp/xrl_cfr_b", 0102, 0600);
+    long oi = 4, oo = 2;
+    CHECK(sc(326 /*copy_file_range*/, a, &oi, b, &oo, 6, 0) == 6 && oi == 10 && oo == 8, "copy_file_range with both offsets: moves them");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc4(17, b, buf, 8, 0) == 8 && !memcmp(buf + 2, "456789", 6), "...and the bytes landed at offset 2");
+    sc3(8, a, 0, 0);
+    sc3(8, b, 0, 0);
+    CHECK(sc(326, a, 0, b, 0, 4, 0) == 4 && sc3(8, a, 0, 1) == 4 && sc3(8, b, 0, 1) == 4, "copy_file_range without offsets moves the file positions");
+    long so = 0;
+    CHECK(sc(40 /*sendfile*/, b, a, &so, 16, 0, 0) == 16 && so == 16, "sendfile with an offset pointer");
+    int p1[2], p2[2]; sc2(293, p1, 0); sc2(293, p2, 0);
+    sc3(1, p1[1], "pipeline", 8);
+    CHECK(sc(275 /*splice*/, p1[0], 0, p2[1], 0, 8, 0) == 8 && sc3(0, p2[0], buf, 16) == 8 && !memcmp(buf, "pipeline", 8), "splice from a pipe to a pipe");
+    CHECK(sc(275, a, &oi, p2[1], &oo, 4, 0) == -29, "splice with an offset on a pipe end -> -ESPIPE");
+    sc1(3, a); sc1(3, b); sc1(87, "/tmp/xrl_cfr_a"); sc1(87, "/tmp/xrl_cfr_b");
+    sc1(3, p1[0]); sc1(3, p1[1]); sc1(3, p2[0]); sc1(3, p2[1]);
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -1747,6 +1833,7 @@ void cstart(u64 *sp)
     test_unix();
     test_shm();
     test_pty();
+    test_timers();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

@@ -401,6 +401,17 @@ slong xrl_unix_iov(int fd, u64 iov, u64 cnt, int is_write);   /* readv/writev: o
 slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *));
 slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj);   /* ENOENT, or 0 with type 0 for an ordinary file */
 
+/* timers.c: timerfd, setitimer/alarm, inotify */
+slong xrl_timerfd_create(int clock, int flags);
+slong xrl_timerfd_settime(int fd, int flags, u64 unew, u64 uold);
+slong xrl_timerfd_gettime(int fd, u64 ucur);
+slong xrl_setitimer(int which, u64 unew, u64 uold);
+slong xrl_getitimer(int which, u64 ucur);
+slong xrl_alarm(unsigned seconds);
+slong xrl_inotify_init(int flags);
+slong xrl_inotify_add_watch(int fd, const char *path, u32 mask);
+slong xrl_inotify_rm_watch(int fd, int wd);
+
 /* pty.c: /dev/ptmx and /dev/pts/N. xrl_tty_signal is proc.c's (signal a process group); pty.c links a logging default. */
 xfile *xrl_pty_open_master(int flags, int *err);              /* NULL + positive errno */
 xfile *xrl_pty_open_slave(int index, int flags, int *err);

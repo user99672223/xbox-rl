@@ -93,56 +93,98 @@ SYS(pwritev) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
 SYS(preadv2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 0); }
 SYS(pwritev2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
 
-/* sendfile(out, in, *offset, count): copied through a bounce buffer (the ops read/write take any
- * address, guest or host). A seekable `in` is read at explicit offsets so a short write to `out`
- * leaves its position exactly after the bytes that were sent; a pipe/socket `in` (allowed since
- * Linux 5.12) cannot be rewound, so bytes read but not accepted by `out` are lost there. */
+/* copy `count` bytes from `in` to `out` through a bounce buffer (the ops read/write take any address, guest or
+ * host). offin/offout (user pointers, 0 = use and move the file position): a seekable file is read/written at
+ * explicit offsets, so a short write leaves its position exactly after what was copied; a pipe/socket `in` cannot be
+ * rewound, so bytes it gave but `out` did not take are lost there. Returns bytes copied, or -errno if none. */
+static slong copy_loop(xfile *in, xfile *out, u64 uoffin, u64 uoffout, u64 count)
+{
+    s64 oi = -1, oo = -1;
+    if (uoffin) { if (xrl_cfu(&oi, uoffin, 8)) return -LX_EFAULT; if (oi < 0) return -LX_EINVAL; }
+    if (uoffout) { if (xrl_cfu(&oo, uoffout, 8)) return -LX_EFAULT; if (oo < 0) return -LX_EINVAL; }
+    if (!in->ops->read || !out->ops->write || (in->flags & LX_O_ACCMODE) == LX_O_WRONLY || (out->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EBADF;
+    if (count > 0x7ffff000ull) count = 0x7ffff000ull;
+    int in_seek = in->ops->lseek && in->ops->lseek(in, 0, 1) >= 0;
+    int out_seek = out->ops->lseek && out->ops->lseek(out, 0, 1) >= 0;
+    if ((uoffin && !in_seek) || (uoffout && !out_seek)) return -LX_ESPIPE;
+    s64 ci = oi >= 0 ? oi : in_seek ? in->pos : -1;
+    s64 co = oo >= 0 ? oo : out_seek ? out->pos : -1;
+    u8 *buf = (u8 *)malloc(65536);
+    if (!buf) return -LX_ENOMEM;
+    u64 sent = 0;
+    slong ret = 0;
+    while (sent < count) {
+        u64 want = count - sent < 65536 ? count - sent : 65536;
+        slong r = in->ops->read(in, buf, want, in_seek ? ci + (s64)sent : -1);
+        if (r < 0) { ret = sent ? 0 : r; break; }
+        if (r == 0) break;
+        u64 put = 0;
+        slong w = 0;
+        while (put < (u64)r) {
+            w = out->ops->write(out, buf + put, (u64)r - put, out_seek ? co + (s64)sent + (s64)put : -1);
+            if (w < 0) break;
+            put += (u64)w;
+        }
+        sent += put;
+        if (w < 0) { ret = sent ? 0 : w; break; }
+        if ((u64)r < want) break;
+    }
+    free(buf);
+    if (!sent) return ret;
+    if (uoffin) { s64 n = oi + (s64)sent; xrl_ctu(uoffin, &n, 8); } else if (in_seek) in->pos = ci + (s64)sent;
+    if (uoffout) { s64 n = oo + (s64)sent; xrl_ctu(uoffout, &n, 8); } else if (out_seek) out->pos = co + (s64)sent;
+    return (slong)sent;
+}
+
+/* sendfile(out, in, *offset, count) */
 SYS(sendfile)
 {
     UNUSED6;
-    u64 count = (u64)a4;
-    s64 off = -1;
-    if (a3) { if (xrl_cfu(&off, (u64)a3, 8)) return -LX_EFAULT; if (off < 0) return -LX_EINVAL; }
     xfile *in = xrl_fd_get((int)a2);
     if (!in) return -LX_EBADF;
     xfile *out = xrl_fd_get((int)a1);
     if (!out) { xfile_unref(in); return -LX_EBADF; }
-    slong ret = 0;
-    u8 *buf = NULL;
-    if (!in->ops->read || !out->ops->write || (in->flags & LX_O_ACCMODE) == LX_O_WRONLY || (out->flags & LX_O_ACCMODE) == LX_O_RDONLY) { ret = -LX_EBADF; goto done; }
-    if (count > 0x7ffff000ull) count = 0x7ffff000ull;
-    int seekable = in->ops->lseek && in->ops->lseek(in, 0, 1) >= 0;
-    if (a3 && !seekable) { ret = -LX_ESPIPE; goto done; }
-    s64 cur = off;
-    if (cur < 0 && seekable) cur = in->pos;
-    buf = (u8 *)malloc(65536);
-    if (!buf) { ret = -LX_ENOMEM; goto done; }
-    u64 sent = 0;
-    while (sent < count) {
-        u64 want = count - sent < 65536 ? count - sent : 65536;
-        slong r = in->ops->read(in, buf, want, seekable ? cur + (s64)sent : -1);
-        if (r < 0) { ret = sent ? (slong)sent : r; goto fin; }
-        if (r == 0) break;
-        u64 put = 0;
-        while (put < (u64)r) {
-            slong w = out->ops->write(out, buf + put, (u64)r - put, -1);
-            if (w < 0) { ret = (sent + put) ? (slong)(sent + put) : w; sent += put; goto fin; }
-            put += (u64)w;
-        }
-        sent += put;
-        if ((u64)r < want) break;
-    }
-    ret = (slong)sent;
-fin:
-    if (ret > 0) {
-        if (a3) { s64 no = off + ret; xrl_ctu((u64)a3, &no, 8); }
-        else if (seekable) in->pos = cur + ret;
-    }
-done:
-    free(buf);
+    slong r = copy_loop(in, out, (u64)a3, 0, (u64)a4);
     xfile_unref(out); xfile_unref(in);
-    return ret;
+    return r;
 }
+
+/* copy_file_range(in, *off_in, out, *off_out, len, flags) and splice(in, *off_in, out, *off_out, len, flags): the same copy */
+SYS(copy_file_range)
+{
+    UNUSED6;
+    if (a6) return -LX_EINVAL;
+    xfile *in = xrl_fd_get((int)a1);
+    if (!in) return -LX_EBADF;
+    xfile *out = xrl_fd_get((int)a3);
+    if (!out) { xfile_unref(in); return -LX_EBADF; }
+    slong r = copy_loop(in, out, (u64)a2, (u64)a4, (u64)a5);
+    xfile_unref(out); xfile_unref(in);
+    return r;
+}
+SYS(splice)
+{
+    UNUSED6;
+    if ((u64)a6 & ~0xfull) return -LX_EINVAL;
+    xfile *in = xrl_fd_get((int)a1);
+    if (!in) return -LX_EBADF;
+    xfile *out = xrl_fd_get((int)a3);
+    if (!out) { xfile_unref(in); return -LX_EBADF; }
+    slong r = copy_loop(in, out, (u64)a2, (u64)a4, (u64)a5);
+    xfile_unref(out); xfile_unref(in);
+    return r;
+}
+
+SYS(timerfd_create) { UNUSED6; return xrl_timerfd_create((int)a1, (int)a2); }
+SYS(timerfd_settime) { UNUSED6; return xrl_timerfd_settime((int)a1, (int)a2, (u64)a3, (u64)a4); }
+SYS(timerfd_gettime) { UNUSED6; return xrl_timerfd_gettime((int)a1, (u64)a2); }
+SYS(setitimer) { UNUSED6; return xrl_setitimer((int)a1, (u64)a2, (u64)a3); }
+SYS(getitimer) { UNUSED6; return xrl_getitimer((int)a1, (u64)a2); }
+SYS(alarm) { UNUSED6; return xrl_alarm((unsigned)a1); }
+SYS(inotify_init1) { UNUSED6; return xrl_inotify_init((int)a1); }
+SYS(inotify_init) { UNUSED6; return xrl_inotify_init(0); }
+SYS(inotify_add_watch) { UNUSED6; char p[PATH_MAX_]; slong r = getpath(p, (u64)a2); if (r) return r; return xrl_inotify_add_watch((int)a1, p, (u32)a3); }
+SYS(inotify_rm_watch) { UNUSED6; return xrl_inotify_rm_watch((int)a1, (int)a2); }
 
 SYS(lseek)
 {
@@ -778,7 +820,10 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_madvise, madvise), T(NR_msync, msync), T(NR_mincore, mincore),
     T(NR_mlock, zero_ok), T(NR_munlock, zero_ok), T(NR_mlockall, zero_ok), T(NR_munlockall, zero_ok),
     /* files */
-    T(NR_read, read), T(NR_write, write), T(NR_pread64, pread64), T(NR_pwrite64, pwrite64), T(NR_sendfile, sendfile),
+    T(NR_read, read), T(NR_write, write), T(NR_pread64, pread64), T(NR_pwrite64, pwrite64), T(NR_sendfile, sendfile), T(NR_copy_file_range, copy_file_range), T(NR_splice, splice),
+    T(NR_timerfd_create, timerfd_create), T(NR_timerfd_settime, timerfd_settime), T(NR_timerfd_gettime, timerfd_gettime),
+    T(NR_setitimer, setitimer), T(NR_getitimer, getitimer), T(NR_alarm, alarm),
+    T(NR_inotify_init, inotify_init), T(NR_inotify_init1, inotify_init1), T(NR_inotify_add_watch, inotify_add_watch), T(NR_inotify_rm_watch, inotify_rm_watch),
     T(NR_readv, readv), T(NR_writev, writev), T(NR_preadv, preadv), T(NR_pwritev, pwritev), T(NR_preadv2, preadv2), T(NR_pwritev2, pwritev2),
     T(NR_getxattr, xattr_nodata), T(NR_lgetxattr, xattr_nodata), T(NR_fgetxattr, xattr_nodata),
     T(NR_removexattr, xattr_nodata), T(NR_lremovexattr, xattr_nodata), T(NR_fremovexattr, xattr_nodata),
