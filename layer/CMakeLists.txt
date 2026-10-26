@@ -15,7 +15,7 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")   # /MD (UWP requires the dyn
 
 set(XRL_SRC
     src/boot.c src/com.c src/dbt.c src/elf.c src/exec.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c src/ntsync.c
-    src/cpuinfo.c src/hangdump.c src/net.c src/procfs.c src/rewrite.c src/rewrite_core.c src/signal.c src/syscall.c src/sysnames.c src/systrace.c src/teb.c src/thread.c
+    src/cpuinfo.c src/hangdump.c src/net.c src/procfs.c src/rewrite.c src/rewrite_core.c src/signal.c src/syscall.c src/sysnames.c src/systrace.c src/task.c src/teb.c src/thread.c
     src/util.c src/vfs.c src/x86dec.c
     )
 

@@ -618,6 +618,51 @@ static void test_procfs_rlimits(void)
     CHECK(sc4(302, 0, 7, 0, rl) == 0 && sc4(302, 0, 9999, 0, rl) == -22, "bad resource: EINVAL");
 }
 
+/* fork() and ptrace() for a child that alternates with its parent (XRL_FORK_TASKS=1; layer/src/task.c).
+ * The pattern is the one the EAC module uses on Linux: fork; the child closes its descriptors, sets
+ * PR_SET_DUMPABLE 0, PTRACE_TRACEME, raises SIGSTOP; the parent waits for the stop, sets options, then steps
+ * the child's system calls with PTRACE_SYSCALL, reading its registers at each stop, until it exits. */
+static volatile long child_saw_ppid, child_closed_ok;
+static void test_fork_tasks(void)
+{
+    int pf[2];
+    sc2(293, pf, 0);
+    long me = sc1(39, 0);
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip fork/ptrace tasks (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {   /* child */
+        child_saw_ppid = sc1(110, 0);
+        sc1(3, pf[0]); sc1(3, pf[1]); child_closed_ok = 1;      /* its own table: the parent keeps its descriptors */
+        sc3(157, 4, 0, 0);                                         /* prctl(PR_SET_DUMPABLE, 0) */
+        sc4(101, 0, 0, 0, 0);                                      /* PTRACE_TRACEME */
+        sc2(62, sc1(39, 0), 19);                                   /* kill(getpid(), SIGSTOP) */
+        sc1(39, 0); sc1(39, 0);                                    /* two getpid calls to be seen */
+        sc1(60, 7);                                                /* exit(7) */
+        for (;;) sc1(60, 7);
+    }
+    CHECK(pid > 0 && pid != me, "fork: a child pid of its own");
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 19, "wait4: the traced child stopped with SIGSTOP");
+    CHECK(child_closed_ok == 1 && child_saw_ppid == me, "the child ran, getppid() is the parent's pid");
+    struct { int a; } pst; long fr = sc2(5, pf[0], &pst);
+    CHECK(fr == 0, "the child's close() did not touch the parent's descriptors");
+    CHECK(sc4(101, 0x4200, pid, 0, 1 /* PTRACE_O_TRACESYSGOOD */) == 0, "PTRACE_SETOPTIONS");
+    int getpids = 0, stops = 0, exited = 0;
+    u64 regs[27];
+    for (int i = 0; i < 40 && !exited; i++) {
+        if (sc4(101, 24 /* PTRACE_SYSCALL */, pid, 0, 0) != 0) break;
+        if (sc4(61, pid, &st, 0, 0) != pid) break;
+        if ((st & 0x7f) == 0) { exited = 1; break; }
+        if ((st & 0xff) == 0x7f && ((st >> 8) & 0xff) == (5 | 0x80)) {
+            stops++;
+            if (sc4(101, 12 /* PTRACE_GETREGS */, pid, 0, regs) == 0 && regs[15] == 39 && regs[10] == (u64)-38) getpids++;   /* orig_rax = getpid at entry, rax = -ENOSYS */
+        }
+    }
+    CHECK(stops >= 4 && getpids == 2, "PTRACE_SYSCALL: entry and exit stops, GETREGS shows the two getpid calls");
+    CHECK(exited && ((st >> 8) & 0xff) == 7, "wait4: the child's exit status 7");
+    CHECK(sc4(61, pid, &st, 0, 0) == -10, "wait4 again: no more children");
+}
+
 static char cpubuf[1 << 16];
 static void test_cpuinfo(void)
 {
@@ -1271,6 +1316,7 @@ void cstart(u64 *sp)
     test_fs();
     test_cpuinfo();
     test_procfs_rlimits();
+    test_fork_tasks();
     test_threads();
     test_net();
     test_ntsync();

@@ -521,7 +521,9 @@ static slong send_signal(xrl_thread *t, int sig, int from_kill)
         if (a.handler == LX_SIG_IGN) return 0;
         if (a.handler == LX_SIG_DFL && default_ignored(sig)) return 0;
     }
+    if (t == xrl_cur() && t->task && xrl_task_signal(t, sig)) return 0;
     if (sig == LX_SIGKILL || (a.handler == LX_SIG_DFL && !blocked)) {
+        if (t->task) xrl_task_signal_death(t, sig);
         LOGE("signal %d to tid %d with the default action: terminating process (128+%d)", sig, t->tid, sig);
         xrl_do_exit(128 + sig, 1);
     }

@@ -605,6 +605,7 @@ SYS(clone3)
 SYS(fork)
 {
     UNUSED6;
+    if (xrl_fork_tasks_enabled()) return xrl_do_fork();
     LOGE("fork/vfork called: the layer is single-process; use posix_spawn-free paths (-ENOSYS)");
     return -LX_ENOSYS;
 }
@@ -632,8 +633,8 @@ SYS(exit)
 }
 SYS(exit_group) { UNUSED6; xrl_do_exit((int)a1, 1); return 0; }
 SYS(gettid) { UNUSED6; xrl_thread *t = xrl_cur(); return t ? t->tid : G.pid; }
-SYS(getpid) { UNUSED6; return G.pid; }
-SYS(getppid) { UNUSED6; return 1; }
+SYS(getpid) { UNUSED6; int pp, k = xrl_task_pid(xrl_cur(), &pp); return k ? k : G.pid; }
+SYS(getppid) { UNUSED6; int pp = 1; xrl_task_pid(xrl_cur(), &pp); return pp; }
 SYS(uid) { UNUSED6; return 1000; }
 SYS(set_tid_address) { UNUSED6; xrl_thread *t = xrl_cur(); if (t) t->clear_child_tid = (u64)a1; return t ? t->tid : G.pid; }
 SYS(set_robust_list) { UNUSED6; xrl_thread *t = xrl_cur(); if (a2 != 24) return -LX_EINVAL; if (t) { t->robust_list = (u64)a1; t->robust_len = (u64)a2; } return 0; }
@@ -657,12 +658,16 @@ SYS(kill)
 {
     UNUSED6;
     int pid = (int)a1, sig = (int)a2;
+    { slong tr; int tp = xrl_task_pid(xrl_cur(), NULL);
+      if (xrl_task_kill(pid, sig, &tr)) return tr;
+      if (tp && pid == tp) return xrl_sys_tgkill(G.pid, xrl_cur()->tid, sig); }
     if (pid != G.pid && pid != 0 && pid != -1) return -LX_ESRCH;
     return xrl_sig_kill_process(sig);
 }
 SYS(tkill) { UNUSED6; return xrl_sys_tgkill(G.pid, (int)a1, (int)a2); }
-SYS(tgkill) { UNUSED6; return xrl_sys_tgkill((int)a1, (int)a2, (int)a3); }
-SYS(wait4) { UNUSED6; return -LX_ECHILD; }
+SYS(tgkill) { UNUSED6; int tg = (int)a1; if (tg && tg == xrl_task_pid(xrl_cur(), NULL)) tg = G.pid; return xrl_sys_tgkill(tg, (int)a2, (int)a3); }
+SYS(wait4) { UNUSED6; return xrl_task_wait((int)a1, (u64)a2, (int)a3); }
+SYS(ptrace) { UNUSED6; return xrl_fork_tasks_enabled() ? xrl_task_ptrace((int)a1, (int)a2, (u64)a3, (u64)a4) : -LX_ENOSYS; }
 SYS(rt_sigaction) { UNUSED6; return xrl_sys_rt_sigaction((int)a1, (u64)a2, (u64)a3, (u64)a4); }
 SYS(rt_sigprocmask) { UNUSED6; return xrl_sys_rt_sigprocmask((int)a1, (u64)a2, (u64)a3, (u64)a4); }
 SYS(sigaltstack) { UNUSED6; return xrl_sys_sigaltstack((u64)a1, (u64)a2); }
@@ -734,7 +739,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_rt_sigreturn, rt_sigreturn), T(NR_rt_sigsuspend, rt_sigsuspend), T(NR_rt_sigtimedwait, rt_sigtimedwait),
     T(NR_rt_sigpending, rt_sigpending), T(NR_sigaltstack, sigaltstack), T(NR_tgkill, tgkill), T(NR_tkill, tkill),
     T(NR_kill, kill), T(NR_exit, exit), T(NR_exit_group, exit_group), T(NR_pause, pause),
-    T(NR_fork, fork), T(NR_vfork, fork), T(NR_execve, execve), T(NR_wait4, wait4),
+    T(101, ptrace), T(NR_fork, fork), T(NR_vfork, fork), T(NR_execve, execve), T(NR_wait4, wait4),
     /* memory */
     T(NR_mmap, mmap), T(NR_munmap, munmap), T(NR_mprotect, mprotect), T(NR_mremap, mremap), T(NR_brk, brk),
     T(NR_madvise, madvise), T(NR_msync, msync), T(NR_mincore, mincore),
@@ -870,6 +875,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     if (g_prof < 0) { char v[4]; g_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
     LARGE_INTEGER t0 = {0}, t1;
     if (g_prof) QueryPerformanceCounter(&t0);
+    if (t && t->task) { const slong ta[6] = { a1, a2, a3, a4, a5, a6 }; xrl_task_syscall_stop(t, nr, ta, 0, 1); }
     if (nr == 15 && t) r = xrl_sig_return(t, (u64)a1);   /* rt_sigreturn: never a plain return */
     else if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
@@ -883,6 +889,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         if (now >= next && InterlockedCompareExchange64(&g_prof_next, now + 30000, next) == next && next) prof_dump();
         else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
     }
+    if (t && t->task) { const slong ta[6] = { a1, a2, a3, a4, a5, a6 }; xrl_task_syscall_stop(t, nr, ta, r, 0); }
     if (G.trace_syscalls >= 2) { const slong ta[6] = { a1, a2, a3, a4, a5, a6 }; xrl_systrace(nr, ta, r, t ? t->tid : -1); }
     else if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
     if (t && t->exec_kill) xrl_thread_die(t);   /* execve is replacing the image (exec.c) */

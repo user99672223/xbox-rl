@@ -153,6 +153,7 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
     slong r;
     if (!self) return -LX_ENOSYS;
     if ((r = xrl_strfu(path, upath, sizeof path)) < 0) return r;
+    if (self->task) return xrl_task_exec(self, path, uargv, uenvp);
     if (!path[0]) return -LX_ENOENT;
     if ((r = xrl_vfs_resolve(LX_AT_FDCWD, path, 1, gpath, sizeof gpath)) < 0) return r;
 

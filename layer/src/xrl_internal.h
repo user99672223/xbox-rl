@@ -73,6 +73,7 @@ typedef struct xrl_sigregs {
     __declspec(align(64)) unsigned char xs[1024]; /* 0xC0 XSAVE image, standard format */
 } xrl_sigregs;
 
+struct xrl_task;
 typedef struct xrl_thread xrl_thread;
 struct xrl_thread {
     /* --- asm-visible block (offsets frozen, see thread.c static asserts) --- */
@@ -121,6 +122,8 @@ struct xrl_thread {
     /* shared-TEB views (teb.c): the copy NOT currently live in the TEB */
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
+    struct xrl_task *task; /* non-NULL: the body of a fork()ed task (task.c, XRL_FORK_TASKS=1) */
+    void *fdt;             /* its fd table (fd.c); NULL: the process's */
 };
 
 /* teb.c: guest/host views of the shared TEB (docs/gs-teb.md) */
@@ -151,6 +154,23 @@ xrl_thread *xrl_thread_by_tid(int tid);
 int  xrl_thread_count(void);
 slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc);
 slong xrl_do_exit(int code, int group);
+/* task.c: fork() and ptrace() for children that alternate with their parent (experiment) */
+int  xrl_fork_tasks_enabled(void);
+slong xrl_do_fork(void);
+int  xrl_task_pid(xrl_thread *t, int *ppid);             /* the task's pid (0: not a task) and its parent's */
+slong xrl_task_wait(int pid, u64 ustatus, int options);
+int  xrl_task_kill(int pid, int sig, slong *res);
+slong xrl_task_ptrace(int req, int pid, u64 addr, u64 data);
+void xrl_task_syscall_stop(xrl_thread *t, slong nr, const slong *a, slong ret, int enter);
+int  xrl_task_signal(xrl_thread *t, int sig);
+slong xrl_task_exec(xrl_thread *t, const char *path, u64 uargv, u64 uenvp);
+void xrl_task_on_exit(xrl_thread *t, int code);
+void xrl_task_wake_parent(xrl_thread *t);
+void xrl_task_signal_death(xrl_thread *t, int sig);
+xrl_thread *xrl_task_thread_new(xrl_thread *p, u64 rsp, struct xrl_task *k);   /* thread.c */
+void xrl_task_thread_start(xrl_thread *t);
+void *xrl_fd_table_clone(void);                          /* fd.c */
+void xrl_fd_table_free(void *tab);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);
 void xrl_threads_terminate_all(void);
