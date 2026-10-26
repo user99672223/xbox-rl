@@ -357,10 +357,23 @@ static slong remote_ptrace(xrl_task *k, int req, u64 addr, u64 data)
         if (req == 0x4205) { u64 iov[2]; if (xrl_cfu(iov, data, 16) || iov[1] < sizeof r) return -LX_EINVAL; src = iov[0]; }
         if (xrl_cfu(r, src, sizeof r)) return -LX_EFAULT;
         return rcall(k, 13 /* SETREGS */, 0, 0, r, sizeof r, NULL, NULL); }
-    case 0x4202: {
+    case 0x4202: {   /* GETSIGINFO: si_signo is the signal this stop is for (s_kind==4: whatever xrl_tracee_stop
+                      * sent, SIGTRAP for its own int3, or the real signal for a hardware fault) -- it used to be
+                      * hardcoded to SIGTRAP, wrong for every fault stop. si_code/si_addr: Linux reports the
+                      * kernel's own fault classification and the faulting address, which the wire protocol does
+                      * not carry; for a code-fetch fault (the case this layer's own tests exercise: a `ret` to an
+                      * invalid address) the faulting address equals rip, fetched fresh as a stand-in -- not
+                      * exact for a data-access fault elsewhere, but closer than the constant 0x80 this had. */
         u32 si[32]; memset(si, 0, sizeof si);
-        si[0] = 5;
-        si[2] = k->s_kind == 3 ? ((k->opts & 0x10) ? (5 | (4 << 8)) : 5) : 0x80;
+        int sig = k->s_kind == 3 ? SIGTRAP_ : k->s_sig;
+        si[0] = (u32)sig;
+        if (k->s_kind == 3) si[2] = (k->opts & 0x10) ? (SIGTRAP_ | (4 << 8)) : SIGTRAP_;
+        else if (sig == 11 /*SIGSEGV*/ || sig == 7 /*SIGBUS*/) {
+            si[2] = 1;   /* SEGV_MAPERR / BUS_ADRALN: the common case, not distinguished here */
+            void *out = NULL; u32 olen = 0;
+            if (!rcall(k, 12 /* GETREGS */, 0, 0, NULL, 0, &out, &olen) && olen >= 17 * 8) memcpy(&si[4], (char *)out + 16 * 8, 8);
+            free(out);
+        } else si[2] = 0x80;   /* SI_KERNEL: our own int3/trap stops */
         return xrl_ctu(data, si, sizeof si) ? -LX_EFAULT : 0; }
     case 0x4201: { u64 m = 0; return xrl_ctu(data, &m, 8) ? -LX_EFAULT : 0; }
     default: LOGW("ptrace request 0x%x on remote task %d: not supported", req, k->pid); return -LX_EIO;

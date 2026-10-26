@@ -670,6 +670,34 @@ static int spawned_main(long argc, u64 *sp)
     char buf[512]; int n = 0;
     u64 *env = sp + 1 + argc + 1;
     if (argc > 2 && !memcmp((const char *)sp[3], "sleep", 5)) { long ts[2] = { 4, 0 }; sc2(35, ts, 0); return 0; }   /* holds a process slot for a while */
+    if (argc > 2 && !memcmp((const char *)sp[3], "inject", 6)) {
+        /* set up a memfd-mapped executable page (DBT-translated under XRL_DBT_MEMFD=1, same trigger as the
+         * EAC module's own download), write the address its tracer will call into a fixed scratch page, then
+         * trap: this is the system-interface shape of the module's own injection, no module code involved. */
+        volatile u64 *scr = (volatile u64 *)0x700000000000ull;
+        sc(9, 0x700000000000ull, 4096, 3 /*PROT_READ|WRITE*/, 0x32 /*FIXED|PRIVATE|ANON*/, -1, 0);
+        u8 blob[4096]; for (int i = 0; i < 4096; i++) blob[i] = 0;
+        blob[0] = 0x7f; blob[1] = 'E'; blob[2] = 'L'; blob[3] = 'F';
+        blob[4] = 2; blob[5] = 1; blob[6] = 1;                                  /* ELFCLASS64, ELFDATA2LSB, EV_CURRENT */
+        blob[0x10] = 3;                                                         /* e_type = ET_DYN */
+        blob[0x12] = 62;                                                        /* e_machine = EM_X86_64 */
+        blob[0x14] = 1;                                                         /* e_version */
+        blob[0x34] = 64;                                                        /* e_ehsize */
+        blob[0x36] = 56;                                                        /* e_phentsize */
+        blob[0x38] = 1;                                                         /* e_phnum */
+        blob[0x40] = 0x48; blob[0x41] = 0x8b; blob[0x42] = 0x07;                /* mov rax, [rdi] */
+        blob[0x43] = 0x48; blob[0x44] = 0x83; blob[0x45] = 0xc0; blob[0x46] = 1; /* add rax, 1   */
+        blob[0x47] = 0xc3;                                                      /* ret            */
+        long mfd = sc2(319, "xrl_inject_test", 0);
+        sc3(1, mfd, blob, 4096);
+        void *code = (void *)sc(9, 0, 4096, 5 /*READ|EXEC*/, 2 /*PRIVATE*/, mfd, 0);
+        sc1(3, mfd);
+        scr[0] = (u64)code + 0x40;
+        scr[1] = 0xC0FFEEu;
+        scr[2] = 0x1234;   /* at scratch+16: what the injected call's pointer argument dereferences */
+        __asm__ volatile("int3");
+        for (;;) sc1(60, 95);
+    }
     const char *want = "XRL_SPAWN_ENV=";
     for (long i = 2; i < argc; i++) { const char *a = (const char *)sp[1 + i]; while (*a && n < 400) buf[n++] = *a++; buf[n++] = '|'; }
     for (; *env; env++) { const char *e = (const char *)*env; unsigned long l = slen(want); if (!memcmp(e, want, l)) { while (e[l] && n < 480) buf[n++] = e[l++]; buf[n++] = '|'; } }
@@ -786,6 +814,59 @@ static void test_traced_exec(void)
     if (ff >= 0) sc1(3, ff);
     CHECK(fn > 0 && find(fb, "traced|") && find(fb, "|tr|"), "it ran with its arguments and environment");
     CHECK(fn > 0 && find(fb, "m:memfd-data|"), "the memfd was inherited at the same descriptor number, with its contents");
+}
+
+/* The one step of the real EAC injection not yet covered by test_traced_exec: resuming a traced process, via
+ * SETREGS + PTRACE_CONT, straight into a DBT-translated executable mapping (dbt.c, triggered the same way the
+ * EAC module's own downloaded library is: an mmap(PROT_EXEC) of a memfd with a valid ELF header, under
+ * XRL_DBT_MEMFD=1). No module code or data: the helper's own "function" is a single `ret`; the call is set up
+ * with a fake return address (9, as the real injection uses) so that, as on Linux, the call runs and then
+ * faults when it returns there. Ground truth (WSL2, real Linux, same shape): fork, child TRACEME + SIGSTOP,
+ * parent PEEKDATA/GETREGS/POKEDATA(fake retaddr)/SETREGS(rip=target,rsp=scratch)/CONT -> the child stops again
+ * with SIGSEGV, rip == the fake return address exactly, GETSIGINFO si_signo == SIGSEGV. See
+ * docs/eac-trace/ptrace-request-sequence.md. */
+static void test_inject_call(void)
+{
+    long pid = sc(57, 0, 0, 0, 0, 0, 0);
+    if (pid == -38) { out("  skip inject call (XRL_FORK_TASKS=1 not set)\n"); return; }
+    if (pid == 0) {
+        sc4(101, 0, 0, 0, 0);
+        sc2(62, sc1(39, 0), 19);
+        const char *av[] = { "/bin/guest.elf", "--spawned", "inject", 0 }, *ev[] = { 0 };
+        sc3(59, "/bin/guest.elf", av, ev);
+        sc1(60, 98);
+        for (;;) sc1(60, 98);
+    }
+    int st = 0;
+    CHECK(sc4(61, pid, &st, 0, 0) == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 19, "inject: traced child stops with SIGSTOP");
+    sc4(101, 0x4200, pid, 0, 0x10 /* PTRACE_O_TRACEEXEC */);
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 | (4 << 8)) << 8 | 0x7f), "inject: execve: exec-stop");
+    /* let the exec'd helper run its own setup (memfd + mmap PROT_EXEC + write the scratch page) to its own int3 */
+    CHECK(sc4(101, 7, pid, 0, 0) == 0 && sc4(61, pid, &st, 0, 0) == pid && st == ((5 << 8) | 0x7f), "inject: CONT: the helper traps with its own int3 after setup");
+    u64 target = 0, magic = 0;
+    CHECK(sc4(101, 2, pid, 0x700000000000ull, &target) == 0 && sc4(101, 2, pid, 0x700000000008ull, &magic) == 0 && magic == 0xC0FFEEu,
+          "inject: PEEKDATA reads the target address the helper set up");
+    u64 regs[27];
+    CHECK(sc4(101, 12, pid, 0, regs) == 0, "inject: GETREGS at the helper's own trap");
+    u64 scratch_rsp = (regs[19] - 512) & ~15ull;
+    CHECK(sc4(101, 5, pid, scratch_rsp, 9 /* fake return address, as the real injection's trace used */) == 0, "inject: POKEDATA the fake return address");
+    regs[16] = target;            /* rip: the function to call */
+    regs[19] = scratch_rsp;       /* rsp: [rsp] = the fake return address */
+    regs[14] = 0x700000000010ull; /* rdi: a pointer argument on the stack, shape only (the called function dereferences it: mov rax,[rdi]) */
+    CHECK(sc4(101, 13, pid, 0, regs) == 0, "inject: SETREGS to call the function with a fake return address");
+    CHECK(sc4(101, 7, pid, 0, 0) == 0, "inject: CONT into the DBT-translated function");
+    long wr = sc4(61, pid, &st, 0, 0);
+    CHECK(wr == pid && (st & 0xff) == 0x7f && ((st >> 8) & 0xff) == 11,
+          "inject: the call runs and faults at the fake return address with SIGSEGV, same as Linux");
+    if (wr == pid && (st & 0xff) == 0x7f) {
+        memset(regs, 0, sizeof regs);
+        CHECK(sc4(101, 12, pid, 0, regs) == 0 && regs[16] == 9, "inject: GETREGS: rip is exactly the fake return address");
+        u32 si[32]; memset(si, 0, sizeof si);
+        CHECK(sc4(101, 0x4202, pid, 0, si) == 0 && si[0] == 11, "inject: GETSIGINFO: si_signo is SIGSEGV");
+        sc4(101, 8, pid, 0, 0);
+    } else {
+        outn("    inject: layer wait4 status", st);
+    }
 }
 
 static char cpubuf[1 << 16];
@@ -1452,6 +1533,7 @@ void cstart(u64 *sp)
     test_fork_tasks();
     test_spawn();
     test_traced_exec();
+    test_inject_call();
     test_threads();
     test_net();
     test_ntsync();

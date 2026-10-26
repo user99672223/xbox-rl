@@ -115,7 +115,7 @@ void xrl_tracee_boot(u64 *entry, u64 *sp)
     InterlockedExchange(&g_tr_on, 1);
     if (G.trace_syscalls >= 2) xrl_systrace_arm();
     u64 regs[27] = { 0 };
-    regs[15] = (u64)-1; regs[16] = *entry; regs[17] = 0x33; regs[18] = 0x202; regs[19] = *sp; regs[20] = 0x2b;
+    regs[15] = 59; regs[16] = *entry; regs[17] = 0x33; regs[18] = 0x202; regs[19] = *sp; regs[20] = 0x2b;   /* orig_rax: Linux reports the execve syscall number (59) at the exec stop, confirmed on WSL2 */
     u8 fp[512] = { 0 };
     *(u16 *)fp = 0x37f; *(u32 *)(fp + 24) = 0x1f80; *(u32 *)(fp + 28) = 0xffff;   /* the state a new process starts with */
     xrl_tr_send(g_tr, TR_HELLO, *entry, *sp, NULL, 0);
