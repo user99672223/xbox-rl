@@ -146,5 +146,10 @@ void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig)
         LOGW("tracee: rip %llx -> %llx (translation %llx)", r[16], (u64)c->Rip, tr);
     }
     LOGW("tracee: resumes at rip=%llx rsp=%llx eflags=%llx rdi=%llx rsi=%llx fs_base=%llx mxcsr=%x cw=%x", r[16], r[19], r[18], r[14], r[13], r[21], c->MxCsr, *(u16 *)fp);
+    {   MEMORY_BASIC_INFORMATION mi, ms;
+        VirtualQuery((void *)c->Rip, &mi, sizeof mi); VirtualQuery((void *)c->Rsp, &ms, sizeof ms);
+        LOGW("tracee: CONTEXT flags=%lx cs=%x ss=%x ds=%x es=%x fs=%x gs=%x eflags=%lx mxcsr=%x/%x rip-page prot=%lx state=%lx rsp-page prot=%lx state=%lx rax=%llx rcx=%llx rdx=%llx rbx=%llx rbp=%llx r8=%llx",
+             c->ContextFlags, c->SegCs, c->SegSs, c->SegDs, c->SegEs, c->SegFs, c->SegGs, c->EFlags, c->MxCsr, c->FltSave.MxCsr, mi.Protect, mi.State, ms.Protect, ms.State, c->Rax, c->Rcx, c->Rdx, c->Rbx, c->Rbp, c->R8);
+    }
     if (r[21] != t->guest_tp) t->guest_tp = r[21];
 }
