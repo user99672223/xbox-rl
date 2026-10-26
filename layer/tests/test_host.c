@@ -30,7 +30,41 @@ static xrl_status host_swapchain(xrl_handle d, xrl_handle q, uint32_t w, uint32_
     *out = d ^ q ^ ((uint64_t)w << 32 | h) ^ ((uint64_t)n << 8) ^ fmt;
     return XRL_OK;
 }
-static xrl_status host_pad(uint32_t slot, xrl_pad_state *o) { memset(o, 0, sizeof *o); o->buttons = 0x1000 | slot; o->connected = 1; return XRL_OK; }
+/* Pad 0: connected, idle. XRL_PAD_SCRIPT="130:A,135:DOWN,140:0x1000" presses that
+ * button (XInput name or mask) N seconds after start, for 200 ms: a scripted player
+ * for menus ("press any button"). Pads 1..3 are absent. */
+static struct { double at; uint32_t mask; } g_pad_steps[64];
+static int g_pad_nsteps;
+static ULONGLONG g_pad_t0;
+static void pad_script_init(void)
+{
+    static const struct { const char *n; uint32_t m; } names[] = {
+        { "UP", 0x1 }, { "DOWN", 0x2 }, { "LEFT", 0x4 }, { "RIGHT", 0x8 }, { "START", 0x10 }, { "BACK", 0x20 },
+        { "LB", 0x100 }, { "RB", 0x200 }, { "A", 0x1000 }, { "B", 0x2000 }, { "X", 0x4000 }, { "Y", 0x8000 } };
+    char s[1024];
+    g_pad_t0 = GetTickCount64();
+    if (!GetEnvironmentVariableA("XRL_PAD_SCRIPT", s, sizeof s)) return;
+    for (char *tok = strtok(s, ","); tok && g_pad_nsteps < 64; tok = strtok(NULL, ",")) {
+        char *c = strchr(tok, ':');
+        if (!c) continue;
+        *c++ = 0;
+        uint32_t m = (uint32_t)strtoul(c, NULL, 0);
+        for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) if (!_stricmp(c, names[i].n)) m = names[i].m;
+        g_pad_steps[g_pad_nsteps].at = atof(tok);
+        g_pad_steps[g_pad_nsteps++].mask = m;
+    }
+    printf("[host] pad script: %d presses\n", g_pad_nsteps);
+}
+static xrl_status host_pad(uint32_t slot, xrl_pad_state *o)
+{
+    memset(o, 0, sizeof *o);
+    if (slot) return XRL_ERR_NOTAVAIL;
+    o->connected = 1;
+    double t = (double)(GetTickCount64() - g_pad_t0) / 1000.0;
+    for (int i = 0; i < g_pad_nsteps; i++)
+        if (t >= g_pad_steps[i].at && t < g_pad_steps[i].at + 0.2) o->buttons |= g_pad_steps[i].mask;
+    return XRL_OK;
+}
 static xrl_status host_xaudio_create(xrl_handle *o) { *o = 0xA0D10ull; return XRL_OK; }
 
 const xrl_gfx_ops *xrl_desktop_gfx(void (*log)(int, const char *, const char *));   /* desktop_gfx.cpp */
@@ -45,6 +79,7 @@ int main(int argc, char **argv)
     gfx.create_swapchain_for_corewindow = host_swapchain; gfx.release = host_release;
     audio.struct_size = sizeof audio; audio.xaudio2_create = host_xaudio_create; audio.release = host_release;
     input.struct_size = sizeof input; input.get_pad_state = host_pad;
+    pad_script_init();
 
     const char *gargv[32]; int n = 0;
     gargv[n++] = argv[2];
