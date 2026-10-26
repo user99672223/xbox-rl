@@ -469,7 +469,9 @@ void xrl_rewrite_fd_mapped(int fd, u64 addr, u64 len, s64 off, int prot);
 int   xrl_dbt_wanted(const char *path);
 int   xrl_dbt_attach(const char *name, u64 addr, u64 len);
 void  xrl_dbt_attach_pe(const char *name, u64 addr, u64 len);
-void  xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable (mprotect) */
+int   xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable (mprotect); 1: it is part of a Windows image */
+void  xrl_dbt_generated(u64 addr, u64 len);   /* a writable+executable anonymous range (generated code) */
+void  xrl_dbt_unmapped(u64 addr, u64 len);    /* a range was unmapped or remapped */
 u64   xrl_dbt_translate(u64 pc);
 slong xrl_dbt_enter_sys(u64 pc);
 void  xrl_dbt_stats(u64 *faults, u64 *translated);

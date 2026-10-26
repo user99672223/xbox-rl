@@ -19,10 +19,17 @@ rootfs="$WORK/out/rootfs"; prefix="$WORK/out/prefix"
 [ -d "$prefix" ] || die "no $prefix -- run bake-prefix.sh"
 
 mkdir -p "$dest"
+# XRL_STAGE_KEEP="a b": extra top-level entries of DEST that --delete must leave alone (test programs,
+# the EAC runtime...); XRL_STAGE_PREFIX=0: do not touch DEST/prefix (a prefix that holds state worth keeping).
+keep=(); for k in ${XRL_STAGE_KEEP:-}; do keep+=("--exclude=/$k"); done
 log "stage: Wine rootfs -> $dest"
-rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclude=/game --exclude=/etc/resolv.conf --exclude=/etc/hosts "$rootfs"/ "$dest"/
-log "stage: prefix -> $dest/prefix"
-rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
+rsync -a --delete --no-links --exclude=/prefix --exclude=/.xrl-symlinks --exclude=/game --exclude=/etc/resolv.conf --exclude=/etc/hosts "${keep[@]}" "$rootfs"/ "$dest"/
+if [ "${XRL_STAGE_PREFIX:-1}" != 0 ]; then
+  log "stage: prefix -> $dest/prefix"
+  rsync -a --delete --no-links "$prefix"/ "$dest/prefix"/
+else
+  log "stage: prefix left as it is (XRL_STAGE_PREFIX=0)"
+fi
 
 # glibc-ABI shim for native modules built against glibc (the EAC runtime); see docs/decisions.md.
 # musl is already in $dest/lib/ld-musl-x86_64.so.1, so this only adds libgcompat.so.0 and two stubs.

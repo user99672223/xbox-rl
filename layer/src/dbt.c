@@ -45,11 +45,16 @@ typedef struct dimg {
     u64 lo, hi;                          /* the mapping that is translated */
     u8 *cache; u64 cache_va, cap, used;
     char name[64];
+    int gen;                             /* generated code (a page the program wrote): a write drops the translation */
 } dimg;
 static dimg g_img[MAX_IMG];
 static int g_nimg;
 static SRWLOCK g_lock = SRWLOCK_INIT;
+static SRWLOCK g_genlock = SRWLOCK_INIT;   /* generated-code bookkeeping; taken before g_lock */
 static PVOID g_veh;
+#define MAX_WATCH 16
+static struct { u64 lo, hi; } g_watch[MAX_WATCH];   /* RWX pages of the program, not executable for the host until first fetched */
+static volatile int g_nwatch;
 static volatile LONG64 g_nfault, g_ntrans;
 
 /* ---------------------------------------------------------------- tables */
@@ -60,7 +65,7 @@ static void tab_put(u64 orig, u64 tr)
     for (u32 i = 0; i < 4; i++) {
         u64 *e = &xrl_dbt_tab[(th(orig) + i) * 2];
         if (e[0] == orig) { e[1] = tr; return; }
-        if (!e[0]) {
+        if (!e[0] || e[0] == 1) {         /* free, or dropped (1: probing in dbt.asm continues past it) */
             e[1] = tr;
             MemoryBarrier();
             e[0] = orig;                  /* published last */
@@ -420,20 +425,33 @@ slong xrl_dbt_enter_sys(u64 pc)
     return (slong)(r ? r : pc);
 }
 
-/* instruction fetch from a translated image */
+/* generated code (below) */
+static int gen_fetch(u64 pc);
+static int gen_write(u64 a);
+static volatile LONG g_has_gen;
+
+/* instruction fetch from a translated image (or a watched page of generated code); a write to a page of
+ * generated code that is translated */
 static LONG CALLBACK dbt_veh(PEXCEPTION_POINTERS ep)
 {
     EXCEPTION_RECORD *r = ep->ExceptionRecord;
-    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2 || r->ExceptionInformation[0] != 8) return EXCEPTION_CONTINUE_SEARCH;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    u64 acc = (u64)r->ExceptionInformation[0];
     u64 pc = (u64)r->ExceptionInformation[1];
-    if (!img_of(pc)) return EXCEPTION_CONTINUE_SEARCH;
+    if (acc != 8 && !(acc == 1 && g_has_gen)) return EXCEPTION_CONTINUE_SEARCH;
+    if (acc == 8 && !img_of(pc) && !g_nwatch) return EXCEPTION_CONTINUE_SEARCH;
     xrl_thread *t = xrl_cur();
     u64 stk[2];
     int g = xrl_teb_enter_host(t);
     xrl_teb_stack_here(stk);
-    u64 tr = xrl_dbt_translate(pc);
+    int retry = 0;
+    u64 tr = 0;
+    if (acc == 1) retry = gen_write(pc);
+    else if (img_of(pc)) tr = xrl_dbt_translate(pc);
+    else retry = gen_fetch(pc);
     xrl_teb_stack_back(stk);
     xrl_teb_restore(t, g);
+    if (retry) return EXCEPTION_CONTINUE_EXECUTION;
     if (!tr) return EXCEPTION_CONTINUE_SEARCH;
     InterlockedIncrement64(&g_nfault);
     ep->ContextRecord->Rip = tr;
@@ -501,17 +519,18 @@ void xrl_dbt_attach_pe(const char *name, u64 addr, u64 len)
     free(mark);
 }
 
+static int policy_on(void);
+
 /* Wine loads a PE image into anonymous memory (pread, not mmap) and then mprotects the sections. When a range
  * becomes executable inside a Windows image (an "MZ" header a few pages below) and the program being run is
- * one of the anti-cheat's (its command line matches the XRL_DBT policy), look for raw `syscall`s. */
-void xrl_dbt_exec_hint(u64 addr, u64 len)
+ * one of the anti-cheat's (its command line matches the XRL_DBT policy), look for raw `syscall`s. Returns 1 if the
+ * range is part of a Windows image. */
+int xrl_dbt_exec_hint(u64 addr, u64 len)
 {
-    static int mode = -1;
-    if (mode < 0) mode = G.argc > 1 && G.argv[1] && xrl_dbt_wanted(G.argv[1]);
-    if (!mode || len < LX_PAGE || len > (64u << 20) || (addr & (LX_PAGE - 1))) return;
+    if (!policy_on() || len < LX_PAGE || len > (64u << 20) || (addr & (LX_PAGE - 1))) return 0;
     for (int back = 1; back <= 8; back++) {
         u64 hdr = addr - (u64)back * LX_PAGE;
-        if (!xrl_mem_is_mapped(hdr)) return;
+        if (!xrl_mem_is_mapped(hdr)) return 0;
         const u8 *h = (const u8 *)hdr;
         if (h[0] == 'M' && h[1] == 'Z') {
             u32 lfa = *(const u32 *)(h + 0x3c);
@@ -520,9 +539,10 @@ void xrl_dbt_exec_hint(u64 addr, u64 len)
                 snprintf(name, sizeof name, "%s (Windows image at %llx)", G.argv[1], hdr);
                 xrl_dbt_attach_pe(name, addr, len);
             }
-            return;
+            return 1;
         }
     }
+    return 0;
 }
 
 /* The mapping [addr, addr+len) of `name` becomes translated code. */
@@ -530,7 +550,9 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
 {
     int rc = -1;
     AcquireSRWLockExclusive(&g_lock);
-    if (g_nimg >= MAX_IMG) { LOGE("dbt: more than %d translated images", MAX_IMG); goto out; }
+    int slot = g_nimg;
+    for (int i = 0; i < g_nimg; i++) if (!g_img[i].hi) { slot = i; break; }      /* a dropped image's slot */
+    if (slot >= MAX_IMG) { LOGE("dbt: more than %d translated images", MAX_IMG); goto out; }
     u64 cap = len * 8; if (cap < (1u << 20)) cap = 1u << 20; if (cap > (64u << 20)) cap = 64u << 20;
     cap = ALIGN_UP(cap, LX_PAGE);
     len = ALIGN_UP(len, LX_PAGE);
@@ -556,7 +578,7 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
         xrl_mem_munmap((u64)cm, cap);
         goto out;
     }
-    dimg *im = &g_img[g_nimg];
+    dimg *im = &g_img[slot];
     memset(im, 0, sizeof *im);
     im->lo = addr; im->hi = addr + len;
     im->cache = (u8 *)cm; im->cache_va = (u64)cm; im->cap = cap; im->used = 64;
@@ -573,10 +595,10 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
         xrl_mem_munmap((u64)cm, cap);
         goto out;
     }
-    xrl_dbt_rng[g_nimg * 2] = addr;
+    xrl_dbt_rng[slot * 2] = addr;
     MemoryBarrier();
-    xrl_dbt_rng[g_nimg * 2 + 1] = len;
-    g_nimg++;
+    xrl_dbt_rng[slot * 2 + 1] = len;
+    if (slot == g_nimg) g_nimg++;
     if (!g_veh) g_veh = AddVectoredExceptionHandler(1, dbt_veh);
     LOGI("dbt: %s: %llu bytes at %llx are translated, not executed (cache %llu KiB at %llx); the image's bytes are untouched",
          name, len, addr, cap >> 10, (u64)cm);
@@ -585,5 +607,175 @@ out:
     ReleaseSRWLockExclusive(&g_lock);
     return rc;
 }
+
+/* ------------------------------------------------- generated code
+ * A program that carries its own system-call stubs (the EAC bootstrapper copies a 21-byte `syscall` wrapper
+ * into a VirtualAlloc'd RWX page and calls it) executes `syscall` from memory it wrote itself. The
+ * image-page scan above never sees it. So, while the program is one the policy selects, an anonymous
+ * mapping that is writable *and* executable is a candidate: its host protection is read-write only (the
+ * guest still sees rwx in /proc/self/maps), and the first instruction fetch from it faults. The handler
+ * looks at the page then: with a `syscall` in it the page is translated like an image (and a later write to
+ * it drops the translation and starts over); without, it simply becomes executable again, and the program
+ * runs it natively as before. Limits, stated: code written into a page after its first execution is not
+ * looked at when the page had no `syscall`; at most MAX_WATCH ranges of at most 256 KiB are watched (more,
+ * or bigger, run natively and are logged); a thread executing a translation while another thread rewrites
+ * the page is not stopped. */
+#define GEN_MAX (256u << 10)
+
+static int policy_on(void)
+{
+    static int mode = -1;
+    if (mode < 0) mode = G.argc > 1 && G.argv[1] && xrl_dbt_wanted(G.argv[1]);
+    return mode;
+}
+
+static int page_has_syscall(u64 pg)
+{
+    const u8 *p = (const u8 *)pg;
+    size_t i = 0;
+    while (i + 2 <= LX_PAGE) {
+        x86i in;
+        size_t avail = LX_PAGE - i < 15 ? LX_PAGE - i : 15;
+        int l = x86_decode(p + i, avail, &in);
+        if (!l) { i++; continue; }
+        if (!in.vex && in.map == 1 && in.opcode == 0x05) return 1;
+        i += (size_t)l;
+    }
+    return 0;
+}
+
+static void watch_add(u64 lo, u64 hi)      /* g_genlock held */
+{
+    if (g_nwatch >= MAX_WATCH) { LOGW("dbt: more than %d watched ranges of generated code: %llx runs natively", MAX_WATCH, lo); return; }
+    DWORD old;
+    if (xrl_host_protect((void *)lo, (size_t)(hi - lo), PAGE_READWRITE, &old)) { LOGE("dbt: cannot watch generated code at %llx", lo); return; }
+    g_watch[g_nwatch].lo = lo; g_watch[g_nwatch].hi = hi;
+    MemoryBarrier();
+    g_nwatch++;
+    if (!g_veh) g_veh = AddVectoredExceptionHandler(1, dbt_veh);
+}
+
+static void watch_remove_at(int i) { g_watch[i] = g_watch[g_nwatch - 1]; g_nwatch--; }
+
+/* the translations of a generated-code image go; its cache is freed and its slot can be reused. g_lock held. */
+static void img_drop_locked(dimg *im)
+{
+    for (u32 i = 0; i < (1u << CM_BITS); i++) {
+        u64 o = g_cmap[i].o;
+        if (!o || o < im->lo || o >= im->hi) continue;
+        if (g_cmap[i].t) {      /* the map entry stays as a dead key so that probe chains stay intact */
+            for (u32 k = 0; k < 4; k++) {
+                u64 *e = &xrl_dbt_tab[(th(o) + k) * 2];
+                if (e[0] == o) { e[1] = 0; MemoryBarrier(); e[0] = 1; break; }
+            }
+        }
+        g_cmap[i].t = 0;
+    }
+    int idx = (int)(im - g_img);
+    xrl_dbt_rng[idx * 2 + 1] = 0;
+    MemoryBarrier();
+    xrl_dbt_rng[idx * 2] = 0;
+    xrl_mem_munmap(im->cache_va, im->cap);
+    im->lo = im->hi = 0;
+}
+
+/* [addr, addr+len) is a writable and executable anonymous mapping (mmap or mprotect) */
+void xrl_dbt_generated(u64 addr, u64 len)
+{
+    if (!policy_on() || !len) return;
+    u64 lo = addr & ~(LX_PAGE - 1), hi = ALIGN_UP(addr + len, LX_PAGE);
+    if (hi - lo > GEN_MAX) {
+        static volatile LONG warned;
+        if (!InterlockedExchange(&warned, 1)) LOGW("dbt: %llu KiB of writable+executable memory at %llx is too big to watch for system-call stubs: it runs natively", (hi - lo) >> 10, lo);
+        return;
+    }
+    AcquireSRWLockExclusive(&g_genlock);
+    AcquireSRWLockExclusive(&g_lock);
+    for (int i = 0; i < g_nimg; i++)                        /* made writable again: whatever was translated is stale */
+        if (g_img[i].gen && g_img[i].hi && g_img[i].lo < hi && g_img[i].hi > lo) img_drop_locked(&g_img[i]);
+    ReleaseSRWLockExclusive(&g_lock);
+    for (int i = 0; i < g_nwatch; i++)
+        if (g_watch[i].lo < hi && g_watch[i].hi > lo) { if (g_watch[i].lo < lo) lo = g_watch[i].lo; if (g_watch[i].hi > hi) hi = g_watch[i].hi; watch_remove_at(i--); }
+    if (xrl_mem_pin_stack(lo, hi - lo)) LOGW("dbt: cannot commit generated code at %llx", lo);   /* committed, and never swapped out */
+    else {
+        watch_add(lo, hi);
+        LOGI("dbt: generated code: %llu KiB at %llx is writable and executable; watched for `syscall` (host: read-write until first fetched)", (hi - lo) >> 10, lo);
+    }
+    ReleaseSRWLockExclusive(&g_genlock);
+}
+
+/* [addr, addr+len) is unmapped or remapped */
+void xrl_dbt_unmapped(u64 addr, u64 len)
+{
+    if (!g_nwatch && !g_has_gen) return;
+    u64 hi = addr + len;
+    AcquireSRWLockExclusive(&g_genlock);
+    AcquireSRWLockExclusive(&g_lock);
+    for (int i = 0; i < g_nimg; i++)
+        if (g_img[i].gen && g_img[i].hi && g_img[i].lo < hi && g_img[i].hi > addr) img_drop_locked(&g_img[i]);
+    ReleaseSRWLockExclusive(&g_lock);
+    for (int i = 0; i < g_nwatch; i++)
+        if (g_watch[i].lo < hi && g_watch[i].hi > addr) watch_remove_at(i--);
+    ReleaseSRWLockExclusive(&g_genlock);
+}
+
+/* instruction fetch from a watched page: look at it. 1: retry the instruction */
+static int gen_fetch(u64 pc)
+{
+    u64 lo = 0, hi = 0;
+    AcquireSRWLockExclusive(&g_genlock);
+    for (int i = 0; i < g_nwatch; i++)
+        if (pc >= g_watch[i].lo && pc < g_watch[i].hi) { lo = g_watch[i].lo; hi = g_watch[i].hi; watch_remove_at(i); break; }
+    if (!hi) {      /* another thread got here first (or it was never ours): retry if the page has changed state */
+        MEMORY_BASIC_INFORMATION mbi;
+        int r = img_of(pc) != NULL || (VirtualQuery((void *)pc, &mbi, sizeof mbi) && (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)));
+        ReleaseSRWLockExclusive(&g_genlock);
+        return r;
+    }
+    char name[96];
+    snprintf(name, sizeof name, "generated code at %llx", lo);
+    for (u64 pg = lo; pg < hi;) {
+        int has = page_has_syscall(pg);
+        u64 e = pg + LX_PAGE;
+        while (e < hi && page_has_syscall(e) == has) e += LX_PAGE;
+        if (has && !xrl_dbt_attach(name, pg, e - pg)) {
+            AcquireSRWLockExclusive(&g_lock);
+            dimg *im = img_of(pg);
+            if (im) im->gen = 1;
+            ReleaseSRWLockExclusive(&g_lock);
+            g_has_gen = 1;
+            LOGI("dbt: %s: `syscall` in pages %llx-%llx of generated code; translated", name, pg, e);
+        } else {
+            DWORD old;
+            xrl_host_protect((void *)pg, (size_t)(e - pg), PAGE_EXECUTE_READWRITE, &old);   /* no `syscall`: native, as before */
+        }
+        pg = e;
+    }
+    ReleaseSRWLockExclusive(&g_genlock);
+    return 1;
+}
+
+/* a write to a translated page of generated code: the translation is stale. 1: retry the write */
+static int gen_write(u64 a)
+{
+    int r = 0;
+    AcquireSRWLockExclusive(&g_genlock);
+    AcquireSRWLockExclusive(&g_lock);
+    dimg *im = img_of(a);
+    u64 lo = 0, hi = 0;
+    if (im && im->gen) { lo = im->lo; hi = im->hi; img_drop_locked(im); }
+    ReleaseSRWLockExclusive(&g_lock);
+    if (hi) {
+        watch_add(lo, hi);          /* host: read-write again; the next fetch looks at it again */
+        LOGI("dbt: generated code at %llx was written again: its translation is dropped", lo);
+        r = 1;
+    } else {            /* not ours, or another thread dropped it meanwhile */
+        MEMORY_BASIC_INFORMATION mbi;
+        r = VirtualQuery((void *)a, &mbi, sizeof mbi) && (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE));
+    }
+    ReleaseSRWLockExclusive(&g_genlock);
+    return r;
+}
+
 
 void xrl_dbt_stats(u64 *faults, u64 *translated) { *faults = (u64)g_nfault; *translated = (u64)g_ntrans; }
