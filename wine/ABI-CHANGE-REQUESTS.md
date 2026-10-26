@@ -26,6 +26,7 @@ the layer inside `xrl_syscall`:
 | `0x10002` | `XRL_SYS_GET_AUDIO_OPS` | same for `xrl_audio_ops`                                       |
 | `0x10003` | `XRL_SYS_GET_INPUT_OPS` | same for `xrl_input_ops`                                       |
 | `0x10004` | `XRL_SYS_GET_LOG_FN`    | guest-callable `xrl_log_fn` (so Wine's `ERR/WARN` land in `LocalState/log.txt` in order) |
+| `0x10005` | `XRL_SYS_GET_VCLOCK`    | (added later, additive) a vDSO-style SysV `int (*)(clockid_t, struct timespec *)` musl's `clock_gettime` calls without entering the layer (patches/musl/0004); `-ENOSYS` from an older layer |
 
 The returned tables are the layer's thunk tables (each slot a guest-callable trampoline that
 switches GS/TEB/stack and calls the real host function). `struct_size` is the host's.
