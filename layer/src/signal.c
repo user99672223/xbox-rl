@@ -11,6 +11,24 @@
 #include <intrin.h>
 #include <immintrin.h>
 
+/* Logging here: no CRT stream, no log lock (a faulting thread may hold either,
+ * and a fatal signal ends the process before buffered output is written). One WriteFile per line to the process's stderr and the debugger. */
+static void emerg(const char *fmt, ...)
+{
+    char line[600];
+    va_list ap; va_start(ap, fmt);
+    int n = _vsnprintf_s(line, sizeof line, _TRUNCATE, fmt, ap);
+    va_end(ap);
+    if (n < 0) n = (int)strlen(line);
+    line[n++] = '\n';
+    DWORD w;
+    WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, NULL);
+    line[n - 1] = 0;
+    OutputDebugStringA(line);
+}
+#undef LOGE
+#define LOGE(...) emerg("[E layer    ] " __VA_ARGS__)
+
 #if defined(WINAPI_FAMILY) && WINAPI_FAMILY == WINAPI_FAMILY_APP
 /* kernel32 exports it; the app-family headers do not declare it. The host links
  * kernel32.lib (see mem.c on VirtualAlloc). Whether the console's app container
@@ -593,23 +611,7 @@ static int host_stack_fault(const CONTEXT *c)
     return c->Rsp >= limit && c->Rsp < base;
 }
 
-/* Crash-path logging: no CRT stream, no log lock (the faulting thread may hold
- * either). One WriteFile per line to the process's stderr and the debugger. */
-static void emerg(const char *fmt, ...)
-{
-    char line[600];
-    va_list ap; va_start(ap, fmt);
-    int n = _vsnprintf_s(line, sizeof line, _TRUNCATE, fmt, ap);
-    va_end(ap);
-    if (n < 0) n = (int)strlen(line);
-    line[n++] = '\n';
-    DWORD w;
-    WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, NULL);
-    line[n - 1] = 0;
-    OutputDebugStringA(line);
-}
-#undef LOGE
-#define LOGE(...) emerg("[E layer    ] " __VA_ARGS__)
+
 
 static void crash_report(PEXCEPTION_POINTERS ep, xrl_thread *t)
 {
