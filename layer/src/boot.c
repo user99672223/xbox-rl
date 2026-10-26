@@ -121,6 +121,11 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     int code = (int)G.exit_code;
     { extern volatile LONG64 xrl_fs_rearms; LOGI("boot: FS-base re-arm faults handled: %lld", (long long)xrl_fs_rearms); }
     LOGI("boot: guest exiting with code %d; draining %lld thread(s)", code, (slong)G.nthreads);
+    AcquireSRWLockShared(&G.thread_lock);
+    for (xrl_thread *t = G.threads; t; t = t->next)
+        LOGI("boot:   still running: tid %d of process %d (%s) in_sys %d state %d dying %d exec_kill %d", t->tid, t->proc ? t->proc->pid : -1, t->name, t->in_sys,
+             t->proc ? t->proc->state : -1, t->proc ? (int)t->proc->dying : -1, (int)t->exec_kill);
+    ReleaseSRWLockShared(&G.thread_lock);
     for (int i = 0; i < 50 && G.nthreads > 0; i++) Sleep(10);
     if (G.nthreads > 0) { LOGW("boot: terminating %lld straggler thread(s)", (slong)G.nthreads); xrl_threads_terminate_all(); }
     return code;

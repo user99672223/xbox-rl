@@ -100,8 +100,6 @@ xrl_thread *xrl_thread_new_in(xrl_proc *p)
     xrl_thread *t = (xrl_thread *)calloc(1, sizeof *t);
     if (!t) return NULL;
     t->proc = p;
-    InterlockedIncrement(&p->nthreads);
-    xrl_proc_ref(p);
     t->self = (u64)t;
     t->tid = 0;                         /* the OS thread id, set by start_os_thread */
     t->fsb_enabled = (u64)G.fsgsbase;
@@ -109,6 +107,16 @@ xrl_thread *xrl_thread_new_in(xrl_proc *p)
     t->sig_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
     strcpy_s(t->name, sizeof t->name, "xrl-guest");
     AcquireSRWLockExclusive(&G.thread_lock);
+    /* a process that is being torn down (xrl_proc_exit marks it dying before it lists its threads, under this
+     * lock) gets no new thread: an execve or clone racing with a kill must not outlive the process */
+    if (p->dying) {
+        ReleaseSRWLockExclusive(&G.thread_lock);
+        if (t->sig_ev) CloseHandle(t->sig_ev);
+        free(t);
+        return NULL;
+    }
+    InterlockedIncrement(&p->nthreads);
+    xrl_proc_ref(p);
     t->next = G.threads;
     if (G.threads) G.threads->prev = t;
     G.threads = t;
@@ -251,7 +259,7 @@ int xrl_thread_clone_prepare(xrl_thread *p, xrl_proc *np, u64 flags, u64 child_s
         if (!G.fsgsbase && !G.tp_slot) { LOGE("clone: CLONE_SETTLS but neither FSGSBASE nor the TP slot is available"); return -LX_ENOSYS; }
     }
     xrl_thread *t = xrl_thread_new_in(np);
-    if (!t) return -LX_ENOMEM;
+    if (!t) return p->proc->dying ? -LX_EAGAIN : -LX_ENOMEM;
     const u64 *fr = (const u64 *)p->frame;
     for (int i = 0; i < 7; i++) t->resume[i] = fr[i];
     /* B's musl passes an explicit child entry (7th arg): a call cannot return
@@ -335,8 +343,10 @@ static slong do_exit(int code, int group, int sig)
     if (t->timer) CloseHandle(t->timer);
     /* another process: it becomes a zombie (its fds close, its mm goes, the parent hears SIGCHLD, a vfork parent
      * runs again); this has to happen before our own record goes, it needs to know which thread is the caller */
+    xrl_heapcheck("do_exit: start");
     if (ends && !is_init) xrl_proc_exit(p, sig ? sig : (code & 0xff) << 8, t);
     thread_unlink(t);
+    xrl_heapcheck("do_exit: unlinked");
     xrl_thread_unbind();
     if (ends && is_init) SetEvent(G.exit_event);
     /* leave the record allocated: other threads may briefly hold pointers via tgkill lookup */

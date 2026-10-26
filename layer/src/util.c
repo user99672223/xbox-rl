@@ -326,6 +326,19 @@ static int wait_addr_raw(volatile void *addr, void *cmp, size_t sz, u64 ns)
 }
 
 /* Blocking in the layer lets another member of a fork group run (proc.c, "fork groups"). */
+void xrl_heapcheck(const char *where)
+{
+    static int on = -1;
+    static volatile LONG reported;
+    if (on < 0) { char v[4]; on = GetEnvironmentVariableA("XRL_HEAPCHECK", v, sizeof v) && v[0] == '1'; }
+    if (!on || reported) return;
+    if (!HeapValidate(GetProcessHeap(), 0, NULL) && !InterlockedExchange(&reported, 1)) {
+        char line[200];
+        int n = _snprintf_s(line, sizeof line, _TRUNCATE, "[E layer    ] HEAP CORRUPT before/at: %s (tid %lu)\n", where, GetCurrentThreadId());
+        DWORD w; WriteFile(GetStdHandle(STD_ERROR_HANDLE), line, (DWORD)n, &w, NULL);
+    }
+}
+
 int xrl_wait_addr(volatile void *addr, void *cmp, size_t sz, u64 ns)
 {
     int rel = xrl_swap_block();

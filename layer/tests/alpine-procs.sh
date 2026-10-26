@@ -17,6 +17,7 @@ case_() {
     if [ "$rc" = "$erc" ] && [ "$out" = "$want" ]; then echo "  ok   $name"
     else
         echo "  FAIL $name (rc=$rc, want $erc)"; echo "--- got"; printf '%s\n' "$out"; echo "--- want"; printf '%s\n' "$want"; fails=$((fails+1))
+        [ -n "$XRL_KEEP_LOG" ] && printf '%s\n' "$got" > "$XRL_KEEP_LOG"   # the whole log of a failing case
     fi
 }
 
@@ -73,6 +74,22 @@ echo ok
 cat /proc/$p/comm 2>/dev/null | head -1
 grep "^State:" /proc/$p/status | cut -f2 | cut -c1
 kill $p; wait $p 2>/dev/null; true'
+
+case_ "#! scripts are run by execve itself (env, a nested interpreter)" 0 "shebang /tmp/xrl-sb.sh a b
+shebang2 /tmp/xrl-sb2.sh c
+cleaned" 'printf "#!/bin/sh
+echo shebang \$0 \$1 \$2
+" > /tmp/xrl-sb.sh
+printf "#!/tmp/xrl-sb.sh
+" > /tmp/xrl-sb-nested.sh
+printf "#! /bin/sh -e
+echo shebang2 \$0 \$1
+" > /tmp/xrl-sb2.sh
+chmod +x /tmp/xrl-sb.sh /tmp/xrl-sb2.sh /tmp/xrl-sb-nested.sh
+env /tmp/xrl-sb.sh a b
+env /tmp/xrl-sb2.sh c
+rm -f /tmp/xrl-sb.sh /tmp/xrl-sb2.sh /tmp/xrl-sb-nested.sh
+echo cleaned'
 
 echo "TOTAL FAILS=$fails"
 exit $fails

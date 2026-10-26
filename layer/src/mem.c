@@ -2107,6 +2107,7 @@ xrl_msnap *xrl_mem_snapshot(u32 mm, u64 cap_bytes)
     if (!c.fail) sn->data = (u8 *)malloc(sn->dlen ? sn->dlen : 1);
     if (c.fail || !sn->data) { xrl_mem_snap_free(sn); return NULL; }
     for (size_t i = 0; i < sn->nr; i++) memcpy(sn->data + sn->rg[i].off, (const void *)sn->rg[i].s, (size_t)(sn->rg[i].e - sn->rg[i].s));
+    xrl_heapcheck("snapshot taken");
     return sn;
 }
 
@@ -2174,6 +2175,7 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
         if (b) b->cur = sn->brk_cur;
         ReleaseSRWLockExclusive(&g_lock);
     }
+    xrl_heapcheck("snapshot restored");
 }
 
 void xrl_mem_snap_free(xrl_msnap *sn)

@@ -773,6 +773,21 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     case EXCEPTION_IN_PAGE_ERROR: case EXCEPTION_DATATYPE_MISALIGNMENT: case EXCEPTION_FLT_DIVIDE_BY_ZERO:
     case EXCEPTION_FLT_INVALID_OPERATION: case EXCEPTION_INT_OVERFLOW: case EXCEPTION_STACK_OVERFLOW:
         break;
+    case 0xC0000374: case 0xC0000409: {   /* the heap found corruption / a fail-fast: say where, then let it end the process */
+        void *bt[24];
+        USHORT n = RtlCaptureStackBackTrace(0, 24, bt, NULL);
+        emerg("=== %s (0x%08lx) on tid %lu: ===", code == 0xC0000374 ? "HEAP CORRUPTION" : "FAIL FAST", code, GetCurrentThreadId());
+        for (USHORT i = 0; i < n; i++) {
+            HMODULE m = NULL;
+            char nm[MAX_PATH] = "?";
+            if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)bt[i], &m) && m) {
+                GetModuleFileNameA(m, nm, sizeof nm);
+                const char *b2 = strrchr(nm, '\\');
+                emerg("  #%u %s+%llx", i, b2 ? b2 + 1 : nm, (u64)bt[i] - (u64)m);
+            } else emerg("  #%u %p", i, bt[i]);
+        }
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
     default:
         return EXCEPTION_CONTINUE_SEARCH;
     }

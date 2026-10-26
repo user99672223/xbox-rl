@@ -89,7 +89,13 @@ static void proc_free(xrl_proc *p)
 }
 
 void xrl_proc_ref(xrl_proc *p) { InterlockedIncrement(&p->refs); }
-void xrl_proc_put(xrl_proc *p) { if (p && InterlockedDecrement(&p->refs) == 0) proc_free(p); }
+void xrl_proc_put(xrl_proc *p)
+{
+    if (!p) return;
+    LONG n = InterlockedDecrement(&p->refs);
+    if (n < 0) LOGE("proc %d: reference count went to %ld (a reference was dropped twice)", p->pid, n);
+    if (n == 0) proc_free(p);
+}
 
 xrl_proc *xrl_proc_init_get(void) { return G.init_proc; }
 
@@ -292,6 +298,7 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
     xrl_thread *t = NULL;
     slong r = xrl_thread_clone_prepare(p, np, flags, child_stack, tls, resume_pc, &t);
     if (r) { xrl_files_put(np->files); mm_put(np->mm); proc_free(np); return r; }
+    xrl_heapcheck("clone: prepared");
     np->pid = t->tid;
     t->leader = 1;
     np->parent = (flags & LX_CLONE_PARENT) && pp->parent ? pp->parent : pp;
@@ -346,11 +353,13 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
     ReleaseSRWLockExclusive(&g_proc_lock);
     LOGI("%s: pid %d -> new process %d (flags 0x%llx%s)", vfork ? "vfork" : snapshot_fork ? "fork" : "clone", pp->pid, np->pid, flags,
          share_mm ? ", shared mm" : "");
+    xrl_heapcheck("clone: before start");
     xrl_thread_start(t);
     if (grp) {
         /* until the child execs, exits or blocks, the parent has nothing to run on: it takes the baton back then
          * (and its own memory, if the child's image is in the address space) */
         swap_acquire(grp, pp, p);
+        xrl_heapcheck("clone: parent resumed");
     } else if (sync) {
         HANDLE ev = np->vfork_ev;
         WaitForSingleObject(ev, INFINITE);
@@ -530,10 +539,15 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
 {
     if (InterlockedExchange(&p->dying, 1)) return;
     xrl_proc_ref(p);   /* the parent may reap us the moment we are a zombie */
+    xrl_heapcheck("exit: start");
     xrl_proc_kill_threads(p, self && self->proc == p ? self : NULL, 0);
+    xrl_heapcheck("exit: threads killed");
     xrl_files *files = p->files;
     p->files = NULL;
     xrl_files_put(files);
+    xrl_heapcheck("exit: files closed");
+    swap_leave(p);
+    xrl_heapcheck("exit: left the group");   /* before the mm (and the fork group it owns) can go */
     xrl_mm *mm = p->mm;
     p->mm = NULL;
     int pd[64], npd = 0;
@@ -542,6 +556,7 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
     p->wstatus = wstatus;
     p->state = XP_ZOMBIE;
     xrl_proc *par = p->parent;
+    if (par) xrl_proc_ref(par);   /* it may end (and be reaped) before we have told it: a shell that wait()s returns as soon as we are a zombie */
     int reap = 0;
     if (par && par->state != XP_ZOMBIE) {
         const lx_ksigaction *a = &par->act[LX_SIGCHLD];
@@ -550,17 +565,21 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
     if (reap) proc_unlink(p);
     ReleaseSRWLockExclusive(&g_proc_lock);
     LOGI("proc %d ended (wait status 0x%x)%s", p->pid, wstatus, reap ? ", reaped (SIGCHLD ignored)" : "");
+    xrl_heapcheck("exit: zombie");
     if (mm && InterlockedDecrement(&mm->refs) == 0) mm_free(mm);
-    swap_leave(p);
+    xrl_heapcheck("exit: mm");
     for (int i = 0; i < npd; i++) {   /* children that asked to be told when their parent ends */
         xrl_proc *c = xrl_proc_by_pid(pd[i]);
         if (c) { if (c->pdeathsig) xrl_proc_signal(c, c->pdeathsig, 0); xrl_proc_put(c); }
     }
     xrl_proc_vfork_release(p);
     if (par && !reap) xrl_proc_signal(par, p->exit_signal ? p->exit_signal : LX_SIGCHLD, 0);
+    xrl_proc_put(par);
     xrl_io_notify();
+    xrl_heapcheck("exit: signals");
     if (reap) xrl_proc_put(p);   /* the table's reference; the thread records hold theirs until they are unlinked */
     xrl_proc_put(p);
+    xrl_heapcheck("exit: end");
 }
 
 /* ---------------------------------------------------------------- signals */
@@ -572,10 +591,12 @@ static void proc_stop(xrl_proc *p, int sig)
     if (p->state != XP_RUNNING) { ReleaseSRWLockExclusive(&g_proc_lock); return; }
     p->state = XP_STOPPED; p->stop_sig = sig; p->stop_reported = 0; p->cont_reported = 1;
     xrl_proc *par = p->parent;
+    if (par) xrl_proc_ref(par);   /* it may end before we have told it */
     ReleaseSRWLockExclusive(&g_proc_lock);
     xrl_thread *self = xrl_cur();
     xrl_proc_freeze(p, self && self->proc == p ? NULL : NULL);
     if (par && !(par->act[LX_SIGCHLD].flags & LX_SA_NOCLDSTOP)) xrl_proc_signal(par, LX_SIGCHLD, 0);
+    xrl_proc_put(par);
     xrl_io_notify();
 }
 
@@ -585,9 +606,11 @@ static void proc_continue(xrl_proc *p)
     if (p->state != XP_STOPPED) { ReleaseSRWLockExclusive(&g_proc_lock); return; }
     p->state = XP_RUNNING; p->cont_reported = 0;
     xrl_proc *par = p->parent;
+    if (par) xrl_proc_ref(par);   /* it may end before we have told it */
     ReleaseSRWLockExclusive(&g_proc_lock);
     xrl_proc_thaw(p);
     if (par && !(par->act[LX_SIGCHLD].flags & LX_SA_NOCLDSTOP)) xrl_proc_signal(par, LX_SIGCHLD, 0);
+    xrl_proc_put(par);
     xrl_io_notify();
 }
 
@@ -714,6 +737,7 @@ static slong wait_core(int idtype, int id, int options, int *status, int *code, 
         ReleaseSRWLockExclusive(&g_proc_lock);
         if (res) {
             if (found) xrl_proc_put(found);   /* reaped: the table's reference goes; freed with its last thread record */
+            xrl_heapcheck("wait: reaped");
             return res;
         }
         if (!any) return -LX_ECHILD;

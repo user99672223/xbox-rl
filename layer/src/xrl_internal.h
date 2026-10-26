@@ -43,6 +43,7 @@ BOOL WINAPI TerminateThread(HANDLE hThread, DWORD dwExitCode);
 
 /* ------------------------------------------------------------------ log */
 void xrl_logf(int level, const char *tag, const char *fmt, ...);
+void xrl_heapcheck(const char *where);   /* XRL_HEAPCHECK=1: HeapValidate the process heap, log the first place it is not */
 #define LOGT(...) xrl_logf(0, "layer", __VA_ARGS__)
 #define LOGI(...) xrl_logf(1, "layer", __VA_ARGS__)
 #define LOGW(...) xrl_logf(2, "layer", __VA_ARGS__)
