@@ -860,7 +860,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     xrl_thread *t = xrl_cur();
     slong r;
     int was_guest = xrl_teb_enter_host(t);
-    if (t) t->in_sys++;
+    if (t) { t->in_sys++; t->nsys++; }
     if (g_prof < 0) { char v[4]; g_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
     LARGE_INTEGER t0 = {0}, t1;
     if (g_prof) QueryPerformanceCounter(&t0);

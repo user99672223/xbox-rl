@@ -124,6 +124,13 @@ int main(int argc, char **argv)
     static char trace[16]; if (GetEnvironmentVariableA("XRL_TRACE", trace + 0, 15)) { static char t2[24]; sprintf(t2, "XRL_TRACE=%s", trace); envp[e++] = t2; }
     for (char *s = GetEnvironmentStringsA(); s && *s && e < 63; s += strlen(s) + 1)
         if (!strncmp(s, "XRL_ENV_", 8)) envp[e++] = s + 8;
+    /* the real display for Wine's mode list (win32u, patches/wine/0025): this desktop's mode,
+     * unless XRL_ENV_XRL_DISPLAY gave one */
+    static char disp[48]; DEVMODEA dm; memset(&dm, 0, sizeof dm); dm.dmSize = sizeof dm;
+    if (!GetEnvironmentVariableA("XRL_ENV_XRL_DISPLAY", NULL, 0) && e < 63 && EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
+        sprintf(disp, "XRL_DISPLAY=%lux%lu@%lu", (unsigned long)dm.dmPelsWidth, (unsigned long)dm.dmPelsHeight, (unsigned long)dm.dmDisplayFrequency);
+        envp[e++] = disp;
+    }
     envp[e] = NULL;
 
     xrl_boot_context ctx; memset(&ctx, 0, sizeof ctx);

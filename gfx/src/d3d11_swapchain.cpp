@@ -281,6 +281,28 @@ private:
         return S_OK;
     }
 
+    // Frame pacing numbers, logged every 10 s: frames per second, the average and the worst time
+    // between two Presents, and the time this Present (copy + host Present) took.
+    void Pace(LARGE_INTEGER q0, UINT sync) {
+        LARGE_INTEGER q1; QueryPerformanceCounter(&q1);
+        if (!qf_) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); qf_ = f.QuadPart; win_start_ = q1.QuadPart; }
+        if (last_present_) {
+            int64_t gap = q0.QuadPart - last_present_;
+            if (gap > win_max_gap_) win_max_gap_ = gap;
+        }
+        last_present_ = q0.QuadPart;
+        win_frames_++;
+        win_present_ += q1.QuadPart - q0.QuadPart;
+        int64_t span = q1.QuadPart - win_start_;
+        if (span < 10 * qf_) return;
+        double secs = (double)span / (double)qf_;
+        Log(LOG_INFO, "perf: frames %.1f fps (%llu in %.1f s), worst gap %.1f ms, present %.2f ms avg; %ux%u sync %u; "
+            "%llu frames so far", (double)win_frames_ / secs, (unsigned long long)win_frames_, secs,
+            (double)win_max_gap_ * 1000.0 / (double)qf_, (double)win_present_ * 1000.0 / (double)qf_ / (double)win_frames_,
+            app_.width, app_.height, sync, (unsigned long long)presents_);
+        win_start_ = q1.QuadPart; win_frames_ = 0; win_max_gap_ = 0; win_present_ = 0;
+    }
+
     // Wait until the GPU is done with everything submitted so far (buffers are about to go away).
     HRESULT Drain() {
         if (!ctx_ || !queue_ || !dev12_) return S_OK;
@@ -300,6 +322,7 @@ private:
             return thr;
         }
         std::lock_guard<std::mutex> l(mu_);
+        LARGE_INTEGER q0; QueryPerformanceCounter(&q0);
         UINT idx = host_->GetCurrentBackBufferIndex();
         ID3D11Resource* dst = wrapped_[idx].Get();
         on12_->AcquireWrappedResources(&dst, 1);
@@ -317,9 +340,8 @@ private:
                     (unsigned long)dev12_->GetDeviceRemovedReason());
             return hr;
         }
-        if (presents_++ % 300 == 0)
-            Log(LOG_INFO, "d3d11 swapchain %p: %llu frames presented (sync %u, buffer %u)", static_cast<void*>(this),
-                (unsigned long long)presents_, sync, idx);
+        presents_++;
+        Pace(q0, sync);
         return hr;
     }
 
@@ -380,6 +402,8 @@ private:
     xrl_swapchain_desc app_;
     bool fullscreen_ = false;
     uint64_t presents_ = 0;
+    int64_t qf_ = 0, win_start_ = 0, last_present_ = 0, win_max_gap_ = 0, win_present_ = 0;
+    uint64_t win_frames_ = 0;
     uint64_t tests_ = 0;   // Present(DXGI_PRESENT_TEST) calls (occlusion checks)
 };
 

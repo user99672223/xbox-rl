@@ -79,11 +79,26 @@ struct HostConfig {
     int  linger_seconds  = 5;   // probe build: stay alive this long after the probe
     int  log_level       = 0;   // minimum level written to log.txt
     bool skip_layer      = false;   // full build: run probe + window, do not boot layer
+    // display=auto | off | <w>x<h>[@<hz>]: the console video mode to switch to (display.cpp)
+    std::string display;
 };
 
 // Loads launch.cfg from LocalState (missing file is fine). Logs what it read.
 const HostConfig& load_config();
 const HostConfig& config();
+
+}  // namespace xrl
+
+// ---------------------------------------------------------------------------
+// Display mode  (display.cpp)
+// ---------------------------------------------------------------------------
+namespace xrl {
+
+struct DisplayMode { uint32_t width = 0, height = 0, refresh_hz = 0; };
+// UI thread, after the window exists: picks (and on the console switches to) the output mode
+// per launch.cfg display=; the guest is told about it as XRL_DISPLAY (boot.cpp).
+void display_select();
+DisplayMode display_mode();   // zero until display_select() ran
 
 }  // namespace xrl
 

@@ -17,6 +17,11 @@
 #game_path=/game
 #mem_budget_mb=4096        xrl_boot_context::guest_mem_budget (placeholder default!)
 #skip_layer=0              1 = open the window + run the probe but don't call xrl_layer_boot()
+#display=auto              console video mode: auto = largest up to 2560x1440, then highest refresh up to
+#                          120 Hz (SDR); or <w>x<h>[@<hz>]; off = keep the current one. The guest sees
+#                          it as XRL_DISPLAY (Wine's display + resolution list: patches/wine/0025)
+#host_env=XRL_PERF=10      NAME=value set in the host process (repeatable): the layer's switches, e.g.
+#                          XRL_PERF=<s> (perf: lines in the log, default 10, 0 = off), XRL_PROFILE=1
 # argv= and env= lines are repeatable and ORDERED; if any argv= is present the default argv is
 # replaced entirely (same for env=).
 #argv=/usr/bin/wine64

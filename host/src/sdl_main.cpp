@@ -100,6 +100,7 @@ int sdl_main(int, char**) {
     wi.width = (uint32_t)w; wi.height = (uint32_t)h; wi.valid = wi.core_window != nullptr;
     XLOGI("sdl", "window created: CoreWindow=%p size %dx%d px, driver '%s'", wi.core_window, w, h, SDL_GetCurrentVideoDriver());
     xrl::window_info_set(wi);
+    xrl::display_select();   // the console's output mode (before the boot thread reads it)
 
     SDL_AddEventWatch(WatchAppEvents, nullptr);
     for (int i = 0; i < SDL_NumJoysticks(); ++i) open_pad(i);

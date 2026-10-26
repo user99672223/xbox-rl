@@ -68,6 +68,16 @@ int boot_layer() {
         }
         SetEnvironmentVariableA("XRL_MOUNTS", all.c_str());
     }
+    // the output mode for Wine's display list (win32u, patches/wine/0025), unless env= set one
+    {
+        DisplayMode dm = display_mode();
+        bool given = false;
+        for (const auto& e : g_envp_s) given |= e.rfind("XRL_DISPLAY=", 0) == 0;
+        if (!given && dm.width) {
+            char b[64]; snprintf(b, sizeof b, "XRL_DISPLAY=%ux%u@%u", dm.width, dm.height, dm.refresh_hz ? dm.refresh_hz : 60);
+            g_envp_s.push_back(b);
+        }
+    }
     g_argv_p.clear(); g_envp_p.clear();
     for (auto& s : g_argv_s) g_argv_p.push_back(s.c_str());
     for (auto& s : g_envp_s) g_envp_p.push_back(s.c_str());
