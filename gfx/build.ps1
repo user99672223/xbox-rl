@@ -19,7 +19,7 @@ if ($Desktop) {
 }
 if ($Uwp) {
     cmake -S $here -B "$here\build-uwp" -G "Visual Studio 17 2022" -A x64 `
-          -DCMAKE_SYSTEM_NAME=WindowsStore -DCMAKE_SYSTEM_VERSION=10.0.26100.0
+          "-DCMAKE_SYSTEM_NAME=WindowsStore" "-DCMAKE_SYSTEM_VERSION=10.0.26100.0"   # quoted: PowerShell splits 10.0.x at the dot
     cmake --build "$here\build-uwp" --config $Config
     if ($LASTEXITCODE) { throw "uwp build failed" }
 }

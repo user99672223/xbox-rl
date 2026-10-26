@@ -41,7 +41,9 @@
 // Layout guards for the seams we mirror/consume (x64).
 static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_host_services) == 48,
               "xrl_gfx_host_services layout drifted from host/src/gfx_seam.h");
-static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_ops) == 56, "xrl_gfx_ops (ABI v1) layout changed");
+// v2 appended four slots after release (56 -> 88); v1 members keep their offsets.
+static_assert(sizeof(void*) != 8 || sizeof(xrl_gfx_ops) == 88, "xrl_gfx_ops (ABI v2) layout changed");
+static_assert(sizeof(void*) != 8 || offsetof(xrl_gfx_ops, release) == 48, "xrl_gfx_ops v1 prefix moved");
 
 namespace xrl {
 
@@ -113,6 +115,8 @@ HRESULT GetFactory(ComPtr<IDXGIFactory4>& out);
 // Adapter picked + device created at FL 11_0 (gfx-thread side).
 HRESULT CreateDeviceImpl(ComPtr<ID3D12Device>& out, DXGI_ADAPTER_DESC1* desc_out);
 xrl_status DeviceCreateOp(xrl_handle* out_device);
+// ABI v2 get_adapter_info: identity + max FL of the adapter d3d12_create_device uses.
+xrl_status AdapterInfoOp(xrl_adapter_info* out);
 std::string Narrow(const wchar_t* w);
 
 // Wait for the queue to drain via a fresh fence. S_OK, or failure / timeout /

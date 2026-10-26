@@ -122,6 +122,50 @@ xrl_status DeviceCreateOp(xrl_handle* out_device) {
     return XRL_OK;
 }
 
+xrl_status AdapterInfoOp(xrl_adapter_info* out) {
+    if (!out) return XRL_ERR_GENERIC;
+    SetLastHr(S_OK);
+    // D3D12 devices are per-adapter singletons, so after the guest's first
+    // d3d12_create_device this returns the same device cheaply.
+    struct Res {
+        xrl_adapter_info info{};
+    };
+    auto res = std::make_shared<Res>();
+    HRESULT hr = RunOnGfxThread("get_adapter_info", [res]() -> HRESULT {
+        ComPtr<ID3D12Device> dev;
+        DXGI_ADAPTER_DESC1 d{};
+        HRESULT h = CreateDeviceImpl(dev, &d);
+        if (FAILED(h)) return h;
+        xrl_adapter_info& i = res->info;
+        i.vendor_id = d.VendorId;
+        i.device_id = d.DeviceId;
+        i.subsys_id = d.SubSysId;
+        i.revision = d.Revision;
+        i.dedicated_video_memory = d.DedicatedVideoMemory;
+        i.dedicated_system_memory = d.DedicatedSystemMemory;
+        i.shared_system_memory = d.SharedSystemMemory;
+        i.adapter_luid = (uint64_t)d.AdapterLuid.LowPart | ((uint64_t)(uint32_t)d.AdapterLuid.HighPart << 32);
+        static_assert(sizeof(WCHAR) == sizeof(uint16_t), "UTF-16");
+        size_t n = 0;
+        for (; n + 1 < _countof(i.description) && n < _countof(d.Description) && d.Description[n]; n++)
+            i.description[n] = (uint16_t)d.Description[n];
+        i.description[n] = 0;
+        static const D3D_FEATURE_LEVEL lv[] = {D3D_FEATURE_LEVEL_12_2, D3D_FEATURE_LEVEL_12_1, D3D_FEATURE_LEVEL_12_0,
+                                               D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+        D3D12_FEATURE_DATA_FEATURE_LEVELS fl{};
+        fl.NumFeatureLevels = _countof(lv);
+        fl.pFeatureLevelsRequested = lv;
+        i.max_feature_level = SUCCEEDED(dev->CheckFeatureSupport(D3D12_FEATURE_FEATURE_LEVELS, &fl, sizeof fl))
+                                  ? (uint32_t)fl.MaxSupportedFeatureLevel
+                                  : (uint32_t)D3D_FEATURE_LEVEL_11_0;
+        return S_OK;
+    });
+    if (FAILED(hr)) return Fail(hr, "get_adapter_info");
+    *out = res->info;
+    out->struct_size = sizeof *out;
+    return XRL_OK;
+}
+
 HRESULT WaitQueueIdle(ID3D12Device* dev, ID3D12CommandQueue* q, DWORD timeout_ms) {
     ComPtr<ID3D12Fence> f;
     HRESULT hr = dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&f));

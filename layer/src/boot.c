@@ -43,8 +43,10 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
 {
     static volatile LONG booted;
     if (!ctx || ctx->struct_size < offsetof(xrl_boot_context, guest_mem_budget) + sizeof(uint64_t)) return XRL_ERR_GENERIC;
-    if (ctx->abi_version != XRL_ABI_VERSION) {
-        if (ctx->log) ctx->log(3, "layer", "xrl_layer_boot: ABI version mismatch");
+    /* v2 is append-only over v1: accept both; v2 fields are read only when
+     * struct_size covers them. */
+    if (ctx->abi_version < 1 || ctx->abi_version > XRL_ABI_VERSION) {
+        if (ctx->log) ctx->log(3, "layer", "xrl_layer_boot: unsupported ABI version");
         return XRL_ERR_GENERIC;
     }
     if (!ctx->vfs_root || !ctx->argv || !ctx->argv[0] || !ctx->gfx || !ctx->audio || !ctx->input) {
@@ -57,14 +59,19 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     }
 
     memset(&G, 0, sizeof G);
-    G.ctx = *ctx;
+    /* copy only what the host's struct actually has (a v1 host is smaller) */
+    memcpy(&G.ctx, ctx, ctx->struct_size < sizeof G.ctx ? ctx->struct_size : sizeof G.ctx);
     G.ctx.struct_size = sizeof G.ctx;
     G.vfs_root = NULL;
     G.prefix_path = dupstr(ctx->prefix_path);
     G.game_path = dupstr(ctx->game_path);
     G.argv = dup_strv(ctx->argv, &G.argc);
     G.envp = dup_strv(ctx->envp, &G.envc);
-    G.exec_path = _strdup(G.argv[0]);
+    {
+        const char *ep = NULL;
+        if (ctx->struct_size >= offsetof(xrl_boot_context, exec_path) + sizeof(ctx->exec_path)) ep = ctx->exec_path;
+        G.exec_path = _strdup(ep && *ep ? ep : G.argv[0]);
+    }
     G.mem_budget = ctx->guest_mem_budget;
     G.exit_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     InitializeSRWLock(&G.cwd_lock);

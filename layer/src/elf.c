@@ -201,6 +201,67 @@ static void resolve_imports(const loaded *L)
     }
 }
 
+/* Find a *defined* dynsym in a mapped image through its PT_DYNAMIC segment
+ * (DT_SYMTAB/DT_STRTAB, symbol count from DT_HASH or DT_GNU_HASH). Unlike
+ * find_symbol() this works on stripped images, which is what we ship. */
+#define DT_HASH 4
+#define DT_GNU_HASH 0x6ffffef5
+static u64 dyn_find_symbol(const loaded *L, const char *want)
+{
+    for (int i = 0; i < L->eh.phnum; i++) {
+        if (L->ph[i].type != PT_DYNAMIC) continue;
+        u64 dyn_va = L->ph[i].vaddr + L->bias;
+        u64 symtab = 0, strtab = 0, hash = 0, gnuhash = 0;
+        for (Dyn *d = (Dyn *)dyn_va; d->tag != DT_NULL; d++) {
+            switch (d->tag) {
+            case DT_SYMTAB: symtab = d->val; break;
+            case DT_STRTAB: strtab = d->val; break;
+            case DT_HASH: hash = d->val; break;
+            case DT_GNU_HASH: gnuhash = d->val; break;
+            }
+        }
+        if (!symtab || !strtab) return 0;
+        if (L->type == ET_DYN) {
+            symtab += L->bias; strtab += L->bias;
+            if (hash) hash += L->bias;
+            if (gnuhash) gnuhash += L->bias;
+        }
+        u64 nsyms = 0;
+        if (hash) {
+            nsyms = ((const u32 *)hash)[1];                 /* nchain */
+        } else if (gnuhash) {
+            const u32 *h = (const u32 *)gnuhash;
+            u32 nbuckets = h[0], symoff = h[1], bloom = h[2];
+            const u32 *buckets = (const u32 *)(gnuhash + 16 + (u64)bloom * 8);
+            const u32 *chain = buckets + nbuckets;
+            u32 last = 0;
+            for (u32 b = 0; b < nbuckets; b++) if (buckets[b] > last) last = buckets[b];
+            if (last >= symoff) { while (!(chain[last - symoff] & 1)) last++; nsyms = (u64)last + 1; }
+            else nsyms = symoff;
+        }
+        if (!nsyms || nsyms > (1u << 20)) return 0;
+        for (u64 k = 1; k < nsyms; k++) {
+            const Sym *s = (const Sym *)(symtab + k * sizeof(Sym));
+            if (!s->shndx) continue;
+            if (!strcmp((const char *)(strtab + s->name), want))
+                return L->type == ET_DYN ? s->value + L->bias : s->value;
+        }
+    }
+    return 0;
+}
+
+/* B's patched musl reads the gateway from an 8-byte data symbol `__xrl_gateway`
+ * that the loader fills before any guest instruction runs (musl's own start-up
+ * issues syscalls). Fill it in every image that defines it. */
+static int install_gateway(const loaded *L, const char *what)
+{
+    u64 slot = dyn_find_symbol(L, "__xrl_gateway");
+    if (!slot) return 0;
+    *(u64 *)slot = (u64)(uintptr_t)&xrl_syscall;
+    LOGI("elf: __xrl_gateway in %s at %llx -> xrl_syscall", what, slot);
+    return 1;
+}
+
 /* find an exported dynsym by name via section headers (works if not stripped) */
 static u64 find_symbol(const loaded *L, const char *want)
 {
@@ -244,11 +305,13 @@ int xrl_elf_load(const char *gpath, xrl_elf_image *out)
         if (load_one(main.interp, 1, &interp)) return -1;
         out->base = interp.bias;
         out->entry = interp.entry;
+        install_gateway(&interp, "interpreter");
         free(interp.ph);
         xrl_fd_close(interp.fd);
     } else {
         resolve_imports(&main);
     }
+    install_gateway(&main, "main image");
     out->exports_xrl_wineserver_main = find_symbol(&main, "xrl_wineserver_main");
     free(main.ph);
     xrl_fd_close(main.fd);

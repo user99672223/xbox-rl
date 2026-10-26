@@ -178,7 +178,7 @@ int xrl_threads_start_fn(u64 fn, const char *name)
 }
 
 /* ----------------------------------------------------------------- clone */
-slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls)
+slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc)
 {
     xrl_thread *p = xrl_cur();
     if (!p) return -LX_ENOSYS;
@@ -194,6 +194,12 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls)
     if (!t) return -LX_ENOMEM;
     const u64 *fr = (const u64 *)p->frame;
     for (int i = 0; i < 7; i++) t->resume[i] = fr[i];
+    /* B's musl passes an explicit child entry (7th arg): a call cannot return
+     * twice, so the child starts at resume_pc instead of "returning" from it. */
+    if (resume_pc) {
+        if (!child_stack) { thread_unlink(t); free(t); return -LX_EINVAL; }
+        t->resume[6] = resume_pc;
+    }
     t->child_rsp = child_stack ? child_stack : (p->frame + 56);
     t->guest_tp = (flags & LX_CLONE_SETTLS) ? tls : p->guest_tp;
     t->sigmask = p->sigmask;
@@ -230,8 +236,11 @@ slong xrl_do_exit(int code, int group)
         InterlockedExchange(&G.exit_code, code);
         InterlockedExchange(&G.exiting, 1);
     }
-    xrl_wake_ctid(t);
+    /* Linux order: musl's __unmapself unmaps the stack before exit, and the
+     * CLEARTID wake happens in exit, so a joiner never sees the old mapping.
+     * If ctid lived inside the unmapped region the store just fails, as on Linux. */
     if (t->defer_unmap_len) { xrl_mem_munmap(t->defer_unmap_addr, t->defer_unmap_len); t->defer_unmap_len = 0; }
+    xrl_wake_ctid(t);
     if (t->timer) CloseHandle(t->timer);
     thread_unlink(t);
     xrl_thread_unbind();

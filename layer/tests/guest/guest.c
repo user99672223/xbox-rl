@@ -303,6 +303,55 @@ static void test_misc(void)
     c->log(1, "guest", "log via host stub");
 }
 
+/* ---- ABI v2 / B-contract tests ------------------------------------------- */
+/* long xclone_rpc(long flags, void *stack, void *ptid, void *ctid, void *tls):
+ * models B's musl __clone: the child starts at an explicit resume_pc (7th arg)
+ * with rsp = stack; fn/arg/map_base/map_size are pre-placed on that stack, and
+ * the child exits with exit(code, map_base, map_size) like musl __unmapself. */
+long xclone_rpc(long flags, void *stack, void *ptid, void *ctid, void *tls);
+__asm__(
+".text\n.globl xclone_rpc\nxclone_rpc:\n"
+"  mov %r8,%r9\n  mov %rcx,%r8\n  mov %rdx,%rcx\n  mov %rsi,%rdx\n  mov %rdi,%rsi\n"
+"  mov $56,%edi\n"
+"  lea xrl_child_entry(%rip),%rax\n"
+"  mov xsc(%rip),%r10\n"
+"  push %rax\n"                       /* a6 = resume_pc */
+"  call *%r10\n"
+"  add $8,%rsp\n"
+"  ret\n"
+"xrl_child_entry:\n"
+"  mov 8(%rsp),%rdi\n"
+"  call *(%rsp)\n"
+"  mov %eax,%esi\n  mov 16(%rsp),%rdx\n  mov 24(%rsp),%rcx\n"
+"  mov $60,%edi\n  mov xsc(%rip),%rax\n  push $0\n  call *%rax\n  ud2\n");
+
+static int rpc_thr(void *arg) { *(volatile int *)arg = 42; return 7; }
+
+static void test_v2(void)
+{
+    out("abi v2 / wine contract:\n");
+    struct gctx2 { u32 sz, magic, abi, flags; u64 sysc, tlsoff; u64 log, g, a, i, budget; } *c = (void *)xctx;
+    CHECK(sc1(0x10001, 0) == (long)c->g && c->g, "pseudo-syscall GET_GFX_OPS == ctx gfx table");
+    CHECK(sc1(0x10002, 0) == (long)c->a && sc1(0x10003, 0) == (long)c->i, "pseudo-syscalls GET_AUDIO/INPUT_OPS");
+    CHECK(sc1(0x10004, 0) == (long)c->log && c->log, "pseudo-syscall GET_LOG_FN");
+    CHECK(sc1(0x10005, 0) == -38, "pseudo-syscall out of range -> -ENOSYS");
+
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+    u64 mlen = 256 * 1024;
+    u8 *stk = mmap_anon(mlen, 3);
+    struct tls *t = mmap_anon(4096, 3); t->self = t;
+    u64 *s = (u64 *)(stk + mlen - 64);
+    volatile int hit = 0, ctid = -1, ptid = 0;
+    s[0] = (u64)rpc_thr; s[1] = (u64)&hit; s[2] = (u64)stk; s[3] = mlen;
+    long tid = xclone_rpc(flags, s, (void *)&ptid, (void *)&ctid, t);
+    CHECK(tid > 0 && ptid == tid, "clone with resume_pc starts the child (PARENT_SETTID)");
+    wait_eq(&ctid, 0);
+    CHECK(hit == 42, "child ran fn(arg) from resume_pc");
+    u8 vec[1];
+    CHECK(sc3(27, stk, 4096, vec) == -12, "exit(code, map_base, map_size) unmapped the child's stack");
+    CHECK(sc3(27, t, 4096, vec) == 0, "unrelated mapping (child TLS) left intact");
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -324,6 +373,7 @@ void cstart(u64 *sp)
     test_mem();
     test_fs();
     test_threads();
+    test_v2();
     outn("TOTAL FAILS", fails);
     sc1(231, fails);
     for (;;) {}

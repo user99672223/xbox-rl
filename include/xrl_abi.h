@@ -3,28 +3,45 @@
  *
  * This header is the FROZEN seam between the four workstreams. It is owned by
  * the integrator (top level), not by any single subagent. Changing anything in
- * here is a cross-workstream event: it must be discussed, versioned via
- * XRL_ABI_VERSION, and recorded in docs/decisions.md.
+ * here is a cross-workstream event: it must be versioned via XRL_ABI_VERSION
+ * and recorded in docs/decisions.md. Changes are APPEND-ONLY: existing struct
+ * members never move, new ones go at the end, and every table carries
+ * struct_size so a reader can tell which members the writer knew about.
  *
  * Three seams live here:
  *
  *   1. The syscall gateway (wine/ -> layer/). musl's __syscall and Wine's few
  *      raw syscall sites are patched to call xrl_syscall() instead of emitting
  *      a `syscall` instruction. The binary therefore contains no syscall
- *      instructions and runs native on the locked-down Windows host.
+ *      instructions and runs native on the locked-down Windows host. The
+ *      non-1:1 gateway contracts (clone, exit, rt_sigreturn, __xrl_gateway)
+ *      are specified in docs/syscall-abi.md.
  *
  *   2. The boot/loader entry (host/ -> layer/). The UWP host hands the layer a
  *      fully-populated boot context and asks it to load the ELF image and run.
  *
  *   3. The host op-table (wine/ -> host/ + gfx/). Wine's builtin d3d12/dxgi/
  *      d3d11/xaudio2/xinput DLLs forward to native Xbox D3D12/XAudio2/
- *      Windows.Gaming.Input through this vtable, which the host installs before
- *      the guest starts. The Wine side never touches a WinRT or D3D type
- *      directly; everything crosses as opaque handles + plain C.
+ *      Windows.Gaming.Input through these vtables. The Wine side never touches
+ *      a WinRT or D3D *header*; it gets opaque handles and plain C tables.
  *
- * Calling convention for every function pointer and entry point here is the
- * platform C ABI (System V on the unix side as Wine sees it; the layer owns the
- * thunk to the host's native convention). Everything is extern "C".
+ * CALLING CONVENTIONS (v2 — the question all four workstreams raised):
+ *   - Every function pointer in xrl_gfx_ops / xrl_audio_ops / xrl_input_ops and
+ *     xrl_log_fn is a NATIVE host function: Microsoft x64 ABI, expects the host
+ *     TEB in %gs and a host-valid stack. The host fills the tables with these.
+ *   - Guest (SysV) code never calls them directly. It obtains guest-callable
+ *     copies through the pseudo-syscalls below; each slot in a copy is a
+ *     layer-generated SysV->MS-x64 stub that moves to the host stack and makes
+ *     the native call. Constraint the stubs rely on: integer/pointer arguments
+ *     only, at most 8 per function. Keep it that way when appending ops.
+ *   - xrl_log_fn must be thread-safe: it is called from every guest thread.
+ *   - HANDLES: an xrl_handle that names a COM object (device, queue, swapchain,
+ *     resource, XAudio2 engine/voice) IS the raw native interface pointer
+ *     (ID3D12Device*, IDXGISwapChain1*, ...). Wine hands it to the game, which
+ *     calls COM methods on it (MS-x64, from PE code). Making those calls safe
+ *     from guest threads is the layer's job (GS/TEB state, see
+ *     docs/decisions.md "GS/TEB"). Wine never wraps them except where noted
+ *     (the D3D11 swapchain buffer path).
  */
 #ifndef XRL_ABI_H
 #define XRL_ABI_H
@@ -36,7 +53,7 @@
 extern "C" {
 #endif
 
-#define XRL_ABI_VERSION 1u
+#define XRL_ABI_VERSION 2u
 
 /* ------------------------------------------------------------------ *
  * Seam 1: the syscall gateway  (wine/ -> layer/)
@@ -44,27 +61,36 @@ extern "C" {
 
 /*
  * The one entry every patched syscall site funnels through. `nr` is a Linux
- * x86-64 syscall number (see docs/syscall-abi.md for the frozen subset the
- * layer actually implements). Arguments are passed as 64-bit values; unused
- * trailing arguments are ignored by the callee.
+ * x86-64 syscall number (see docs/syscall-abi.md for the subset the layer
+ * implements) or one of the XRL pseudo-syscalls below. Arguments are 64-bit;
+ * a6 is the 7th C argument (on the stack in SysV) and is always read — every
+ * patched musl stub zeroes it when unused.
  *
- * Return value follows the Linux kernel convention, NOT glibc/musl: success is
- * a non-negative value (or a pointer cast to long); failure is the negated
- * errno in the range [-4095, -1]. The musl __syscall shim that B patches in
- * returns this value verbatim, so musl's own errno translation keeps working
- * unchanged. The layer must never set a Windows last-error or throw across
- * this boundary.
+ * Return value follows the Linux kernel convention, NOT libc: success is a
+ * non-negative value (or a pointer); failure is the negated errno in
+ * [-4095, -1]. musl's patched __syscall returns it verbatim.
  *
- * This call may block (futex, read, poll, wineserver round-trip). It is
- * reentrant and thread-safe: it is called from every guest thread.
+ * int64_t, not long: MSVC's long is 32-bit (v1 bug, fixed in v2). On the SysV
+ * side int64_t is long, so the guest-visible signature is unchanged.
+ *
+ * May block (futex, read, poll). Reentrant and thread-safe.
  */
-long xrl_syscall(long nr, long a1, long a2, long a3, long a4, long a5, long a6);
+int64_t xrl_syscall(int64_t nr, int64_t a1, int64_t a2, int64_t a3,
+                    int64_t a4, int64_t a5, int64_t a6);
 
 /*
- * Linux errno values the layer returns (negated) across xrl_syscall. Only the
- * ones the implemented subset can produce are enumerated; keep in sync with
- * docs/syscall-abi.md. Defined here so B and C agree on the numbers without
- * pulling in a Linux <errno.h>.
+ * Pseudo-syscalls (v2), outside the Linux number space, answered inside
+ * xrl_syscall. Each returns a pointer to a guest-callable (SysV-stubbed) copy
+ * of the host table, or -ENOSYS if the host provides none. struct_size in the
+ * returned table is the host's. Used by wine's dlls/xrlhost.
+ */
+#define XRL_SYS_GET_GFX_OPS    0x10001
+#define XRL_SYS_GET_AUDIO_OPS  0x10002
+#define XRL_SYS_GET_INPUT_OPS  0x10003
+#define XRL_SYS_GET_LOG_FN     0x10004
+
+/*
+ * Linux errno values the layer returns (negated) across xrl_syscall.
  */
 enum {
     XRL_EPERM   = 1,   XRL_ENOENT  = 2,   XRL_ESRCH   = 3,   XRL_EINTR   = 4,
@@ -78,44 +104,43 @@ enum {
 
 /* ------------------------------------------------------------------ *
  * Seam 3: the host op-table  (wine/ -> host/ + gfx/)
- *
- * Declared before the boot context because the boot context carries a pointer
- * to it. Handles are opaque on the Wine side: a d3d12_device is really a native
- * ID3D12Device*, but B only ever sees xrl_handle.
  * ------------------------------------------------------------------ */
 
 typedef uint64_t xrl_handle;          /* opaque; 0 means null/invalid        */
 #define XRL_INVALID_HANDLE ((xrl_handle)0)
 
-/* Result codes for host ops. 0 == success; negative == failure. These are NOT
- * HRESULTs; the host maps native HRESULTs to these so the Wine side needs no
- * Windows headers. On failure the Wine DLL synthesizes the matching DXGI/
- * HRESULT for the guest. */
+/* Result codes for host ops. 0 == success; negative == failure. Not HRESULTs:
+ * the host maps native HRESULTs to these; the precise HRESULT of the last
+ * failing gfx call is available via xrl_gfx_ops.last_hresult (v2). */
 typedef int32_t xrl_status;
-#define XRL_OK            ((xrl_status)0)
-#define XRL_ERR_GENERIC   ((xrl_status)-1)
-#define XRL_ERR_NOTAVAIL  ((xrl_status)-2)   /* feature absent on this console */
+#define XRL_OK             ((xrl_status)0)
+#define XRL_ERR_GENERIC    ((xrl_status)-1)
+#define XRL_ERR_NOTAVAIL   ((xrl_status)-2)   /* feature absent on this console */
 #define XRL_ERR_DEVICELOST ((xrl_status)-3)
 
+/* v2: adapter identity for Wine's dxgi (IDXGIAdapter::GetDesc etc.). */
+typedef struct xrl_adapter_info {
+    uint32_t struct_size;             /* sizeof(xrl_adapter_info)             */
+    uint32_t vendor_id, device_id, subsys_id, revision;
+    uint32_t max_feature_level;       /* D3D_FEATURE_LEVEL, e.g. 0xb000 = 11_0 */
+    uint64_t dedicated_video_memory;  /* bytes                                */
+    uint64_t dedicated_system_memory;
+    uint64_t shared_system_memory;
+    uint64_t adapter_luid;            /* LowPart | ((uint64_t)HighPart << 32) */
+    uint16_t description[128];        /* UTF-16, NUL-terminated               */
+} xrl_adapter_info;
+
 /*
- * Graphics forwarding. The host owns the CoreWindow and the native D3D12
- * device + swapchain (created with CreateSwapChainForCoreWindow on the host's
- * UI thread — see decisions.md: D3D11CreateDevice on the UI thread hangs on
- * Xbox, so device creation is marshalled to the right thread by the host).
- *
- * Wine's dxgi/d3d12 builtin calls create_device() once, then drives the native
- * device through the returned handle. d3d11.dll uses d3d11on12_create() which
- * wraps the SAME d3d12 device (shared queue) per the D3D11On12 contract.
+ * Graphics forwarding. The host owns the CoreWindow and creates devices and
+ * swapchains on its gfx thread (D3D creation on the Xbox UI thread hangs).
+ * The guest creates its own direct command queue on the device (a COM call)
+ * and passes that queue to create_swapchain_for_corewindow and
+ * d3d11on12_create; queue must be non-NULL.
  */
 typedef struct xrl_gfx_ops {
     uint32_t struct_size;             /* sizeof(xrl_gfx_ops) for versioning   */
 
-    /* Native D3D12 device bound to the Xbox adapter. out_device receives an
-     * opaque handle wrapping ID3D12Device. */
     xrl_status (*d3d12_create_device)(xrl_handle *out_device);
-
-    /* Create the flip-model swapchain against the host CoreWindow. `queue` is
-     * the guest's direct command queue handle. width/height 0 = use window. */
     xrl_status (*create_swapchain_for_corewindow)(xrl_handle device,
                                                   xrl_handle queue,
                                                   uint32_t width,
@@ -127,17 +152,23 @@ typedef struct xrl_gfx_ops {
                                        xrl_handle *out_resource);
     xrl_status (*swapchain_present)(xrl_handle swapchain, uint32_t sync_interval,
                                     uint32_t flags);
-
-    /* D3D11On12 wrapper over the existing d3d12 device/queue. Only reached if
-     * the native D3D11On12 path is viable; otherwise the host leaves this NULL
-     * and the Wine side falls back to DXVK->Dozen (see gfx/ branch). */
+    /* NULL when D3D11On12 is unavailable (host preflight failed). */
     xrl_status (*d3d11on12_create)(xrl_handle d3d12_device,
                                    xrl_handle d3d12_queue,
                                    xrl_handle *out_d3d11_device,
                                    xrl_handle *out_d3d11_context);
-
-    /* Generic COM-style release for any handle this table produced. */
     void       (*release)(xrl_handle h);
+
+    /* ---- v2 (append-only; check struct_size before use) ---- */
+    xrl_status (*swapchain_get_current_index)(xrl_handle swapchain,
+                                              uint32_t *out_index);
+    /* 0 = keep current value for each argument. Release all buffer refs first. */
+    xrl_status (*swapchain_resize)(xrl_handle swapchain, uint32_t buffer_count,
+                                   uint32_t width, uint32_t height,
+                                   uint32_t dxgi_format);
+    /* HRESULT behind the most recent failing gfx op on THIS thread; 0 if none. */
+    int32_t    (*last_hresult)(void);
+    xrl_status (*get_adapter_info)(xrl_adapter_info *out);
 } xrl_gfx_ops;
 
 /* Audio forwarding -> native XAudio2 (xaudio2_9.dll on the console). */
@@ -147,18 +178,26 @@ typedef struct xrl_audio_ops {
     xrl_status (*create_mastering_voice)(xrl_handle xaudio2, uint32_t channels,
                                          uint32_t sample_rate,
                                          xrl_handle *out_voice);
+    /* bits_per_sample 32 means IEEE float; 16 means PCM int16. */
     xrl_status (*create_source_voice)(xrl_handle xaudio2,
                                       uint32_t channels, uint32_t sample_rate,
                                       uint32_t bits_per_sample,
                                       xrl_handle *out_voice);
+    /* flags: 0, or XRL_AUDIO_END_OF_STREAM. The host copies `data`. */
     xrl_status (*voice_submit_buffer)(xrl_handle voice, const void *data,
                                       uint32_t bytes, uint32_t flags);
     xrl_status (*voice_start)(xrl_handle voice);
     xrl_status (*voice_stop)(xrl_handle voice);
     void       (*release)(xrl_handle h);
-} xrl_audio_ops;
 
-/* Input forwarding -> native Windows.Gaming.Input (+ SDL WinRT keyboard). */
+    /* ---- v2 ---- */
+    /* Pacing for a WASAPI-style driver: frames consumed and buffers in flight. */
+    xrl_status (*voice_get_state)(xrl_handle voice, uint64_t *samples_played,
+                                  uint32_t *buffers_queued);
+} xrl_audio_ops;
+#define XRL_AUDIO_END_OF_STREAM 0x40u   /* == XAUDIO2_END_OF_STREAM */
+
+/* Input forwarding -> native Windows.Gaming.Input. Keyboard/mouse: not yet. */
 typedef struct xrl_pad_state {
     uint32_t buttons;        /* XINPUT-compatible button bitmask              */
     uint8_t  left_trigger;
@@ -170,8 +209,7 @@ typedef struct xrl_pad_state {
 
 typedef struct xrl_input_ops {
     uint32_t struct_size;
-    /* Poll gamepad `slot` (0..3). Returns XRL_OK and fills `out` if present,
-     * XRL_ERR_NOTAVAIL if that slot is empty. */
+    /* Poll gamepad `slot` (0..3): XRL_OK + state, or XRL_ERR_NOTAVAIL if empty. */
     xrl_status (*get_pad_state)(uint32_t slot, xrl_pad_state *out);
     xrl_status (*set_pad_vibration)(uint32_t slot, uint16_t left_motor,
                                     uint16_t right_motor);
@@ -182,54 +220,54 @@ typedef struct xrl_input_ops {
  * ------------------------------------------------------------------ */
 
 /*
- * The host logging callback. The layer and the Wine side both log through this
- * so everything lands in LocalState/log.txt in order. level: 0=trace 1=info
- * 2=warn 3=error. `msg` is a NUL-terminated UTF-8 string already formatted.
+ * Host logging callback; everything lands in LocalState/log.txt in order.
+ * level: 0=trace 1=info 2=warn 3=error. `msg` is formatted UTF-8.
+ * MUST be thread-safe.
  */
 typedef void (*xrl_log_fn)(int level, const char *tag, const char *msg);
 
 typedef struct xrl_boot_context {
     uint32_t struct_size;             /* sizeof(xrl_boot_context)             */
-    uint32_t abi_version;             /* must equal XRL_ABI_VERSION           */
+    uint32_t abi_version;             /* XRL_ABI_VERSION the host built with  */
 
-    /* Filesystem roots, UTF-8, host (Win32) paths. The VFS maps the guest's
-     * unix tree onto these. vfs_root is writable LocalState; it holds the
-     * pre-baked wine prefix, /tmp, and the guest's view of "C:". */
-    const char *vfs_root;             /* e.g. <LocalState>\\rootfs            */
-    const char *prefix_path;          /* guest path to the wine prefix (/prefix) */
-    const char *game_path;            /* guest path to the game install        */
+    /* Filesystem roots, UTF-8. vfs_root is a host (Win32) path under writable
+     * LocalState; prefix_path/game_path are guest paths inside it. */
+    const char *vfs_root;
+    const char *prefix_path;
+    const char *game_path;
 
-    /* argv/envp handed to the guest's ELF entry (the wine loader). Arrays are
-     * NULL-terminated. This is where "RocketLeague.exe -nocrashdialog ..." and
-     * the anti-cheat-off launch option are passed. */
+    /* argv/envp for the guest, NULL-terminated. argv[0] is the guest path of
+     * the ELF to load unless exec_path (v2) is set. */
     const char *const *argv;
     const char *const *envp;
 
-    /* Services the host provides to the layer + Wine side. */
     xrl_log_fn            log;
     const xrl_gfx_ops    *gfx;        /* never NULL                            */
     const xrl_audio_ops  *audio;      /* never NULL                            */
     const xrl_input_ops  *input;      /* never NULL                            */
 
-    /* Memory budget, bytes. The console reserves a large VA range at launch;
-     * the layer must keep its ELF image, heaps and mmap arena inside this.
-     * See docs/decisions.md on the address-space hole. */
+    /* COMMITTED-memory budget, bytes. Measured on the Series S (Game bucket):
+     * commits above ~4.5 GiB fail with ERROR_COMMITMENT_LIMIT, while reserving
+     * address space succeeds up to 1 TiB. The layer reserves freely and keeps
+     * commit under this budget. */
     uint64_t guest_mem_budget;
+
+    /* ---- v2 ---- */
+    /* Guest path of the ELF to load; NULL = argv[0]. Lets argv[0] be what the
+     * guest should see (e.g. "wine64") independent of the file loaded. */
+    const char *exec_path;
 } xrl_boot_context;
 
 /*
- * The layer's single entry point, called by the host after it has installed
- * the op-tables and populated the boot context. It maps the ELF (Blink loader),
- * wires xrl_syscall, starts wineserver-as-thread, and transfers control to the
- * guest. Returns the guest's process exit code, or a negative xrl_status if the
- * image could not be brought up. Blocks until the guest exits.
+ * The layer's single entry point. Maps the ELF, wires xrl_syscall, starts the
+ * guest. Returns the guest's exit code, or a negative xrl_status if the image
+ * could not be brought up. Blocks until the guest exits. Single-shot: call at
+ * most once per process. Accepts abi_version 1 or 2 (reads v2 fields only when
+ * struct_size covers them).
  */
 int xrl_layer_boot(const xrl_boot_context *ctx);
 
-/*
- * Optional: ask a running layer to begin orderly shutdown (e.g. the host's
- * CoreApplication Suspending handler). Safe to call from another thread.
- */
+/* Ask a running layer to begin orderly shutdown. Safe from any thread. */
 void xrl_layer_request_exit(int exit_code);
 
 #ifdef __cplusplus

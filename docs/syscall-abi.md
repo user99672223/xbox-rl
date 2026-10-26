@@ -69,3 +69,37 @@ the final shape here once it runs.
 TLS depend on it). On Windows the layer sets it via the host thread's GS/FS or a
 context swap; this is a real implementation item, not a stub. Record the chosen
 mechanism in decisions.md when C lands it.
+
+## Gateway contracts that are not 1:1 Linux (ABI v2, settled 2026-10-26)
+
+These are what B's patched musl does and what the layer implements and tests
+(`layer/tests/guest/guest.c`, section "abi v2 / wine contract").
+
+- **`__xrl_gateway`.** libc.so (ld-musl) exports an 8-byte data symbol. The
+  layer's ELF loader finds it through the image's PT_DYNAMIC (works on stripped
+  images) and stores the address of the SysV `xrl_syscall` thunk there before
+  any guest instruction runs, in the interpreter and in the main image. auxv
+  `AT_XRL_SYSCALL` (0x5801) carries the same address for other guests.
+- **7th argument.** `xrl_syscall` takes `nr` + `a1..a6`; `a6` is on the stack
+  (SysV) and is always read. musl's stubs zero it when unused.
+- **`clone` (56).** `xrl_syscall(56, flags, child_stack, ptid, ctid, tls,
+  resume_pc)`. Threads only (`CLONE_VM|CLONE_THREAD`). With `resume_pc != 0`
+  the child starts at `resume_pc` with `rsp = child_stack`, `rax = 0`, FS base
+  = `tls` under `CLONE_SETTLS`; other registers undefined; it never returns
+  through the gateway. With `resume_pc == 0` the child "returns" from the call
+  site instead (used by the layer's own test guest).
+- **`exit` (60).** `xrl_syscall(60, status, map_base, map_size)`. The layer
+  unmaps the region after leaving that stack and *before* the CLEARTID wake
+  (Linux order). Because Linux ignores a2/a3 for exit, other callers leave
+  garbage there: the region is honoured only if it is page-aligned, a page
+  multiple, ≤ 256 MiB, contains the caller's stack pointer, and is mapped at
+  both ends. (A permissive first version unmapped half the address space when
+  a3 held a huge garbage value; see decisions.md.)
+- **`rt_sigreturn` (15).** `xrl_syscall(15, ucontext_ptr)`. Not implemented yet
+  (signal delivery is the next layer item).
+- **`arch_prctl` FS/GS.** FS is real (wrfsbase + fault re-arm). GS: see the
+  GS/TEB decision; `ARCH_SET_GS` is refused unless it names the host TEB.
+- **No vDSO.** No `AT_SYSINFO_EHDR`; `clock_gettime` goes through 228.
+- **Pseudo-syscalls** `0x10001`–`0x10004` (`XRL_SYS_GET_GFX_OPS`, `_AUDIO_OPS`,
+  `_INPUT_OPS`, `_LOG_FN` in `xrl_abi.h`): return the guest-callable,
+  SysV-stubbed copies of the host tables the layer builds at boot, or -ENOSYS.

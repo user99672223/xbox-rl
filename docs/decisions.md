@@ -144,6 +144,33 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — ABI v2 (append-only).** Folded the convergent requests of all
+  four workstreams into `include/xrl_abi.h`: `xrl_syscall` takes `int64_t` (MSVC
+  `long` is 32-bit — real v1 bug); op-table functions are native MS-x64 and the
+  guest only ever calls layer-generated SysV stubs; handles naming COM objects
+  ARE the raw interface pointers; pseudo-syscalls 0x10001–4 hand out the stubbed
+  tables (chosen over auxv because Wine's xrlhost already used them and the
+  layer already built the tables — less churn); gfx gains
+  `swapchain_get_current_index`, `swapchain_resize`, `last_hresult`,
+  `get_adapter_info`; audio gains `voice_get_state`; boot ctx gains `exec_path`.
+  The layer accepts v1 or v2 hosts and copies only `struct_size` bytes of the
+  boot context (v1 code read past a smaller struct). Deferred: keyboard/mouse,
+  suspend/resume, guest→host fatal channel.
+- **2026-10-26 — B↔C contract reconciled in the layer** (gateway symbol write,
+  clone `resume_pc`, exit region, pseudo-syscalls). Spec in syscall-abi.md;
+  covered by new tests in the layer's guest suite.
+- **Seam bug — exit(60) garbage args.** Honouring `exit(status, base, size)`
+  naively unmapped a garbage range (a3 = 0x7ffffffffffffffc) and crashed the
+  main thread intermittently. Fixed with plausibility checks; also moved the
+  stack unmap before the CLEARTID wake to match Linux. Found by bisecting
+  against the committed baseline.
+- **Build bug — PowerShell splits `-DCMAKE_SYSTEM_VERSION=10.0.26100.0`** at the
+  first dot (CMake saw "10"). gfx's UWP configure only worked from a cached
+  build dir; a clean clone would fail. Quoted the arguments.
+- **Repo — line endings.** core.autocrlf=true would turn WSL scripts and
+  patches into CRLF on a Windows clone. Root `.gitattributes` pins LF for
+  `*.sh`, `*.S`, pins files, and `-text` for `*.patch`.
+
 - **2026-10-26 — ABI v1 frozen.** `include/xrl_abi.h` defines three seams:
   the syscall gateway (`xrl_syscall`, Linux return convention), the boot context
   (`xrl_layer_boot`), and the host op-table (gfx/audio/input as opaque-handle C

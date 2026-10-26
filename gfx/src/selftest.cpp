@@ -411,7 +411,19 @@ extern "C" XRL_GFX_API int xrl_gfx_run_probe(const xrl_gfx_config* cfg) {
     xrl_gfx_selftest_result res{};
     xrl_gfx_selftest(60, &res);
 
-    const bool pass = s_caps == XRL_OK && dec.backend == XRL_GFX_D3D11_ON12 && res.pass;
+    // ABI v2 get_adapter_info through the vtable, i.e. what Wine's dxgi calls.
+    xrl_adapter_info ai{};
+    xrl_status s_ai = xrl_gfx_get_ops()->get_adapter_info(&ai);
+    std::string ai_name;
+    for (size_t i = 0; i < _countof(ai.description) && ai.description[i]; i++)
+        ai_name += ai.description[i] < 128 ? (char)ai.description[i] : '?';
+    const bool ai_ok = s_ai == XRL_OK && ai.vendor_id && ai.max_feature_level >= 0xb000 && !ai_name.empty();
+    Log(ai_ok ? LOG_INFO : LOG_ERROR,
+        "probe: get_adapter_info -> %d vendor=0x%04X device=0x%04X maxFL=0x%X vram=%llu MiB shared=%llu MiB \"%s\"",
+        s_ai, ai.vendor_id, ai.device_id, ai.max_feature_level, (unsigned long long)(ai.dedicated_video_memory >> 20),
+        (unsigned long long)(ai.shared_system_memory >> 20), ai_name.c_str());
+
+    const bool pass = s_caps == XRL_OK && dec.backend == XRL_GFX_D3D11_ON12 && res.pass && ai_ok;
     Log(pass ? LOG_INFO : LOG_ERROR,
         "=== xrl_gfx probe RESULT: %s | adapter=\"%s\" vendor=0x%04X device=0x%04X FL=0x%X bind_tier=%u heap_tier=%u "
         "d3d11on12=%s present_avg=%.2fms swapchain_stages=%s ===",

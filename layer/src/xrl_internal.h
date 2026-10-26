@@ -108,7 +108,7 @@ void xrl_thread_unbind(void);
 xrl_thread *xrl_thread_new(void);
 xrl_thread *xrl_thread_by_tid(int tid);
 int  xrl_thread_count(void);
-slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls);
+slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc);
 slong xrl_do_exit(int code, int group);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);

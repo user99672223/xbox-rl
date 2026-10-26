@@ -464,7 +464,7 @@ SYS(msync) { UNUSED6; return xrl_mem_msync((u64)a1, (u64)a2, (int)a3); }
 SYS(mincore) { UNUSED6; return xrl_mem_mincore((u64)a1, (u64)a2, (u64)a3); }
 
 /* ============================================================== threads */
-SYS(clone) { UNUSED6; return xrl_do_clone((u64)a1, (u64)a2, (u64)a3, (u64)a4, (u64)a5); }
+SYS(clone) { UNUSED6; return xrl_do_clone((u64)a1, (u64)a2, (u64)a3, (u64)a4, (u64)a5, (u64)a6); }
 SYS(clone3)
 {
     UNUSED6;
@@ -473,7 +473,7 @@ SYS(clone3)
     memset(&ca, 0, sizeof ca);
     if (xrl_cfu(&ca, (u64)a1, 64)) return -LX_EFAULT;
     u64 sp = ca.stack ? ca.stack + ca.stack_size : 0;
-    return xrl_do_clone(ca.flags, sp, ca.parent_tid, ca.child_tid, ca.tls);
+    return xrl_do_clone(ca.flags, sp, ca.parent_tid, ca.child_tid, ca.tls, 0);
 }
 SYS(fork)
 {
@@ -482,7 +482,27 @@ SYS(fork)
     return -LX_ENOSYS;
 }
 SYS(execve) { UNUSED6; LOGE("execve called: not supported (in-process exec is handled by Wine, not the kernel)"); return -LX_ENOSYS; }
-SYS(exit) { UNUSED6; xrl_do_exit((int)a1, 0); return 0; }
+/* exit(status, base, size): B's musl __unmapself passes the dying thread's own
+ * stack; unmapped in xrl_do_exit once we are off it (on the host stack). */
+SYS(exit)
+{
+    UNUSED6;
+    xrl_thread *t = xrl_cur();
+    /* Linux ignores a2/a3 for exit, so other callers leave garbage there. Only
+     * honour the region when it really is this thread's own stack (the
+     * __unmapself case): it must contain the guest sp at the call. */
+    if (t && t->frame && a2 && a3) {
+        u64 sp = t->frame + 56, lo = (u64)a2, len = (u64)a3, hi = lo + len;
+        /* musl's map_base/map_size: page-aligned, page-multiple, bounded, and a
+         * live layer mapping at both ends. Garbage (e.g. a huge size) fails. */
+        int plausible = !(lo & (LX_PAGE - 1)) && !(len & (LX_PAGE - 1)) && len <= (256ull << 20) &&
+                        hi > lo && sp >= lo && sp < hi &&
+                        xrl_mem_is_mapped(lo) && xrl_mem_is_mapped(hi - LX_PAGE);
+        if (plausible) { t->defer_unmap_addr = lo; t->defer_unmap_len = len; }
+    }
+    xrl_do_exit((int)a1, 0);
+    return 0;
+}
 SYS(exit_group) { UNUSED6; xrl_do_exit((int)a1, 1); return 0; }
 SYS(gettid) { UNUSED6; xrl_thread *t = xrl_cur(); return t ? t->tid : G.pid; }
 SYS(getpid) { UNUSED6; return G.pid; }
@@ -637,6 +657,22 @@ static slong enosys(slong nr, slong a1, slong a2, slong a3)
     return -LX_ENOSYS;
 }
 
+/* XRL pseudo-syscalls (ABI v2): guest-callable copies of the host op tables. */
+static slong xrl_pseudo(slong nr)
+{
+    const xrl_guest_ctx *g = (const xrl_guest_ctx *)G.guest_ctx;
+    const void *p = NULL;
+    if (g) {
+        switch (nr) {
+        case XRL_SYS_GET_GFX_OPS:   p = g->gfx; break;
+        case XRL_SYS_GET_AUDIO_OPS: p = g->audio; break;
+        case XRL_SYS_GET_INPUT_OPS: p = g->input; break;
+        case XRL_SYS_GET_LOG_FN:    p = (const void *)g->log; break;
+        }
+    }
+    return p ? (slong)(uintptr_t)p : -LX_ENOSYS;
+}
+
 slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slong a5, slong a6, void *frame)
 {
     (void)frame;
@@ -644,6 +680,7 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     slong r;
     if (t) t->in_sys++;
     if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
+    else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
     else r = enosys(nr, a1, a2, a3);
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
     if (t) t->in_sys--;

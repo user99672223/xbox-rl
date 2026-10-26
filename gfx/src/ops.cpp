@@ -1,4 +1,4 @@
-// ops.cpp — the xrl_gfx_ops vtable (frozen ABI v1) and its thunks.
+// ops.cpp — the xrl_gfx_ops vtable (ABI v2) and its thunks.
 //
 // Each slot is a thin function that forwards to the implementation in
 // device.cpp / swapchain.cpp / d3d11on12.cpp. The table is mutable only so that
@@ -31,6 +31,14 @@ void Op_release(xrl_handle h) {
     if (h) FromHandle<IUnknown>(h)->Release();
 }
 
+// ---- ABI v2 slots (the former "extras", now in the table) ----
+xrl_status Op_swapchain_get_current_index(xrl_handle sc, uint32_t* out) { return xrl_gfx_swapchain_current_index(sc, out); }
+xrl_status Op_swapchain_resize(xrl_handle sc, uint32_t n, uint32_t w, uint32_t h, uint32_t fmt) {
+    return xrl_gfx_swapchain_resize(sc, n, w, h, fmt);
+}
+int32_t Op_last_hresult(void) { return xrl_gfx_last_hresult(); }
+xrl_status Op_get_adapter_info(xrl_adapter_info* out) { return AdapterInfoOp(out); }
+
 xrl_gfx_ops g_ops = {
     sizeof(xrl_gfx_ops),
     Op_d3d12_create_device,
@@ -39,6 +47,10 @@ xrl_gfx_ops g_ops = {
     Op_swapchain_present,
     Op_d3d11on12_create,
     Op_release,
+    Op_swapchain_get_current_index,
+    Op_swapchain_resize,
+    Op_last_hresult,
+    Op_get_adapter_info,
 };
 
 }  // namespace
