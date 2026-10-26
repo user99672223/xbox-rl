@@ -204,6 +204,19 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
     key, a wheel notch, a click at the centre of the screen from an absolute position, a relative move arriving as
     raw input - 10/10 on the laptop (`XRL_DISPLAY` 1920x1200) with the build tree's win32u/user32/xrlhost
     overlaid on a hard-linked copy of the shared rootfs. Console not run.
+  - **An X server on `/dev/fb0` (`layer/tests/guest/xbridge.c`, `layer/tests/xbridge-test.sh`).** One single-threaded guest, no libc, no Xlib:
+    it polls an Xvfb `-fbdir` screen file (XWD: big-endian header, `header_size + ncolors*12` to the pixels, 32 bpp BGRX = our framebuffer's
+    format, so rows are copied verbatim; it first resizes /dev/fb0 to the X screen and writes only runs of changed rows), and reads
+    event0/event2 to send XTest `FakeInput` requests it encodes itself (key code = evdev + 8, buttons 1/2/3, wheels as buttons 4-7, ABS -> an
+    absolute warp scaled to the X screen, REL -> relative motion), after `QueryExtension("XTEST")`. It talks TCP today (the layer's Winsock),
+    AF_UNIX once the layer has it. Chosen over linking Xlib/libXtst because the guest needs nothing but the syscall gateway, and over Xorg's
+    fbdev + evdev drivers because those need udev, `/sys/class/input` and `/proc/bus/input/devices`, which the layer does not have (nor the
+    fork/exec an Xorg session needs; a second process for the bridge likewise waits for the process model). Laptop proof with the X server in
+    WSL (Alpine's Xvfb 21.1.25, twm, xterm, unpacked from the verified minirootfs into RAM through `apk`): 23 injected requests, QueryPointer
+    returned the injected position (300,250), the xterm showed the typed "hello world", and `/dev/fb0` read back inside the layer held the
+    X desktop (`results/display-xbridge-fb0.png`). Notes: Xvfb cannot mmap its `-fbdir` file on a Windows drive (SIGBUS), so the screen file
+    is copied Windows-side by a loop; the guest reopens it each poll because a writer replacing it in place fails while it is held open
+    (Windows sharing); the test host's GPU init took more than a minute once while another agent ran its own tests (not reproduced).
 
 - **2026-10-26 — `XRL_D3D11=native`: the game's D3D11 can run on a native D3D11 device instead of D3D11On12;
   measured on the laptop at RL's title menu it halves the render thread's CPU and cuts Present ~4x. Opt-in; the
