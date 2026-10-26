@@ -843,6 +843,19 @@ static void mem_breakdown_locked(void)
     }
 }
 
+int xrl_mem_guest_ctx(u64 rip, u64 rsp)
+{
+    if (!TryAcquireSRWLockShared(&g_lock)) return -1;   /* the target may hold it: never wait */
+    size_t i = vma_lower(rip);
+    int ok = i < g_n && g_v[i].start <= rip && (g_v[i].prot & LX_PROT_EXEC);
+    if (ok) {
+        i = vma_lower(rsp - 1);
+        ok = i < g_n && g_v[i].start <= rsp - 1 && (g_v[i].prot & LX_PROT_WRITE);
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return ok;
+}
+
 /* Commit the whole lazy mapping containing `addr` (a new thread's stack). */
 slong xrl_mem_populate_containing(u64 addr)
 {

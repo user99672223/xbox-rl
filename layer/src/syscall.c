@@ -608,8 +608,7 @@ SYS(kill)
     UNUSED6;
     int pid = (int)a1, sig = (int)a2;
     if (pid != G.pid && pid != 0 && pid != -1) return -LX_ESRCH;
-    if (sig == 0) return 0;
-    return xrl_sys_tgkill(G.pid, G.pid, sig);
+    return xrl_sig_kill_process(sig);
 }
 SYS(tkill) { UNUSED6; return xrl_sys_tgkill(G.pid, (int)a1, (int)a2); }
 SYS(tgkill) { UNUSED6; return xrl_sys_tgkill((int)a1, (int)a2, (int)a3); }
@@ -779,9 +778,15 @@ static void prof_dump(void)
     }
 }
 
+/* rt_sigreturn re-running a syscall an SA_RESTART handler interrupted */
+slong xrl_syscall_redo(slong nr, const slong *a)
+{
+    if ((u64)nr < XRL_NR_MAX && g_tab[nr]) return g_tab[nr](a[0], a[1], a[2], a[3], a[4], a[5]);
+    return -LX_EINTR;
+}
+
 slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slong a5, slong a6, void *frame)
 {
-    (void)frame;
     xrl_thread *t = xrl_cur();
     slong r;
     int was_guest = xrl_teb_enter_host(t);
@@ -789,7 +794,8 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     if (g_prof < 0) { char v[4]; g_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
     LARGE_INTEGER t0 = {0}, t1;
     if (g_prof) QueryPerformanceCounter(&t0);
-    if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
+    if (nr == 15 && t) r = xrl_sig_return(t, (u64)a1);   /* rt_sigreturn: never a plain return */
+    else if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
     else r = enosys(nr, a1, a2, a3);
     if (g_prof && (u64)nr < XRL_NR_MAX) {
@@ -801,6 +807,10 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
         else if (!next) InterlockedCompareExchange64(&g_prof_next, now + 30000, 0);
     }
     if (G.trace_syscalls) LOGT("[%d] %s(%llx, %llx, %llx, %llx, %llx, %llx) = %lld", t ? t->tid : -1, xrl_sysname(nr), a1, a2, a3, a4, a5, a6, r);
+    if (t && !t->sig_jump && (t->sigpending & ~t->sigmask)) {
+        const slong args[6] = { a1, a2, a3, a4, a5, a6 };
+        xrl_sig_at_return(t, nr, args, (const u64 *)frame, r, NULL);
+    }
     if (t) t->in_sys--;
     xrl_teb_restore(t, was_guest);
     return r;

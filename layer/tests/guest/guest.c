@@ -264,6 +264,199 @@ static void test_ntsync(void)
     sc1(3, sem); sc1(3, ev); sc1(3, mtx); sc1(3, ev2); sc1(3, dev);
 }
 
+/* ---- signals: delivery at syscall return, async, restart, faults ------------ */
+/* musl's patched __restore_rt (patches/musl): rt_sigreturn(&ucontext) via the gateway */
+void sig_restorer(void);
+__asm__(".text\n.globl sig_restorer\nsig_restorer:\n"
+"  mov %rsp,%rsi\n  and $-16,%rsp\n  sub $16,%rsp\n  movq $0,(%rsp)\n  mov $15,%edi\n"
+"  xor %edx,%edx\n  xor %ecx,%ecx\n  xor %r8d,%r8d\n  xor %r9d,%r9d\n  mov xsc(%rip),%rax\n  call *%rax\n  hlt\n");
+
+/* Spin in pure guest code with known values in every register until *flag;
+ * returns how many registers changed (an async signal lands in the loop). */
+int spin_regs(volatile int *flag);
+__asm__(".text\n.globl spin_regs\nspin_regs:\n"
+"  push %rbx\n  push %rbp\n  push %r12\n  push %r13\n  push %r14\n  push %r15\n"
+"  mov $0x1111,%rbx\n  mov $0x2222,%rbp\n  mov $0x3333,%r12\n  mov $0x4444,%r13\n  mov $0x5555,%r14\n  mov $0x6666,%r15\n"
+"  mov $0x7777,%rsi\n  mov $0x8888,%r8\n  mov $0x9999,%r9\n  mov $0xaaaa,%r10\n  mov $0xbbbb,%r11\n  mov $0xcccc,%rdx\n"
+"  mov $0xdddd,%rcx\n  movq %rbx,%xmm0\n  movq %rbp,%xmm7\n  movq %r12,%xmm15\n"
+"1: pause\n  cmpl $0,(%rdi)\n  je 1b\n"
+"  xor %eax,%eax\n"
+"  cmp $0x1111,%rbx\n  je 2f\n  inc %eax\n2:\n  cmp $0x2222,%rbp\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x3333,%r12\n  je 2f\n  inc %eax\n2:\n  cmp $0x4444,%r13\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x5555,%r14\n  je 2f\n  inc %eax\n2:\n  cmp $0x6666,%r15\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x7777,%rsi\n  je 2f\n  inc %eax\n2:\n  cmp $0x8888,%r8\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0x9999,%r9\n  je 2f\n  inc %eax\n2:\n  cmp $0xaaaa,%r10\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0xbbbb,%r11\n  je 2f\n  inc %eax\n2:\n  cmp $0xcccc,%rdx\n  je 2f\n  inc %eax\n2:\n"
+"  cmp $0xdddd,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  movq %xmm0,%rcx\n  cmp $0x1111,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  movq %xmm7,%rcx\n  cmp $0x2222,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  movq %xmm15,%rcx\n  cmp $0x3333,%rcx\n  je 2f\n  inc %eax\n2:\n"
+"  pop %r15\n  pop %r14\n  pop %r13\n  pop %r12\n  pop %rbp\n  pop %rbx\n  ret\n");
+
+struct ksa { void *h; u64 flags; void *restorer; u64 mask; };
+#define SA_SIGINFO 4ul
+#define SA_ONSTACK 0x08000000ul
+#define SA_RESTART 0x10000000ul
+#define SA_RESTORER 0x04000000ul
+static long sigact(int sig, void *h, u64 flags)
+{
+    struct ksa a = { h, flags | SA_SIGINFO | SA_RESTORER, (void *)sig_restorer, 0 };
+    return sc4(13, sig, &a, 0, 8);
+}
+static u64 cur_mask(void) { u64 m = 0; sc4(14, 0, 0, &m, 8); return m; }
+static long gettid(void) { return sc1(186, 0); }
+
+/* ucontext offsets (Linux x86-64): mcontext at 40, rip = gregs[16], trapno, sigmask */
+#define UC_RIP 168
+#define UC_TRAPNO 200
+#define UC_FPSTATE 224
+#define UC_SIGMASK 296
+static volatile int h_sig, h_code, h_pid, h_masked, h_tid, h_count, h_alt;
+static volatile u64 h_rip, h_fpstate, segv_addr, segv_trap;
+static volatile int segv_code;
+static u8 *alt_lo, *alt_hi;
+static void h_info(int sig, u8 *si, u8 *uc)
+{
+    h_sig = sig; h_code = *(int *)(si + 8); h_pid = *(int *)(si + 16);
+    h_masked = (int)((cur_mask() >> (sig - 1)) & 1);
+    h_rip = *(u64 *)(uc + UC_RIP); h_fpstate = *(u64 *)(uc + UC_FPSTATE);
+    h_tid = (int)gettid();
+    u8 here; h_alt = alt_lo && &here >= alt_lo && &here < alt_hi;
+    __atomic_fetch_add(&h_count, 1, __ATOMIC_SEQ_CST);
+}
+static volatile int async_flag;
+static void h_async(int sig, u8 *si, u8 *uc) { h_info(sig, si, uc); async_flag = 1; }
+static void h_segv(int sig, u8 *si, u8 *uc)
+{
+    (void)sig;
+    segv_addr = *(u64 *)(si + 16); segv_code = *(int *)(si + 8); segv_trap = *(u64 *)(uc + UC_TRAPNO);
+    *(u64 *)(uc + UC_RIP) += 2;   /* skip the 2-byte faulting load */
+}
+static long fault_read(u64 addr)
+{
+    long v;
+    __asm__ volatile("mov %1,%%rax\n  mov $77,%%edx\n  .byte 0x8b,0x10\n  mov %%rdx,%0"   /* mov (%rax),%edx */
+                     : "=r"(v) : "r"(addr) : "rax", "rdx", "memory");
+    return v;
+}
+
+static volatile int sg_ready, sg_done, sg_tid[4], sg_ctid[4];
+static volatile long sg_ret;
+static volatile int rw;
+static int thr_spin(void *a) { (void)a; sg_ready = 1; futex(&sg_ready, 1, 1, 0, 0, 0); sg_ret = spin_regs(&async_flag); sg_done = 1; futex(&sg_done, 1, 1, 0, 0, 0); return 0; }
+static int thr_futex(void *a)
+{
+    long ts[2] = { 3, 0 };
+    sg_ready = 1; futex(&sg_ready, 1, 1, 0, 0, 0);
+    sg_ret = futex(&rw, 0, 0, a ? ts : 0, 0, 0);   /* a: with a timeout, so a lost signal cannot hang the test */
+    sg_done = 1; futex(&sg_done, 1, 1, 0, 0, 0);
+    return 0;
+}
+static int thr_sleep(void *a)
+{
+    (void)a;
+    long ts[2] = { 2, 0 }, rem[2] = { -1, -1 };
+    sg_ready = 1; futex(&sg_ready, 1, 1, 0, 0, 0);
+    sg_ret = sc2(35, ts, rem);
+    sg_tid[3] = rem[0] == 1 || (rem[0] == 0 && rem[1] > 0);   /* about 2 s minus the time slept */
+    sg_done = 1; futex(&sg_done, 1, 1, 0, 0, 0);
+    return 0;
+}
+static long sg_start(int (*fn)(void *), void *arg, int slot)
+{
+    long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+    u8 *stk = mmap_anon(256 * 1024, 3);
+    struct tls *t = mmap_anon(4096, 3);
+    t->self = t;
+    sg_ready = 0; sg_done = 0; sg_ctid[slot] = -1;
+    long r = xclone(fn, stk + 256 * 1024 - 64, flags, arg, (void *)&sg_tid[slot], t, (void *)&sg_ctid[slot]);
+    wait_ne(&sg_ready, 0);
+    return r;
+}
+static void sleep_ms(long ms) { long ts[2] = { 0, ms * 1000000 }; sc2(35, ts, 0); }
+static int wait_done(void)   /* <= 3 s */
+{
+    for (int i = 0; i < 300 && !sg_done; i++) sleep_ms(10);
+    return sg_done;
+}
+
+static void test_signals(void)
+{
+    out("signals:\n");
+    long pid = sc1(39, 0), me = gettid();
+    sigact(10, h_info, 0);
+    volatile u64 keep = 0x1234567890abcdefull;
+    h_count = 0;
+    long r = sc3(234, pid, me, 10);
+    CHECK(r == 0 && h_count == 1 && h_sig == 10, "tgkill(self): the handler runs before the syscall returns");
+    CHECK(h_code == -6 && h_pid == pid, "siginfo: SI_TKILL from our own pid");
+    CHECK(h_masked, "the signal is blocked inside its handler");
+    CHECK(h_fpstate != 0 && h_rip != 0, "ucontext has the interrupted rip and an fpstate");
+    CHECK(!(cur_mask() & (1ul << 9)) && keep == 0x1234567890abcdefull, "rt_sigreturn restores the mask and the frame");
+    sc4(14, 0, (u64[]){ 1ul << 9 }, 0, 8);          /* block SIGUSR1 */
+    h_count = 0;
+    sc3(234, pid, me, 10);
+    CHECK(h_count == 0, "a blocked signal stays pending");
+    sc4(14, 1, (u64[]){ 1ul << 9 }, 0, 8);          /* unblock: delivered as sigprocmask returns */
+    CHECK(h_count == 1, "unblocking delivers the pending signal");
+
+    /* async: the target spins in guest code, no syscalls */
+    sigact(12, h_async, 0);
+    async_flag = 0; h_count = 0;
+    r = sg_start(thr_spin, 0, 0);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[0], 12);
+    int ok = wait_done();
+    CHECK(ok && h_count == 1 && h_tid == sg_tid[0], "async: the handler ran on the spinning thread");
+    CHECK(ok && sg_ret == 0, "async: every register (GPRs, xmm0/7/15) intact after the handler");
+
+    /* SA_RESTART: an interrupted futex wait carries on */
+    sigact(10, h_info, SA_RESTART);
+    rw = 0; h_count = 0;
+    sg_start(thr_futex, 0, 1);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[1], 10);
+    sleep_ms(50);
+    CHECK(h_count == 1 && !sg_done, "SA_RESTART: the handler ran and the futex wait was restarted");
+    rw = 1; futex(&rw, 1, 1, 0, 0, 0);
+    CHECK(wait_done() && sg_ret == 0, "...and it returns 0 when woken");
+    /* without SA_RESTART: -EINTR */
+    sigact(10, h_info, 0);
+    rw = 0; h_count = 0;
+    sg_start(thr_futex, (void *)1, 2);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[2], 10);
+    CHECK(wait_done() && h_count == 1 && sg_ret == -4, "no SA_RESTART: the futex wait returns -EINTR");
+
+    /* nanosleep is never restarted: -EINTR and the time left */
+    sigact(10, h_info, SA_RESTART);
+    sg_start(thr_sleep, 0, 3);
+    sleep_ms(30);
+    sc3(234, pid, sg_tid[3], 10);
+    CHECK(wait_done() && sg_ret == -4 && sg_tid[3], "nanosleep: -EINTR with the remaining time");
+
+    /* a fault in guest code goes to the SIGSEGV handler */
+    sigact(11, h_segv, 0);
+    long v = fault_read(0x1000);
+    CHECK(v == 77 && segv_addr == 0x1000 && segv_code == 1 && segv_trap == 14, "SIGSEGV: si_addr, SEGV_MAPERR, trap 14; handler skips the load");
+    struct ksa dfl = { 0, 0, 0, 0 };
+    sc4(13, 11, &dfl, 0, 8);
+
+    /* sigaltstack + SA_ONSTACK */
+    alt_lo = mmap_anon(64 * 1024, 3); alt_hi = alt_lo + 64 * 1024;
+    struct { void *sp; int flags, pad; u64 size; } ss = { alt_lo, 0, 0, 64 * 1024 };
+    sc2(131, &ss, 0);
+    sigact(10, h_info, SA_ONSTACK);
+    h_alt = 0;
+    sc3(234, pid, me, 10);
+    CHECK(h_alt, "SA_ONSTACK: the handler runs on the sigaltstack");
+    ss.flags = 2;   /* SS_DISABLE */
+    sc2(131, &ss, 0);
+    alt_lo = 0;
+    sc4(13, 10, &dfl, 0, 8);
+    sc4(13, 12, &dfl, 0, 8);
+}
+
 /* /proc/cpuinfo must agree with what CPUID says about the CPU */
 static const char *find(const char *h, const char *n)
 {
@@ -603,6 +796,7 @@ void cstart(u64 *sp)
     test_cpuinfo();
     test_threads();
     test_ntsync();
+    test_signals();
     test_v2();
     test_teb();
     outn("TOTAL FAILS", fails);

@@ -46,6 +46,9 @@ C_ASSERT(FIELD_OFFSET(xrl_thread, self) == 0x18);
 C_ASSERT(FIELD_OFFSET(xrl_thread, resume) == 0x20);
 C_ASSERT(FIELD_OFFSET(xrl_thread, child_rsp) == 0x60);
 C_ASSERT(FIELD_OFFSET(xrl_thread, teb_guest_live) == 0x70);
+C_ASSERT(FIELD_OFFSET(xrl_thread, sig_jump) == 0x78);
+C_ASSERT(FIELD_OFFSET(xrl_sigregs, rsp) == 0x78 && FIELD_OFFSET(xrl_sigregs, rip) == 0x80);
+C_ASSERT(FIELD_OFFSET(xrl_sigregs, xmask) == 0x90 && FIELD_OFFSET(xrl_sigregs, xs) == 0xC0);
 
 /* ------------------------------------------------------------ thread table */
 static SRWLOCK g_ttab_lock = SRWLOCK_INIT;
@@ -97,6 +100,7 @@ xrl_thread *xrl_thread_new(void)
     t->tid = 0;                         /* the OS thread id, set by start_os_thread */
     t->fsb_enabled = (u64)G.fsgsbase;
     t->sigmask = 0;
+    t->sig_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
     strcpy_s(t->name, sizeof t->name, "xrl-guest");
     AcquireSRWLockExclusive(&G.thread_lock);
     t->next = G.threads;

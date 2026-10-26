@@ -275,8 +275,12 @@ static slong do_wait(u64 arg, int all)
         w.alert = (nobj *)f->priv;
     }
     w.count = a.count; w.owner = a.owner; w.all = all;
+    /* the thread's signal event: a queued signal ends the wait with -EINTR,
+     * like Linux's -ERESTARTSYS (rt_sigreturn restarts it for SA_RESTART) */
+    xrl_thread *self = xrl_cur();
     if (!t_ev) t_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
-    w.ev = t_ev;
+    w.ev = self && self->sig_ev ? self->sig_ev : t_ev;
+    int intr = 0;
 
     AcquireSRWLockExclusive(&g_lock);
     if (!try_grant(&w)) {
@@ -286,6 +290,7 @@ static slong do_wait(u64 arg, int all)
         for (;;) {
             u64 now = (a.flags & NTSYNC_WAIT_REALTIME) ? xrl_real_ns() : xrl_mono_ns();
             if (a.timeout != ~0ull && now >= a.timeout) break;
+            if (self && xrl_sig_pending_for(self)) { intr = 1; break; }
             DWORD ms = INFINITE;
             if (a.timeout != ~0ull) {
                 u64 left = (a.timeout - now + 999999) / 1000000;
@@ -301,7 +306,7 @@ static slong do_wait(u64 arg, int all)
     }
     ReleaseSRWLockExclusive(&g_lock);
 
-    if (!w.done) r = -LX_ETIMEDOUT;
+    if (!w.done) r = intr ? -LX_EINTR : -LX_ETIMEDOUT;
     else {
         a.index = (u32)w.index;
         if (xrl_ctu(arg, &a, sizeof a)) r = -LX_EFAULT;

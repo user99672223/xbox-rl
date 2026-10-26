@@ -339,8 +339,12 @@ slong xrl_sleep_ns(u64 ns, int *interrupted)
             LARGE_INTEGER due;
             due.QuadPart = -(LONGLONG)((ns + 99) / 100);
             if (SetWaitableTimer(t->timer, &due, 0, NULL, NULL, FALSE)) {
-                WaitForSingleObjectEx(t->timer, INFINITE, FALSE);
-                return 0;
+                if (!interrupted || !t->sig_ev) { WaitForSingleObjectEx(t->timer, INFINITE, FALSE); return 0; }
+                HANDLE hs[2] = { t->timer, t->sig_ev };
+                for (;;) {
+                    if (xrl_sig_pending_for(t)) { CancelWaitableTimer(t->timer); *interrupted = 1; return 0; }
+                    if (WaitForMultipleObjectsEx(2, hs, FALSE, INFINITE, FALSE) == WAIT_OBJECT_0) return 0;
+                }
             }
         }
     }

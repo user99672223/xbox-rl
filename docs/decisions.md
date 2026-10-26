@@ -144,6 +144,32 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Linux signal delivery.** The layer recorded handlers but never
+  ran them; Wine's thread suspend (SIGUSR1 via tgkill) waited forever, which is
+  where Rocket League hung after loading. Now real rt_sigframes (ucontext,
+  siginfo, XSAVE fpstate with Linux's magic words, uc_stack, sigmask) go on the
+  guest stack or the sigaltstack, three ways:
+  - **at syscall return**, by the thread itself; `xrl_sig_jump` (thunks.asm)
+    loads the whole register state with `xrstor` + `iretq`, so nothing below
+    the target rsp (the red zone) is touched;
+  - **asynchronously** to a thread running guest code: the sender suspends it,
+    checks rip is in executable and rsp in writable guest memory (a try-lock on
+    the VMA list: a thread in layer code is never waited for), writes the frame
+    and redirects the context. Threads in host code are retried by a pump
+    thread; threads in a syscall get it at syscall return (waits are woken:
+    futex, I/O, ntsync, nanosleep);
+  - **faults in guest code** with a guest handler (SIGSEGV/BUS/ILL/TRAP/FPE with
+    Linux's si_code, trapno and error code, which Wine's handlers read), instead
+    of the crash report. The frame stays below the exception dispatcher's frames.
+  rt_sigreturn restores everything and re-runs a syscall that an SA_RESTART
+  handler interrupted (Linux's -ERESTARTSYS; the frame carries a private
+  record). kill(getpid()) picks a thread that does not block the signal (it
+  looked up tid == pid, which stopped existing with host thread ids). Guest
+  suite: 15 checks incl. all registers intact across an async signal.
+  Unverified on the console: Suspend/Get/SetThreadContext in the app container.
+  Note for glibc programs (the EAC branch's rewriter): the layer takes
+  rt_sigreturn's ucontext from a1, as musl's patched `__restore_rt` passes it.
+
 - **2026-10-26 — Rocket League loads past the shader cache; its own peak is
   6.4 GiB.** With a 12 GiB test budget it gets through script packages, audio
   init (no driver), display modes and a second D3D11 device, then hangs: Wine
