@@ -98,6 +98,50 @@ measurements, not assumptions. Build to them.
   tile in Dev Home** on the console. Deploy scripts register; a human presses
   Start. Ask once, continue on "done".
 
+## Measured facts — THIS app's first console run (2026-10-26)
+
+Probe `xbox-rl.host` v1.0.63.0, installed in the **Game bucket**, run on the
+Series S. `results/log-latest.txt` is the full log. `PROBE_RESULT … required=PASS`
+— every required capability works from our own app/manifest, confirming the
+2026-10-21 win10xbox probe still holds here:
+- **RWX/JIT:** execute-in-place, RW→RX flip, RX→RW patch→RX, and execute from a
+  worker thread all OK. The loader+JIT foundation is green on this app.
+- **4 GiB alloc:** committed and touched all 1,048,576 pages in 588 ms, readback OK.
+- **NEW — commit ceiling ≈ 4.5 GiB.** VirtualAlloc *commit*: 4.5 GiB OK, **5.0/6/8
+  GiB DENIED (ERROR_COMMITMENT_LIMIT 1455)**. *Reserve-only* (no commit) OK to
+  1024 GiB. => mmap can reserve huge VA freely, but total **committed** guest
+  memory must stay under ~4.5 GiB. Sets `guest_mem_budget` and makes C's
+  lazy-commit (reserve-then-commit-on-touch) a real requirement, not optional.
+  Nominal AppMemoryUsageLimit still reports 5120 MiB; the hard wall is lower.
+- **D3D12:** device OK, adapter SraKmd_arden (128 MiB dedicated / 1280 shared),
+  **FL 11_0** (as expected for the AppContainer view), binding tier 3, heap tier
+  2, shader model 6.4, **UMA + cache-coherent-UMA**, wave lane count 64, GPU VA 40
+  bits, raytracing tier 0.
+- **D3D11On12:** device+context OK, CreateTexture2D/RTV/Clear/Flush all OK. The
+  primary d3d11 path is confirmed on the console — no DXVK→Dozen needed.
+- **NEW — CoreWindow swapchain works:** `CreateSwapChainForCoreWindow` (flip,
+  2 buffers, fmt 28/BGRA8, 1920x1080), created off the UI thread on the gfx MTA
+  thread, **presented 120/120 frames at 59.2 fps (~60 vsync)**. This is the path
+  D built that had never run on hardware. It works at full framerate.
+- **Audio:** XAudio2 engine + mastering voice (2ch/48kHz) OK, beep played.
+- **Input:** Windows.Gaming.Input ready; a controller connected mid-run →
+  "gamepad connected -> slot 0".
+- Device family Windows.Xbox, OS 10.0.26100, CPU AuthenticAMD Zen2, avx2=1
+  bmi2=1 avx512=0 rdrand=0, hypervisor-bit=0 (leaf 0x40000000 = 'Microsoft Xb').
+- Install paths: pkg at `S:\Program Files\WindowsApps\…`, LocalState at
+  `Q:\Users\UserMgr1\AppData\Local\Packages\xbox-rl.host_…\LocalState` (the VFS
+  root; `Q:` is writable, confirmed by the log file being written there).
+
+### Deploy tooling: real-Device-Portal fixes (2026-10-26)
+The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.ps1`:
+1. **CSRF:** WDP needs a primed cookie session + `X-CSRF-Token` header on POST/
+   DELETE (`Initialize-DpSession`/`Get-DpCsrf`). Without it, cert POST → 403.
+2. **Multipart:** PowerShell `-Form` isn't shaped the way `/packagemanager/package`
+   parses (→ 400 "Missing .msix"). Hand-built multipart in `Invoke-DpMultipart`.
+3. **Name match:** WDP `.Name` is the *display* name ("xbox-rl"); match the
+   identity via `PackageFullName -like "xbox-rl.host_*"`.
+(Note `Set-StrictMode` requires `$script:DpSession` be declared before first read.)
+
 ## Project decisions (newest first)
 
 - **2026-10-26 — ABI v1 frozen.** `include/xrl_abi.h` defines three seams:
