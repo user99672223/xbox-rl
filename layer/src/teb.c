@@ -18,16 +18,20 @@ static const struct { u16 off, n; } k_swap[] = { XRL_TEB_SWAP_RANGES(XRL__TEB_RO
 
 static int g_swap = 1;
 
+/* Through the TEB's own linear address (NtTib.Self, never swapped) one memcpy per range: a
+ * gs-prefixed move per qword cost ~0.17 us per swap pair, paid on every syscall and host COM call. */
 static void copy_out(u64 *dst)      /* live TEB -> dst */
 {
-    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); i++)
-        for (u16 j = 0; j < k_swap[i].n; j++) dst[k++] = __readgsqword(k_swap[i].off + 8u * j);
+    const u8 *teb = (const u8 *)__readgsqword(0x30);
+    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); k += k_swap[i].n, i++)
+        memcpy(dst + k, teb + k_swap[i].off, 8u * k_swap[i].n);
 }
 
 static void copy_in(const u64 *src) /* src -> live TEB */
 {
-    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); i++)
-        for (u16 j = 0; j < k_swap[i].n; j++) __writegsqword(k_swap[i].off + 8u * j, src[k++]);
+    u8 *teb = (u8 *)__readgsqword(0x30);
+    for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); k += k_swap[i].n, i++)
+        memcpy(teb + k_swap[i].off, src + k, 8u * k_swap[i].n);
 }
 
 void xrl_teb_init(void)
