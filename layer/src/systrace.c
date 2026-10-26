@@ -151,10 +151,44 @@ void xrl_systrace(slong nr, const slong *a, slong r, int tid)
     case N_FCNTL: n += snprintf(l + n, sizeof l - n, "%d, cmd %lld, %llx", (int)a[0], a[1], (u64)a[2]); break;
     case N_PRLIMIT64: n += snprintf(l + n, sizeof l - n, "pid %lld, resource %lld", a[0], a[1]); break;
     case N_GETRLIMIT: n += snprintf(l + n, sizeof l - n, "resource %lld", a[0]); break;
+    case 9: {   /* mmap: every argument, flags by name */
+        u64 fl = (u64)a[3]; char fs[200]; int k = 0;
+        static const struct { u64 b; const char *s; } mf[] = { {1,"SHARED"},{2,"PRIVATE"},{0x10,"FIXED"},{0x20,"ANON"},{0x40,"32BIT"},
+            {0x100,"GROWSDOWN"},{0x800,"DENYWRITE"},{0x1000,"EXECUTABLE"},{0x2000,"LOCKED"},{0x4000,"NORESERVE"},{0x8000,"POPULATE"},
+            {0x10000,"NONBLOCK"},{0x20000,"STACK"},{0x40000,"HUGETLB"},{0x80000,"SYNC"},{0x100000,"FIXED_NOREPLACE"} };
+        fs[0] = 0;
+        if ((fl & 3) == 3) k += snprintf(fs + k, sizeof fs - k, "SHARED_VALIDATE");
+        for (int i = 0; i < (int)(sizeof mf / sizeof mf[0]); i++)
+            if ((fl & mf[i].b) && !(mf[i].b <= 2 && (fl & 3) == 3)) k += snprintf(fs + k, sizeof fs - k, "%s%s", k ? "|" : "", mf[i].s);
+        u64 known = 0x1ff973ull; if (fl & ~known) k += snprintf(fs + k, sizeof fs - k, "%s0x%llx", k ? "|" : "", fl & ~known);
+        n += snprintf(l + n, sizeof l - n, "0x%llx, 0x%llx, prot %s%s%s%s, %s, fd %d, off 0x%llx", (u64)a[0], (u64)a[1],
+                      (a[2] & 1) ? "R" : "", (a[2] & 2) ? "W" : "", (a[2] & 4) ? "X" : "", (a[2] & 7) ? "" : "NONE", fs, (int)a[4], (u64)a[5]);
+        break; }
+    case 10: case 11: case 28:   /* mprotect, munmap, madvise */
+        n += snprintf(l + n, sizeof l - n, "0x%llx, 0x%llx, 0x%llx", (u64)a[0], (u64)a[1], (u64)a[2]); break;
+    case 77: n += snprintf(l + n, sizeof l - n, "%d (%s), 0x%llx", (int)a[0], (a[0] >= 0 && a[0] < 4096 && g_fdpath[a[0]][0]) ? g_fdpath[a[0]] : "", (u64)a[1]); break;
     default: n += snprintf(l + n, sizeof l - n, "%llx, %llx, %llx", (u64)a[0], (u64)a[1], (u64)a[2]); break;
     }
     n += snprintf(l + n, sizeof l - n, ") = %lld", (long long)r);
     if (r < 0 && r > -4096) { const char *en = errname((int)-r); if (en) n += snprintf(l + n, sizeof l - n, " %s", en); }
+    if (nr == 9 && r == -17) {   /* EEXIST: what holds the range, as the guest's maps show it and as the host sees it */
+        u64 s = (u64)a[0], e = s + (((u64)a[1] + 0xfff) & ~0xfffull);
+        size_t cap = 256 * 1024; char *m = (char *)malloc(cap), *hit = NULL;
+        if (m) {
+            size_t ml = xrl_mem_format_maps(m, cap - 1); m[ml] = 0;
+            for (char *p = m; *p;) {
+                char *nl = strchr(p, '\n'); u64 vs = 0, ve = 0;
+                if (sscanf(p, "%llx-%llx", &vs, &ve) == 2 && vs < e && ve > s) { if (nl) *nl = 0; hit = p; break; }
+                if (!nl) break; p = nl + 1;
+            }
+            n += snprintf(l + n, sizeof l - n, " {guest maps: %.200s}", hit ? hit : "nothing there");
+            free(m);
+        }
+        MEMORY_BASIC_INFORMATION mi;
+        if (VirtualQuery((void *)s, &mi, sizeof mi))
+            n += snprintf(l + n, sizeof l - n, " {host: base %llx alloc %llx size %llx state %lx type %lx prot %lx}", (u64)mi.BaseAddress,
+                          (u64)mi.AllocationBase, (u64)mi.RegionSize, mi.State, mi.Type, mi.Protect);
+    }
 
     if (r >= 0) switch (nr) {
     case N_READ: case N_PREAD: case N_RECVFROM:
