@@ -144,6 +144,52 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — `XRL_D3D11=native`: the game's D3D11 can run on a native D3D11 device instead of D3D11On12;
+  measured on the laptop at RL's title menu it halves the render thread's CPU and cuts Present ~4x. Opt-in; the
+  default (D3D11On12) is unchanged.** Branch `claude/d3d11-native` (gfx commit da923fc).
+  - **Design.** A host-process switch, read once in `xrl_gfx_init` (`gfx/src/core.cpp`) and logged as
+    `xrl_gfx init: D3D11 device path = NATIVE` / `= D3D11On12`. Laptop: an environment variable of the shell
+    that starts `tools/run-rl.sh` / `run-desktop-wine.sh` (inherited by `xrl_test_host.exe`; it is not an
+    `XRL_ENV_` guest variable). Console: `host_env=XRL_D3D11=native` in `LocalState\launch.cfg` (applied in
+    `load_config()`, before gfx starts). In native mode `d3d12_create_device` hands the guest a stand-in
+    ID3D12Device + queue (`gfx/src/stub12.cpp`; no D3D12 device or queue exists, no memory spent), and
+    `d3d11on12_create` makes a plain `D3D11CreateDevice` (FL11_0, BGRA support, same adapter pick) on the gfx
+    thread; the guest's D3D11 calls then go straight to that device. `d3d11_create_swapchain` sees a device
+    without `ID3D11On12Device` and makes a D3D11 flip swapchain from it (`CreateSwapChainForHwnd` on the
+    laptop, `ForCoreWindow` on the console); Present copies/resolves the game's back buffer into its buffer 0
+    on the same context (no wrapped resources, no D3D12 queue fence), Drain uses an event query. Wine's
+    `d3d11`/`dxgi`/`xrlhost` are unchanged: the layer's ABI is the same in both modes.
+  - **Why.** D3D11On12 translates every D3D11 call onto D3D12 on the calling (render) thread; the console has a
+    native D3D11 runtime at FL11_0 (the probe), so the translation is pure overhead if native D3D11 works there.
+    It also removes D3D11On12's own memory (its D3D12 heaps/allocators) from the 5 GiB budget.
+  - **Measured (laptop, Intel Graphics, RL title menu, Epic login failing; `XRL_PROFILE=1 XRL_RL_REUSE_ARGS=1
+    XRL_SWAP_RESERVE_MB=700 XRL_REAL_GFX=1 XRL_TEST_BUDGET_MB=1792 WINEDEBUG=err+all`, 130 s and 170 s runs,
+    10-s `perf:` windows once frames flow).** The GPU caps both at ~55 fps, so CPU is the number that matters.
+    The render thread is the unnamed `xrl-guest/<tid>` whose top syscall is `rt_sigprocmask` (~13k syscalls/s
+    in both modes).
+
+    | | default (D3D11On12), 4 runs | `XRL_D3D11=native`, 4 runs |
+    |---|---|---|
+    | fps (steady) | 54.2-55.1 | 54.0-55.6 |
+    | worst gap (steady) | 32.0-45.2 ms | 32.6-39.2 ms |
+    | Present, avg | 0.26-0.34 ms (0.42-0.55 first window) | 0.06-0.08 ms (0.09-0.13 first window) |
+    | render thread CPU, per window | 23-47 %, median 34 % | 9-37 %, median 20 % (18 % without run 3) |
+    | guest COM calls/s | 275-281k (one run 441k/872k on a later screen) | 259-269k |
+    | whole guest CPU | 57-113 % of a core | 35-78 % (run 3: 90-212 %) |
+
+    Run 3 of native was a noisy one (every thread, the idle websocket/HTTP ones included, ~2-3x its usual CPU,
+    a network thread spinning on `getsockopt` at the end): the laptop was busy. One extra default run hung during
+    loading (main thread spinning in `getrusage`/`sched_yield`, one guest thread at 100 % with no syscalls, 5 COM
+    calls in total, i.e. before any D3D work) and is not counted; it is not mode-related. No `[E` lines in any
+    run, the same two device creations and the same swapchain (1024x768 fmt 28, buffer_count 1 clamped to 2)
+    in both modes. RL does not call ResizeBuffers at the menu; resize is covered by the gfx harness
+    (`XRL_D3D11=native gfx/build-desktop/Release/xrl_gfx_harness.exe`: BGRA, sRGB, 4xMSAA, RGBA, each presented,
+    screen pixel checked, resized to 640x360; the default harness still passes too).
+  - **Costs / open.** Not yet run on the console: whether the Xbox's native D3D11 runtime takes RL's shaders and
+    formats the way D3D11On12 does is unmeasured. If it fails, remove the `host_env` line (no rebuild). The
+    device is created without the game's own creation flags (as in the D3D11On12 path). Default stays
+    D3D11On12 until the console run says otherwise.
+
 - **2026-10-26 — Wine module mapping: the real EAC module is mapped, initialised, and talks to Epic's
   backend; the bootstrapper then reports `Launch Error: 256` (where it stops).** Branch
   `claude/eac-module-map`. Findings, then what was built, then where it stops.

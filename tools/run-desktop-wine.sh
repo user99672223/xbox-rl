@@ -10,7 +10,10 @@
 #   tools/run-desktop-wine.sh 'C:\windows\system32\cmd.exe' /c ver
 #
 # XRL_ROOTFS overrides the staged tree; the log is printed and kept in
-# results/desktop-wine-latest.txt.
+# results/desktop-wine-latest.txt. The test host's own switches are plain
+# environment variables of this shell (inherited by xrl_test_host.exe), e.g.
+# XRL_REAL_GFX=1, XRL_D3D11=native (native D3D11 device instead of D3D11On12; the
+# log's "D3D11 device path = ..." line says which); XRL_ENV_<NAME> goes to the guest.
 cd "$(dirname "$0")/.." || exit 2
 root="${XRL_ROOTFS:-$(cygpath -w "$HOME/xrl-work/rootfs")}"
 host=layer/build/desktop/xrl_test_host.exe
