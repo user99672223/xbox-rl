@@ -401,6 +401,20 @@ slong xrl_unix_iov(int fd, u64 iov, u64 cnt, int is_write);   /* readv/writev: o
 slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *));
 slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj);   /* ENOENT, or 0 with type 0 for an ordinary file */
 
+/* shm.c: SysV shared memory, and one set of pages behind every shared mapping of a memfd or /dev/shm file.
+ * The mem.c hooks answer XRL_NOT_NET when the file / range is not shm.c's. */
+slong xrl_shm_map_file(xfile *f, u64 len, s64 off);       /* the address to return for mmap(MAP_SHARED, f, off), or -errno */
+slong xrl_shm_munmap(u64 addr, u64 len);
+slong xrl_shmget(int key, u64 size, int flags);
+slong xrl_shmat(int id, u64 addr, int flags);
+slong xrl_shmdt(u64 addr);
+slong xrl_shmctl(int id, int cmd, u64 buf);
+slong xrl_memfd_seals(xfile *f, int op, u32 seals);       /* fcntl F_ADD_SEALS (op 1) / F_GET_SEALS (op 0) on a memfd; -EINVAL if f is not one */
+int   xrl_memfd_sealed(const xfile *f, u32 seal);         /* a write/truncate must be refused: the seal is set on this memfd */
+void  xrl_shm_memfd_gone(u32 n);                      /* vfs.c: the last description of memfd n was closed */
+u64   xrl_mem_shared_alloc(u64 len, const char *name);   /* mem.c: backing pages for shm.c */
+void  xrl_mem_shared_free(u64 addr, u64 len);
+
 /* -------------------------------------------------------------- signals */
 void xrl_sig_init(void);
 slong xrl_sys_rt_sigaction(int sig, u64 act, u64 oact, u64 sigsetsize);

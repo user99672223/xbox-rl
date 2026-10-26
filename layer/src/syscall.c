@@ -216,8 +216,11 @@ SYS(fcntl)
     }
     case LX_F_SETLK: case LX_F_SETLKW:
         f = xrl_fd_get(fd); if (!f) return -LX_EBADF; xfile_unref(f); return 0;   /* advisory locks: no-ops */
-    case LX_F_SETOWN: case LX_F_ADD_SEALS: return 0;
-    case LX_F_GETOWN: case LX_F_GET_SEALS: return 0;
+    case LX_F_ADD_SEALS: case LX_F_GET_SEALS:
+        f = xrl_fd_get(fd); if (!f) return -LX_EBADF;
+        r = xrl_memfd_seals(f, (int)a2 == LX_F_ADD_SEALS, (u32)a3); xfile_unref(f); return r;
+    case LX_F_SETOWN: return 0;
+    case LX_F_GETOWN: return 0;
     case 1031: return 65536;      /* F_SETPIPE_SZ */
     case 1032: return 65536;      /* F_GETPIPE_SZ */
     default: return -LX_EINVAL;
@@ -443,6 +446,10 @@ SYS(pipe) { UNUSED6; int fds[2]; slong r = xrl_pipe_create(0, fds); if (r) retur
 SYS(pipe2) { UNUSED6; int fds[2]; slong r = xrl_pipe_create((int)a2, fds); if (r) return r; if (xrl_ctu((u64)a1, fds, 8)) { xrl_fd_close(fds[0]); xrl_fd_close(fds[1]); return -LX_EFAULT; } return 0; }
 SYS(eventfd2) { UNUSED6; return xrl_eventfd_create((u32)a1, (int)a2); }
 SYS(eventfd) { UNUSED6; return xrl_eventfd_create((u32)a1, 0); }
+SYS(shmget) { UNUSED6; return xrl_shmget((int)a1, (u64)a2, (int)a3); }
+SYS(shmat) { UNUSED6; return xrl_shmat((int)a1, (u64)a2, (int)a3); }
+SYS(shmctl) { UNUSED6; return xrl_shmctl((int)a1, (int)a2, (u64)a3); }
+SYS(shmdt) { UNUSED6; return xrl_shmdt((u64)a1); }
 SYS(memfd_create) { UNUSED6; char n[256]; slong r = xrl_strfu(n, (u64)a1, sizeof n); if (r) return r; return xrl_memfd_create(n, (unsigned)a2); }
 
 /* ---- sockets: AF_INET/AF_INET6 are net.c's (Winsock), AF_UNIX is unix.c's ----------------------- */
@@ -783,6 +790,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_getdents64, getdents64), T(NR_readlink, readlink), T(NR_readlinkat, readlinkat),
     T(NR_fcntl, fcntl), T(NR_ioctl, ioctl), T(NR_dup, dup), T(NR_dup2, dup2), T(NR_dup3, dup3),
     T(NR_pipe, pipe), T(NR_pipe2, pipe2), T(NR_eventfd, eventfd), T(NR_eventfd2, eventfd2), T(NR_memfd_create, memfd_create),
+    T(NR_shmget, shmget), T(NR_shmat, shmat), T(NR_shmctl, shmctl), T(NR_shmdt, shmdt),
     T(NR_unlink, unlink), T(NR_unlinkat, unlinkat), T(NR_mkdir, mkdir), T(NR_mkdirat, mkdirat), T(NR_rmdir, rmdir),
     T(NR_rename, rename), T(NR_renameat, renameat), T(NR_renameat2, renameat2),
     T(NR_symlink, symlink), T(NR_symlinkat, symlinkat), T(NR_link, link), T(NR_linkat, linkat),

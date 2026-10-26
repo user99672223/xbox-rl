@@ -1493,6 +1493,100 @@ static void test_unix(void)
     CHECK(sc3(S_connect, pf3[0], &a, al) == -88 && sc2(S_listen, pf3[0], 1) == -88, "connect/listen on a pipe -> -ENOTSOCK");
 }
 
+/* ---- shared memory: SysV segments, memfd / /dev/shm mappings (layer/src/shm.c) ------- */
+static void test_shm(void)
+{
+    out("shared memory:\n");
+    long id = sc3(29 /*shmget*/, 0 /*IPC_PRIVATE*/, 100000, 01000 | 0600);
+    CHECK(id >= 0, "shmget(IPC_PRIVATE, 100000)");
+    u8 ds[112]; memset(ds, 0xff, sizeof ds);
+    CHECK(sc3(31 /*shmctl*/, id, 2 /*IPC_STAT*/, ds) == 0 && *(u64 *)(ds + 48) == 100000 && *(u64 *)(ds + 88) == 0 && (*(u32 *)(ds + 20) & 0777) == 0600, "IPC_STAT: size as asked, no attaches, mode 0600");
+    u8 *a = (u8 *)sc3(30 /*shmat*/, id, 0, 0);
+    CHECK((long)a > 0 && !((u64)a & 4095), "shmat(NULL) -> a page-aligned address");
+    CHECK(a[0] == 0 && a[99999] == 0, "a new segment reads as zeros");
+    for (int i = 0; i < 100000; i += 4096) a[i] = (u8)(i >> 12) + 1;
+    u8 *b = (u8 *)sc3(30, id, 0, 0);
+    CHECK(b == a && b[4096] == 2 && b[8192] == 3, "a second attach shows the same pages");
+    sc3(31, id, 2, ds);
+    CHECK(*(u64 *)(ds + 88) == 2 && *(int *)(ds + 84) == (int)sc(39, 0, 0, 0, 0, 0, 0), "nattch == 2, lpid is us");
+    CHECK(sc1(67 /*shmdt*/, a) == 0, "shmdt");
+    sc3(31, id, 2, ds);
+    CHECK(*(u64 *)(ds + 88) == 1, "nattch == 1");
+    CHECK(sc3(31, id, 0 /*IPC_RMID*/, 0) == 0, "IPC_RMID with one attach left");
+    CHECK(a[4096] == 2, "the segment lives on while attached");
+    CHECK(sc1(67, a) == 0, "last shmdt destroys it");
+    CHECK(sc3(30, id, 0, 0) == -22, "shmat of a destroyed id -> -EINVAL");
+    CHECK(sc1(67, 0x1000) == -22, "shmdt of a non-attach -> -EINVAL");
+    CHECK(sc3(30, 12345, 0, 0) == -22, "shmat of an id that never existed -> -EINVAL");
+
+    long k1 = sc3(29, 0x58524c31, 8192, 01000 | 0666);
+    CHECK(k1 >= 0 && sc3(29, 0x58524c31, 4096, 0) == k1, "shmget with a key: the same segment again");
+    CHECK(sc3(29, 0x58524c31, 4096, 01000 | 02000) == -17, "IPC_CREAT|IPC_EXCL on an existing key -> -EEXIST");
+    CHECK(sc3(29, 0x58524c31, 16384, 0) == -22, "asking for a bigger size than it has -> -EINVAL");
+    CHECK(sc3(29, 0x58524c32, 4096, 0) == -2, "an unknown key without IPC_CREAT -> -ENOENT");
+    CHECK(sc3(29, 0x58524c33, 0, 01000) == -22, "creating with size 0 -> -EINVAL");
+    sc3(31, k1, 0, 0);
+    CHECK(sc3(29, 0x58524c31, 4096, 0) == -2, "after IPC_RMID the key is free");
+
+    /* memfd: every shared mapping shows the same pages, whatever the offset */
+    long fd = sc3(319 /*memfd_create*/, "xrl-shm", 3 /*CLOEXEC|ALLOW_SEALING*/, 0);
+    CHECK(fd >= 0 && sc2(77 /*ftruncate*/, fd, 16384) == 0, "memfd_create + ftruncate(16 KiB)");
+    u8 *m1 = (u8 *)sc(9, 0, 16384, 3, 1 /*MAP_SHARED*/, fd, 0);
+    CHECK((long)m1 > 0, "mmap(MAP_SHARED) of the memfd");
+    m1[0] = 0x11; m1[5000] = 0x22;
+    u8 *m2 = (u8 *)sc(9, 0, 8192, 3, 1, fd, 4096);
+    CHECK(m2 == m1 + 4096 && m2[904] == 0x22, "a mapping at offset 4096 is the same pages (sees the write at 5000)");
+    m2[0] = 0x33;
+    CHECK(m1[4096] == 0x33, "and a write through it shows in the first mapping");
+    sc1(3, fd);
+    m1[100] = 0x44;
+    CHECK(m1[100] == 0x44, "close(fd) leaves the mappings usable");
+    CHECK(sc2(11, m2, 8192) == 0 && m1[4096] == 0x33, "munmap of the second mapping keeps the first");
+    CHECK(sc2(11, m1, 16384) == 0, "munmap of the first");
+
+    /* the content survives 'unmap everything, map again' while the fd is open; seals */
+    long f2 = sc3(319, "xrl-keep", 2, 0);
+    sc2(77, f2, 8192);
+    u8 *k = (u8 *)sc(9, 0, 8192, 3, 1, f2, 0);
+    k[10] = 0x5a; k[8000] = 0x6b;
+    sc2(11, k, 8192);
+    u8 *k2 = (u8 *)sc(9, 0, 8192, 3, 1, f2, 0);
+    CHECK((long)k2 > 0 && k2[10] == 0x5a && k2[8000] == 0x6b, "unmap and map again: the data is still there (fd open)");
+    CHECK(sc3(72, f2, 1034 /*F_GET_SEALS*/, 0) == 0, "no seals yet");
+    CHECK(sc3(72, f2, 1033 /*F_ADD_SEALS*/, 2 | 4) == 0 && sc3(72, f2, 1034, 0) == 6, "F_ADD_SEALS(SHRINK|GROW)");
+    CHECK(sc2(77, f2, 4096) == -1 && sc2(77, f2, 16384) == -1, "ftruncate smaller or bigger -> -EPERM");
+    CHECK(sc2(77, f2, 8192) == 0, "ftruncate to the same size is fine");
+    CHECK(sc3(72, f2, 1033, 8) == 0 && sc3(1, f2, "x", 1) == -1, "F_SEAL_WRITE: write() -> -EPERM");
+    CHECK(sc3(72, f2, 1033, 1) == 0 && sc3(72, f2, 1033, 8) == -1, "F_SEAL_SEAL: no more seals -> -EPERM");
+    long f3 = sc3(319, "xrl-nosealing", 0, 0);
+    CHECK(sc3(72, f3, 1033, 2) == -1 && sc3(72, f3, 1034, 0) == 1, "a memfd without MFD_ALLOW_SEALING: adding -> -EPERM, GET shows F_SEAL_SEAL");
+    CHECK(sc3(319, "x", 0x1000, 0) == -22, "memfd_create with an unknown flag -> -EINVAL");
+    long pf = sc3(2, "/tmp/xrl_not_a_memfd", 0102, 0600);
+    CHECK(sc3(72, pf, 1034, 0) == -22, "F_GET_SEALS on a regular file -> -EINVAL");
+    sc1(3, pf); sc1(87, "/tmp/xrl_not_a_memfd");
+    sc2(11, k2, 8192); sc1(3, f2); sc1(3, f3);
+
+    /* a /dev/shm file: shared while mapped, written back when the last mapping goes */
+    long sf = sc3(2, "/dev/shm/xrl_shm_test", 0102, 0600);
+    sc2(77, sf, 8192);
+    u8 *s1 = (u8 *)sc(9, 0, 8192, 3, 1, sf, 0);
+    u8 *s2 = (u8 *)sc(9, 0, 4096, 3, 1, sf, 0);
+    s1[7] = 0x77;
+    CHECK(s2 == s1 && s2[7] == 0x77, "/dev/shm file: two mappings, one set of pages");
+    sc2(11, s1, 8192);
+    char rb[4]; rb[0] = 0;
+    sc2(11, s2, 4096);
+    CHECK(sc4(17, sf, rb, 1, 7) == 1 && (u8)rb[0] == 0x77, "after the last munmap the file holds what was written");
+    sc1(3, sf); sc1(87, "/dev/shm/xrl_shm_test");
+    /* a file elsewhere is not shared memory: the ordinary private-copy mapping */
+    long of = sc3(2, "/tmp/xrl_plain_map", 0102, 0600);
+    sc2(77, of, 4096);
+    u8 *p1 = (u8 *)sc(9, 0, 4096, 3, 1, of, 0);
+    u8 *p2 = (u8 *)sc(9, 0, 4096, 3, 1, of, 0);
+    CHECK((long)p1 > 0 && (long)p2 > 0 && p1 != p2, "a regular file's shared mapping is its own copy (not shm.c's)");
+    sc2(11, p1, 4096); sc2(11, p2, 4096); sc1(3, of); sc1(87, "/tmp/xrl_plain_map");
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -1524,6 +1618,7 @@ void cstart(u64 *sp)
     test_threads();
     test_net();
     test_unix();
+    test_shm();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

@@ -366,6 +366,7 @@ static void ft_to_ts(FILETIME ft, lx_timespec *ts)
 }
 
 static int g_meta_on;
+static int memfd_sealed(const xfile *f, u32 seal);
 static void meta_apply(const char *gpath, lx_stat *st);
 
 static u64 hash_str(const char *s)
@@ -852,6 +853,7 @@ static slong dfile_write(xfile *f, const void *buf, u64 n, s64 off)
 {
     if (f->h == INVALID_HANDLE_VALUE || f->mode != 0) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EBADF;
+    if (memfd_sealed(f, 8 /*F_SEAL_WRITE*/)) return -LX_EPERM;
     slong pr = xrl_mem_populate((u64)(uintptr_t)buf, n);   /* the kernel reads buf: no lazy pages */
     if (pr) return pr;
     int use_pos = off < 0;
@@ -914,6 +916,10 @@ static slong dfile_ftruncate(xfile *f, s64 len)
 {
     if (f->mode == 1) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EINVAL;
+    if (f->gpath && !strncmp(f->gpath, "/memfd:", 7)) {   /* a sealed memfd keeps its size (and its contents) */
+        LARGE_INTEGER cur;
+        if (GetFileSizeEx(f->h, &cur) && ((len < cur.QuadPart && memfd_sealed(f, 2 /*F_SEAL_SHRINK*/)) || (len > cur.QuadPart && memfd_sealed(f, 4 /*F_SEAL_GROW*/)) || memfd_sealed(f, 8))) return -LX_EPERM;
+    }
     FILE_END_OF_FILE_INFO e; e.EndOfFile.QuadPart = len;
     if (!SetFileInformationByHandle(f->h, FileEndOfFileInfo, &e, sizeof e)) return xrl_lasterr();
     return 0;
@@ -1066,6 +1072,8 @@ static slong dir_getdents(xfile *f, void *ubuf, u64 cap)
 }
 
 static const xfile_ops g_file_ops = { "file", dfile_read, dfile_write, dfile_lseek, dfile_fstat, NULL, dfile_ioctl, dfile_ftruncate, dfile_fsync, dfile_poll, NULL, dfile_read };
+static void memfd_close(xfile *f);
+static const xfile_ops g_memfd_ops = { "memfd", dfile_read, dfile_write, dfile_lseek, dfile_fstat, NULL, dfile_ioctl, dfile_ftruncate, dfile_fsync, dfile_poll, memfd_close, dfile_read };
 static const xfile_ops g_dir_ops = { "dir", NULL, NULL, dfile_lseek, dfile_fstat, dir_getdents, dfile_ioctl, NULL, NULL, dfile_poll, dir_close, NULL };
 
 static xfile *wrap_handle(HANDLE h, int flags, const char *gpath, int isdir, const wchar_t *hostpath)
@@ -1213,9 +1221,73 @@ static slong memfd_host_path(unsigned n, char *g, size_t cap, wchar_t *hp, size_
     return xrl_vfs_host_path(g, hp, hpcap);
 }
 
+/* Per memfd: how many open file descriptions refer to it (the pages behind a shared mapping, shm.c, live until the
+ * last one is closed and the last mapping is gone) and its seals. */
+typedef struct mfd_state { u32 n; int opens; u32 seals; int sealable; } mfd_state;
+static mfd_state *g_mfd;
+static size_t g_nmfd, g_capmfd;
+static SRWLOCK g_mfd_lock = SRWLOCK_INIT;
+
+static mfd_state *mfd_find(u32 n)   /* lock held */
+{
+    for (size_t i = 0; i < g_nmfd; i++) if (g_mfd[i].n == n) return &g_mfd[i];
+    return NULL;
+}
+
+static void mfd_open(u32 n, int sealable)
+{
+    AcquireSRWLockExclusive(&g_mfd_lock);
+    mfd_state *m = mfd_find(n);
+    if (!m) {
+        if (g_nmfd == g_capmfd) { g_capmfd = g_capmfd ? g_capmfd * 2 : 16; g_mfd = (mfd_state *)realloc(g_mfd, g_capmfd * sizeof *g_mfd); }
+        m = &g_mfd[g_nmfd++];
+        *m = (mfd_state){ n, 0, 0, sealable };
+    }
+    m->opens++;
+    ReleaseSRWLockExclusive(&g_mfd_lock);
+}
+
+static void memfd_close(xfile *f)
+{
+    u32 n = (u32)(uintptr_t)f->priv;
+    int gone = 0;
+    AcquireSRWLockExclusive(&g_mfd_lock);
+    mfd_state *m = mfd_find(n);
+    if (m && --m->opens <= 0) { *m = g_mfd[--g_nmfd]; gone = 1; }
+    ReleaseSRWLockExclusive(&g_mfd_lock);
+    if (gone) xrl_shm_memfd_gone(n);
+}
+
+static int memfd_sealed(const xfile *f, u32 seal)
+{
+    if (f->ops != &g_memfd_ops) return 0;
+    AcquireSRWLockShared(&g_mfd_lock);
+    mfd_state *m = mfd_find((u32)(uintptr_t)f->priv);
+    int r = m && (m->seals & seal);
+    ReleaseSRWLockShared(&g_mfd_lock);
+    return r;
+}
+
+/* fcntl(F_ADD_SEALS = op 1, F_GET_SEALS = op 0) */
+slong xrl_memfd_seals(xfile *f, int op, u32 seals)
+{
+    if (f->ops != &g_memfd_ops) return -LX_EINVAL;
+    slong r = 0;
+    AcquireSRWLockExclusive(&g_mfd_lock);
+    mfd_state *m = mfd_find((u32)(uintptr_t)f->priv);
+    if (!m) r = -LX_EINVAL;
+    else if (op == 0) r = m->sealable ? (slong)m->seals : 0x1 /*F_SEAL_SEAL: no sealing allowed*/;
+    else if (!m->sealable || (m->seals & 1)) r = -LX_EPERM;
+    else if (seals & ~0x1fu) r = -LX_EINVAL;
+    else m->seals |= seals;
+    ReleaseSRWLockExclusive(&g_mfd_lock);
+    return r;
+}
+
 slong xrl_memfd_create(const char *name, unsigned flags)
 {
     static volatile LONG ctr;
+    if (flags & ~(1u | 2u | 4u | (0x3fu << 26))) return -LX_EINVAL;   /* MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_HUGETLB (+ size bits, ignored) */
     unsigned n = (unsigned)InterlockedIncrement(&ctr);
     char g[128], disp[300];
     wchar_t hp[PATHBUF];
@@ -1225,7 +1297,9 @@ slong xrl_memfd_create(const char *name, unsigned flags)
     if (h == INVALID_HANDLE_VALUE) return xrl_lasterr();
     snprintf(disp, sizeof disp, "/memfd:%.249s (deleted)", name ? name : "");
     xfile *f = wrap_handle(h, LX_O_RDWR, disp, 0, hp);
+    f->ops = &g_memfd_ops;
     f->priv = (void *)(uintptr_t)n;
+    mfd_open(n, (flags & 2) != 0);
     int fd = xrl_fd_install(f, (flags & 1) != 0, 0);
     xfile_unref(f);
     return fd;
@@ -1242,7 +1316,7 @@ static slong memfd_reopen(const char *gabs, int flags)
     if (fd < 0) return -1;
     xfile *of = xrl_fd_get(fd);
     if (!of) return -1;
-    if (of->ops != &g_file_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) { xfile_unref(of); return -1; }
+    if (of->ops != &g_memfd_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) { xfile_unref(of); return -1; }
     char g[128];
     wchar_t hp[PATHBUF];
     slong r = memfd_host_path((unsigned)(uintptr_t)of->priv, g, sizeof g, hp, ARRAY_LEN(hp));
@@ -1251,7 +1325,9 @@ static slong memfd_reopen(const char *gabs, int flags)
     HANDLE h = hopen(hp, acc == LX_O_RDONLY ? GENERIC_READ : acc == LX_O_WRONLY ? GENERIC_WRITE : (GENERIC_READ | GENERIC_WRITE), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);
     if (h == INVALID_HANDLE_VALUE) { xfile_unref(of); return xrl_lasterr(); }
     xfile *f = wrap_handle(h, flags & ~(LX_O_CREAT | LX_O_EXCL | LX_O_TRUNC), of->gpath, 0, hp);
+    f->ops = &g_memfd_ops;
     f->priv = of->priv;
+    mfd_open((u32)(uintptr_t)of->priv, 0);
     xfile_unref(of);
     int nfd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
     xfile_unref(f);

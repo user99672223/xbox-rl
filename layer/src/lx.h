@@ -52,6 +52,10 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_msync 26
 #define NR_mincore 27
 #define NR_madvise 28
+#define NR_shmget 29
+#define NR_shmat 30
+#define NR_shmctl 31
+#define NR_shmdt 67
 #define NR_dup 32
 #define NR_dup2 33
 #define NR_pause 34
