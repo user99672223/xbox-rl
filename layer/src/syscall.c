@@ -795,7 +795,35 @@ SYS(time) { UNUSED6; return xrl_sys_time((u64)a1); }
 SYS(times) { UNUSED6; return xrl_sys_times((u64)a1); }
 SYS(getrusage) { UNUSED6; return xrl_sys_getrusage((int)a1, (u64)a2); }
 SYS(getpgid) { UNUSED6; return G.pid; }
-SYS(getgroups) { UNUSED6; return 0; }
+/* Supplementary groups: the layer has no privilege model, so setgroups needs euid 0 (as on Linux) and then only changes what
+ * getgroups reads back. setfsuid/setfsgid return the previous value (the effective id) and change nothing. */
+#define XRL_NGROUPS_MAX 256
+static u32 g_groups[XRL_NGROUPS_MAX];
+static int g_ngroups;
+static SRWLOCK g_groups_lock = SRWLOCK_INIT;
+SYS(getgroups)
+{
+    UNUSED6;
+    AcquireSRWLockShared(&g_groups_lock);
+    slong r = (int)a1 < 0 ? -LX_EINVAL : (int)a1 == 0 ? g_ngroups : (int)a1 < g_ngroups ? -LX_EINVAL : g_ngroups;
+    if (r > 0 && (int)a1 && xrl_ctu((u64)a2, g_groups, (size_t)r * 4)) r = -LX_EFAULT;
+    ReleaseSRWLockShared(&g_groups_lock);
+    return r;
+}
+SYS(setgroups)
+{
+    UNUSED6;
+    if (xrl_cur_uid() != 0) return -LX_EPERM;
+    if (a1 < 0 || a1 > XRL_NGROUPS_MAX) return -LX_EINVAL;
+    u32 g[XRL_NGROUPS_MAX];
+    if (a1 && xrl_cfu(g, (u64)a2, (size_t)a1 * 4)) return -LX_EFAULT;
+    AcquireSRWLockExclusive(&g_groups_lock);
+    memcpy(g_groups, g, (size_t)a1 * 4); g_ngroups = (int)a1;
+    ReleaseSRWLockExclusive(&g_groups_lock);
+    return 0;
+}
+SYS(setfsuid) { UNUSED6; return xrl_cur_uid(); }
+SYS(setfsgid) { UNUSED6; return xrl_cur_gid(); }
 SYS(getresuid) { UNUSED6; u32 id = xrl_cur_uid(); if (xrl_ctu((u64)a1, &id, 4) || xrl_ctu((u64)a2, &id, 4) || xrl_ctu((u64)a3, &id, 4)) return -LX_EFAULT; return 0; }
 SYS(getresgid) { UNUSED6; u32 id = xrl_cur_gid(); if (xrl_ctu((u64)a1, &id, 4) || xrl_ctu((u64)a2, &id, 4) || xrl_ctu((u64)a3, &id, 4)) return -LX_EFAULT; return 0; }
 SYS(personality) { UNUSED6; return 0; }
@@ -860,7 +888,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_getpid, getpid), T(NR_getppid, getppid), T(NR_getuid, uid), T(NR_geteuid, uid), T(NR_getgid, gid), T(NR_getegid, gid),
     T(NR_getpgid, getpgid), T(NR_getpgrp, getpgid), T(NR_getsid, getpgid), T(NR_setsid, getpgid), T(NR_setpgid, zero_ok),
     T(NR_setuid, zero_ok), T(NR_setgid, zero_ok), T(NR_setresuid, zero_ok), T(NR_setresgid, zero_ok),
-    T(NR_getgroups, getgroups), T(NR_getresuid, getresuid), T(NR_getresgid, getresgid),
+    T(NR_getgroups, getgroups), T(NR_setgroups, setgroups), T(NR_setfsuid, setfsuid), T(NR_setfsgid, setfsgid), T(NR_setreuid, zero_ok), T(NR_setregid, zero_ok), T(NR_getresuid, getresuid), T(NR_getresgid, getresgid),
     T(NR_prctl, prctl), T(NR_arch_prctl, arch_prctl), T(NR_uname, uname), T(NR_sysinfo, sysinfo), T(NR_getrandom, getrandom), T(NR_membarrier, membarrier),
     T(NR_getrlimit, getrlimit), T(NR_setrlimit, setrlimit), T(NR_prlimit64, prlimit64), T(NR_personality, personality),
     T(NR_sched_getaffinity, sched_getaffinity), T(NR_sched_setaffinity, zero_ok), T(NR_getcpu, getcpu),

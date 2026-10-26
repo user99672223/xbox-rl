@@ -135,6 +135,11 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_setpgid 109
 #define NR_getppid 110
 #define NR_getpgrp 111
+#define NR_setreuid 113
+#define NR_setregid 114
+#define NR_setgroups 116
+#define NR_setfsuid 122
+#define NR_setfsgid 123
 #define NR_setsid 112
 #define NR_getgroups 115
 #define NR_setresuid 117

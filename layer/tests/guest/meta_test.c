@@ -53,6 +53,10 @@ static void phase_root(void)
     CHECK(sc1(87, "/m2/secret") == 0 && mk("/m2/secret", 0644) >= 0 && stat_("/m2/secret", &s) == 0 && (s.mode & 07777) == 0644 && s.uid == 0, "unlink then create again: a fresh 0644 file, not the old mode");
     CHECK(sc3(2, "/m2/renamed", 0, 0) >= 0, "root opens a 0640 file owned by someone else");
     CHECK(sc2(21, "/m2/renamed", 4) == 0 && sc2(21, "/m2/renamed", 1) == -13, "access(X_OK) on a file with no x bit -> -EACCES even for root");
+    { u32 gl[2] = { 5, 6 }, back[8];
+      CHECK(sc2(116 /*setgroups*/, 2, gl) == 0 && sc2(115 /*getgroups*/, 0, 0) == 2 && sc2(115, 8, back) == 2 && back[0] == 5 && back[1] == 6, "root: setgroups, getgroups(0) counts, getgroups reads them back");
+      CHECK(sc2(115, 1, back) == -22, "getgroups into a list that is too small -> -EINVAL");
+      CHECK(sc1(122 /*setfsuid*/, 0) == 0, "setfsuid returns the previous (effective) uid"); }
     /* what the user phase works on */
     sc1(95, 0);
     mk("/m2/rootonly", 0600);
@@ -66,6 +70,7 @@ static void phase_user(void)
     struct st s;
     out("meta (uid 1000):\n");
     CHECK(sc(102, 0, 0, 0, 0, 0, 0) == 1000 && sc(104, 0, 0, 0, 0, 0, 0) == 1000, "getuid/getgid come from XRL_UID/XRL_GID");
+    { u32 gl[1] = { 7 }; CHECK(sc2(116, 1, gl) == -1, "setgroups as a non-root caller -> -EPERM"); }
     CHECK(sc3(2, "/m2/rootonly", 0, 0) == -13, "open of a 0600 root file -> -EACCES");
     CHECK(sc3(2, "/m2/mine", 2, 0) >= 0, "open of my own 0644 file for writing works");
     CHECK(sc3(2, "/m2/group", 2, 0) >= 0, "group bits apply when the gid matches (0660, group 1000)");
