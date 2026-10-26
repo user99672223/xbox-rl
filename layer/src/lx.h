@@ -513,6 +513,7 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_CLONE_FILES 0x00000400
 #define LX_CLONE_SIGHAND 0x00000800
 #define LX_CLONE_VFORK 0x00004000
+#define LX_CLONE_NEW_MASK 0x7e020000u   /* CLONE_NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET */
 #define LX_CLONE_PARENT 0x00008000
 #define LX_CLONE_THREAD 0x00010000
 #define LX_CLONE_SYSVSEM 0x00040000
@@ -569,6 +570,9 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_ARCH_GET_CPUID 0x1011
 #define LX_ARCH_SET_CPUID 0x1012
 #define LX_PR_SET_PDEATHSIG 1
+#define LX_PR_GET_PDEATHSIG 2
+#define LX_PR_SET_CHILD_SUBREAPER 36
+#define LX_PR_GET_CHILD_SUBREAPER 37
 #define LX_PR_GET_DUMPABLE 3
 #define LX_PR_SET_DUMPABLE 4
 #define LX_PR_SET_NAME 15

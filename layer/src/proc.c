@@ -275,6 +275,11 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
 {
     xrl_thread *p = xrl_cur();
     if (!p || !p->proc) return -LX_ENOSYS;
+    if (flags & LX_CLONE_NEW_MASK) {   /* no namespaces: what an unprivileged process gets */
+        static volatile LONG warned;
+        if (!InterlockedExchange(&warned, 1)) LOGW("clone: namespace flags 0x%llx refused (-EPERM)", flags & LX_CLONE_NEW_MASK);
+        return -LX_EPERM;
+    }
     xrl_proc *pp = p->proc;
     if (flags & (LX_CLONE_SIGHAND | LX_CLONE_THREAD) && !(flags & LX_CLONE_VM)) return -LX_EINVAL;
     int share_mm = (flags & LX_CLONE_VM) != 0;
@@ -492,14 +497,22 @@ void xrl_proc_park(xrl_thread *t)
 }
 
 /* ------------------------------------------------------------------ exit */
-static void reparent_children(xrl_proc *p)
+/* the nearest ancestor that is a subreaper, else init */
+static xrl_proc *reaper_for(xrl_proc *p)
 {
-    xrl_proc *init = G.init_proc;
+    for (xrl_proc *a = p->parent; a; a = a->parent) if (a->subreaper && a->state != XP_ZOMBIE) return a;
+    return G.init_proc;
+}
+
+static void reparent_children(xrl_proc *p, int *sig_to, int *nsig, int cap)
+{
+    xrl_proc *reaper = reaper_for(p);
     for (xrl_proc *c = g_procs; c; c = c->next) {
         if (c->parent != p) continue;
-        c->parent = init;
-        c->ppid = init->pid;
-        if (c->state == XP_ZOMBIE) xrl_proc_signal(init, LX_SIGCHLD, 0);
+        c->parent = reaper;
+        c->ppid = reaper->pid;
+        if (c->pdeathsig && c->state != XP_ZOMBIE && *nsig < cap) sig_to[(*nsig)++] = c->pid;
+        if (c->state == XP_ZOMBIE) xrl_proc_signal(reaper, LX_SIGCHLD, 0);
     }
 }
 
@@ -523,8 +536,9 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
     xrl_files_put(files);
     xrl_mm *mm = p->mm;
     p->mm = NULL;
+    int pd[64], npd = 0;
     AcquireSRWLockExclusive(&g_proc_lock);
-    reparent_children(p);
+    reparent_children(p, pd, &npd, 64);
     p->wstatus = wstatus;
     p->state = XP_ZOMBIE;
     xrl_proc *par = p->parent;
@@ -538,6 +552,10 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
     LOGI("proc %d ended (wait status 0x%x)%s", p->pid, wstatus, reap ? ", reaped (SIGCHLD ignored)" : "");
     if (mm && InterlockedDecrement(&mm->refs) == 0) mm_free(mm);
     swap_leave(p);
+    for (int i = 0; i < npd; i++) {   /* children that asked to be told when their parent ends */
+        xrl_proc *c = xrl_proc_by_pid(pd[i]);
+        if (c) { if (c->pdeathsig) xrl_proc_signal(c, c->pdeathsig, 0); xrl_proc_put(c); }
+    }
     xrl_proc_vfork_release(p);
     if (par && !reap) xrl_proc_signal(par, p->exit_signal ? p->exit_signal : LX_SIGCHLD, 0);
     xrl_io_notify();

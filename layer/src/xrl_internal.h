@@ -220,6 +220,8 @@ struct xrl_proc {
     int stop_sig, stop_reported, cont_reported;
     int exit_signal;                /* sent to the parent when this process ends (SIGCHLD) */
     int is_init;                    /* the process boot started: its exit ends the layer */
+    int pdeathsig;                  /* PR_SET_PDEATHSIG: sent to this process when its parent ends */
+    int subreaper;                  /* PR_SET_CHILD_SUBREAPER: orphaned descendants are reparented here, not to init */
     volatile LONG refs;             /* the process table (until reaped) + one per thread record */
     volatile LONG nthreads, ndaemons;
     volatile LONG dying;            /* the process is being torn down: its threads end at their next syscall return */

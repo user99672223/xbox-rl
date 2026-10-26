@@ -478,6 +478,14 @@ slong xrl_sys_prctl(int op, u64 a2, u64 a3, u64 a4, u64 a5)
     case LX_PR_GET_NAME:
         return xrl_ctu(a2, t ? t->name : "xrl", 16);
     case LX_PR_SET_PDEATHSIG:
+        if (a2 > LX_NSIG) return -LX_EINVAL;
+        if (t) t->proc->pdeathsig = (int)a2;
+        return 0;
+    case LX_PR_GET_PDEATHSIG: { int v = t ? t->proc->pdeathsig : 0; return xrl_ctu(a2, &v, 4); }
+    case LX_PR_SET_CHILD_SUBREAPER:
+        if (t) t->proc->subreaper = a2 != 0;
+        return 0;
+    case LX_PR_GET_CHILD_SUBREAPER: { int v = t ? t->proc->subreaper : 0; return xrl_ctu(a2, &v, 4); }
     case LX_PR_SET_DUMPABLE:
     case LX_PR_SET_NO_NEW_PRIVS:
     case LX_PR_SET_TIMERSLACK:

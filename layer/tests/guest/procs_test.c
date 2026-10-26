@@ -206,6 +206,27 @@ static void run_role(int argc, char **argv)
         exit_(9);
     }
     if (seq(role, "stop")) { msleep(20000); exit_(99); }
+    if (seq(role, "sigpipe")) {   /* write to a pipe nobody reads: SIGPIPE kills us (status 13) */
+        int p[2]; pipe2_(p, 0);
+        close_(p[0]);
+        write_(p[1], "x", 1);
+        exit_(99);
+    }
+    if (seq(role, "epipe")) {     /* ... and with SIGPIPE ignored: -EPIPE */
+        struct ksa ign = { (void *)1, 0, 0, 0 };
+        sc4(13, 13, &ign, 0, 8);
+        int p[2]; pipe2_(p, 0);
+        close_(p[0]);
+        exit_(role_ok(write_(p[1], "x", 1) == -32));
+    }
+    if (seq(role, "pdparent")) {   /* starts a child that asked for SIGUSR1 when its parent ends, reports its pid, ends */
+        long pid = fork_();
+        if (pid == 0) { char *av[] = { g_self, "pdchild", 0 }; execve_(g_self, av, g_envp); exit_(127); }
+        write_(atol_(argv[2]), &pid, 8);
+        msleep(300);
+        exit_(0);
+    }
+    if (seq(role, "pdchild")) { sc(157, 1 /* PR_SET_PDEATHSIG */, 10, 0, 0, 0, 0); msleep(20000); exit_(99); }
     (void)argc;
     exit_(120);
 }
@@ -560,6 +581,35 @@ static void driver(void)
         if (c == 0) { char *av2[] = { "/bin/procs_nopie.elf", "exit", "6", 0 }; execve_("/bin/procs_nopie.elf", av2, g_envp); exit_(127); }
         w = wait_for(c, &st, 3000);
         CHECKV(w == c && st == (6 << 8), "...and it runs again once the first is gone", st);
+    }
+    out("pipes, SIGPIPE, parent-death signal:\n");
+    {
+        char *av[] = { g_self, "sigpipe", 0 };
+        long pid = spawn(av);
+        long w = wait_for(pid, &st, 3000);
+        CHECKV(w == pid && st == 13, "write to a pipe with no reader kills the writer with SIGPIPE", st);
+        char *av2[] = { g_self, "epipe", 0 };
+        pid = spawn(av2);
+        w = wait_for(pid, &st, 3000);
+        CHECKV(w == pid && st == 0, "...and with SIGPIPE ignored the write returns -EPIPE", st);
+    }
+    {
+        int p[2]; pipe2_(p, 0);
+        char fd[24]; ltoa_(p[1], fd);
+        char *av[] = { g_self, "pdparent", fd, 0 };
+        long pid = spawn(av);
+        close_(p[1]);
+        long child = 0;
+        long n = read_(p[0], &child, 8);
+        close_(p[0]);
+        long w = wait_for(pid, &st, 3000);
+        CHECKV(n == 8 && w == pid && st == 0, "the parent ends normally", st);
+        long w2 = wait_for(child, &st, 3000);
+        CHECKV(w2 == child && st == 10, "PR_SET_PDEATHSIG: the orphan got SIGUSR1 when its parent ended (and is the init's child now)", st);
+    }
+    {
+        long r = sc(56, 0x20000000 | 17 /* CLONE_NEWPID|SIGCHLD */, 0, 0, 0, 0, 0);
+        CHECKV(r == -1, "clone with namespace flags -> -EPERM", r);
     }
     CHECK(wait4_(-1, &st, 1, 0) == -10, "no children left at the end");
     outn("TOTAL FAILS", fails);

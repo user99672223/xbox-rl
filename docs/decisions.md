@@ -178,19 +178,31 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
        execs or exits it puts them back (unmaps what the child mapped, recreates anonymous mappings it unmapped, copies the
        contents back). The parent therefore sees what a real fork would show it: a shell's `(x=2)` or `$(cmd)` leaves its
        variables, heap and `rootshell` alone. This covers fork+exec, fork+builtin+exit (every shell stage), `system()`,
-       `popen()`. Measured cost is in REPORT.md. A mm whose writable footprint exceeds `XRL_FORK_SNAPSHOT_MB` (256)
-       falls back to plain vfork semantics with a warning (Firefox-sized parents: see below).
-       Not supported, logged when detected: a forked child that blocks waiting for its parent (the parent cannot run until
-       the child execs/exits: a pipe whose reader is the parent and that the child fills past 64 KiB, a child that waits
-       for a signal only the parent sends). The parent's other threads are suspended with it.
+       `popen()`. A mm whose writable footprint exceeds `XRL_FORK_SNAPSHOT_MB` (256) falls back to plain vfork
+       semantics with a warning (Firefox-sized parents: see below).
+       **Fork groups (built, `XRL_FORK_SWAP=0` turns it off).** "Child first, parent suspended" would deadlock or
+       reorder output whenever a forked child that does not exec waits for something the parent does (a background
+       subshell `(sleep 1; echo x) &`, a pipe the parent reads, a signal only the parent sends). So processes that share
+       addresses this way form a group (`mm->grp`): one *holder* runs guest code at a time, and the address space holds
+       one member's image. A member that is about to block in the layer (`xrl_wait_addr` and `xrl_sleep_ns` cover wait4,
+       pipe reads, poll/epoll, futexes, sleeps) lets go of the baton; when its wait ends it takes the baton back, and if
+       another member's image is in memory by then, that image is snapshotted into the member and this one's is restored
+       (the same snapshot code, a few milliseconds for a shell). The parent resumes from its fork call as soon as the child
+       execs, exits or blocks. Verified with Alpine's `ash`: `(sleep 1; echo bg) & echo before; wait` prints `before`
+       first. Only single-threaded processes join (a thread that blocks cannot stop its siblings); a multi-threaded parent
+       keeps the child-runs-to-completion schedule with its other threads frozen. Blocking primitives outside the two hooks
+       (Winsock waits in net.c, ntsync's waits) do not release the baton: a forked child blocked there keeps the parent
+       waiting.
     3. `clone(CLONE_VM)` without `CLONE_THREAD`/`CLONE_VFORK`: a new process on the shared mm, running concurrently.
-  - **A real copy-on-write fork (not built).** Options for fork-without-exec that must run concurrently with its parent
-    (Firefox's fork server, Chromium's zygote, daemons): (a) *snapshot-and-swap*: processes whose mms overlap run one at a
-    time and the layer swaps the writable private mappings (the snapshot machinery above) at blocking syscalls, so each
-    process sees its own memory at the same addresses; cheap for small processes, hopeless for 500 MB ones; (b) section
-    objects: back private memory with pagefile sections and give the child a copy-on-write view, which Windows can only
-    map at *different* addresses, so it needs (c) address translation (Blink-style or the `XRL_DBT` code cache) with a
-    per-process offset; (d) on the laptop only, a second Windows process. (a) is the incremental step from this entry.
+  - **Real concurrent copy-on-write fork (not built).** The fork groups above are cooperative: members of one group never
+    run at the same instant. What that cannot do: a fork-without-exec child that computes while its parent computes
+    (Firefox's fork server, Chromium's zygote, a forking daemon with CPU-bound children), a multi-threaded process that
+    forks without exec, and big processes (the swap copies the whole writable footprint). Options: (b) section objects:
+    back private memory with pagefile sections and give the child a copy-on-write view, which Windows can only map at
+    *different* addresses, so it needs (c) address translation (Blink-style or the `XRL_DBT` code cache) with a
+    per-process offset; (d) on the laptop only, a second Windows process; (e) make the baton finer: swap at every
+    syscall boundary of a *runnable* member, which turns the group into a time-slicing scheduler (a few ms per slice for
+    a shell, far too slow for a browser).
   - **`execve`** (extends exec.c): the old image goes (in place if the mm has one user, else the process takes a fresh mm
     and drops its reference), `FD_CLOEXEC` descriptors close in this process's table, handlers reset (SIG_IGN stays),
     other threads of *this* process stop, the new image starts on a new main thread. The Wine hand-over prctls are
