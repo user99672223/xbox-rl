@@ -10,8 +10,8 @@
 D=/c/Users/10harbad/xrl-work/linux-agents/display
 cd "$(dirname "$0")/.."
 rm -f $D/x11tmp/screen.xwd
-(wsl -u root -e bash -lc "bash /mnt/c/Users/10harbad/xrl-work/linux-agents/display/xvfb-start.sh ${XB_SECONDS:-40}" > $D/xvfb-run.log 2>&1 &)
-for i in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do [ -s $D/x11tmp/screen.xwd ] && break; sleep 1; done
+(wsl -u root -e bash -lc "bash /mnt/c/Users/10harbad/xrl-work/linux-agents/display/xvfb-start.sh ${XB_SECONDS:-75}" > $D/xvfb-run.log 2>&1 &)
+for i in $(seq 1 180); do [ -s $D/x11tmp/screen.xwd ] && break; sleep 1; done   # the first start installs Alpine's Xvfb into RAM
 sleep 3   # twm and the xterm draw
 R="${XRL_TEST_ROOT:-$(mktemp -d)}"
 mkdir -p "$R/bin" "$R/tmp"
