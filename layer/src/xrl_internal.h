@@ -90,6 +90,7 @@ struct xrl_thread {
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
     u64  nsys;             /* syscalls made (perf.c); written by this thread only */
+    u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;
     DWORD  win_tid;
     u64  guest_gs;

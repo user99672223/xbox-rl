@@ -157,6 +157,29 @@ static u64 make_stub(u64 target)   /* hook lock held */
     return (u64)s;
 }
 
+/* QueryInterface of every hooked vtable (slot 0): it may return an interface of a type not seen
+ * yet on any call, so its results are always scanned (xrl_com_after) */
+#define QI_SET 1024
+static volatile u64 g_qi[QI_SET];
+
+static void qi_add(u64 fn)   /* hook lock held */
+{
+    for (u32 i = (u32)(fn >> 4) & (QI_SET - 1), n = 0; n < QI_SET; n++, i = (i + 1) & (QI_SET - 1)) {
+        if (g_qi[i] == fn) return;
+        if (!g_qi[i]) { g_qi[i] = fn; return; }
+    }
+}
+
+static int is_qi(u64 fn)
+{
+    for (u32 i = (u32)(fn >> 4) & (QI_SET - 1), n = 0; n < QI_SET; n++, i = (i + 1) & (QI_SET - 1)) {
+        u64 k = g_qi[i];
+        if (k == fn) return 1;
+        if (!k) return 0;
+    }
+    return 0;
+}
+
 static void hook_vtable(u64 vt)
 {
     AcquireSRWLockExclusive(&g_hook_lock);
@@ -171,6 +194,7 @@ static void hook_vtable(u64 vt)
     DWORD old;
     int err = n ? xrl_host_protect(e, (size_t)n * 8, PAGE_READWRITE, &old) : 0;
     int hooked = 0;
+    if (n) qi_add(is_stub(e[0]) ? *(const u64 *)(e[0] + 2) : e[0]);
     if (!err) {
         for (int i = 0; i < n; i++) {
             if (is_stub(e[i])) continue;
@@ -237,8 +261,11 @@ void xrl_com_scan(const u64 *v, int n)
 static volatile u64 g_hot_fn[HOT_SET];
 static volatile LONG64 g_hot_n[HOT_SET];
 static volatile u64 g_hot_ret[HOT_SET];   /* the last return value */
+static volatile u8 g_hot_scan[HOT_SET];   /* 1: always scan this method's arguments (it hooked something,
+                                            * or is a QueryInterface); 2: decided, skip mostly */
 
-static void hot_count(u64 fn, u64 ret)
+/* the method's slot (-1: table full), with its call count after this call in *n_out */
+static int hot_count(u64 fn, u64 ret, LONG64 *n_out)
 {
     for (u32 i = (u32)(fn >> 4) & (HOT_SET - 1), n = 0; n < 32; n++, i = (i + 1) & (HOT_SET - 1)) {
         u64 k = g_hot_fn[i];
@@ -246,8 +273,9 @@ static void hot_count(u64 fn, u64 ret)
             u64 prev = (u64)InterlockedCompareExchange64((volatile LONG64 *)&g_hot_fn[i], (LONG64)fn, 0);
             k = prev ? prev : fn;
         }
-        if (k == fn) { InterlockedIncrement64(&g_hot_n[i]); g_hot_ret[i] = ret; return; }
+        if (k == fn) { *n_out = InterlockedIncrement64(&g_hot_n[i]); g_hot_ret[i] = ret; return (int)i; }
     }
+    return -1;
 }
 
 /* The hooked vtable slot that calls `fn` (a stub holds its target at +2). */
@@ -296,11 +324,42 @@ void xrl_com_hot(void (*emit)(const char *line), int max)
  * stack (the callee may have reused its own copy), the return value and the method. */
 volatile LONG64 xrl_com_calls;   /* guest -> host COM calls (XRL_PROFILE output) */
 
+volatile LONG64 xrl_com_after_ticks;   /* XRL_PROFILE: QPC ticks spent in here (perf.c) */
+static int g_com_prof = -1;
+
+/* The argument scan is what finds new host objects (an out-parameter or return value of a type
+ * not hooked yet), and it is most of the cost of a call (1-2 us, mostly on the game's render
+ * thread). A method that has run SCAN_LEARN times without its scan ever hooking anything only
+ * hands out known types or none (Draw*, *Set*, Map...): it is scanned once in SCAN_RECHECK calls
+ * after that. QueryInterface and any method whose scan once hooked a vtable are always scanned.
+ * XRL_COM_SCAN_ALL=1 scans every call (as before). */
+#define SCAN_LEARN 512
+#define SCAN_RECHECK 4096
+static int g_scan_all = -1;
+
 void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
 {
+    LARGE_INTEGER q0 = {0}, q1;
+    if (g_com_prof < 0) { char v[4]; g_com_prof = GetEnvironmentVariableA("XRL_PROFILE", v, sizeof v) && v[0] == '1'; }
+    if (g_scan_all < 0) { char v[4]; g_scan_all = GetEnvironmentVariableA("XRL_COM_SCAN_ALL", v, sizeof v) && v[0] == '1'; }
+    if (g_com_prof) QueryPerformanceCounter(&q0);
     InterlockedIncrement64(&xrl_com_calls);
-    hot_count(fn, ret);
+    LONG64 n = 0;
+    int i = hot_count(fn, ret, &n);
+    if (i >= 0 && !g_scan_all) {
+        u8 m = g_hot_scan[i];
+        if (!m && is_qi(fn)) g_hot_scan[i] = m = 1;
+        if (!m && n > SCAN_LEARN) g_hot_scan[i] = m = 2;
+        if (m == 2 && (n % SCAN_RECHECK)) goto done;
+    }
+    LONG hooked0 = g_nhooked;
     xrl_com_scan(regs, 4);
     xrl_com_scan(stack_args, 12);
     consider(ret);
+    if (i >= 0 && g_nhooked != hooked0 && g_hot_scan[i] != 1) {
+        if (g_hot_scan[i] == 2) LOGW("com: method %llx handed out a new object type after %lld calls: scanning it always again", fn, (long long)n);
+        g_hot_scan[i] = 1;
+    }
+done:
+    if (g_com_prof) { QueryPerformanceCounter(&q1); InterlockedAdd64(&xrl_com_after_ticks, q1.QuadPart - q0.QuadPart); }
 }

@@ -528,10 +528,29 @@ static slong dfile_ftruncate(xfile *f, s64 len)
 static slong dfile_fsync(xfile *f) { return FlushFileBuffers(f->h) ? 0 : xrl_lasterr(); }
 static u32 dfile_poll(xfile *f, u32 ev) { (void)f; return ev & (LX_POLLIN | LX_POLLOUT); }
 
+static const xfile_ops g_dir_ops;
+
+/* FS_IOC_GETFLAGS (EXT2_IOC_GETFLAGS): FS_CASEFOLD_FL on a case-insensitive directory, as on a
+ * casefolded ext4 one. Wine asks this (get_dir_case_sensitivity) before it looks for a name it did
+ * not find by reading the whole directory and comparing case-insensitively: NTFS already matches
+ * names that way, so a miss is a miss, and a game probing many absent files in a large directory
+ * no longer lists that directory each time. A directory with Windows' per-directory case
+ * sensitivity on (WSL can set it) says so and gets no flag. */
+#define LX_FS_IOC_GETFLAGS 0x80086601u
+#define LX_FS_CASEFOLD_FL 0x40000000
+static slong dir_getflags(xfile *f, u64 arg)
+{
+    FILE_CASE_SENSITIVE_INFO cs = {0};
+    int flags = LX_FS_CASEFOLD_FL;
+    if (GetFileInformationByHandleEx(f->h, FileCaseSensitiveInfo, &cs, sizeof cs) &&
+        (cs.Flags & FILE_CS_FLAG_CASE_SENSITIVE_DIR)) flags = 0;
+    return xrl_ctu(arg, &flags, 4);
+}
+
 static slong dfile_ioctl(xfile *f, u64 req, u64 arg)
 {
-    (void)f;
     if (req == LX_FIOCLEX || req == LX_FIONCLEX || req == LX_FIONBIO) return 0;
+    if (req == LX_FS_IOC_GETFLAGS && f->ops == &g_dir_ops) return dir_getflags(f, arg);
     if (req == LX_FIONREAD) {
         LARGE_INTEGER sz;
         s64 avail = 0;

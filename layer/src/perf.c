@@ -19,7 +19,26 @@ typedef struct pf_prev { int tid; u64 cpu, nsys; } pf_prev;
 static pf_prev g_prev[PF_MAX];
 static int g_nprev;
 
-typedef struct pf_row { int tid; u64 cpu, nsys; char name[16]; } pf_row;
+typedef struct pf_row { int tid; u64 cpu, nsys; char name[16]; u32 topn[5]; u16 topnr[5]; } pf_row;
+
+/* XRL_PROFILE: the thread's five most frequent syscalls since the last read (counts reset) */
+static void take_top(xrl_thread *t, pf_row *r)
+{
+    memset(r->topn, 0, sizeof r->topn);
+    if (!t->sysn) return;
+    for (int nr = 0; nr < XRL_NR_MAX; nr++) {
+        u32 c = t->sysn[nr];
+        if (!c) continue;
+        t->sysn[nr] = 0;   /* races with the owner's increment: a lost count or two */
+        for (int k = 0; k < 5; k++)
+            if (c > r->topn[k]) {
+                memmove(&r->topn[k + 1], &r->topn[k], (4 - k) * sizeof *r->topn);
+                memmove(&r->topnr[k + 1], &r->topnr[k], (4 - k) * sizeof *r->topnr);
+                r->topn[k] = c; r->topnr[k] = (u16)nr;
+                break;
+            }
+    }
+}
 
 static u64 ft64(FILETIME f) { return ((u64)f.dwHighDateTime << 32) | f.dwLowDateTime; }
 
@@ -66,6 +85,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
             r->tid = t->tid;
             r->cpu = cpu - (pp && pp->cpu <= cpu ? pp->cpu : 0);
             r->nsys = t->nsys - (pp && pp->nsys <= t->nsys ? pp->nsys : 0);
+            take_top(t, r);
             memcpy(r->name, t->name, sizeof r->name);
             r->name[sizeof r->name - 1] = 0;
             if (nn < PF_MAX) { next[nn].tid = t->tid; next[nn].cpu = cpu; next[nn].nsys = t->nsys; nn++; }
@@ -89,6 +109,14 @@ static DWORD WINAPI perf_thread(LPVOID p)
              (double)(fltt - last_flt_ticks) * 1000.0 / (double)qf.QuadPart / secs,
              xrl_mem_committed() >> 20, sn >> 20,
              (double)(so - last_out) / 1048576.0 / secs, (double)(si - last_in) / 1048576.0 / secs);
+        {   /* XRL_PROFILE: the argument scan after each COM call, and one TEB view swap pair */
+            extern volatile LONG64 xrl_com_after_ticks;
+            static u64 last_after;
+            u64 at = (u64)xrl_com_after_ticks;
+            if (at) LOGI("perf: com scan %.1f ms/s (%.2f us per call)", (double)(at - last_after) * 1000.0 / (double)qf.QuadPart / secs,
+                         com > last_com ? (double)(at - last_after) * 1e6 / (double)qf.QuadPart / (double)(com - last_com) : 0.0);
+            last_after = at;
+        }
         last_com = com; last_flt = flt; last_flt_ticks = fltt; last_out = so; last_in = si;
 
         /* the busiest threads, by CPU */
@@ -102,6 +130,12 @@ static DWORD WINAPI perf_thread(LPVOID p)
                              rows[b].tid, (double)rows[b].cpu / 1e5 / secs, (double)rows[b].nsys / 1000.0 / secs);
             if (w < 0 || w >= (int)(sizeof line) - len) break;
             len += w;
+            if (shown < 3 && rows[b].topn[0]) {   /* XRL_PROFILE: what the three busiest threads call */
+                char sub[300]; int sl = 0;
+                for (int k = 0; k < 5 && rows[b].topn[k]; k++)
+                    sl += snprintf(sub + sl, sizeof sub - sl, " %s %.0f/s", xrl_sysname(rows[b].topnr[k]), (double)rows[b].topn[k] / secs);
+                LOGI("perf: thr %s/%d calls%s", rows[b].name, rows[b].tid, sub);
+            }
             rows[b].tid = 0;
         }
         LOGI("%s", line);
