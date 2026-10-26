@@ -164,6 +164,8 @@ SNIP(s_rip_neighbor, "mov 1f(%rip),%rbx\n mov %fs:(%rax),%ecx\n jmp 2f\n1: .quad
 SNIP(s_jcc_after, "cmpl $0x9,%fs:(%rax)\n jne 1f\n mov $1,%rbx\n1: mov $2,%rdx")
 SNIP(s_jcc_taken, "cmpl $0,%fs:(%rax)\n je 1f\n mov $1,%rbx\n1: mov $2,%rdx")
 SNIP(s_loop, "xor %ebx,%ebx\n1: mov %fs:(%rax),%ecx\n inc %ebx\n cmp $3,%ebx\n jne 1b")
+/* a function entry reached only through a pointer must survive a window ending at the previous ret */
+SNIP(s_sys_boundary, "lea 1f(%rip),%rbx\n call *%rbx\n mov %rax,%rdx\n jmp 9f\n1: xor %eax,%eax\n syscall\n ret\n2: mov $39,%eax\n syscall\n ret\n9: lea 2b(%rip),%rbx\n call *%rbx\n xor %ebx,%ebx")
 SNIP(s_ret_in_window, "mov %fs:(%rax),%ecx\n ret")
 
 typedef struct snip { const char *name; char *s, *e; } snip;
@@ -172,7 +174,7 @@ static snip g_snips[] = {
     S(s_tp0), S(s_canary), S(s_base), S(s_base_dest), S(s_base_r9), S(s_idx), S(s_idx_only), S(s_r12), S(s_hi_regs), S(s_zx),
     S(s_store), S(s_cmp_flags), S(s_cmp_keep), S(s_lock), S(s_sse), S(s_byte), S(s_neg), S(s_pair),
     S(s_getpid), S(s_gettid), S(s_sys_short), S(s_sys_args), S(s_sys_nowin), S(s_redzone), S(s_target_before),
-    S(s_rip_neighbor), S(s_jcc_after), S(s_jcc_taken), S(s_loop), S(s_ret_in_window),
+    S(s_rip_neighbor), S(s_jcc_after), S(s_jcc_taken), S(s_loop), S(s_sys_boundary), S(s_ret_in_window),
 };
 
 static xrw g_w;

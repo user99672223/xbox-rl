@@ -180,6 +180,12 @@ int main(int argc, char **argv)
                 fprintf(stderr, "[catch]   rip=%016llx rsp=%016llx rbp=%016llx rax=%016llx rbx=%016llx\n", c.Rip, c.Rsp, c.Rbp, c.Rax, c.Rbx);
                 fprintf(stderr, "[catch]   rcx=%016llx rdx=%016llx rsi=%016llx rdi=%016llx r8=%016llx r9=%016llx\n", c.Rcx, c.Rdx, c.Rsi, c.Rdi, c.R8, c.R9);
                 fprintf(stderr, "[catch]   r10=%016llx r11=%016llx r12=%016llx r13=%016llx r14=%016llx r15=%016llx\n", c.R10, c.R11, c.R12, c.R13, c.R14, c.R15);
+                UCHAR code[48]; SIZE_T cgot = 0;   /* the bytes around rip: what the CPU was running (rewritten code, stubs) */
+                if (ReadProcessMemory(pi.hProcess, (LPCVOID)(c.Rip - 24), code, sizeof code, &cgot) && cgot == sizeof code) {
+                    fprintf(stderr, "[catch]   code[rip-24..+24]:");
+                    for (int k = 0; k < 48; k++) fprintf(stderr, k == 24 ? " |%02x" : " %02x", code[k]);
+                    fputc('\n', stderr);
+                }
                 ULONG64 stk[6] = {0}; SIZE_T got = 0;
                 if (ReadProcessMemory(pi.hProcess, (LPCVOID)c.Rsp, stk, sizeof stk, &got) && got)
                     fprintf(stderr, "[catch]   [rsp] %016llx %016llx %016llx %016llx %016llx %016llx\n", stk[0], stk[1], stk[2], stk[3], stk[4], stk[5]);

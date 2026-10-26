@@ -214,6 +214,22 @@ static int movable(const uint8_t *code, const rgn *r, size_t i)
     return 1;
 }
 
+/* Control never falls through this instruction, so what follows it is probably an entry point: a function
+ * reached through a pointer, a PLT or a jump table, which no direct branch in the image shows. A window
+ * must not span the boundary (its jmp would overwrite the entry's first bytes), see movable()'s callers. */
+static int ends_flow(const uint8_t *code, const rgn *r, size_t i)
+{
+    x86i t;
+    if (x86_decode(code + r->off[i], r->len[i], &t) != r->len[i] || t.vex) return 0;
+    if (t.map == 1) return t.opcode == 0x0b;                                                         /* ud2 */
+    if (t.map != 0) return 0;
+    switch (t.opcode) {
+    case 0xc2: case 0xc3: case 0xca: case 0xcb: case 0xcc: case 0xcf: case 0xe9: case 0xeb: case 0xf4: return 1;   /* ret, int3, iret, jmp, hlt */
+    case 0xff: return ((t.modrm >> 3) & 7) == 4 || ((t.modrm >> 3) & 7) == 5;                         /* jmp * */
+    }
+    return 0;
+}
+
 #define LOGF(...) do { if (w->log) w->log(__VA_ARGS__); } while (0)
 
 static void jmp_abs(eb *e, uint64_t target)
@@ -331,8 +347,10 @@ static int process_region(xrw *w, uint8_t *code, uint64_t vaddr, size_t total, s
         size_t lo = u, hi = u;
         int len = r->len[u];
         while (len < 5) {
-            int canR = hi + 1 < r->n && r->off[hi + 1] == r->off[hi] + r->len[hi] && movable(code, r, hi + 1) && !is_target(r, hi + 1);
-            int canL = lo > 0 && r->off[lo] == r->off[lo - 1] + r->len[lo - 1] && movable(code, r, lo - 1) && !is_target(r, lo);
+            int canR = hi + 1 < r->n && r->off[hi + 1] == r->off[hi] + r->len[hi] && movable(code, r, hi + 1) && !is_target(r, hi + 1) &&
+                       !ends_flow(code, r, hi);
+            int canL = lo > 0 && r->off[lo] == r->off[lo - 1] + r->len[lo - 1] && movable(code, r, lo - 1) && !is_target(r, lo) &&
+                       !ends_flow(code, r, lo - 1);
             if (canR) { hi++; len += r->len[hi]; }
             else if (canL) { lo--; len += r->len[lo]; }
             else break;
