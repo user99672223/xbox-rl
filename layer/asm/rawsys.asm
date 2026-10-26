@@ -60,6 +60,12 @@ xrl_rawsys PROC
     mov     [rsp], r9                      ; a6
     cmp     rax, 56
     je      rs_clone
+    cmp     rax, 15
+    jne     rs_call
+    ; rt_sigreturn: the kernel finds the frame through the guest rsp at the `syscall` (the handler's `ret` popped
+    ; pretcode, so it points at the ucontext); the layer takes it as an argument. rbp+144 = the stub's lea (128) +
+    ; the call's return address (8) + our saved rbp (8) above our frame.
+    lea     rdi, [rbp+144]
 rs_call:
     mov     r9, r8                         ; a5
     mov     r8, r10                        ; a4
