@@ -516,7 +516,13 @@ SYS(epoll_wait) { UNUSED6; return xrl_epoll_wait((int)a1, (u64)a2, (int)a3, (int
 SYS(epoll_pwait) { UNUSED6; return xrl_epoll_wait((int)a1, (u64)a2, (int)a3, (int)a4, NULL); }
 
 /* ============================================================== memory */
-SYS(mmap) { UNUSED6; return xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6); }
+SYS(mmap)
+{
+    UNUSED6;
+    slong r = xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6);
+    if (r > 0 && (a3 & LX_PROT_EXEC) && !(a4 & LX_MAP_ANONYMOUS)) xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
+    return r;
+}
 SYS(munmap)
 {
     UNUSED6;

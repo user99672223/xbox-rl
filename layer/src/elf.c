@@ -99,6 +99,7 @@ static int map_segment(int fd, const Phdr *p, u64 bias)
         if (tail && xrl_zerou(file_end, (size_t)tail)) return -1;
         if (p->memsz > p->filesz && (file_end & (LX_PAGE - 1))) {}   /* covered by zeroing */
         if (prot != (prot | LX_PROT_WRITE) && xrl_mem_mprotect(start, flen, prot)) return -1;
+        if (prot & LX_PROT_EXEC) xrl_rewrite_fd_mapped(fd, start, flen, (s64)off, prot);   /* foreign images: rewrite.c */
         start += flen;
     }
     if (start < mem_end) {

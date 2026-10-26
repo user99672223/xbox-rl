@@ -15,7 +15,8 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")   # /MD (UWP requires the dyn
 
 set(XRL_SRC
     src/boot.c src/com.c src/elf.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c
-    src/procfs.c src/signal.c src/syscall.c src/sysnames.c src/teb.c src/thread.c src/util.c src/vfs.c
+    src/procfs.c src/rewrite.c src/rewrite_core.c src/signal.c src/syscall.c src/sysnames.c src/teb.c src/thread.c
+    src/util.c src/vfs.c src/x86dec.c
     )
 
 # MASM thunks: assembled by hand (CMake's ASM_MASM + Ninja mangles rule names here)
@@ -23,8 +24,12 @@ set(THUNK_OBJ ${CMAKE_CURRENT_BINARY_DIR}/thunks.obj)
 add_custom_command(OUTPUT ${THUNK_OBJ}
     COMMAND ml64 /nologo /c /Zi /Fo${THUNK_OBJ} ${CMAKE_CURRENT_SOURCE_DIR}/asm/thunks.asm
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/asm/thunks.asm VERBATIM)
-add_library(xrl_layer STATIC ${XRL_SRC} ${THUNK_OBJ})
-set_source_files_properties(${THUNK_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+set(RAWSYS_OBJ ${CMAKE_CURRENT_BINARY_DIR}/rawsys.obj)
+add_custom_command(OUTPUT ${RAWSYS_OBJ}
+    COMMAND ml64 /nologo /c /Zi /Fo${RAWSYS_OBJ} ${CMAKE_CURRENT_SOURCE_DIR}/asm/rawsys.asm
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/asm/rawsys.asm VERBATIM)
+add_library(xrl_layer STATIC ${XRL_SRC} ${THUNK_OBJ} ${RAWSYS_OBJ})
+set_source_files_properties(${THUNK_OBJ} ${RAWSYS_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
 target_include_directories(xrl_layer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include PRIVATE src)
 target_compile_definitions(xrl_layer PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 target_compile_options(xrl_layer PRIVATE /W3 /utf-8 /Zi /Gy $<$<COMPILE_LANGUAGE:C>:/std:c11>)

@@ -384,6 +384,14 @@ typedef struct xrl_elf_image {
 int xrl_elf_load(const char *guest_path, xrl_elf_image *out);
 u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_stack_lo, u64 *out_stack_hi);
 
+/* -------------------------------------------------------------- rewrite */
+/* rewrite.c: load-time rewriting of foreign ELF images (`syscall`, `%fs:`). Called for every
+ * file-backed mapping that is executable. e_flags of an image verified clean at build time
+ * (tools/xrl-tpfix.py --stamp) carries this value and is skipped. */
+#define XRL_ELF_E_FLAGS_CLEAN 0x58524c01u
+void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot);
+void xrl_rewrite_fd_mapped(int fd, u64 addr, u64 len, s64 off, int prot);
+
 /* -------------------------------------------------------------- syscall */
 const char *xrl_sysname(slong nr);
 void xrl_syscall_table_init(void);

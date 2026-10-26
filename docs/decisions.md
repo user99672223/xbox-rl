@@ -144,6 +144,52 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Easy Anti-Cheat: run a glibc-built native module inside the
+  musl/no-`syscall`/no-`%fs` world. Chosen: (c) load-time rewriting of ELF
+  images in the layer + (b) a small glibc-ABI shim over musl. Rejected: (a).**
+  Rocket League's EAC is the closed Linux module `easyanticheat_x64.so` from
+  Valve's "Proton EasyAntiCheat Runtime", which Wine's unix side `dlopen`s
+  (`PROTON_EAC_RUNTIME`). It is built against glibc, may issue raw `syscall`
+  instructions and uses `%fs` (TLS, `%fs:0x28` stack-protector canary), none of
+  which can run here: Wine's unix side is musl, a `syscall` instruction would
+  enter the *Windows* kernel with a Linux number, and the console has no
+  FSGSBASE so `%fs` carries nothing (the thread pointer lives in TEB slot 63,
+  see the FSGSBASE entry below). Three ways to make that work:
+
+  | | (a) Wine unix side on patched glibc | (b) glibc-ABI shim over musl (gcompat style) | (c) rewrite `syscall`/`%fs` at load time |
+  |---|---|---|---|
+  | Fixes closed `.so` symbol/ABI needs (`libc.so.6`, `__memcpy_chk`, `__isoc23_*`, versioned names) | yes, natively | yes, for the functions we list | no |
+  | Fixes closed `.so` raw `syscall` and `%fs` | no: the *Wine-side* glibc could be patched (we build it), the closed `.so` still carries both | no | yes, whatever the libc it was built with |
+  | Work / risk | Rebuild Wine's whole unix side on glibc; patch glibc's ~hundreds of inline `syscall` sites and every direct `%fs` form (errno, canary, TLS IE/LE) which glibc's build does not allow to be turned off; redo patches/musl equivalents; lose the working, tested Wine build | A few hundred lines of C (the `_chk` family, `__isoc99/23_*`, `__xstat`, `gnu_get_libc_version`, a `libc.so.6`/`libm.so.6`/`libdl.so.2`/`libpthread.so.0` set that depends on musl); musl's loader already ignores symbol versions | A length decoder, a trampoline pool and a tiny asm entry (`rawsys`); about 1500 lines; testable on any ELF (we diff its findings against `objdump`) |
+  | Serves the general Linux layer (unmodified Linux programs) | no: only Wine's own unix side | partly (glibc programs that load through musl), but a glibc *program* still needs its own libc rewritten | **yes**: it is the one mechanism that makes any prebuilt x86-64 ELF (static glibc, Alpine, Go, a closed `.so`) safe to run without a kernel |
+  | Failure mode | a mixed-libc process does not exist; we would be rebuilding the project's foundation | missing symbol = clean `dlopen` error naming it (we ship a checker listing them) | an instruction we cannot move falls back to a trap (`int3` + handler), a decode failure is logged and the function is left alone |
+
+  Decision: **(c) is the foundation, (b) is the thin adapter, (a) is dropped.**
+  `layer/src/rewrite.c` rewrites every file-backed ELF mapping that the layer
+  sees becoming executable (the layer's own loader for the main program and its
+  interpreter, and the `mmap(PROT_EXEC)` of any later `dlopen`) before a guest
+  instruction of it runs. A `syscall` becomes a jump into a trampoline that
+  calls `xrl_syscall` through `rawsys` (register state and red zone preserved,
+  every Linux syscall-ABI register kept as the kernel would); each `%fs:` memory
+  operand becomes the same operand relative to the TEB-slot thread pointer
+  (`mov %gs:0x1678,%r11; <insn with %fs dropped and r11 added as base>`; the
+  tpfix form `mov %fs:0,%reg` is patched in place). Images the build already
+  verified clean (`tools/xrl-tpfix.py` stamps `e_flags`, Wine's whole unix side)
+  are skipped, so Wine pays nothing. `%fs`-less glibc features (IFUNC, `cpuid`,
+  `rdtsc`) are left alone: they run natively. The shim (`wine/glibc-compat/`,
+  built by `wine/scripts/build-glibc-compat.sh`) is only needed for a glibc
+  `.so` dlopen'ed into the musl process; it is deliberately small and
+  list-driven (`tools/glibc-compat-check.sh LIB.so` prints every undefined
+  symbol musl and the shim cannot satisfy), because we cannot read the closed
+  module until the runtime is installed.
+  Costs, stated plainly: the rewritten code differs from the vendor's bytes in
+  memory (a module that hashes its own `.text` will notice; we do not hide
+  that, see NEEDS-USER/EAC report), every guest `%fs` access in glibc code costs
+  a jump pair, and unusual encodings (`%fs` on `push/pop/call/jmp` memory
+  operands, VEX-encoded `%fs`) are reported, not guessed. Not done and not
+  needed for the EAC module: instruction-level handling of self-modifying code,
+  text relocations (`DT_TEXTREL`), `mprotect(PROT_EXEC)` on anonymous memory.
+
 - **2026-10-26 — Rocket League starts on the laptop through the whole stack**
   (console Wine build, real layer, gfx/ on the laptop GPU via
   `XRL_REAL_GFX=1`): it reports "Host OS: Linux (Wine 11.0)", creates its
