@@ -60,11 +60,11 @@ static int poke(u64 addr, const void *src, size_t n)
 {
     DWORD old = 0, tmp;
     u64 lo = addr & ~(u64)(LX_PAGE - 1), hi = ALIGN_UP(addr + n, LX_PAGE);
-    if (!VirtualProtect((void *)lo, (SIZE_T)(hi - lo), PAGE_EXECUTE_READWRITE, &old)) return -LX_EIO;
+    if (xrl_host_protect((void *)lo, (size_t)(hi - lo), PAGE_EXECUTE_READWRITE, &old)) return -LX_EIO;
     int r = 0;
     __try { memcpy((void *)addr, src, n); } __except (EXCEPTION_EXECUTE_HANDLER) { r = -LX_EIO; }
     FlushInstructionCache(GetCurrentProcess(), (void *)addr, n);
-    VirtualProtect((void *)lo, (SIZE_T)(hi - lo), old, &tmp);
+    xrl_host_protect((void *)lo, (size_t)(hi - lo), old, &tmp);
     return r;
 }
 

@@ -45,6 +45,7 @@ static char *dupfmt(size_t *len, const char *fmt, ...)
 static char *g_maps(const char *p, size_t *len)
 {
     (void)p;
+    xrl_boot_apply_dynfix();   /* convert interpreter DT entries to absolute (once) before EAC reads maps */
     size_t cap = 1 << 20;
     char *b = (char *)malloc(cap);
     *len = xrl_mem_format_maps(b, cap);
@@ -594,6 +595,13 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
         } else if (!strcmp(leaf, "status")) data = g_status(norm, &len);
         else if (!strcmp(leaf, "statm")) data = g_statm(norm, &len);
         else data = g_stat(norm, &len);
+    }
+    if (!strcmp(norm, "/proc/self/maps") && data && len > 0) {
+        LOGW("proc maps: %zu bytes, first 400: %.400s", len, data);
+        if (len > 400) LOGW("proc maps tail: ...%.400s", data + len - (len > 400 ? 400 : len));
+        LOGW("proc maps check: libc=%d ld=%d stack=%d vdso=%d",
+             strstr(data, "libc") != NULL, strstr(data, "ld-") != NULL,
+             strstr(data, "[stack]") != NULL, strstr(data, "[vdso]") != NULL);
     }
     memfile *m = (memfile *)calloc(1, sizeof *m);
     m->data = data; m->len = len;

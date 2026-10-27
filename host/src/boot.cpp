@@ -31,6 +31,11 @@ int boot_layer() {
     const HostConfig& cfg = load_config();
 
     g_vfs_root    = cfg.vfs_root.empty()    ? local_state_utf8() + "\\rootfs" : cfg.vfs_root;
+    // Support pkg: prefix for vfs_root (same as mounts)
+    if (g_vfs_root.rfind("pkg:", 0) == 0) {
+        std::string pkg = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
+        g_vfs_root = pkg + "\\" + g_vfs_root.substr(4);
+    }
     g_prefix_path = cfg.prefix_path.empty() ? "/prefix" : cfg.prefix_path;
     g_game_path   = cfg.game_path.empty()   ? "/game"   : cfg.game_path;
 

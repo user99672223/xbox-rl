@@ -61,7 +61,15 @@ const HostConfig& load_config() {
     std::wstring path = local_state_wide() + L"\\launch.cfg";
     std::string text = read_file(path);
     if (text.empty()) {
-        XLOGI("config", "no launch.cfg in LocalState (using defaults)");
+        // Fallback: read from the package install directory (LooseApps)
+        try {
+            std::wstring pkg_path = std::wstring(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path().c_str()) + L"\\launch.cfg";
+            text = read_file(pkg_path);
+            if (!text.empty()) XLOGI("config", "launch.cfg from install dir (%zu bytes)", text.size());
+        } catch (...) {}
+    }
+    if (text.empty()) {
+        XLOGI("config", "no launch.cfg in LocalState or install dir (using defaults)");
         return g_cfg;
     }
     XLOGI("config", "reading launch.cfg (%zu bytes)", text.size());

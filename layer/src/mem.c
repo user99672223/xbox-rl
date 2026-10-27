@@ -349,9 +349,9 @@ static void sync_memfd_readonly(xfile *f, u64 ino)
         u64 len = v->end - v->start;
         LOGW("memfd-sync: refresh [%llx,%llx) prot=%d moff=%lld ino=%llu", v->start, v->end, v->prot, (long long)v->moff, v->ino);
         DWORD old;
-        VirtualProtect((void *)v->start, (SIZE_T)len, PAGE_READWRITE, &old);
+        w_protect((void *)v->start, len, PAGE_READWRITE, &old);
         file_fill(f, v->start, len, v->moff);
-        VirtualProtect((void *)v->start, (SIZE_T)len, old, &old);
+        w_protect((void *)v->start, len, old, &old);
     }
 }
 
@@ -381,9 +381,9 @@ int xrl_mem_sync_shared_page(u64 addr, u64 len)
         u64 s_addr = src->start + (u64)(ov_start - s_fstart);
         u64 copy_len = (u64)(ov_end - ov_start);
         DWORD old;
-        VirtualProtect((void *)t_addr, (SIZE_T)copy_len, PAGE_READWRITE, &old);
+        w_protect((void *)t_addr, copy_len, PAGE_READWRITE, &old);
         memcpy((void *)t_addr, (const void *)s_addr, (size_t)copy_len);
-        VirtualProtect((void *)t_addr, (SIZE_T)copy_len, old, &old);
+        w_protect((void *)t_addr, copy_len, old, &old);
         synced = 1;
         LOGW("memfd-sync: copied %llu bytes from [%llx] to [%llx] (ino=%llu)", copy_len, s_addr, t_addr, target->ino);
     }
@@ -1618,6 +1618,17 @@ out:
     return r;
 }
 
+void xrl_mem_rename_range(u64 lo, u64 hi, const char *new_name)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    for (size_t i = 0; i < g_n; i++) {
+        vma *v = &g_v[i];
+        if (v->start >= lo && v->end <= hi)
+            vma_name(v, new_name);
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr)
 {
     if ((old_addr & (LX_PAGE - 1)) || !new_len) return -LX_EINVAL;
@@ -1985,19 +1996,47 @@ void xrl_mem_stack_free(u64 base, u64 size)
 
 size_t xrl_mem_format_maps(char *buf, size_t cap)
 {
-    size_t n = 0;
+    static const struct { u64 start; u64 end; const char *perm; const char *name; } pseudo[] = {
+        { 0x7ffff7fc3000ULL, 0x7ffff7fc5000ULL, "r--p", "[vvar]" },
+        { 0x7ffff7fc5000ULL, 0x7ffff7fc7000ULL, "r-xp", "[vdso]" },
+        { 0xffffffffff600000ULL, 0xffffffffff601000ULL, "--xp", "[vsyscall]" },
+    };
+    size_t n = 0, pi = 0;
     AcquireSRWLockShared(&g_lock);
+    /* find the stack: highest anonymous rw-p VMA above 0x7fff_0000_0000 */
+    size_t stack_idx = (size_t)-1;
+    for (size_t j = g_n; j-- > 0; ) {
+        vma *v = &g_v[j];
+        if (!v->name[0] && (v->prot & (LX_PROT_READ | LX_PROT_WRITE)) == (LX_PROT_READ | LX_PROT_WRITE)
+            && !v->shared && v->start >= 0x7fff00000000ULL) {
+            stack_idx = j;
+            break;
+        }
+    }
     for (size_t i = 0; i < g_n && n + 300 < cap; i++) {
         vma *v = &g_v[i];
+        while (pi < 3 && pseudo[pi].start < v->start && n + 300 < cap) {
+            n += (size_t)snprintf(buf + n, cap - n, "%08llx-%08llx %s 00000000 00:00 0                          %s\n",
+                                  pseudo[pi].start, pseudo[pi].end, pseudo[pi].perm, pseudo[pi].name);
+            pi++;
+        }
+        const char *name = v->name;
+        const char *pad  = v->name[0] ? "                       " : "";
+        if (i == stack_idx) { name = "[stack]"; pad = "                          "; }
         int w = snprintf(buf + n, cap - n, "%08llx-%08llx %c%c%c%c %08llx 00:00 %llu %s%s\n",
                          v->start, v->end,
                          v->prot & LX_PROT_READ ? 'r' : '-', v->prot & LX_PROT_WRITE ? 'w' : '-',
                          v->prot & LX_PROT_EXEC ? 'x' : '-', v->shared ? 's' : 'p',
-                         (u64)(v->name[0] && v->name[0] != '[' ? v->moff : 0), v->ino, v->name[0] ? "                       " : "", v->name);
+                         (u64)(name[0] && name[0] != '[' ? v->moff : 0), v->ino, pad, name);
         if (w < 0) break;
         n += (size_t)w;
     }
     ReleaseSRWLockShared(&g_lock);
+    while (pi < 3 && n + 300 < cap) {
+        n += (size_t)snprintf(buf + n, cap - n, "%08llx-%08llx %s 00000000 00:00 0                          %s\n",
+                              pseudo[pi].start, pseudo[pi].end, pseudo[pi].perm, pseudo[pi].name);
+        pi++;
+    }
     return n;
 }
 

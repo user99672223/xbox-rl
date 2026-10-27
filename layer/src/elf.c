@@ -306,6 +306,8 @@ int xrl_elf_load(const char *gpath, xrl_elf_image *out)
         if (load_one(main.interp, 1, &interp)) return -1;
         out->base = interp.bias;
         out->entry = interp.entry;
+        out->interp_lo = ALIGN_DOWN(interp.min_vaddr + interp.bias, LX_PAGE);
+        out->interp_hi = ALIGN_UP(interp.max_vaddr + interp.bias, LX_PAGE);
         install_gateway(&interp, "interpreter");
         free(interp.ph);
         xrl_fd_close(interp.fd);

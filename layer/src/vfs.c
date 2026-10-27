@@ -850,8 +850,11 @@ static slong memfd_reopen(const char *gabs, int flags)
     else if (!strncmp(gabs, pre, strlen(pre))) fd = atoi(gabs + strlen(pre));
     if (fd < 0) return -1;
     xfile *of = xrl_fd_get(fd);
-    if (!of) return -1;
-    if (of->ops != &g_file_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) { xfile_unref(of); return -1; }
+    if (!of) { LOGW("memfd_reopen(%s): fd %d not found", gabs, fd); return -1; }
+    if (of->ops != &g_file_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) {
+        LOGW("memfd_reopen(%s): fd %d not a memfd (gpath=%s)", gabs, fd, of->gpath ? of->gpath : "(null)");
+        xfile_unref(of); return -1;
+    }
     char g[128];
     wchar_t hp[PATHBUF];
     slong r = memfd_host_path((u64)(uintptr_t)of->priv, g, sizeof g, hp, ARRAY_LEN(hp));
@@ -864,6 +867,7 @@ static slong memfd_reopen(const char *gabs, int flags)
     xfile_unref(of);
     int nfd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
     xfile_unref(f);
+    LOGW("memfd_reopen(%s): ok -> fd %d", gabs, nfd);
     return nfd;
 }
 

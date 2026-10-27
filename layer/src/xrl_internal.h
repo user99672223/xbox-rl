@@ -269,6 +269,8 @@ int  xrl_mem_init(u64 budget);
 slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off);
 slong xrl_mem_munmap(u64 addr, u64 len);
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot);
+void  xrl_mem_rename_range(u64 lo, u64 hi, const char *new_name);
+void  xrl_boot_apply_dynfix(void);
 int   xrl_mem_sync_shared_page(u64 addr, u64 len);
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr);
 slong xrl_mem_brk(u64 addr);
@@ -325,6 +327,7 @@ struct xfile {
     HANDLE h;
     char  *gpath;          /* guest path (for /proc/self/fd, fstat, mmap)      */
     u32    mode;           /* st_mode type bits for synthesized objects        */
+    u32    seals;          /* memfd F_ADD_SEALS bitmask                        */
     void  *priv;           /* type-specific                                    */
 };
 
@@ -486,6 +489,7 @@ typedef struct xrl_elf_image {
     u64 brk_start;
     int is_dyn;
     char interp[256];
+    u64 interp_lo, interp_hi;         /* interpreter span (0 if none)   */
     u64 exports_xrl_wineserver_main;  /* dynsym lookup, 0 if absent */
 } xrl_elf_image;
 int xrl_elf_load(const char *guest_path, xrl_elf_image *out);
