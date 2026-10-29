@@ -452,8 +452,12 @@ typedef struct lx_tms { s64 tms_utime, tms_stime, tms_cutime, tms_cstime; } lx_t
 #define LX_SIGCHLD 17
 #define LX_SIGCONT 18
 #define LX_SIGSTOP 19
+#define LX_SIGTSTP 20
+#define LX_SIGTTIN 21
+#define LX_SIGTTOU 22
 
 #define LX_SA_NOCLDSTOP 1u
+#define LX_SA_NOCLDWAIT 2u
 #define LX_SA_SIGINFO 4u
 #define LX_SA_ONSTACK 0x08000000u
 #define LX_SA_RESTART 0x10000000u
@@ -509,6 +513,7 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_CLONE_FILES 0x00000400
 #define LX_CLONE_SIGHAND 0x00000800
 #define LX_CLONE_VFORK 0x00004000
+#define LX_CLONE_NEW_MASK 0x7e020000u   /* CLONE_NEWNS|NEWCGROUP|NEWUTS|NEWIPC|NEWUSER|NEWPID|NEWNET */
 #define LX_CLONE_PARENT 0x00008000
 #define LX_CLONE_THREAD 0x00010000
 #define LX_CLONE_SYSVSEM 0x00040000
@@ -517,6 +522,25 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_CLONE_CHILD_CLEARTID 0x00200000
 #define LX_CLONE_DETACHED 0x00400000
 #define LX_CLONE_CHILD_SETTID 0x01000000
+
+/* ---- wait4 / waitid ---------------------------------------------------- */
+#define LX_WNOHANG 1
+#define LX_WUNTRACED 2
+#define LX_WSTOPPED 2
+#define LX_WEXITED 4
+#define LX_WCONTINUED 8
+#define LX_WNOWAIT 0x01000000
+#define LX_WNOTHREAD 0x20000000
+#define LX_WALL 0x40000000
+#define LX_WCLONE 0x80000000u
+#define LX_P_ALL 0
+#define LX_P_PID 1
+#define LX_P_PGID 2
+#define LX_CLD_EXITED 1
+#define LX_CLD_KILLED 2
+#define LX_CLD_DUMPED 3
+#define LX_CLD_STOPPED 5
+#define LX_CLD_CONTINUED 6
 
 /* ---- futex ------------------------------------------------------------- */
 #define LX_FUTEX_WAIT 0
@@ -546,6 +570,9 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_ARCH_GET_CPUID 0x1011
 #define LX_ARCH_SET_CPUID 0x1012
 #define LX_PR_SET_PDEATHSIG 1
+#define LX_PR_GET_PDEATHSIG 2
+#define LX_PR_SET_CHILD_SUBREAPER 36
+#define LX_PR_GET_CHILD_SUBREAPER 37
 #define LX_PR_GET_DUMPABLE 3
 #define LX_PR_SET_DUMPABLE 4
 #define LX_PR_SET_NAME 15
@@ -593,6 +620,10 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_TCGETS 0x5401
 #define LX_TIOCGWINSZ 0x5413
 #define LX_TIOCGPGRP 0x540F
+#define LX_TIOCSPGRP 0x5410
+#define LX_TIOCSCTTY 0x540E
+#define LX_TIOCNOTTY 0x5422
+#define LX_TIOCGSID 0x5429
 #define LX_FIONREAD 0x541B
 #define LX_FIONBIO 0x5421
 #define LX_FIOCLEX 0x5451

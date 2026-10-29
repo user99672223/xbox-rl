@@ -77,59 +77,36 @@ slong xrl_sys_getrandom(u64 buf, u64 len, u32 flags)
     return (slong)len;
 }
 
-/* Resource limits, per process, as a Linux user session has them. Soft limits can be changed up to the
- * hard limit and the hard limit lowered (raising it needs CAP_SYS_RESOURCE, which we do not have: EPERM);
- * what was set reads back, here and in /proc/self/limits. */
-#define NRLIM 16
-static lx_rlimit g_rlim[NRLIM];
-static SRWLOCK g_rlim_lock = SRWLOCK_INIT;
-static int g_rlim_init;
-
-static void rlim_defaults(void)
-{
-    const u64 inf = LX_RLIM_INFINITY;
-    for (int i = 0; i < NRLIM; i++) g_rlim[i].rlim_cur = g_rlim[i].rlim_max = inf;
-    g_rlim[LX_RLIMIT_STACK].rlim_cur = 8u << 20;
-    g_rlim[LX_RLIMIT_CORE].rlim_cur = 0;
-    g_rlim[LX_RLIMIT_NPROC].rlim_cur = g_rlim[LX_RLIMIT_NPROC].rlim_max = 32768;
-    g_rlim[LX_RLIMIT_NOFILE].rlim_cur = g_rlim[LX_RLIMIT_NOFILE].rlim_max = 65536;
-    g_rlim[LX_RLIMIT_MEMLOCK].rlim_cur = g_rlim[LX_RLIMIT_MEMLOCK].rlim_max = 8u << 20;   /* the 5.16+ default */
-    g_rlim[11].rlim_cur = g_rlim[11].rlim_max = 32768;     /* RLIMIT_SIGPENDING */
-    g_rlim[12].rlim_cur = g_rlim[12].rlim_max = 819200;    /* RLIMIT_MSGQUEUE */
-    g_rlim[13].rlim_cur = g_rlim[13].rlim_max = 0;         /* RLIMIT_NICE */
-    g_rlim[14].rlim_cur = g_rlim[14].rlim_max = 0;         /* RLIMIT_RTPRIO */
-}
-
+/* Resource limits, per process (inherited across fork and exec), as a Linux user session has them. Soft limits can be
+ * changed up to the hard limit and the hard limit lowered (raising it needs CAP_SYS_RESOURCE, which we do not have:
+ * EPERM); what was set reads back, here and in /proc/self/limits. Not enforced. */
 int xrl_rlimit_get(int res, lx_rlimit *out)
 {
-    if (res < 0 || res >= NRLIM) return -1;
-    AcquireSRWLockExclusive(&g_rlim_lock);
-    if (!g_rlim_init) { rlim_defaults(); g_rlim_init = 1; }
-    *out = g_rlim[res];
-    ReleaseSRWLockExclusive(&g_rlim_lock);
+    if (res < 0 || res > 15) return -1;
+    *out = xrl_curproc()->rlim[res];
     return 0;
 }
 
 slong xrl_sys_prlimit(int pid, int res, u64 newp, u64 oldp)
 {
-    if (pid != 0 && pid != G.pid) return -LX_ESRCH;
-    if (res < 0 || res >= NRLIM) return -LX_EINVAL;
-    lx_rlimit nw, old;
-    if (newp && xrl_cfu(&nw, newp, sizeof nw)) return -LX_EFAULT;
-    slong r = 0;
-    AcquireSRWLockExclusive(&g_rlim_lock);
-    if (!g_rlim_init) { rlim_defaults(); g_rlim_init = 1; }
-    old = g_rlim[res];
-    if (newp) {
-        if (nw.rlim_cur > nw.rlim_max) r = -LX_EINVAL;
-        else if (nw.rlim_max > old.rlim_max) r = -LX_EPERM;
-        else if (res == LX_RLIMIT_NOFILE && nw.rlim_max > (1u << 20)) r = -LX_EPERM;
-        else g_rlim[res] = nw;
+    xrl_proc *me = xrl_curproc(), *p = me;
+    if (res < 0 || res > 15) return -LX_EINVAL;
+    if (pid != 0 && pid != me->pid) {
+        p = xrl_proc_by_pid(pid);
+        if (!p) return -LX_ESRCH;
     }
-    ReleaseSRWLockExclusive(&g_rlim_lock);
-    if (r) return r;
-    if (oldp && xrl_ctu(oldp, &old, sizeof old)) return -LX_EFAULT;
-    return 0;
+    slong rc = 0;
+    lx_rlimit old = p->rlim[res], nw;
+    if (newp) {
+        if (xrl_cfu(&nw, newp, sizeof nw)) rc = -LX_EFAULT;
+        else if (nw.rlim_cur > nw.rlim_max) rc = -LX_EINVAL;
+        else if (nw.rlim_max > old.rlim_max) rc = -LX_EPERM;
+        else if (res == LX_RLIMIT_NOFILE && nw.rlim_max > (1u << 20)) rc = -LX_EPERM;
+        else p->rlim[res] = nw;
+    }
+    if (!rc && oldp && xrl_ctu(oldp, &old, sizeof old)) rc = -LX_EFAULT;
+    if (p != me) xrl_proc_put(p);
+    return rc;
 }
 
 slong xrl_sys_sched_getaffinity(int pid, u64 size, u64 mask)

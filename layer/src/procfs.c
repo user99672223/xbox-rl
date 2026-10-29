@@ -2,7 +2,8 @@
  * procfs.c - synthesized /proc and /sys files.
  *
  * Everything here is generated on open from layer state (VMA list, thread
- * list, fd table, boot context). Only what Wine/musl plausibly read is
+ * list, fd table, boot context). /proc/<pid>/... shows that guest process
+ * (proc.c); /proc/self and a pid of the caller's own process show the caller's. Only what Wine/musl plausibly read is
  * provided; anything else is -ENOENT. Add entries to proc_init() when the
  * ENOENT log (vfs: ENOENT proc ...) shows Wine asking for more.
  */
@@ -41,6 +42,11 @@ static char *dupfmt(size_t *len, const char *fmt, ...)
     return b;
 }
 
+/* The process /proc/<pid>/... names while a file is opened, stat'ed or read-linked (set by norm_enter); the
+ * calling thread's own for /proc/self. */
+static __declspec(thread) xrl_proc *t_target;
+static xrl_proc *tgt(void) { return t_target ? t_target : xrl_curproc(); }
+
 /* ------------------------------------------------------------ generators */
 static char *g_maps(const char *p, size_t *len)
 {
@@ -48,33 +54,39 @@ static char *g_maps(const char *p, size_t *len)
     xrl_boot_apply_dynfix();   /* convert interpreter DT entries to absolute (once) before EAC reads maps */
     size_t cap = 1 << 20;
     char *b = (char *)malloc(cap);
-    *len = xrl_mem_format_maps(b, cap);
+    xrl_proc *t = tgt();
+    *len = t->mm ? xrl_mem_format_maps_mm(t->mm->id, b, cap) : 0;
     return b;
 }
 static char *g_cmdline(const char *p, size_t *len)
 {
     (void)p;
+    xrl_proc *t = tgt();
     size_t n = 0;
-    for (int i = 0; i < G.argc; i++) n += strlen(G.argv[i]) + 1;
+    for (int i = 0; i < t->argc; i++) n += strlen(t->argv[i]) + 1;
     char *b = (char *)malloc(n + 1), *w = b;
-    for (int i = 0; i < G.argc; i++) { size_t l = strlen(G.argv[i]) + 1; memcpy(w, G.argv[i], l); w += l; }
+    for (int i = 0; i < t->argc; i++) { size_t l = strlen(t->argv[i]) + 1; memcpy(w, t->argv[i], l); w += l; }
     *len = n;
     return b;
 }
 static char *g_environ(const char *p, size_t *len)
 {
     (void)p;
+    xrl_proc *t = tgt();
     size_t n = 0;
-    for (int i = 0; i < G.envc; i++) n += strlen(G.envp[i]) + 1;
+    for (int i = 0; i < t->envc; i++) n += strlen(t->envp[i]) + 1;
     char *b = (char *)malloc(n + 1), *w = b;
-    for (int i = 0; i < G.envc; i++) { size_t l = strlen(G.envp[i]) + 1; memcpy(w, G.envp[i], l); w += l; }
+    for (int i = 0; i < t->envc; i++) { size_t l = strlen(t->envp[i]) + 1; memcpy(w, t->envp[i], l); w += l; }
     *len = n;
     return b;
 }
 static const char *comm_name(void)
 {
-    const char *b = G.exec_path ? strrchr(G.exec_path, '/') : NULL;
-    return b ? b + 1 : (G.exec_path ? G.exec_path : "wine");
+    static __declspec(thread) char c[16];
+    xrl_proc *t = tgt();
+    xrl_proc_comm(t, c);
+    if (!c[0]) { const char *b = t->exec_path ? strrchr(t->exec_path, '/') : NULL; return b ? b + 1 : "wine"; }
+    return c;
 }
 static char *g_comm(const char *p, size_t *len)
 {
@@ -97,14 +109,15 @@ static void pwho_of(const char *path, pwho *w)
         strcpy_s(w->name, sizeof w->name, "init");
         return;
     }
-    w->nthreads = (int)G.nthreads;
+    xrl_proc *pr = tgt();
+    w->nthreads = (int)pr->nthreads;
     xrl_thread *t = NULL;
     if (!strncmp(path, "/proc/self/task/", 16)) t = xrl_thread_by_tid(atoi(path + 16));
     if (t) {
         w->tid = t->tid; w->sigblk = t->sigmask; w->sigpnd = t->sigpending;
         snprintf(w->name, sizeof w->name, "%.15s", t->name);
     } else {
-        w->tid = G.pid;
+        w->tid = pr->pid;
         snprintf(w->name, sizeof w->name, "%.15s", comm_name());
     }
 }
@@ -127,11 +140,14 @@ static char *g_status(const char *p, size_t *len)
     lx_rlimit sigp; xrl_rlimit_get(11, &sigp);
     int n = xrl_nprocs();
     char mask[96]; cpumask_hex(mask, sizeof mask, n);
-    u64 vm = w.init ? 4096 : xrl_mem_committed() >> 10;
+    xrl_proc *pr = tgt();
+    u64 vm = w.init ? 4096 : pr->mm ? xrl_mem_mm_size(pr->mm->id) >> 10 : xrl_mem_committed() >> 10;
     u64 pte = vm / 512 + 8;
-    int pid = w.init ? 1 : G.pid;
-    int uid = w.init ? 0 : 1000;
-    const char *state = w.init ? "S (sleeping)" : "R (running)";
+    int pid = w.init ? 1 : pr->pid, ppid = w.init ? 0 : pr->ppid;
+    u32 uid = w.init ? 0 : pr->uid, gid = w.init ? 0 : pr->gid;
+    /* a process reading its own status is running; another one, as seen from here, sleeps (or is stopped, a zombie) */
+    const char *state = w.init ? "S (sleeping)" : pr->state == XP_ZOMBIE ? "Z (zombie)" : pr->state == XP_STOPPED ? "T (stopped)" :
+                        pr == xrl_curproc() ? "R (running)" : "S (sleeping)";
     const u64 capall = 0x000001ffffffffffull;   /* CAP_LAST_CAP 40 on 6.1 */
     char *b = (char *)malloc(8192);
     int k = snprintf(b, 8192,
@@ -147,8 +163,8 @@ static char *g_status(const char *p, size_t *len)
         "NoNewPrivs:\t0\nSeccomp:\t0\nSeccomp_filters:\t0\nSpeculation_Store_Bypass:\tvulnerable\nSpeculationIndirectBranch:\tunsupported\n"
         "Cpus_allowed:\t%s\nCpus_allowed_list:\t0-%d\nMems_allowed:\t00000001\nMems_allowed_list:\t0\n"
         "voluntary_ctxt_switches:\t1\nnonvoluntary_ctxt_switches:\t1\n",
-        w.name, (unsigned)G.umask & 0777, state, pid, w.tid, w.init ? 0 : 1,
-        uid, uid, uid, uid, uid, uid, uid, uid, w.init ? 64 : 256, pid, pid, pid, pid,
+        w.name, w.init ? 022u : (unsigned)pr->umask & 0777, state, pid, w.tid, ppid,
+        uid, uid, uid, uid, gid, gid, gid, gid, w.init ? 64 : 256, pid, pid, pid, pid,
         vm, vm, vm, vm, vm, vm, pte, w.nthreads, sigp.rlim_cur,
         w.sigpnd, 0ull, w.sigblk, w.init ? 0ull : ign, w.init ? 0ull : cgt,
         0ull, w.init ? capall : 0ull, w.init ? capall : 0ull, capall,
@@ -159,14 +175,17 @@ static char *g_status(const char *p, size_t *len)
 static char *g_stat(const char *p, size_t *len)
 {
     pwho w; pwho_of(p, &w);
-    u64 pages = w.init ? 1024 : xrl_mem_committed() >> 12;
-    u64 up = w.init ? 0 : xrl_mono_ns() / 10000000ull;
-    int pid = w.init ? 1 : G.pid;
+    xrl_proc *pr = tgt();
+    u64 pages = w.init ? 1024 : (pr->mm ? xrl_mem_mm_size(pr->mm->id) : xrl_mem_committed()) >> 12;
+    u64 up = w.init ? 0 : pr->start_ns / 10000000ull;
+    int pid = w.init ? 1 : pr->pid;
+    char st = w.init ? 'S' : pr->state == XP_ZOMBIE ? 'Z' : pr->state == XP_STOPPED ? 'T' : pr == xrl_curproc() ? 'R' : 'S';
     /* the fields of proc(5) up to exit_code; the ones we do not keep are 0 */
     return dupfmt(len,
-        "%d (%s) %c %d %d %d 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 "
+        "%d (%s) %c %d %d %d 0 %d 4194304 0 0 0 0 0 0 0 0 20 0 %d 0 %llu %llu %llu 18446744073709551615 "
         "0 0 0 0 0 0 0 0 0 0 0 0 17 0 0 0 0 0 0 0 0 0 0 0 0 0 0\n",
-        w.tid, w.name, w.init ? 'S' : 'R', w.init ? 0 : 1, pid, pid, w.nthreads, up, pages << 12, pages);
+        w.tid, w.name, st, w.init ? 0 : pr->ppid, w.init ? 1 : pr->pgid, w.init ? 1 : pr->sid, w.init ? -1 : xrl_tty_pgrp(),
+        w.nthreads, up, pages << 12, pages);
 }
 static char *g_statm(const char *p, size_t *len)
 {
@@ -257,7 +276,7 @@ static char *g_procstat(const char *p, size_t *len)
     return b;
 }
 static char *g_uptime(const char *p, size_t *len) { (void)p; u64 ms = xrl_mono_ns() / 10000000ull; return dupfmt(len, "%llu.%02llu %llu.%02llu\n", ms / 100, ms % 100, ms / 100, ms % 100); }
-static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, G.pid); }
+static char *g_loadavg(const char *p, size_t *len) { (void)p; return dupfmt(len, "0.10 0.10 0.10 1/%d %d\n", (int)G.nthreads, xrl_curproc()->pid); }
 static char *g_version(const char *p, size_t *len) { (void)p; return dupfmt(len, "Linux version 6.1.0-21-amd64 (debian-kernel@lists.debian.org) (gcc-12 (Debian 12.2.0-14) 12.2.0, GNU ld (GNU Binutils for Debian) 2.40) " XRL_UTS_VERSION "\n"); }
 static char *g_filesystems(const char *p, size_t *len) { (void)p; return dupfmt(len, "nodev\trootfs\nnodev\tproc\nnodev\tsysfs\nnodev\tdevtmpfs\nnodev\ttmpfs\n\text4\n"); }
 static char *g_osrelease(const char *p, size_t *len) { (void)p; return dupfmt(len, "6.1.0-21-amd64\n"); }
@@ -577,17 +596,26 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     return TRUE;
 }
 
-/* /proc/<digits>/... and /proc/thread-self -> /proc/self/... */
+/* /proc/<digits>/... and /proc/thread-self -> /proc/self/..., with t_target the process it names (a reference,
+ * dropped by norm_leave) */
 static void normalize(const char *in, char *out, size_t cap)
 {
     if (!strncmp(in, "/proc/", 6) && in[6] >= '0' && in[6] <= '9') {
         const char *p = in + 6;
         int v = 0;
         while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
-        if (v == G.pid || xrl_thread_by_tid(v)) { snprintf(out, cap, "/proc/self%s", p); return; }
+        xrl_proc *self = xrl_curproc();
+        if (v == self->pid) { snprintf(out, cap, "/proc/self%s", p); return; }
+        xrl_proc *q = xrl_proc_by_pid(v);
+        if (!q) { xrl_thread *th = xrl_thread_by_tid(v); if (th && th->proc) { q = th->proc; xrl_proc_ref(q); } }
+        if (q) { if (q == self) xrl_proc_put(q); else t_target = q; snprintf(out, cap, "/proc/self%s", p); return; }
     }
     if (!strncmp(in, "/proc/thread-self", 17)) { snprintf(out, cap, "/proc/self%s", in + 17); return; }
     snprintf(out, cap, "%s", in);
+}
+static void norm_leave(void)
+{
+    if (t_target) { xrl_proc_put(t_target); t_target = NULL; }
 }
 
 static pent *plookup(const char *norm)
@@ -605,7 +633,7 @@ static int dyn_kind(const char *norm, int *is_fd_entry, int *num)
     if (!strncmp(norm, "/proc/self/task/", 16)) {
         int tid = atoi(norm + 16);
         const char *rest = strchr(norm + 16, '/');
-        if (!xrl_thread_by_tid(tid) && tid != G.pid) return 0;
+        if (!xrl_thread_by_tid(tid) && tid != tgt()->pid) return 0;
         if (!rest) { *num = tid; return K_DIR; }
         if (!strcmp(rest, "/comm") || !strcmp(rest, "/stat") || !strcmp(rest, "/status") || !strcmp(rest, "/statm")) { *num = tid; return K_FILE; }
     }
@@ -711,11 +739,11 @@ static xfile *open_dir(const char *norm, const char *orig)
     pdir_add(d, ".", LX_DT_DIR);
     pdir_add(d, "..", LX_DT_DIR);
     if (!strcmp(norm, "/proc/self/fd")) {
-        int fds[1024]; int n = xrl_fd_list(fds, 1024);
+        int fds[1024]; int n = xrl_files_list(tgt()->files, fds, 1024);
         for (int i = 0; i < n; i++) { char b[16]; sprintf(b, "%d", fds[i]); pdir_add(d, b, LX_DT_LNK); }
     } else if (!strcmp(norm, "/proc/self/task")) {
         AcquireSRWLockShared(&G.thread_lock);
-        for (xrl_thread *t = G.threads; t; t = t->next) { char b[16]; sprintf(b, "%d", t->tid); pdir_add(d, b, LX_DT_DIR); }
+        for (xrl_thread *t = G.threads; t; t = t->next) if (t->proc == tgt()) { char b[16]; sprintf(b, "%d", t->tid); pdir_add(d, b, LX_DT_DIR); }
         ReleaseSRWLockShared(&G.thread_lock);
     } else {
         size_t pl = strlen(norm);
@@ -724,7 +752,10 @@ static xfile *open_dir(const char *norm, const char *orig)
             if (strncmp(p, norm, pl) || p[pl] != '/' || strchr(p + pl + 1, '/')) continue;
             pdir_add(d, p + pl + 1, g_pe[i].kind == K_DIR ? LX_DT_DIR : g_pe[i].kind == K_LINK ? LX_DT_LNK : LX_DT_REG);
         }
-        if (!strcmp(norm, "/proc")) { char b[16]; sprintf(b, "%d", G.pid); pdir_add(d, b, LX_DT_DIR); }
+        if (!strcmp(norm, "/proc")) {
+            int pids[512], n = xrl_proc_list(pids, 512);
+            for (int i = 0; i < n; i++) { char b[16]; sprintf(b, "%d", pids[i]); pdir_add(d, b, LX_DT_DIR); }
+        }
     }
     xfile *f = xfile_new(&g_pd_ops, LX_O_RDONLY);
     f->priv = d;
@@ -741,12 +772,13 @@ static int remote_path(const char *g, int *pid, const char **leaf)
     const char *p = g + 6; int v = 0;
     while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
     if (*p != '/' || v == G.pid || v == 1 || xrl_thread_by_tid(v)) return 0;
+    { xrl_proc *q = xrl_proc_by_pid(v); if (q) { xrl_proc_put(q); return 0; } }   /* a guest process of this one (proc.c) */
     if (strcmp(p + 1, "maps") && strcmp(p + 1, "exe")) return 0;
     *pid = v; *leaf = p + 1;
     return 1;
 }
 
-xfile *xrl_proc_open(const char *gabs, int flags, int *err)
+static xfile *proc_open(const char *gabs, int flags, int *err)
 {
     char norm[512];
     {   int rp; const char *rl;
@@ -811,7 +843,14 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
     return f;
 }
 
-slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
+xfile *xrl_proc_open(const char *gabs, int flags, int *err)
+{
+    xfile *f = proc_open(gabs, flags, err);
+    norm_leave();
+    return f;
+}
+
+static slong proc_readlink(const char *gabs, char *buf, u64 cap)
 {
     char norm[512];
     {   int rp; const char *rl;
@@ -827,11 +866,12 @@ slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
     char tmp[2048];
     tmp[0] = 0;
     if (!strcmp(norm, "/proc/1/exe") || !strcmp(norm, "/proc/1/cwd") || !strcmp(norm, "/proc/1/root")) return -LX_EACCES;
-    if (!strcmp(norm, "/proc/self/exe")) snprintf(tmp, sizeof tmp, "%s", G.exec_path ? G.exec_path : "/bin/wine");
-    else if (!strcmp(norm, "/proc/self/cwd")) { AcquireSRWLockShared(&G.cwd_lock); snprintf(tmp, sizeof tmp, "%s", G.cwd); ReleaseSRWLockShared(&G.cwd_lock); }
+    xrl_proc *tp = tgt();
+    if (!strcmp(norm, "/proc/self/exe")) snprintf(tmp, sizeof tmp, "%s", tp->exec_path && tp->exec_path[0] ? tp->exec_path : "/bin/wine");
+    else if (!strcmp(norm, "/proc/self/cwd")) { AcquireSRWLockShared(&G.cwd_lock); snprintf(tmp, sizeof tmp, "%s", tp->cwd); ReleaseSRWLockShared(&G.cwd_lock); }
     else if (!strcmp(norm, "/proc/self/root")) snprintf(tmp, sizeof tmp, "/");
     else if (!strncmp(norm, "/proc/self/fd/", 14)) {
-        xfile *f = xrl_fd_get(atoi(norm + 14));
+        xfile *f = xrl_files_get(tp->files, atoi(norm + 14));
         if (!f) return -LX_ENOENT;
         if (f->gpath) snprintf(tmp, sizeof tmp, "%s", f->gpath);
         else snprintf(tmp, sizeof tmp, "%s:[%p]", f->ops->name, (void *)f);
@@ -843,8 +883,15 @@ slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
     return (slong)n;
 }
 
+slong xrl_proc_readlink(const char *gabs, char *buf, u64 cap)
+{
+    slong r = proc_readlink(gabs, buf, cap);
+    norm_leave();
+    return r;
+}
+
 /* Returns 1 if handled. st->st_nlink == 0 on return means "handled: ENOENT". */
-int xrl_proc_stat(const char *gabs, lx_stat *st)
+static int proc_stat(const char *gabs, lx_stat *st)
 {
     if (strncmp(gabs, "/proc", 5) && strncmp(gabs, "/sys", 4)) return 0;
     {   int rp; const char *rl;
@@ -868,6 +915,13 @@ int xrl_proc_stat(const char *gabs, lx_stat *st)
                    (u64)(uintptr_t)(e ? e->path : gabs), 0);
     if (kind == K_DIR) st->st_nlink = 2;
     return 1;
+}
+
+int xrl_proc_stat(const char *gabs, lx_stat *st)
+{
+    int r = proc_stat(gabs, st);
+    norm_leave();
+    return r;
 }
 
 int xrl_proc_is_virtual(const char *gabs) { return !strncmp(gabs, "/proc", 5) || !strncmp(gabs, "/sys", 4); }

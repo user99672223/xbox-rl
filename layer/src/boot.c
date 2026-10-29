@@ -195,7 +195,6 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     G.exit_event = CreateEventW(NULL, TRUE, FALSE, NULL);
     InitializeSRWLock(&G.cwd_lock);
     InitializeSRWLock(&G.thread_lock);
-    G.umask = 022;
 
     const char *tr = env_get("XRL_TRACE");
     G.trace_syscalls = tr && tr[0] ? atoi(tr) : 0;   /* 1 raw numbers, 2 decoded (systrace.c) */
@@ -205,6 +204,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
 
     xrl_time_init();
     xrl_threads_init();
+    xrl_proc_init();
     xrl_teb_init();
     xrl_futex_init();
     xrl_rng_init();
@@ -245,6 +245,11 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     LOGI("boot: guest exiting with code %d; draining %lld thread(s)", code, (slong)G.nthreads);
     xrl_dbt_dump_faults();   /* dbt.c: print any faults the DBT let escape (safe context) */
     xrl_mem_dump_faults();   /* mem.c: why the memory handler could not back a faulting write + full map */
+    AcquireSRWLockShared(&G.thread_lock);
+    for (xrl_thread *t = G.threads; t; t = t->next)
+        LOGI("boot:   still running: tid %d of process %d (%s) in_sys %d state %d dying %d exec_kill %d", t->tid, t->proc ? t->proc->pid : -1, t->name, t->in_sys,
+             t->proc ? t->proc->state : -1, t->proc ? (int)t->proc->dying : -1, (int)t->exec_kill);
+    ReleaseSRWLockShared(&G.thread_lock);
     for (int i = 0; i < 50 && G.nthreads > 0; i++) Sleep(10);
     if (G.nthreads > 0) { LOGW("boot: terminating %lld straggler thread(s)", (slong)G.nthreads); xrl_threads_terminate_all(); }
     return code;

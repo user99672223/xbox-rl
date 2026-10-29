@@ -304,6 +304,31 @@ static u64 find_symbol(const loaded *L, const char *want)
     return res;
 }
 
+/* A non-PIE (ET_EXEC) image maps at its own addresses: report the range, so execve can refuse before it
+ * destroys anything when another live process uses it. */
+int xrl_elf_fixed_range(const char *gpath, u64 *lo, u64 *hi)
+{
+    loaded L;
+    memset(&L, 0, sizeof L);
+    L.fd = (int)xrl_vfs_open(LX_AT_FDCWD, gpath, LX_O_RDONLY | LX_O_CLOEXEC, 0);
+    if (L.fd < 0) return 0;
+    int r = 0;
+    Ehdr e;
+    if (!fd_pread_all(L.fd, &e, sizeof e, 0) && !memcmp(e.ident, "\177ELF", 4) && e.type == ET_EXEC && e.phentsize == sizeof(Phdr) &&
+        e.phnum && e.phnum <= 128) {
+        Phdr *ph = (Phdr *)malloc(e.phnum * sizeof(Phdr));
+        if (ph && !fd_pread_all(L.fd, ph, e.phnum * sizeof(Phdr), (s64)e.phoff)) {
+            u64 a = ~0ull, b = 0;
+            for (int i = 0; i < e.phnum; i++)
+                if (ph[i].type == PT_LOAD) { if (ph[i].vaddr < a) a = ph[i].vaddr; if (ph[i].vaddr + ph[i].memsz > b) b = ph[i].vaddr + ph[i].memsz; }
+            if (a != ~0ull) { *lo = ALIGN_DOWN(a, LX_PAGE); *hi = ALIGN_UP(b, LX_PAGE); r = 1; }
+        }
+        free(ph);
+    }
+    xrl_fd_close(L.fd);
+    return r;
+}
+
 int xrl_elf_load(const char *gpath, xrl_elf_image *out)
 {
     loaded main, interp;
@@ -372,11 +397,12 @@ u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_lo, u64 *out_hi)
     sp -= 16; u64 p_random = sp; memcpy((void *)sp, rnd, 16);
     const char *plat = "x86_64";
     sp -= 8; u64 p_plat = sp; memcpy((void *)sp, plat, strlen(plat) + 1);
-    size_t el = strlen(G.exec_path) + 1;
-    sp -= (el + 7) & ~7ull; u64 p_exec = sp; memcpy((void *)sp, G.exec_path, el);
-    u64 *envp_s = (u64 *)calloc(G.envc + 1, 8), *argv_s = (u64 *)calloc(G.argc + 1, 8);
-    for (int i = G.envc - 1; i >= 0; i--) { size_t l = strlen(G.envp[i]) + 1; sp -= l; memcpy((void *)sp, G.envp[i], l); envp_s[i] = sp; }
-    for (int i = G.argc - 1; i >= 0; i--) { size_t l = strlen(G.argv[i]) + 1; sp -= l; memcpy((void *)sp, G.argv[i], l); argv_s[i] = sp; }
+    const xrl_proc *pr = xrl_curproc();   /* the process being started: boot's, or the one in execve */
+    size_t el = strlen(pr->exec_path) + 1;
+    sp -= (el + 7) & ~7ull; u64 p_exec = sp; memcpy((void *)sp, pr->exec_path, el);
+    u64 *envp_s = (u64 *)calloc(pr->envc + 1, 8), *argv_s = (u64 *)calloc(pr->argc + 1, 8);
+    for (int i = pr->envc - 1; i >= 0; i--) { size_t l = strlen(pr->envp[i]) + 1; sp -= l; memcpy((void *)sp, pr->envp[i], l); envp_s[i] = sp; }
+    for (int i = pr->argc - 1; i >= 0; i--) { size_t l = strlen(pr->argv[i]) + 1; sp -= l; memcpy((void *)sp, pr->argv[i], l); argv_s[i] = sp; }
     sp &= ~15ull;
 
     u64 aux[40][2];
@@ -384,7 +410,7 @@ u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_lo, u64 *out_hi)
 #define AUX(t, v) do { aux[na][0] = (t); aux[na][1] = (u64)(v); na++; } while (0)
     AUX(AT_PHDR, img->phdr); AUX(AT_PHENT, img->phent); AUX(AT_PHNUM, img->phnum);
     AUX(AT_PAGESZ, 4096); AUX(AT_BASE, img->base); AUX(AT_FLAGS, 0); AUX(AT_ENTRY, img->prog_entry);
-    AUX(AT_UID, 1000); AUX(AT_EUID, 1000); AUX(AT_GID, 1000); AUX(AT_EGID, 1000);
+    AUX(AT_UID, pr->uid); AUX(AT_EUID, pr->euid); AUX(AT_GID, pr->gid); AUX(AT_EGID, pr->egid);
     AUX(AT_PLATFORM, p_plat);
     int cpuid1[4]; __cpuid(cpuid1, 1);
     AUX(AT_HWCAP, (u32)cpuid1[3]);
@@ -396,15 +422,15 @@ u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_lo, u64 *out_hi)
     AUX(AT_XRL_ABI, XRL_ABI_VERSION);
     AUX(AT_NULL, 0);
 #undef AUX
-    size_t nwords = 1 + (size_t)G.argc + 1 + (size_t)G.envc + 1 + (size_t)na * 2;
+    size_t nwords = 1 + (size_t)pr->argc + 1 + (size_t)pr->envc + 1 + (size_t)na * 2;
     sp -= nwords * 8;
     sp &= ~15ull;
     u64 *w = (u64 *)sp;
     size_t k = 0;
-    w[k++] = (u64)G.argc;
-    for (int i = 0; i < G.argc; i++) w[k++] = argv_s[i];
+    w[k++] = (u64)pr->argc;
+    for (int i = 0; i < pr->argc; i++) w[k++] = argv_s[i];
     w[k++] = 0;
-    for (int i = 0; i < G.envc; i++) w[k++] = envp_s[i];
+    for (int i = 0; i < pr->envc; i++) w[k++] = envp_s[i];
     w[k++] = 0;
     for (int i = 0; i < na; i++) { w[k++] = aux[i][0]; w[k++] = aux[i][1]; }
     free(envp_s); free(argv_s);

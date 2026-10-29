@@ -106,7 +106,7 @@ static void parent(char **argv, char **envp)
         char *a0[] = { "x", 0 };
         CHECK(sc(59, "/bin/does-not-exist", a0, envp, 0, 0, 0) == -2, "execve of a missing file -> -ENOENT, we are still here");
         long fd = sc3(2, "/notelf", 0101 | 0200 /* O_CREAT|O_WRONLY */, 0755);
-        const char txt[] = "#!/bin/sh # not an ELF file, but long enough to be read as a header ..........";
+        const char txt[] = "This is a text file, not an ELF image, but long enough to be read as a header ..........";
         sc3(1, fd, txt, sizeof txt); sc1(3, fd);
         CHECK(sc(59, "/notelf", a0, envp, 0, 0, 0) == -8, "execve of a non-ELF file -> -ENOEXEC");
     }

@@ -92,10 +92,14 @@ void xrl_thread_unbind(void)
 }
 
 /* ------------------------------------------------------------- thread list */
-xrl_thread *xrl_thread_new(void)
+xrl_thread *xrl_thread_new(void) { return xrl_thread_new_in(xrl_curproc()); }
+
+/* A thread record in process `p` (the calling thread's, for clone and exec; a new process's for fork). */
+xrl_thread *xrl_thread_new_in(xrl_proc *p)
 {
     xrl_thread *t = (xrl_thread *)calloc(1, sizeof *t);
     if (!t) return NULL;
+    t->proc = p;
     t->self = (u64)t;
     t->tid = 0;                         /* the OS thread id, set by start_os_thread */
     t->fsb_enabled = (u64)G.fsgsbase;
@@ -103,6 +107,16 @@ xrl_thread *xrl_thread_new(void)
     t->sig_ev = CreateEventW(NULL, FALSE, FALSE, NULL);
     strcpy_s(t->name, sizeof t->name, "xrl-guest");
     AcquireSRWLockExclusive(&G.thread_lock);
+    /* a process that is being torn down (xrl_proc_exit marks it dying before it lists its threads, under this
+     * lock) gets no new thread: an execve or clone racing with a kill must not outlive the process */
+    if (p->dying) {
+        ReleaseSRWLockExclusive(&G.thread_lock);
+        if (t->sig_ev) CloseHandle(t->sig_ev);
+        free(t);
+        return NULL;
+    }
+    InterlockedIncrement(&p->nthreads);
+    xrl_proc_ref(p);
     t->next = G.threads;
     if (G.threads) G.threads->prev = t;
     G.threads = t;
@@ -118,6 +132,10 @@ static void thread_unlink(xrl_thread *t)
     if (t->next) t->next->prev = t->prev;
     InterlockedDecrement(&G.nthreads);
     ReleaseSRWLockExclusive(&G.thread_lock);
+    if (t->proc) {
+        InterlockedDecrement(&t->proc->nthreads);
+        xrl_proc_put(t->proc);      /* the record stays allocated, its process may not */
+    }
 }
 
 xrl_thread *xrl_thread_by_tid(int tid)
@@ -244,27 +262,15 @@ int xrl_threads_start_fn(u64 fn, const char *name)
 }
 
 /* ----------------------------------------------------------------- clone */
-slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc)
+/* Build the child's thread record from the parent's syscall frame, suspended (its tid is known and
+ * published before it runs). `np` is the child's process: the parent's own for a thread, a new one for fork. */
+int xrl_thread_clone_prepare(xrl_thread *p, xrl_proc *np, u64 flags, u64 child_stack, u64 tls, u64 resume_pc, xrl_thread **out)
 {
-    xrl_thread *p = xrl_cur();
-    if (!p) return -LX_ENOSYS;
-    const u64 need = LX_CLONE_VM | LX_CLONE_THREAD;
-    /* fork() (no CLONE_VM) and vfork() (CLONE_VM|CLONE_VFORK, not a thread) both run as a task:
-     * the task model shares the parent's memory and runs parent/child strictly one at a time, which is
-     * exactly vfork's contract (the parent is suspended until the child execs or exits, and the child
-     * execs almost immediately). EAC's bootstrapper calls vfork after it injects the module. */
-    if (xrl_fork_tasks_enabled() && !(flags & LX_CLONE_THREAD) &&
-        (!(flags & LX_CLONE_VM) || (flags & LX_CLONE_VFORK)))
-        return xrl_do_fork();
-    if ((flags & need) != need) {
-        LOGW("clone: flags=0x%llx is not a thread clone (CLONE_VM|CLONE_THREAD required); fork/vfork unsupported", flags);
-        return -LX_ENOSYS;
-    }
     if (flags & LX_CLONE_SETTLS) {
         if (!G.fsgsbase && !G.tp_slot) { LOGE("clone: CLONE_SETTLS but neither FSGSBASE nor the TP slot is available"); return -LX_ENOSYS; }
     }
-    xrl_thread *t = xrl_thread_new();
-    if (!t) return -LX_ENOMEM;
+    xrl_thread *t = xrl_thread_new_in(np);
+    if (!t) return p->proc->dying ? -LX_EAGAIN : -LX_ENOMEM;
     const u64 *fr = (const u64 *)p->frame;
     for (int i = 0; i < 7; i++) t->resume[i] = fr[i];
     /* B's musl passes an explicit child entry (7th arg): a call cannot return
@@ -282,18 +288,43 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
     t->sigmask = p->sigmask;
     t->proc_pid = p->proc_pid;     /* a thread of the same process shares getpid() */
     t->proc_ppid = p->proc_ppid;
+    if (np != p->proc) {   /* a forked process keeps its sigaltstack and its comm, a thread starts without */
+        t->altstack = p->altstack;
+        memcpy(t->name, p->name, sizeof t->name);
+    }
     t->clone_flags = (u32)flags;
-    if (flags & LX_CLONE_CHILD_CLEARTID) t->clear_child_tid = ctid;
     t->guest_stack_lo = 0;
     if (create_os_thread(t)) {   /* suspended: the tid is known before the child runs */
         thread_unlink(t);
         free(t);
         return -LX_EAGAIN;
     }
+    *out = t;
+    return 0;
+}
+
+void xrl_thread_start(xrl_thread *t) { ResumeThread(t->handle); }
+
+slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc)
+{
+    xrl_thread *p = xrl_cur();
+    if (!p) return -LX_ENOSYS;
+    /* XRL_FORK_TASKS (Rocket League through EAC): fork() and vfork() run as a task (task.c): it shares the parent's
+     * memory, runs parent and child one at a time (vfork's contract; EAC's bootstrapper vforks after it injects the
+     * module), and is what ptrace and the traced exec into a second host process work with */
+    if (xrl_fork_tasks_enabled() && !(flags & LX_CLONE_THREAD) && (!(flags & LX_CLONE_VM) || (flags & LX_CLONE_VFORK)))
+        return xrl_do_fork();
+    if (!(flags & LX_CLONE_THREAD)) return xrl_proc_clone(flags, child_stack, ptid, ctid, tls, resume_pc);
+    if (!(flags & LX_CLONE_VM)) return -LX_EINVAL;
+    xrl_thread *t = NULL;
+    slong r = xrl_thread_clone_prepare(p, p->proc, flags, child_stack, tls, resume_pc, &t);
+    if (r) return r;
+    if (flags & LX_CLONE_CHILD_CLEARTID) t->clear_child_tid = ctid;
     if (flags & LX_CLONE_PARENT_SETTID) xrl_ctu(ptid, &t->tid, 4);
     if (flags & LX_CLONE_CHILD_SETTID) xrl_ctu(ctid, &t->tid, 4);
-    ResumeThread(t->handle);
-    return t->tid;
+    int tid = t->tid;
+    xrl_thread_start(t);
+    return tid;
 }
 
 /* a fork()ed task's thread (task.c): resumes where the parent's syscall returns, with rax = 0 */
@@ -324,11 +355,13 @@ void xrl_wake_ctid(xrl_thread *t)
     }
 }
 
-slong xrl_do_exit(int code, int group)
+/* sig != 0: the process dies of that signal (the wait status says so; the init process's exit code stays
+ * 128+sig as it always was) */
+static slong do_exit(int code, int group, int sig)
 {
     xrl_thread *t = xrl_cur();
     if (!t) ExitThread((DWORD)code);
-    if (t->task) {   /* a fork()ed task ends; the process does not */
+    if (t->task) {   /* a fork()ed task ends (task.c); its process does not */
         xrl_task_on_exit(t, code);
         if (t->timer) CloseHandle(t->timer);
         thread_unlink(t);
@@ -336,9 +369,12 @@ slong xrl_do_exit(int code, int group)
         xrl_task_wake_parent(t);
         ExitThread((DWORD)code);
     }
-    int last = (int)(G.nthreads - G.ndaemons) <= 1 && !t->daemon;
-    if (t->daemon) InterlockedDecrement(&G.ndaemons);
-    if (group || last) {
+    xrl_proc *p = t->proc;
+    int last = (int)(p->nthreads - p->ndaemons) <= 1 && !t->daemon;
+    if (t->daemon) { InterlockedDecrement(&p->ndaemons); t->daemon = 0; }
+    int ends = group || last;
+    int is_init = p->is_init;   /* p may be freed as soon as this thread's record is unlinked */
+    if (ends && is_init) {
         InterlockedExchange(&G.exit_code, code);
         InterlockedExchange(&G.exiting, 1);
     }
@@ -348,13 +384,21 @@ slong xrl_do_exit(int code, int group)
     if (t->defer_unmap_len) { xrl_mem_munmap(t->defer_unmap_addr, t->defer_unmap_len); t->defer_unmap_len = 0; }
     xrl_wake_ctid(t);
     if (t->timer) CloseHandle(t->timer);
+    /* another process: it becomes a zombie (its fds close, its mm goes, the parent hears SIGCHLD, a vfork parent
+     * runs again); this has to happen before our own record goes, it needs to know which thread is the caller */
+    xrl_heapcheck("do_exit: start");
+    if (ends && !is_init) xrl_proc_exit(p, sig ? sig : (code & 0xff) << 8, t);
     thread_unlink(t);
+    xrl_heapcheck("do_exit: unlinked");
     xrl_thread_unbind();
-    if (group || last) SetEvent(G.exit_event);
+    if (ends && is_init) SetEvent(G.exit_event);
     /* leave the record allocated: other threads may briefly hold pointers via tgkill lookup */
     ExitThread((DWORD)code);
     return 0;
 }
+
+slong xrl_do_exit(int code, int group) { return do_exit(code, group, 0); }
+slong xrl_do_exit_sig(int sig) { return do_exit(128 + sig, 1, sig); }
 
 /* A thread that ends because execve is replacing the image (or that exec.c terminated while it ran
  * guest code): no CLEARTID wake, no exit_group; just its records. */
@@ -369,7 +413,7 @@ static void thread_forget(xrl_thread *t, u64 teb)
     }
     ReleaseSRWLockExclusive(&g_ttab_lock);
     if (t->timer) { CloseHandle(t->timer); t->timer = NULL; }
-    if (t->daemon) { t->daemon = 0; InterlockedDecrement(&G.ndaemons); }
+    if (t->daemon) { t->daemon = 0; InterlockedDecrement(&t->proc->ndaemons); }
     thread_unlink(t);
 }
 
@@ -492,6 +536,14 @@ slong xrl_sys_prctl(int op, u64 a2, u64 a3, u64 a4, u64 a5)
     case LX_PR_GET_NAME:
         return xrl_ctu(a2, t ? t->name : "xrl", 16);
     case LX_PR_SET_PDEATHSIG:
+        if (a2 > LX_NSIG) return -LX_EINVAL;
+        if (t) t->proc->pdeathsig = (int)a2;
+        return 0;
+    case LX_PR_GET_PDEATHSIG: { int v = t ? t->proc->pdeathsig : 0; return xrl_ctu(a2, &v, 4); }
+    case LX_PR_SET_CHILD_SUBREAPER:
+        if (t) t->proc->subreaper = a2 != 0;
+        return 0;
+    case LX_PR_GET_CHILD_SUBREAPER: { int v = t ? t->proc->subreaper : 0; return xrl_ctu(a2, &v, 4); }
     case LX_PR_SET_DUMPABLE:
     case LX_PR_SET_NO_NEW_PRIVS:
     case LX_PR_SET_TIMERSLACK:

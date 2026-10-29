@@ -6,9 +6,12 @@
  *   cwd, umask) and replaces the program: other threads die, memory is unmapped,
  *   handlers go back to the default, the new ELF starts on a fresh stack. The
  *   layer is one OS process, so that is literally what happens: the other guest
- *   threads are stopped, the guest mappings are released, the new image is loaded
- *   by the same loader the boot uses and its main thread started; the calling
- *   thread ends. The new main thread has a new (host) thread id; getpid() stays.
+ *   threads of the calling *process* are stopped, its guest mappings are released
+ *   (or, when its mm is shared with a vfork/fork parent, it takes a fresh mm and the
+ *   parent's memory stays), the new image is loaded by the same loader the boot uses
+ *   and its main thread started; the calling thread ends. The new main thread has a
+ *   new (host) thread id; getpid() stays. A vfork/fork parent waiting for this exec
+ *   runs again once the new image is loaded (proc.c).
  *
  * Keeping part of the old image (layer-private, docs/decisions.md "exec handover")
  *   Wine's server is a thread of the guest process (patch 0005). A Wine process
@@ -46,7 +49,7 @@ slong xrl_exec_prctl(int op, u64 a2, u64 a3)
         if (!t) return -LX_EINVAL;
         if (!!a2 != !!t->daemon) {
             t->daemon = a2 ? 1 : 0;
-            if (a2) InterlockedIncrement(&G.ndaemons); else InterlockedDecrement(&G.ndaemons);
+            if (a2) InterlockedIncrement(&t->proc->ndaemons); else InterlockedDecrement(&t->proc->ndaemons);
         }
         return 0;
     case LX_PR_XRL_EXEC_KEEP: {
@@ -96,55 +99,6 @@ static slong strv_from_user(u64 uv, char ***out, int *count)
     return 0;
 }
 
-/* ------------------------------------------------------- stopping threads */
-static int thread_listed(xrl_thread *t)
-{
-    int r = 0;
-    AcquireSRWLockShared(&G.thread_lock);
-    for (xrl_thread *x = G.threads; x; x = x->next) if (x == t) { r = 1; break; }
-    ReleaseSRWLockShared(&G.thread_lock);
-    return r;
-}
-
-static void kill_others(xrl_thread *self, int keep_daemons)
-{
-    xrl_thread *tg[512];
-    int n = 0;
-    AcquireSRWLockShared(&G.thread_lock);
-    for (xrl_thread *t = G.threads; t && n < 512; t = t->next)
-        if (t != self && !(keep_daemons && t->daemon)) tg[n++] = t;
-    ReleaseSRWLockShared(&G.thread_lock);
-    for (int i = 0; i < n; i++) InterlockedExchange(&tg[i]->exec_kill, 1);
-    ULONGLONG deadline = GetTickCount64() + 5000;
-    for (;;) {
-        int alive = 0;
-        for (int i = 0; i < n; i++) {
-            xrl_thread *t = tg[i];
-            if (!t || !thread_listed(t)) continue;
-            alive++;
-            if (t->sig_ev) SetEvent(t->sig_ev);
-            xrl_futex_interrupt(t);
-            if (!t->in_sys && t->handle && SuspendThread(t->handle) != (DWORD)-1) {
-                CONTEXT c; memset(&c, 0, sizeof c); c.ContextFlags = CONTEXT_CONTROL;
-                int guest = !t->in_sys && GetThreadContext(t->handle, &c) && xrl_mem_guest_ctx(c.Rip, c.Rsp) == 1;
-                if (guest) { TerminateThread(t->handle, 0); WaitForSingleObject(t->handle, 1000); xrl_thread_reap(t); alive--; }
-                else ResumeThread(t->handle);
-            }
-        }
-        xrl_io_notify();
-        if (!alive) return;
-        if (GetTickCount64() > deadline) {
-            for (int i = 0; i < n; i++)
-                if (tg[i] && thread_listed(tg[i])) {
-                    LOGW("exec: thread %d did not stop in 5 s; terminating it", tg[i]->tid);
-                    TerminateThread(tg[i]->handle, 0); WaitForSingleObject(tg[i]->handle, 1000); xrl_thread_reap(tg[i]);
-                }
-            return;
-        }
-        Sleep(2);
-    }
-}
-
 /* ----------------------------------------------------------------- execve */
 slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
 {
@@ -158,18 +112,6 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
     if ((r = xrl_vfs_resolve(LX_AT_FDCWD, path, 1, gpath, sizeof gpath)) < 0) return r;
 
     /* everything that can fail with an errno happens before anything is destroyed */
-    {
-        u8 hdr[64];
-        slong fd = xrl_vfs_open(LX_AT_FDCWD, gpath, LX_O_RDONLY | LX_O_CLOEXEC, 0);
-        if (fd < 0) return fd;
-        xfile *f = xrl_fd_get((int)fd);
-        slong got = f && f->ops->read ? f->ops->read(f, hdr, sizeof hdr, 0) : -LX_EACCES;
-        xfile_unref(f);
-        xrl_fd_close((int)fd);
-        if (got < 0) return got;
-        if (got < 20 || hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F') return -LX_ENOEXEC;
-        if (hdr[4] != 2 || *(u16 *)(hdr + 18) != 62) return -LX_ENOEXEC;   /* ELFCLASS64, EM_X86_64 */
-    }
     char **av = NULL, **ev = NULL;
     int ac, ec;
     if ((r = strv_from_user(uargv, &av, &ac)) < 0) return r;
@@ -177,24 +119,82 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
     if (!ac) {   /* Linux runs the program with an empty argv[0]; give it its path instead */
         free(av); av = (char **)calloc(2, sizeof(char *)); av[0] = _strdup(path); ac = 1;
     }
+    for (int depth = 0;; depth++) {
+        u8 hdr[256];
+        slong fd = xrl_vfs_open(LX_AT_FDCWD, gpath, LX_O_RDONLY | LX_O_CLOEXEC, 0);
+        if (fd < 0) { strv_free(av); strv_free(ev); return fd; }
+        xfile *f = xrl_fd_get((int)fd);
+        slong got = f && f->ops->read ? f->ops->read(f, hdr, sizeof hdr, 0) : -LX_EACCES;
+        xfile_unref(f);
+        xrl_fd_close((int)fd);
+        if (got < 0) { strv_free(av); strv_free(ev); return got; }
+        if (got >= 2 && hdr[0] == '#' && hdr[1] == '!') {
+            /* binfmt_script: "#!interpreter [one argument]" -> interpreter [arg] script-path original-args... */
+            char interp[256], arg[256];
+            int i = 2, n = 0, m = 0;
+            if (depth >= 4) { strv_free(av); strv_free(ev); return -LX_ELOOP; }
+            while (i < got && (hdr[i] == ' ' || hdr[i] == '\t')) i++;
+            while (i < got && hdr[i] != ' ' && hdr[i] != '\t' && hdr[i] != '\n' && hdr[i] != '\r' && n < (int)sizeof interp - 1) interp[n++] = (char)hdr[i++];
+            interp[n] = 0;
+            while (i < got && (hdr[i] == ' ' || hdr[i] == '\t')) i++;
+            while (i < got && hdr[i] != '\n' && hdr[i] != '\r' && m < (int)sizeof arg - 1) arg[m++] = (char)hdr[i++];
+            while (m > 0 && (arg[m - 1] == ' ' || arg[m - 1] == '\t')) m--;
+            arg[m] = 0;
+            if (!n) { strv_free(av); strv_free(ev); return -LX_ENOEXEC; }
+            int extra = m ? 2 : 1;                       /* interpreter [arg] */
+            char **nv = (char **)calloc((size_t)(ac + extra + 1), sizeof(char *));
+            if (!nv) { strv_free(av); strv_free(ev); return -LX_ENOMEM; }
+            int k = 0;
+            nv[k++] = _strdup(interp);
+            if (m) nv[k++] = _strdup(arg);
+            nv[k++] = _strdup(path);                     /* the script as execve was given it */
+            for (int j = 1; j < ac; j++) nv[k++] = av[j];
+            free(av[0]); free(av);
+            av = nv; ac = k;
+            strcpy_s(path, sizeof path, interp);
+            if ((r = xrl_vfs_resolve(LX_AT_FDCWD, path, 1, gpath, sizeof gpath)) < 0) { strv_free(av); strv_free(ev); return r; }
+            continue;
+        }
+        if (got < 20 || hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' ||
+            hdr[4] != 2 || *(u16 *)(hdr + 18) != 62) {   /* ELFCLASS64, EM_X86_64 */
+            strv_free(av); strv_free(ev);
+            return -LX_ENOEXEC;
+        }
+        break;
+    }
+    {   /* a non-PIE image needs its fixed range: another live process may be using it (decisions.md, "Guest processes") */
+        u64 lo, hi;
+        if (xrl_elf_fixed_range(gpath, &lo, &hi)) {
+            u32 owner = 0;
+            if (xrl_mem_range_foreign(lo, hi, self->proc->mm->refs > 1 ? 0 : self->proc->mm->id, &owner)) {
+                LOGE("exec: %s is not position independent and needs [%llx,%llx), which address-space %u (another live process) "
+                     "uses: -ENOMEM (run it as the only process, or build it as PIE)", gpath, lo, hi, owner);
+                strv_free(av); strv_free(ev);
+                return -LX_ENOMEM;
+            }
+        }
+    }
     if (!TryAcquireSRWLockExclusive(&g_exec_lock)) { strv_free(av); strv_free(ev); return -LX_EAGAIN; }
     int keep = g_keep_on;
     xrange *rg = g_keep_free; int nrg = g_keep_n;
     g_keep_free = NULL; g_keep_n = 0; g_keep_on = 0;
     ReleaseSRWLockExclusive(&g_exec_lock);
 
-    LOGI("exec: pid %d tid %d -> %s (%d args, %d env)%s", G.pid, self->tid, gpath, ac, ec, keep ? ", old image kept" : "");
+    xrl_proc *pr = self->proc;
+    LOGI("exec: pid %d tid %d -> %s (%d args, %d env)%s", pr->pid, self->tid, gpath, ac, ec, keep ? ", old image kept" : "");
 
     /* ---- point of no return ---- */
     u64 before = xrl_mem_committed();
-    kill_others(self, keep);
+    xrl_proc_kill_threads(pr, self, keep);
+    xrl_heapcheck("exec: threads killed");
     if (keep) {
         for (int i = 0; i < nrg; i++) {
             u64 b = rg[i].base & ~(u64)(LX_PAGE - 1), e = ALIGN_UP(rg[i].base + rg[i].len, LX_PAGE);
             if (e > b) xrl_mem_munmap(b, e - b);
         }
     } else {
-        xrl_mem_release_all();
+        if (pr->dying) xrl_thread_die(self);
+        xrl_proc_exec_mm(pr);
         xrl_fd_close_on_exec();
     }
     free(rg);
@@ -210,19 +210,34 @@ slong xrl_sys_execve(u64 upath, u64 uargv, u64 uenvp)
     self->clear_child_tid = 0;
 
     /* the process now is the new program */
-    G.argv = av; G.argc = ac; G.envp = ev; G.envc = ec;
-    G.exec_path = _strdup(gpath);
+    {
+        char **oav = pr->argv, **oev = pr->envp;
+        int oac = pr->argc, oec = pr->envc;
+        char *oexe = pr->exec_path;
+        pr->argv = av; pr->argc = ac; pr->envp = ev; pr->envc = ec;
+        pr->exec_path = _strdup(gpath);
+        if (pr->is_init) { G.argv = av; G.argc = ac; G.envp = ev; G.envc = ec; G.exec_path = pr->exec_path; }   /* the originals leak: boot-time readers may hold them */
+        else { for (int i = 0; i < oac; i++) free(oav[i]); free(oav); for (int i = 0; i < oec; i++) free(oev[i]); free(oev); free(oexe); }
+    }
+    xrl_heapcheck("exec: argv replaced");
     xrl_elf_image img;
     u64 slo = 0, shi = 0, sp = 0;
     xrl_thread *mt = NULL;
-    if (xrl_elf_load(G.exec_path, &img) || !(sp = xrl_elf_build_stack(&img, &slo, &shi)) ||
+    if (xrl_elf_load(pr->exec_path, &img) || !(sp = xrl_elf_build_stack(&img, &slo, &shi)) ||
         xrl_threads_start_main(img.entry, sp, &mt)) {
+        if (pr->dying) xrl_thread_die(self);   /* killed while it was exec'ing: nothing to start (proc.c is tearing the process down) */
         LOGE("exec: cannot start %s after the old image was released; ending the process (SIGSEGV)", gpath);
-        xrl_do_exit(128 + LX_SIGSEGV, 1);
+        xrl_do_exit_sig(LX_SIGSEGV);
         return 0;
     }
     mt->guest_stack_lo = slo; mt->guest_stack_hi = shi;
+    {   /* comm: the program's basename, as Linux sets it at exec */
+        const char *b = strrchr(path, '/');   /* the name execve was given (a symlink's), not its target's */
+        strncpy_s(mt->name, sizeof mt->name, b ? b + 1 : path, _TRUNCATE);
+    }
+    xrl_heapcheck("exec: started");
     LOGI("exec: %s running, main thread tid %d entry %llx", gpath, mt->tid, img.entry);
+    xrl_proc_exec_done(pr);   /* a vfork/fork parent waiting for this exec runs again */
     xrl_thread_die(self);
     return 0;
 }

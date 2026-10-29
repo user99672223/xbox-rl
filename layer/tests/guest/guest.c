@@ -618,6 +618,10 @@ static void test_procfs_rlimits(void)
     CHECK(sc4(302, 0, 7, 0, rl) == 0 && sc4(302, 0, 9999, 0, rl) == -22, "bad resource: EINVAL");
 }
 
+/* The task model (XRL_FORK_TASKS=1) is the one with ptrace; without it fork makes a guest process (proc.c),
+ * whose ptrace is ENOSYS, and these tests, which trace their child, do not apply. */
+static int fork_tasks(void) { return sc4(101, 0x4200, 0x7fffffff, 0, 0) != -38; }
+
 /* fork() and ptrace() for a child that alternates with its parent (XRL_FORK_TASKS=1; layer/src/task.c).
  * The pattern is the one the EAC module uses on Linux: fork; the child closes its descriptors, sets
  * PR_SET_DUMPABLE 0, PTRACE_TRACEME, raises SIGSTOP; the parent waits for the stop, sets options, then steps
@@ -628,8 +632,8 @@ static void test_fork_tasks(void)
     int pf[2];
     sc2(293, pf, 0);
     long me = sc1(39, 0);
+    if (!fork_tasks()) { out("  skip fork/ptrace tasks (XRL_FORK_TASKS=1 not set)\n"); return; }
     long pid = sc(57, 0, 0, 0, 0, 0, 0);
-    if (pid == -38) { out("  skip fork/ptrace tasks (XRL_FORK_TASKS=1 not set)\n"); return; }
     if (pid == 0) {   /* child */
         child_saw_ppid = sc1(110, 0);
         sc1(3, pf[0]); sc1(3, pf[1]); child_closed_ok = 1;      /* its own table: the parent keeps its descriptors */
@@ -720,8 +724,8 @@ static void test_spawn(void)
 {
     sc1(87, "/tmp/xrl_spawned.txt");
     long me = sc1(39, 0);
+    if (!fork_tasks()) { out("  skip exec in a forked task (XRL_FORK_TASKS=1 not set)\n"); return; }
     long pid = sc(57, 0, 0, 0, 0, 0, 0);
-    if (pid == -38) { out("  skip exec in a forked task (XRL_FORK_TASKS=1 not set)\n"); return; }
     if (pid == 0) {
         const char *av[] = { "/bin/guest.elf", "--spawned", "hello world", "x\"y", 0 };
         const char *ev[] = { "XRL_SPAWN_ENV=abc", 0 };
@@ -776,8 +780,8 @@ static void test_traced_exec(void)
     long mfd = sc2(319, "tst", 0);
     char mfs[16]; u2s(mfs, mfd);
     sc3(1, mfd, "memfd-data", 10);
+    if (!fork_tasks()) { out("  skip traced exec (XRL_FORK_TASKS=1 not set)\n"); return; }
     long pid = sc(57, 0, 0, 0, 0, 0, 0);
-    if (pid == -38) { out("  skip traced exec (XRL_FORK_TASKS=1 not set)\n"); return; }
     if (pid == 0) {
         sc4(101, 0, 0, 0, 0);
         sc2(62, sc1(39, 0), 19);
@@ -903,8 +907,8 @@ static void inject_more(long pid, u64 regs[27], u64 target)
 
 static void test_inject_call(void)
 {
+    if (!fork_tasks()) { out("  skip inject call (XRL_FORK_TASKS=1 not set)\n"); return; }
     long pid = sc(57, 0, 0, 0, 0, 0, 0);
-    if (pid == -38) { out("  skip inject call (XRL_FORK_TASKS=1 not set)\n"); return; }
     if (pid == 0) {
         sc4(101, 0, 0, 0, 0);
         sc2(62, sc1(39, 0), 19);

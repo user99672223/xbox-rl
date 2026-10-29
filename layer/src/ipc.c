@@ -161,7 +161,12 @@ static slong pipe_write(xfile *f, const void *b, u64 n, s64 o)
     pipeend *e = (pipeend *)f->priv;
     if (!e->tx) return -LX_EBADF;
     if (!n) return 0;
-    return pb_write(f, e->tx, b, n, NULL);
+    slong r = pb_write(f, e->tx, b, n, NULL);
+    if (r == -LX_EPIPE && !e->is_socket) {   /* a pipe with no reader: SIGPIPE too, like Linux (sockets: net.c / MSG_NOSIGNAL) */
+        xrl_thread *t = xrl_cur();
+        if (t) xrl_sys_tgkill(-1, t->tid, LX_SIGPIPE);
+    }
+    return r;
 }
 static slong pipe_lseek(xfile *f, s64 o, int w) { (void)f; (void)o; (void)w; return -LX_ESPIPE; }
 static slong pipe_fstat(xfile *f, lx_stat *st)
