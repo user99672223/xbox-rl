@@ -658,6 +658,8 @@ bool probe_run(const ProbeOptions& opt) {
 //   memN              N MiB committed and touched up front (mem128, mem512, ...)
 //   memramp           +32 MiB every 500 ms until VirtualAlloc fails or the child dies
 //   init              host_early_init("full") (config, log-child file), then idle
+//   crash, dbgraise   5 s in: an unhandled access violation / an unhandled 0x40010006 (what the EAC child exited with)
+//   exit, ods         5 s in: ExitProcess(0x40010006); OutputDebugStringA every heartbeat (handled internally)
 //   layer             init + the headless layer booting XRL_PP_ARGV (the EAC child's path
 //                     without the tracee pipes); the heartbeat runs on its own thread
 // A spec item "kind@S" spawns that child S seconds after the parent starts.
@@ -758,6 +760,12 @@ void procprobe_child_main(const char* spec) {
             }
             snprintf(line, sizeof line, "HB n=%d t=%llu mb=%llu\n", n, t, pp_private_mb(GetCurrentProcess()));
             wr(line);
+            if (n == 50) {   // 5 s in: the error kinds
+                if (beh == "crash")    { wr("CRASHING (unhandled access violation)\n"); *(volatile int*)nullptr = 1; }
+                if (beh == "dbgraise") { wr("RAISING 0x40010006 unhandled\n"); RaiseException(0x40010006u, 0, 0, nullptr); }
+                if (beh == "exit")     { wr("EXITING 0x40010006\n"); ExitProcess(0x40010006u); }
+            }
+            if (beh == "ods") OutputDebugStringA("procprobe ods\n");   // the handled kind: kernel32 raises and catches 0x40010006
             if (beh == "busy") { unsigned long long end = t + 100; volatile unsigned x = 0; while (GetTickCount64() < end) x++; }
             else Sleep(100);
         }

@@ -8,17 +8,29 @@
 .PARAMETER Runs  Which runs (default: props, ramp, layer). See $specs below.
 #>
 [CmdletBinding()]
-param([string[]]$Runs = @('props', 'ramp', 'layer'), [int]$TimeoutSec = 140)
+param([string[]]$Runs = @('props', 'ramp', 'layer'), [int]$TimeoutSec = 140,
+      [string]$OriginalCfg)   # restore this file instead of what LocalState holds now
 $ErrorActionPreference = 'Stop'
 . "$PSScriptRoot\_common.ps1"
 Set-StrictMode -Off
+$Runs = @($Runs | ForEach-Object { $_ -split ',' } | Where-Object { $_ })   # pwsh -File passes 'a,b' as one string
 
+# the Wine settings of tools/configs/rl.cfg (the direct Rocket League run)
+$wineEnv = @('mount=/game=pkg:game', 'host_env=XRL_D3D11=native',
+    'env=WINEPREFIX=/prefix', 'env=WINEARCH=win64', 'env=USER=steamuser', 'env=HOME=/home/steamuser', 'env=PATH=/usr/bin:/bin',
+    'env=XRL_HOST_USD=1', 'env=XRL_NO_SPAWN=1', 'env=XRL_SKIP_WINEBOOT=1', 'env=WINEDEBUG=err+all,warn+seh', 'env=WINEDLLOVERRIDES=winemenubuilder.exe=d')
 # run -> (spec, extra launch.cfg lines)
 $specs = [ordered]@{
     props = @('idle,busy,winrt,extexec,d3d11,d3d12,init', @())
     ramp  = @('memramp', @())
     layer = @('idle,layer', @('mem_budget_mb=256', 'host_env=XRL_PP_ARGV=/usr/bin/pp-guest|64'))
     late  = @('idle@10,init@10,layer@10', @('mem_budget_mb=256', 'host_env=XRL_PP_ARGV=/usr/bin/pp-guest|64'))
+    crash = @('idle,crash', @())
+    dbg   = @('idle,dbgraise,ods', @())
+    exit  = @('idle,exit', @())
+    # Wine in the windowless child (the EAC game child was wine64 RocketLeague.exe): first a console program, then the game
+    winecmd = @('idle,layer', @('mem_budget_mb=1024', 'host_env=XRL_PP_ARGV=/usr/lib/wine/x86_64-unix/wine64|C:\windows\system32\timeout.exe|/t|80|/nobreak') + $wineEnv)
+    winerl  = @('idle,layer', @('mem_budget_mb=3584', 'host_env=XRL_PP_ARGV=/usr/lib/wine/x86_64-unix/wine64|Z:\game\Binaries\Win64\RocketLeague.exe') + $wineEnv)
 }
 
 $xbox = Get-XboxConfig
@@ -40,10 +52,12 @@ if ($Runs | Where-Object { $_ -in 'layer', 'late' }) {
 }
 
 $results = Join-Path $RepoRoot 'results'
+foreach ($r in $Runs) { if (-not $specs.Contains($r)) { throw "unknown run '$r' (have: $($specs.Keys -join ', '))" } }
 # A LocalState\launch.cfg wins over the installed one, so keep whatever is there and put it back after.
 $backup = Join-Path ([IO.Path]::GetTempPath()) 'pp-launch.cfg.bak'
 Remove-Item -Force $backup -ErrorAction SilentlyContinue
-try { Receive-DpFile $xbox $fn '\LocalState' 'launch.cfg' $backup; Write-Host '[pp] backed up the existing LocalState\launch.cfg' } catch { Remove-Item -Force $backup -ErrorAction SilentlyContinue }
+if ($OriginalCfg) { Copy-Item -Force $OriginalCfg $backup; Write-Host "[pp] will restore $OriginalCfg afterwards" }
+else { try { Receive-DpFile $xbox $fn '\LocalState' 'launch.cfg' $backup; Write-Host '[pp] backed up the existing LocalState\launch.cfg' } catch { Remove-Item -Force $backup -ErrorAction SilentlyContinue } }
 try {
 foreach ($run in $Runs) {
     $spec, $extra = $specs[$run]
