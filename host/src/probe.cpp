@@ -30,6 +30,8 @@
 #include <d3d11on12.h>
 #include <dxgi1_6.h>
 #include <wrl/client.h>
+#include <psapi.h>
+#include <winrt/Windows.ApplicationModel.h>
 #include <winrt/Windows.System.h>
 #include <winrt/Windows.System.Profile.h>
 #include <winrt/Windows.Gaming.Input.h>
@@ -38,6 +40,8 @@
 #include <cmath>
 #include <functional>
 #include <memory>
+#include <mutex>
+#include <thread>
 #include <string>
 #include <vector>
 #include <cstdio>
@@ -639,12 +643,24 @@ bool probe_run(const ProbeOptions& opt) {
 // ===================================================================
 // procprobe - evidence on whether the Xbox lets a packaged app run extra OS
 // processes, and if not, HOW/when it stops them. A child is this exe re-run
-// with XRL_PROCCHILD=<id>:<behavior>; it only heartbeats GetTickCount64 to
-// <XRL_PP_DIR>\pp-child-<id>.log (pure Win32, no WinRT/log.txt). The parent
-// (the foreground, window-owning app) spawns several and classifies each:
+// with XRL_PROCCHILD=<id>:<behavior>; it heartbeats GetTickCount64 plus its own
+// private commit to <XRL_PP_DIR>\pp-child-<id>.log (pure Win32 for the bare kinds).
+// The parent (the foreground, window-owning app) spawns them and classifies each:
 // ALIVE (heartbeats fresh), FROZEN (process alive but heartbeats stopped =
 // PLM-suspended), or TERMINATED (+exit code). GetTickCount64 (system uptime)
 // shares a base across processes, so staleness is comparable.
+//
+// Each behavior adds ONE ingredient of the EAC game child that the Xbox killed
+// ~3 s in (bare children survived 70 s), so the first kind to die names the trigger:
+//   idle, busy        bare control
+//   extexec, winrt    WinRT: an extended-execution request / Package::Current()
+//   d3d11, d3d12      a hardware GPU device held for the child's life
+//   memN              N MiB committed and touched up front (mem128, mem512, ...)
+//   memramp           +32 MiB every 500 ms until VirtualAlloc fails or the child dies
+//   init              host_early_init("full") (config, log-child file), then idle
+//   layer             init + the headless layer booting XRL_PP_ARGV (the EAC child's path
+//                     without the tracee pipes); the heartbeat runs on its own thread
+// A spec item "kind@S" spawns that child S seconds after the parent starts.
 static unsigned long long pp_last_hb(const char* path) {
     HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            nullptr, OPEN_EXISTING, 0, nullptr);
@@ -659,66 +675,148 @@ static unsigned long long pp_last_hb(const char* path) {
     return last;
 }
 
+static unsigned long long pp_private_mb(HANDLE proc) {
+    PROCESS_MEMORY_COUNTERS_EX pmc = { sizeof pmc };
+    return K32GetProcessMemoryInfo(proc, (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof pmc) ? pmc.PrivateUsage >> 20 : 0;
+}
+
+// The job this process runs in (the Xbox puts a package's processes in one): its limits, if readable.
+static void pp_job_info(char* out, size_t n) {
+    BOOL in_job = FALSE; IsProcessInJob(GetCurrentProcess(), nullptr, &in_job);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION li = {};
+    if (!QueryInformationJobObject(nullptr, JobObjectExtendedLimitInformation, &li, sizeof li, nullptr)) {
+        snprintf(out, n, "in_job=%d limits=unreadable(err %lu)", in_job, GetLastError()); return;
+    }
+    JOBOBJECT_BASIC_ACCOUNTING_INFORMATION ac = {};
+    QueryInformationJobObject(nullptr, JobObjectBasicAccountingInformation, &ac, sizeof ac, nullptr);
+    snprintf(out, n, "in_job=%d flags=0x%lx proc_mem=%lluMB job_mem=%lluMB peak_job=%lluMB peak_proc=%lluMB active=%lu",
+             in_job, li.BasicLimitInformation.LimitFlags, (unsigned long long)(li.ProcessMemoryLimit >> 20),
+             (unsigned long long)(li.JobMemoryLimit >> 20), (unsigned long long)(li.PeakJobMemoryUsed >> 20),
+             (unsigned long long)(li.PeakProcessMemoryUsed >> 20), ac.ActiveProcesses);
+}
+
+static void pp_commit_mb(size_t mb, std::vector<void*>& keep) {
+    size_t len = mb << 20;
+    void* p = VirtualAlloc(nullptr, len, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (!p) return;
+    for (size_t o = 0; o < len; o += 4096) ((volatile char*)p)[o] = 1;
+    keep.push_back(p);
+}
+
 void procprobe_child_main(const char* spec) {
     int id = atoi(spec);
     const char* colon = strchr(spec, ':');
     std::string beh = colon ? std::string(colon + 1) : "idle";
-    if (beh == "extexec") { try { winrt::init_apartment(winrt::apartment_type::multi_threaded); request_extended_execution(); } catch (...) {} }
     char dir[600] = "."; GetEnvironmentVariableA("XRL_PP_DIR", dir, sizeof dir);
     char path[720]; snprintf(path, sizeof path, "%s\\pp-child-%d.log", dir, id);
     HANDLE f = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                            nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    auto wr = [&](const char* s) { if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, s, (DWORD)strlen(s), &w, nullptr); FlushFileBuffers(f); } };
-    char line[256];
-    snprintf(line, sizeof line, "START pid=%lu beh=%s t=%llu\n",
-             GetCurrentProcessId(), beh.c_str(), (unsigned long long)GetTickCount64());
+    static std::mutex wr_mu;
+    auto wr = [f](const char* s) { std::lock_guard<std::mutex> g(wr_mu);
+        if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, s, (DWORD)strlen(s), &w, nullptr); FlushFileBuffers(f); } };
+    char line[512], job[300];
+    pp_job_info(job, sizeof job);
+    snprintf(line, sizeof line, "START pid=%lu beh=%s t=%llu %s\n",
+             GetCurrentProcessId(), beh.c_str(), (unsigned long long)GetTickCount64(), job);
     wr(line);
-    for (int n = 0; n < 1500; n++) {   // up to ~150 s of heartbeats
-        unsigned long long t = GetTickCount64();
-        snprintf(line, sizeof line, "HB n=%d t=%llu\n", n, (unsigned long long)t);
+
+    // the ingredient under test
+    std::vector<void*> keep;
+    Microsoft::WRL::ComPtr<ID3D11Device> d11; Microsoft::WRL::ComPtr<ID3D12Device> d12;
+    std::string note = "ok";
+    try {
+        if (beh == "extexec") { winrt::init_apartment(winrt::apartment_type::multi_threaded); request_extended_execution(); }
+        else if (beh == "winrt") {
+            winrt::init_apartment(winrt::apartment_type::multi_threaded);
+            try { note = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().Id().Name()); }
+            catch (...) { note = "Package::Current threw"; }
+        }
+        else if (beh == "d3d11") {
+            HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &d11, nullptr, nullptr);
+            char b[64]; snprintf(b, sizeof b, "D3D11CreateDevice hr=0x%08lx", (unsigned long)hr); note = b;
+        }
+        else if (beh == "d3d12") {
+            HRESULT hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&d12));
+            char b[64]; snprintf(b, sizeof b, "D3D12CreateDevice hr=0x%08lx", (unsigned long)hr); note = b;
+        }
+        else if (beh.rfind("mem", 0) == 0 && beh != "memramp") pp_commit_mb((size_t)atoi(beh.c_str() + 3), keep);
+        else if (beh == "init" || beh == "layer") {
+            SetEnvironmentVariableA("XRL_SPAWN_DEPTH", "1");   // log.cpp: log-child-<pid>.txt, never the parent's log.txt
+            host_early_init("full");
+        }
+    } catch (...) { note = "threw"; }
+    snprintf(line, sizeof line, "READY t=%llu mb=%llu %s\n", (unsigned long long)GetTickCount64(),
+             pp_private_mb(GetCurrentProcess()), note.c_str());
+    wr(line);
+
+    auto heartbeat = [&]() {
+        for (int n = 0; n < 1500; n++) {   // up to ~150 s of heartbeats
+            unsigned long long t = GetTickCount64();
+            if (beh == "memramp" && n % 5 == 0) {
+                size_t before = keep.size(); pp_commit_mb(32, keep);
+                if (keep.size() == before) { snprintf(line, sizeof line, "RAMP-FAIL t=%llu err=%lu\n", t, GetLastError()); wr(line); }
+            }
+            snprintf(line, sizeof line, "HB n=%d t=%llu mb=%llu\n", n, t, pp_private_mb(GetCurrentProcess()));
+            wr(line);
+            if (beh == "busy") { unsigned long long end = t + 100; volatile unsigned x = 0; while (GetTickCount64() < end) x++; }
+            else Sleep(100);
+        }
+    };
+    if (beh == "layer") {
+        std::thread hb(heartbeat);
+        WindowInfo wi; wi.core_window = nullptr; wi.width = 1920; wi.height = 1080; wi.valid = false;
+        window_info_set(wi);
+        gfx_thread_start();
+        int rc = boot_layer();   // XRL_PP_ARGV picks the guest program (boot.cpp)
+        snprintf(line, sizeof line, "LAYER-DONE t=%llu rc=%d mb=%llu\n", (unsigned long long)GetTickCount64(), rc, pp_private_mb(GetCurrentProcess()));
         wr(line);
-        if (beh == "busy") { unsigned long long end = t + 100; volatile unsigned x = 0; while (GetTickCount64() < end) x++; }
-        else Sleep(100);
-    }
+        hb.join();
+    } else heartbeat();
     if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
 }
 
 void procprobe_parent(const char* spec) {
     XLOGW("procprobe", "START main pid=%lu spec=%s", GetCurrentProcessId(), (spec && *spec) ? spec : "(default)");
     wchar_t exe[600]; if (!GetModuleFileNameW(nullptr, exe, 600)) { XLOGE("procprobe", "GetModuleFileName failed"); return; }
-    std::vector<std::string> behs;
+    { char job[300]; pp_job_info(job, sizeof job); XLOGW("procprobe", "main job: %s", job); }
+    struct Kid { HANDLE h = nullptr; DWORD pid = 0; std::string beh; int delay = 0; bool spawned = false, dead = true; char hb[720] = {0}; };
+    std::vector<Kid> kids;
     { std::string s = (spec && *spec) ? std::string(spec) : "idle,busy,extexec,idle";
       size_t p = 0; for (;;) { size_t c = s.find(',', p);
-          behs.push_back(s.substr(p, c == std::string::npos ? std::string::npos : c - p));
+          std::string item = s.substr(p, c == std::string::npos ? std::string::npos : c - p);
+          Kid k; size_t at = item.find('@');
+          k.beh = item.substr(0, at); if (at != std::string::npos) k.delay = atoi(item.c_str() + at + 1);
+          kids.push_back(k);
           if (c == std::string::npos) break; p = c + 1; } }
-    int N = (int)behs.size();
+    int N = (int)kids.size();
     bool use_job = GetEnvironmentVariableA("XRL_PROCPROBE_JOB", nullptr, 0) != 0;
     HANDLE job = nullptr;
     if (use_job) { job = CreateJobObjectW(nullptr, nullptr); XLOGW("procprobe", "job object = %p (err %lu)", job, GetLastError()); }
-    struct Kid { HANDLE h = nullptr; DWORD pid = 0; std::string beh; bool dead = true; char hb[720] = {0}; };
-    std::vector<Kid> kids(N);
     const std::string& ls = local_state_utf8();
     unsigned long long t0 = GetTickCount64();
-    for (int i = 0; i < N; i++) {
-        kids[i].beh = behs[i];
-        char v[64]; snprintf(v, sizeof v, "%d:%s", i, behs[i].c_str());
+    auto spawn = [&](int i) {
+        Kid& k = kids[i]; k.spawned = true;
+        char v[64]; snprintf(v, sizeof v, "%d:%s", i, k.beh.c_str());
         SetEnvironmentVariableA("XRL_PROCCHILD", v);
         STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi = {};
         BOOL ok = CreateProcessW(exe, nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi);
-        if (!ok) { XLOGE("procprobe", "child %d (%s): CreateProcess FAILED err=%lu", i, behs[i].c_str(), GetLastError()); continue; }
+        SetEnvironmentVariableA("XRL_PROCCHILD", nullptr);
+        if (!ok) { XLOGE("procprobe", "child %d (%s): CreateProcess FAILED err=%lu", i, k.beh.c_str(), GetLastError()); return; }
         if (job && !AssignProcessToJobObject(job, pi.hProcess)) XLOGW("procprobe", "child %d: AssignProcessToJobObject err=%lu", i, GetLastError());
         ResumeThread(pi.hThread); CloseHandle(pi.hThread);
-        kids[i].h = pi.hProcess; kids[i].pid = pi.dwProcessId; kids[i].dead = false;
-        snprintf(kids[i].hb, sizeof kids[i].hb, "%s\\pp-child-%d.log", ls.c_str(), i);
-        XLOGW("procprobe", "spawned child %d (%s) pid=%lu", i, behs[i].c_str(), pi.dwProcessId);
-    }
-    SetEnvironmentVariableA("XRL_PROCCHILD", nullptr);
-    for (int s = 1; s <= 70; s++) {
+        k.h = pi.hProcess; k.pid = pi.dwProcessId; k.dead = false;
+        snprintf(k.hb, sizeof k.hb, "%s\\pp-child-%d.log", ls.c_str(), i);
+        XLOGW("procprobe", "spawned child %d (%s) pid=%lu at +%llums", i, k.beh.c_str(), pi.dwProcessId, GetTickCount64() - t0);
+    };
+    for (int i = 0; i < N; i++) if (kids[i].delay == 0) spawn(i);
+    for (int s = 1; s <= 90; s++) {
         Sleep(1000);
+        for (int i = 0; i < N; i++) if (!kids[i].spawned && kids[i].delay <= s) spawn(i);
         unsigned long long now = GetTickCount64();
-        char sum[700]; int o = 0; o += snprintf(sum + o, sizeof sum - o, "t=%2ds", s);
-        for (int i = 0; i < N; i++) {
+        char sum[1400]; int o = 0; o += snprintf(sum + o, sizeof sum - o, "t=%2ds main=%lluMB", s, pp_private_mb(GetCurrentProcess()));
+        for (int i = 0; i < N && o < (int)sizeof sum - 64; i++) {
             Kid& k = kids[i];
+            if (!k.spawned) { o += snprintf(sum + o, sizeof sum - o, " c%d=wait", i); continue; }
             if (!k.h)   { o += snprintf(sum + o, sizeof sum - o, " c%d=nospawn", i); continue; }
             if (k.dead) { o += snprintf(sum + o, sizeof sum - o, " c%d=.", i); continue; }
             if (WaitForSingleObject(k.h, 0) == WAIT_OBJECT_0) {
@@ -728,12 +826,19 @@ void procprobe_parent(const char* spec) {
             }
             unsigned long long last = pp_last_hb(k.hb);
             long long age = last ? (long long)(now - last) : -1;
-            o += snprintf(sum + o, sizeof sum - o, " c%d=%s+%lldms", i, (age >= 0 && age < 1500) ? "ok" : "FROZEN", age);
+            o += snprintf(sum + o, sizeof sum - o, " c%d=%s+%lldms/%lluMB", i, (age >= 0 && age < 1500) ? "ok" : "FROZEN", age, pp_private_mb(k.h));
         }
         XLOGW("procprobe", "%s", sum);
+        if (s % 5 == 1) {
+            MEMORYSTATUSEX ms = { sizeof ms }; GlobalMemoryStatusEx(&ms);
+            XLOGW("procprobe", "mem: phys %llu/%llu MB free, commit %llu/%llu MB free",
+                  (unsigned long long)(ms.ullAvailPhys >> 20), (unsigned long long)(ms.ullTotalPhys >> 20),
+                  (unsigned long long)(ms.ullAvailPageFile >> 20), (unsigned long long)(ms.ullTotalPageFile >> 20));
+        }
     }
     for (int i = 0; i < N; i++)
-        XLOGW("procprobe", "VERDICT child %d (%s): %s", i, kids[i].beh.c_str(), kids[i].dead ? "TERMINATED" : "alive-at-end");
+        XLOGW("procprobe", "VERDICT child %d (%s): %s", i, kids[i].beh.c_str(),
+              !kids[i].h ? "NOT-SPAWNED" : kids[i].dead ? "TERMINATED" : "alive-at-end");
     XLOGW("procprobe", "DONE (main pid=%lu held foreground throughout)", GetCurrentProcessId());
 }
 

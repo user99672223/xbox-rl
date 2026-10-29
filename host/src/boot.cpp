@@ -78,6 +78,13 @@ int boot_layer() {
     // and RL's anti-cheat-off launch option turn out to be. Override without
     // rebuilding via LocalState/launch.cfg (argv= / env= lines).
     g_argv_s = cfg.argv;
+    {   // procprobe "layer" child: XRL_PP_ARGV="prog|arg|..." replaces the configured program
+        char pa[512];
+        if (GetEnvironmentVariableA("XRL_PP_ARGV", pa, sizeof pa)) {
+            g_argv_s.clear();
+            for (char* t = strtok(pa, "|"); t; t = strtok(nullptr, "|")) g_argv_s.push_back(t);
+        }
+    }
     if (g_argv_s.empty()) {
         g_argv_s = { "/usr/bin/wine64", g_game_path + "/Binaries/Win64/RocketLeague.exe", "-nocrashdialog" };
     }
