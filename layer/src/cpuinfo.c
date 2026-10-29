@@ -8,16 +8,12 @@
  * a feature is listed only where Linux would list it (AVX state the OS has not
  * enabled is dropped, as the kernel does).
  *
- * If the hardware CPUID brand string is a non-standard name (e.g. a console
- * APU marketing string), both /proc/cpuinfo and the DBT's CPUID intercept
- * present a standard AMD model name built from CPUID family/model data, so
- * every program sees a consistent, faithful Linux identity.
+ * The model name is the CPU's own brand string, trimmed as the kernel trims
+ * it: code the layer runs directly gets the hardware's CPUID answers and
+ * cannot be told otherwise, so every view of the CPU agrees with those.
  */
 #include "xrl_internal.h"
 #include <intrin.h>
-
-/* 3 leaves × 4 regs × 4 bytes = 48 bytes; read by dbt.asm's cpuid handler */
-int xrl_cpuid_brand[12];
 
 /* ------------------------------------------------------------- topology */
 static int g_core_of[64], g_ncores;
@@ -260,13 +256,7 @@ static BOOL CALLBACK cpu_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
         while (*s == ' ') s++;
         memmove(c->model, s, strlen(s) + 1);
         for (size_t l = strlen(c->model); l && c->model[l - 1] == ' '; l--) c->model[l - 1] = 0;
-        if (_strnicmp(c->model, "AMD", 3) && _strnicmp(c->model, "Intel", 5)) {
-            snprintf(c->model, sizeof c->model, "AMD Custom APU %02X%02X",
-                     c->family, c->model_no);
-        }
     }
-    memset(xrl_cpuid_brand, 0, sizeof xrl_cpuid_brand);
-    memcpy(xrl_cpuid_brand, c->model, min(48, strlen(c->model)));
     if (ext >= 0x80000008) {
         __cpuid(e8, 0x80000008);
         c->phys_bits = (unsigned)e8[0] & 0xff;

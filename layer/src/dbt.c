@@ -35,7 +35,7 @@
 #include "rewrite_core.h"
 #include "x86dec.h"
 
-extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_rawsys(void), xrl_dbt_cpuid(void);
+extern void xrl_dbt_ijmp(void), xrl_dbt_icall(void), xrl_dbt_ret(void), xrl_rawsys(void);
 
 #define TAB_N 262144u
 u64 xrl_dbt_tab[(TAB_N + 4) * 2];        /* {original, translated}: read by dbt.asm */
@@ -353,8 +353,8 @@ static int translate_trace(dimg *im, u64 pc)
                 continue;
             }
             if (op == 0x0b) { emit(im, p, (size_t)len); return 0; } /* ud2 */
-            if (op == 0xa2) { emit_slot_call(im, 4); pc = next; continue; }   /* cpuid: via handler (sanitized brand) */
-            if (op == 0x31 || op == 0x01) { /* rdtsc, xgetbv: executed as they are */ }
+            if (op == 0xa2 || op == 0x31 || op == 0x01) { /* cpuid, rdtsc, xgetbv: executed as they are (CPUID answers
+                                                              translated code as it answers code run directly) */ }
         }
 
         /* an ordinary instruction: copied, with a RIP-relative displacement recomputed */
@@ -870,7 +870,6 @@ int xrl_dbt_attach(const char *name, u64 addr, u64 len)
     slots[1] = (u64)(uintptr_t)&xrl_dbt_ijmp;
     slots[2] = (u64)(uintptr_t)&xrl_dbt_icall;
     slots[3] = (u64)(uintptr_t)&xrl_dbt_ret;
-    slots[4] = (u64)(uintptr_t)&xrl_dbt_cpuid;
     DWORD old;
     if (xrl_host_protect((void *)addr, (size_t)len, PAGE_READONLY, &old)) {
         LOGE("dbt: %s: cannot make the image non-executable", name);

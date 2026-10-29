@@ -25,7 +25,6 @@ OPTION CASEMAP:NONE
 
 EXTERN xrl_dbt_tab:BYTE
 EXTERN xrl_dbt_rng:QWORD
-EXTERN xrl_cpuid_brand:DWORD
 DBT_NRNG EQU 16                    ; translated images the layer can have (dbt.c MAX_IMG): {lo, size} pairs in xrl_dbt_rng
 EXTERN xrl_rawsys:PROC
 
@@ -243,33 +242,5 @@ rt_go:
     pop     rax
     ret
 xrl_dbt_ret ENDP
-
-; CPUID wrapper: executes cpuid, then replaces brand string leaves (0x80000002-4)
-; with the sanitized model name from xrl_cpuid_brand. Called from translated code
-; via slot 4 instead of the raw cpuid instruction; clobbers exactly eax/ebx/ecx/edx
-; (same as cpuid) plus flags, nothing else.
-PUBLIC xrl_dbt_cpuid
-xrl_dbt_cpuid PROC
-    push    r11
-    mov     r11d, eax
-    cpuid
-    cmp     r11d, 80000002h
-    jb      cpuid_done
-    cmp     r11d, 80000004h
-    ja      cpuid_done
-    push    rsi
-    lea     rsi, xrl_cpuid_brand
-    mov     eax, r11d
-    sub     eax, 80000002h
-    shl     eax, 4
-    mov     ebx, [rsi+rax+4]
-    mov     ecx, [rsi+rax+8]
-    mov     edx, [rsi+rax+12]
-    mov     eax, [rsi+rax]
-    pop     rsi
-cpuid_done:
-    pop     r11
-    ret
-xrl_dbt_cpuid ENDP
 
 END
