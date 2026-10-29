@@ -78,6 +78,13 @@ static void fixup_libc_for_eac(const xrl_elf_image *img)
         LOGW("boot: no interpreter loaded (EAC libc fixup skipped)");
         return;
     }
+    /* Only musl needs this. A glibc program's interpreter is ld-linux, a separate object from libc.so.6,
+     * and glibc's ld.so already leaves the dynamic entries absolute: renaming ld-linux "libc.so" would
+     * point EAC at the wrong object, and converting entries again would corrupt them. */
+    if (!strstr(img->interp, "ld-musl")) {
+        LOGI("boot: interpreter %s is not musl: no EAC libc fixup (glibc's own layout applies)", img->interp);
+        return;
+    }
     u64 lo = img->interp_lo, hi = img->interp_hi;
 
     /* (a) Rename the interpreter's VMAs so /proc/self/maps says "libc.so" — safe
