@@ -40,7 +40,7 @@ BOOL WINAPI TerminateThread(HANDLE hThread, DWORD dwExitCode);
 #include "lx.h"
 
 #define XRL_LAYER_VERSION "0.1.0"
-#define XRL_UTS_VERSION "#1 SMP PREEMPT_DYNAMIC Debian " XRL_LAYER_VERSION   /* uname -v and /proc/version */
+#define XRL_UTS_VERSION "#1 SMP PREEMPT_DYNAMIC Debian 6.1.90-1 (2024-05-03)"   /* uname -v and /proc/version: the build of 6.1.0-21-amd64 */
 
 /* ------------------------------------------------------------------ log */
 void xrl_logf(int level, const char *tag, const char *fmt, ...);
@@ -460,6 +460,9 @@ char *xrl_cpuinfo_text(size_t *len);
 int  xrl_cpu_core_id(int cpu);
 int  xrl_cpu_ncores(void);
 void xrl_cpu_siblings_list(int cpu, char *out, size_t cap);
+void xrl_cpu_mask_str(u64 mask, char *out, size_t cap);
+typedef struct xrl_cache { int level, type /* 0 data, 1 instruction, 2 unified */, id; u32 size, line, ways; u64 mask; } xrl_cache;
+int  xrl_cpu_caches(int cpu, xrl_cache *out, int cap);
 
 /* ----------------------------------------------------------- guest ctx */
 /*

@@ -58,6 +58,13 @@ nameserver 8.8.8.8
 # what it is: the xbox-rl layer with a musl userland; staged once, then yours to edit.
 [ -s "$dest/etc/os-release" ] || printf 'NAME="xbox-rl"\nID=xbox-rl\nPRETTY_NAME="xbox-rl Linux compatibility layer (musl userland)"\n' > "$dest/etc/os-release"
 [ -s "$dest/etc/machine-id" ] || od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > "$dest/etc/machine-id"
+# The local time zone, set as a Debian install sets it: /etc/localtime links to the zone's file (Wine reads the
+# link to name the zone) and /etc/timezone names it. The build machine's zone, or XRL_TZ=Area/City.
+tz=${XRL_TZ:-$(readlink -f /etc/localtime | sed -n 's#^/usr/share/zoneinfo/##p')}
+{ [ -n "$tz" ] && [ -f "/usr/share/zoneinfo/$tz" ]; } || tz=Etc/UTC
+mkdir -p "$dest/usr/share/zoneinfo/$(dirname "$tz")"
+cp "/usr/share/zoneinfo/$tz" "$dest/usr/share/zoneinfo/$tz"
+printf '%s\n' "$tz" > "$dest/etc/timezone"
 # Root CAs: Wine's crypt32 fills the Windows root store from the Linux bundle (dlls/crypt32/unixlib.c), and
 # TLS clients verify servers against it (Rocket League's Epic SDK). The build machine's public Mozilla bundle.
 ca=/etc/ssl/certs/ca-certificates.crt
@@ -90,5 +97,6 @@ emit() {  # tree guest_prefix
 }
 emit "$rootfs" ""
 emit "$prefix" "/prefix"
+printf '/etc/localtime%s/usr/share/zoneinfo/%s\n' "$tab" "$tz" >> "$links"; n=$((n+1))
 mv "$links" "$dest/.xrl-symlinks"
 log "stage: $n symlinks -> .xrl-symlinks ($skipped dangling skipped); $(du -sh "$dest" | cut -f1) total"

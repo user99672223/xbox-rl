@@ -77,6 +77,69 @@ void xrl_cpu_siblings_list(int cpu, char *out, size_t cap)
     if (w + 2 <= cap) { out[w] = '\n'; out[w + 1] = 0; }
 }
 
+/* The CPUs of a mask in sysfs bitmap syntax: hex in 32-bit groups joined by commas, the first group only as
+ * wide as nr_cpu_ids needs ("0003" for 16 CPUs) */
+void xrl_cpu_mask_str(u64 mask, char *out, size_t cap)
+{
+    int n = xrl_nprocs(), groups = (n + 31) / 32, lead = n % 32 ? (n % 32 + 3) / 4 : 8;
+    size_t w = 0;
+    out[0] = 0;
+    for (int g = groups - 1; g >= 0; g--) {
+        u32 v = g < 2 ? (u32)(mask >> (32 * g)) : 0;
+        w += (size_t)snprintf(out + w, w < cap ? cap - w : 0, "%s%0*x", w ? "," : "", g == groups - 1 ? lead : 8, v);
+    }
+    if (w + 2 <= cap) { out[w] = '\n'; out[w + 1] = 0; }
+}
+
+/* ------------------------------------------------------------- caches */
+/* /sys/devices/system/cpu/cpuN/cache/indexK, from Windows' cache topology (the same CPUID data the
+ * kernel reads): per CPU, its caches in the kernel's order, L1 data, L1 instruction, L2, L3 */
+static xrl_cache g_caches[64];   /* every distinct cache of the machine */
+static int g_ncaches;
+static INIT_ONCE g_cache_once = INIT_ONCE_STATIC_INIT;
+
+static BOOL CALLBACK cache_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
+{
+    (void)io; (void)prm; (void)ctx;
+    DWORD sz = 0;
+    GetLogicalProcessorInformationEx(RelationCache, NULL, &sz);
+    BYTE *buf = sz ? (BYTE *)malloc(sz) : NULL;
+    if (buf && GetLogicalProcessorInformationEx(RelationCache, (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)buf, &sz)) {
+        for (DWORD off = 0; off < sz && g_ncaches < ARRAY_LEN(g_caches);) {
+            PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX e = (PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX)(buf + off);
+            const CACHE_RELATIONSHIP *c = &e->Cache;
+            if (c->GroupMask.Group == 0 && c->Type != CacheTrace && c->LineSize) {
+                xrl_cache *k = &g_caches[g_ncaches++];
+                k->level = c->Level;
+                k->type = c->Type == CacheData ? 0 : c->Type == CacheInstruction ? 1 : 2;
+                k->size = c->CacheSize; k->line = c->LineSize;
+                k->ways = c->Associativity == CACHE_FULLY_ASSOCIATIVE ? 0 : c->Associativity;
+                k->mask = (u64)c->GroupMask.Mask;
+                k->id = 0;   /* numbered below: the caches of one level, by their first CPU */
+            }
+            off += e->Size;
+        }
+    }
+    free(buf);
+    for (int i = 0; i < g_ncaches; i++)
+        for (int j = 0; j < g_ncaches; j++)
+            if (j != i && g_caches[j].level == g_caches[i].level && g_caches[j].type == g_caches[i].type &&
+                (g_caches[j].mask & (0 - g_caches[j].mask)) < (g_caches[i].mask & (0 - g_caches[i].mask)))
+                g_caches[i].id++;
+    return TRUE;
+}
+
+int xrl_cpu_caches(int cpu, xrl_cache *out, int cap)
+{
+    InitOnceExecuteOnce(&g_cache_once, cache_init, NULL, NULL);
+    int n = 0;
+    for (int level = 1; level <= 3; level++)
+        for (int type = 0; type <= 2; type++)
+            for (int i = 0; i < g_ncaches && n < cap; i++)
+                if (g_caches[i].level == level && g_caches[i].type == type && (g_caches[i].mask >> cpu & 1)) out[n++] = g_caches[i];
+    return n;
+}
+
 /* ---------------------------------------------------------------- flags */
 /* One table per CPUID register Linux maps to a feature word, indexed by bit.
  * NULL = no /proc name (Linux's "" entries, or a bit Linux does not define). */

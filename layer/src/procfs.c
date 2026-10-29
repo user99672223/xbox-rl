@@ -341,7 +341,95 @@ static char *g_cpuid_n(const char *p, size_t *len)
         xrl_cpu_siblings_list(n, l, sizeof l);
         return dupfmt(len, "%s", l);
     }
+    if (!strcmp(leaf, "thread_siblings") || !strcmp(leaf, "core_cpus") || !strcmp(leaf, "core_siblings") || !strcmp(leaf, "package_cpus")) {
+        u64 m = 0; char l[200];
+        int pkg = leaf[0] == 'p' || !strcmp(leaf, "core_siblings");
+        for (int i = 0; i < xrl_nprocs() && i < 64; i++)
+            if (pkg || xrl_cpu_core_id(i) == xrl_cpu_core_id(n)) m |= 1ull << i;
+        xrl_cpu_mask_str(m, l, sizeof l);
+        return dupfmt(len, "%s", l);
+    }
     return dupfmt(len, "0-%d\n", xrl_nprocs() - 1);   /* core_siblings_list / package_cpus_list */
+}
+/* /sys/devices/system/cpu/cpuN/cache/indexK/<leaf> */
+static char *g_cache_n(const char *p, size_t *len)
+{
+    int n = 0, k = 0;
+    sscanf(p, "/sys/devices/system/cpu/cpu%d/cache/index%d", &n, &k);
+    const char *leaf = strrchr(p, '/') + 1;
+    xrl_cache c[8];
+    if (k >= xrl_cpu_caches(n, c, ARRAY_LEN(c))) return dupfmt(len, "");
+    const xrl_cache *x = &c[k];
+    char l[300];
+    if (!strcmp(leaf, "id")) return dupfmt(len, "%d\n", x->id);
+    if (!strcmp(leaf, "level")) return dupfmt(len, "%d\n", x->level);
+    if (!strcmp(leaf, "type")) return dupfmt(len, "%s\n", x->type == 0 ? "Data" : x->type == 1 ? "Instruction" : "Unified");
+    if (!strcmp(leaf, "size")) return dupfmt(len, "%uK\n", x->size >> 10);
+    if (!strcmp(leaf, "ways_of_associativity")) return dupfmt(len, "%u\n", x->ways);
+    if (!strcmp(leaf, "coherency_line_size")) return dupfmt(len, "%u\n", x->line);
+    if (!strcmp(leaf, "number_of_sets")) return dupfmt(len, "%u\n", x->ways && x->line ? x->size / (x->ways * x->line) : 1);
+    if (!strcmp(leaf, "physical_line_partition")) return dupfmt(len, "1\n");
+    if (!strcmp(leaf, "shared_cpu_map")) { xrl_cpu_mask_str(x->mask, l, sizeof l); return dupfmt(len, "%s", l); }
+    /* shared_cpu_list: ranges, as in "0-1" or "0-7" */
+    size_t w = 0;
+    for (int i = 0; i < 64; i++) {
+        if (!(x->mask >> i & 1)) continue;
+        int j = i;
+        while (j + 1 < 64 && (x->mask >> (j + 1) & 1)) j++;
+        w += (size_t)snprintf(l + w, sizeof l - w, j > i ? "%s%d-%d" : "%s%d", w ? "," : "", i, j);
+        i = j;
+    }
+    return dupfmt(len, "%s\n", l);
+}
+
+/* /proc/bus/pci/devices: the PCI devices of the desktop the DMI identity describes (ASUS TUF GAMING
+ * B550-PLUS with a Ryzen 5000 and a Radeon RX 6600), in the kernel's format (drivers/pci/proc.c
+ * show_device): bus+devfn, vendor+device, irq, 7 base addresses, 7 sizes, the bound driver. */
+static char *g_pcidevs(const char *p, size_t *len)
+{
+    (void)p;
+    static const struct { unsigned bd, vd, irq; unsigned long long bar0, bar2, size0, size2; const char *drv; } d[] = {
+        { 0x0000, 0x10221480,   0, 0, 0, 0, 0, "" },                       /* 00:00.0 Starship/Matisse Root Complex */
+        { 0x0002, 0x10221481,  27, 0, 0, 0, 0, "" },                       /* 00:00.2 IOMMU */
+        { 0x0008, 0x10221482,   0, 0, 0, 0, 0, "" },                       /* 00:01.0 host bridge */
+        { 0x000b, 0x10221483,  28, 0, 0, 0, 0, "pcieport" },               /* 00:01.3 GPP bridge */
+        { 0x0010, 0x10221482,   0, 0, 0, 0, 0, "" },                       /* 00:02.0 host bridge */
+        { 0x0018, 0x10221482,   0, 0, 0, 0, 0, "" },                       /* 00:03.0 host bridge */
+        { 0x0019, 0x10221483,  29, 0, 0, 0, 0, "pcieport" },               /* 00:03.1 GPP bridge (GPU) */
+        { 0x0038, 0x10221482,   0, 0, 0, 0, 0, "" },                       /* 00:07.0 host bridge */
+        { 0x0039, 0x10221484,  31, 0, 0, 0, 0, "pcieport" },               /* 00:07.1 internal bridge */
+        { 0x0040, 0x10221482,   0, 0, 0, 0, 0, "" },                       /* 00:08.0 host bridge */
+        { 0x0041, 0x10221484,  32, 0, 0, 0, 0, "pcieport" },               /* 00:08.1 internal bridge */
+        { 0x00a0, 0x1022790b,   0, 0, 0, 0, 0, "piix4_smbus" },            /* 00:14.0 FCH SMBus */
+        { 0x00a3, 0x1022790e,   0, 0, 0, 0, 0, "" },                       /* 00:14.3 FCH LPC */
+        { 0x00c0, 0x10221440,   0, 0, 0, 0, 0, "" },                       /* 00:18.0-7 data fabric */
+        { 0x00c1, 0x10221441,   0, 0, 0, 0, 0, "" },
+        { 0x00c2, 0x10221442,   0, 0, 0, 0, 0, "" },
+        { 0x00c3, 0x10221443,   0, 0, 0, 0, 0, "k10temp" },
+        { 0x00c4, 0x10221444,   0, 0, 0, 0, 0, "" },
+        { 0x00c5, 0x10221445,   0, 0, 0, 0, 0, "" },
+        { 0x00c6, 0x10221446,   0, 0, 0, 0, 0, "" },
+        { 0x00c7, 0x10221447,   0, 0, 0, 0, 0, "" },
+        { 0x0100, 0x144dA80a,  33, 0xfcf00004ull, 0, 0x4000, 0, "nvme" },  /* 01:00.0 Samsung 980 PRO NVMe */
+        { 0x0200, 0x102243e9,   0, 0, 0, 0, 0, "pcieport" },               /* 02:00.0 B550 switch upstream */
+        { 0x0240, 0x102243ea,  34, 0, 0, 0, 0, "pcieport" },               /* 02:08.0 B550 switch downstream */
+        { 0x0300, 0x102243eb,  35, 0, 0, 0, 0, "ahci" },                   /* 03:00.0 B550 SATA */
+        { 0x0400, 0x10ec8168,  36, 0xf001ull, 0xfcc04004ull, 0x100, 0x4000, "r8169" },   /* 04:00.0 RTL8111 */
+        { 0x0700, 0x100273ff, 120, 0xd000000cull, 0xf000000cull, 0x10000000ull, 0x200000ull, "amdgpu" },   /* 07:00.0 Navi 23 */
+        { 0x0701, 0x1002ab28,  73, 0xfcb20000ull, 0, 0x4000, 0, "snd_hda_intel" },   /* 07:00.1 Navi 21/23 HDMI audio */
+        { 0x0900, 0x1022148c,  39, 0xfc800000ull, 0, 0x100000, 0, "xhci_hcd" },      /* 09:00.0 Starship USB 3.0 */
+        { 0x0903, 0x10221487,  75, 0xfc900000ull, 0, 0x8000, 0, "snd_hda_intel" },   /* 09:00.4 Starship HD audio */
+    };
+    char *b = (char *)malloc(ARRAY_LEN(d) * 320 + 1), *w = b;
+    for (size_t i = 0; i < ARRAY_LEN(d); i++) {
+        w += sprintf(w, "%04x\t%08x\t%x", d[i].bd, d[i].vd, d[i].irq);
+        unsigned long long bars[7] = { d[i].bar0, 0, d[i].bar2, 0, 0, 0, 0 }, sizes[7] = { d[i].size0, 0, d[i].size2, 0, 0, 0, 0 };
+        for (int k = 0; k < 7; k++) w += sprintf(w, "\t%16llx", bars[k]);
+        for (int k = 0; k < 7; k++) w += sprintf(w, "\t%16llx", sizes[k]);
+        w += sprintf(w, "\t%s\n", d[i].drv);
+    }
+    *len = (size_t)(w - b);
+    return b;
 }
 
 /* ---------------------------------------------------------- table build */
@@ -372,6 +460,9 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     padd("/proc/self/root", K_LINK, NULL);
     padd("/proc/cpuinfo", K_FILE, g_cpuinfo);
     padd("/proc/meminfo", K_FILE, g_meminfo);
+    padd("/proc/bus", K_DIR, NULL);
+    padd("/proc/bus/pci", K_DIR, NULL);
+    padd("/proc/bus/pci/devices", K_FILE, g_pcidevs);
     padd("/proc/stat", K_FILE, g_procstat);
     padd("/proc/uptime", K_FILE, g_uptime);
     padd("/proc/loadavg", K_FILE, g_loadavg);
@@ -464,10 +555,23 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
         char p[160];
         snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d", i); padd(p, K_DIR, NULL);
         snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/topology", i); padd(p, K_DIR, NULL);
-        static const char *leaves[] = { "core_id", "physical_package_id", "die_id", "thread_siblings_list", "core_cpus_list", "core_siblings_list", "package_cpus_list" };
+        static const char *leaves[] = { "core_id", "physical_package_id", "die_id", "thread_siblings_list", "core_cpus_list", "core_siblings_list", "package_cpus_list",
+                                        "thread_siblings", "core_cpus", "core_siblings", "package_cpus" };
         for (size_t k = 0; k < ARRAY_LEN(leaves); k++) {
             snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/topology/%s", i, leaves[k]);
             padd(p, K_FILE, g_cpuid_n);
+        }
+        xrl_cache c[8];
+        int nc = xrl_cpu_caches(i, c, ARRAY_LEN(c));
+        if (nc) { snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cache", i); padd(p, K_DIR, NULL); }
+        static const char *cleaves[] = { "id", "level", "type", "size", "ways_of_associativity", "coherency_line_size", "number_of_sets",
+                                         "physical_line_partition", "shared_cpu_map", "shared_cpu_list" };
+        for (int k = 0; k < nc; k++) {
+            snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cache/index%d", i, k); padd(p, K_DIR, NULL);
+            for (size_t m = 0; m < ARRAY_LEN(cleaves); m++) {
+                snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cache/index%d/%s", i, k, cleaves[m]);
+                padd(p, K_FILE, g_cache_n);
+            }
         }
     }
     return TRUE;
