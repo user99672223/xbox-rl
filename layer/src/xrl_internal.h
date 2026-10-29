@@ -223,6 +223,7 @@ int  xrl_threads_start_fn(u64 fn, const char *name);
 u64  xrl_exit_stub_addr(void);
 void *xrl_exec_alloc(size_t n);
 int xrl_host_protect(void *p, size_t n, DWORD prot, DWORD *old);   /* VirtualProtect on host memory */
+void *xrl_host_alloc(size_t n);   /* VirtualAlloc'd committed read-write host memory (the UWP-safe call; VirtualFree frees it) */
 slong xrl_mem_populate(u64 addr, u64 len);    /* commit lazy pages before Win32 I/O on guest memory */
 slong xrl_mem_populate_containing(u64 addr);  /* commit the whole lazy mapping holding addr */
 slong xrl_mem_pin_stack(u64 addr, u64 len);    /* commit and never swap (a sigaltstack) */
@@ -437,6 +438,10 @@ typedef struct xfile_ops {
     void (*close)(xfile *f);
     slong (*mmap_read)(xfile *f, void *dst, u64 n, s64 off);  /* for file mmap */
     u32  (*edge)(xfile *f);   /* optional: a counter that changes whenever new data/state arrives, for EPOLLET (see ipc.c) */
+    /* A MAP_SHARED, PROT_WRITE mapping of the file now lives at [addr, addr+len) / is about to go (g_lock
+     * held: must not call back into the memory manager). For devices whose mapping is live memory (fbdev.c). */
+    void (*mapped)(xfile *f, u64 addr, u64 len, s64 off);
+    void (*unmapped)(xfile *f, u64 addr, u64 len);
 } xfile_ops;
 
 struct xfile {
@@ -465,6 +470,10 @@ int    xrl_fd_getfd(int fd);                                /* cloexec flag or -
 slong   xrl_fd_setfd(int fd, int cloexec);
 void   xrl_fd_init(void);
 xfile *xrl_dev_ntsync(int flags);                           /* ntsync.c: /dev/ntsync */
+xfile *xrl_dev_evdev_open(const char *gabs, int flags, int *err);   /* evdev.c: /dev/input/eventN, NULL if not one */
+int    xrl_dev_evdev_stat(const char *gabs, lx_stat *st);           /* 1 if handled */
+xfile *xrl_dev_fb_open(const char *gabs, int flags, int *err);      /* fbdev.c: /dev/fb0, NULL if not it */
+int    xrl_dev_fb_stat(const char *gabs, lx_stat *st);              /* 1 if handled */
 
 slong xrl_vfs_init(const char *root);
 slong xrl_vfs_resolve(int dirfd, const char *path, int follow, char *out_guest, size_t cap);

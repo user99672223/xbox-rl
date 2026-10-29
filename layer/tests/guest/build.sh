@@ -23,4 +23,10 @@ python3 ../../../tools/xrl-tpfix.py out/meta_test.elf
 # the userland objects between processes (layer/tests/xproc-test.sh; needs the proc.c branch)
 gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall     -o out/xproc_test.elf xproc_test.c
 python3 ../../../tools/xrl-tpfix.py out/xproc_test.elf
-echo built out/guest.elf out/exec_test.elf out/procs_test.elf out/procs_nopie.elf out/meta_test.elf out/xproc_test.elf
+# the display/input devices test (layer/tests/fbdemo-test.sh)
+gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall -Wno-unused-function     -o out/fbdemo.elf fbdemo.c
+python3 ../../../tools/xrl-tpfix.py out/fbdemo.elf
+# the X display bridge (docs: layer/tests/xbridge-test.sh)
+gcc -O1 -static -nostdlib -ffreestanding -fno-builtin -fno-stack-protector -fno-pic -no-pie     -mno-tls-direct-seg-refs -fno-tree-loop-distribute-patterns -fno-asynchronous-unwind-tables -Wall -Wno-unused-function     -o out/xbridge.elf xbridge.c
+python3 ../../../tools/xrl-tpfix.py out/xbridge.elf
+echo built out/guest.elf out/exec_test.elf out/procs_test.elf out/procs_nopie.elf out/meta_test.elf out/xproc_test.elf out/fbdemo.elf out/xbridge.elf

@@ -1,0 +1,318 @@
+diff --git a/dlls/user32/user_main.c b/dlls/user32/user_main.c
+index ffd8749..1eb0f0c 100644
+--- a/dlls/user32/user_main.c
++++ b/dlls/user32/user_main.c
+@@ -236,6 +236,210 @@ static void set_null_graphics_driver( const GUID *guid )
+     }
+ }
+ 
++/* xbox-rl: keyboard and mouse from the host (ABI v3 xrl_input_ops) -> SendInput.
++ *
++ * One thread per process, started by the desktop thread, loads xrlhost.dll (the host seam, also used by the
++ * xinput/d3d/audio forwarders), waits on the host's event queue and replays what arrives as hardware input:
++ * the wineserver then routes it like real input (focus window for keys, the window under the cursor for the
++ * mouse, WM_INPUT raw input, key repeat, WM_CHAR through the keyboard layout).  The host's events are Linux
++ * evdev codes (include/xrl_abi.h): keys are converted to PS/2 set-1 scancodes and a virtual key through the
++ * layout.  The queue has one consumer: this thread, or the layer's /dev/input devices, not both.
++ *
++ * Mouse mode: the host reports absolute positions (the window's pixels scaled to 0..32767) while the cursor is
++ * visible and raw relative motion while the host has captured it.  The pump asks for relative mode when the
++ * application hides the cursor (ShowCursor(FALSE) / SetCursor(NULL), the usual state of a game that looks
++ * around with the mouse) and absolute mode otherwise; XRL_MOUSE=abs|rel forces one.  XRL_KBM=0 turns the
++ * pump off. */
++#include "../xrlhost/xrlhost.h"
++
++static BOOL xrl_linux_key( UINT code, WORD *scan, BOOL *ext )
++{
++    *ext = FALSE;
++    switch (code)
++    {
++    case 96:  *scan = 0x1c; *ext = TRUE; return TRUE;   /* KP Enter */
++    case 97:  *scan = 0x1d; *ext = TRUE; return TRUE;   /* Right Ctrl */
++    case 98:  *scan = 0x35; *ext = TRUE; return TRUE;   /* KP / */
++    case 99:  *scan = 0x37; *ext = TRUE; return TRUE;   /* Print */
++    case 100: *scan = 0x38; *ext = TRUE; return TRUE;   /* Right Alt */
++    case 102: *scan = 0x47; *ext = TRUE; return TRUE;   /* Home */
++    case 103: *scan = 0x48; *ext = TRUE; return TRUE;   /* Up */
++    case 104: *scan = 0x49; *ext = TRUE; return TRUE;   /* Page Up */
++    case 105: *scan = 0x4b; *ext = TRUE; return TRUE;   /* Left */
++    case 106: *scan = 0x4d; *ext = TRUE; return TRUE;   /* Right */
++    case 107: *scan = 0x4f; *ext = TRUE; return TRUE;   /* End */
++    case 108: *scan = 0x50; *ext = TRUE; return TRUE;   /* Down */
++    case 109: *scan = 0x51; *ext = TRUE; return TRUE;   /* Page Down */
++    case 110: *scan = 0x52; *ext = TRUE; return TRUE;   /* Insert */
++    case 111: *scan = 0x53; *ext = TRUE; return TRUE;   /* Delete */
++    case 125: *scan = 0x5b; *ext = TRUE; return TRUE;   /* Left Win */
++    case 126: *scan = 0x5c; *ext = TRUE; return TRUE;   /* Right Win */
++    case 127: *scan = 0x5d; *ext = TRUE; return TRUE;   /* Menu */
++    case 69:  *scan = 0x45; *ext = TRUE; return TRUE;   /* Num Lock */
++    default:
++        if (code >= 1 && code <= 0x58 && code != 0x54 && code != 0x55) { *scan = code; return TRUE; }   /* the main block: same numbers */
++        return FALSE;
++    }
++}
++
++struct xrl_pump
++{
++    LONG dx, dy;          /* relative motion not yet sent */
++    LONG ax, ay;          /* absolute position not yet sent */
++    BOOL have_rel, have_abs;
++};
++
++static void xrl_pump_flush( struct xrl_pump *p )
++{
++    INPUT in = { .type = INPUT_MOUSE };
++
++    if (p->have_abs)
++    {
++        in.mi.dx = p->ax * 65535 / XRL_ABS_MAX;
++        in.mi.dy = p->ay * 65535 / XRL_ABS_MAX;
++        in.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
++        NtUserSendInput( 1, &in, sizeof(in) );
++        p->have_abs = FALSE;
++    }
++    if (p->have_rel)
++    {
++        in.mi.dx = p->dx;
++        in.mi.dy = p->dy;
++        in.mi.dwFlags = MOUSEEVENTF_MOVE;
++        NtUserSendInput( 1, &in, sizeof(in) );
++        p->dx = p->dy = 0;
++        p->have_rel = FALSE;
++    }
++}
++
++static void xrl_pump_event( struct xrl_pump *p, const struct xrl_ievent *e )
++{
++    INPUT in = { 0 };
++    WORD scan;
++    BOOL ext;
++
++    switch (e->type)
++    {
++    case XRL_IEV_KEY:
++        if (e->value == 2) return;                      /* wineserver repeats held keys itself */
++        xrl_pump_flush( p );
++        if (e->code < 0x100)
++        {
++            if (!xrl_linux_key( e->code, &scan, &ext )) return;
++            in.type = INPUT_KEYBOARD;
++            in.ki.wScan = scan;
++            in.ki.wVk = MapVirtualKeyW( scan | (ext ? 0xe000 : 0), MAPVK_VSC_TO_VK_EX );
++            in.ki.dwFlags = (ext ? KEYEVENTF_EXTENDEDKEY : 0) | (e->value ? 0 : KEYEVENTF_KEYUP);
++        }
++        else
++        {
++            static const struct { UINT code, down, up, data; } buttons[] =
++            {
++                { 0x110, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, 0 },
++                { 0x111, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, 0 },
++                { 0x112, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, 0 },
++                { 0x113, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, XBUTTON1 },
++                { 0x114, MOUSEEVENTF_XDOWN, MOUSEEVENTF_XUP, XBUTTON2 },
++            };
++            unsigned int i;
++            for (i = 0; i < ARRAY_SIZE(buttons) && buttons[i].code != e->code; i++) ;
++            if (i == ARRAY_SIZE(buttons)) return;
++            in.type = INPUT_MOUSE;
++            in.mi.dwFlags = e->value ? buttons[i].down : buttons[i].up;
++            in.mi.mouseData = buttons[i].data;
++        }
++        NtUserSendInput( 1, &in, sizeof(in) );
++        break;
++    case XRL_IEV_REL:
++        if (e->code == 0) { p->dx += e->value; p->have_rel = TRUE; }
++        else if (e->code == 1) { p->dy += e->value; p->have_rel = TRUE; }
++        else if (e->code == 8 || e->code == 6)
++        {
++            xrl_pump_flush( p );
++            in.type = INPUT_MOUSE;
++            in.mi.dwFlags = e->code == 8 ? MOUSEEVENTF_WHEEL : MOUSEEVENTF_HWHEEL;
++            in.mi.mouseData = e->value * WHEEL_DELTA;
++            NtUserSendInput( 1, &in, sizeof(in) );
++        }
++        break;
++    case XRL_IEV_ABS:
++        if (e->code == 0) p->ax = e->value; else if (e->code == 1) p->ay = e->value;
++        p->have_abs = TRUE;
++        break;
++    default:   /* TEXT: WM_CHAR comes from the keys; FOCUS: nothing to do */
++        break;
++    }
++}
++
++static DWORD WINAPI xrl_input_thread( void *arg )
++{
++    NTSTATUS (WINAPI *call)( ULONG, void *, INT * );
++    struct xrl_call_input_read *rd;
++    struct xrl_call_input_wait wait = { 100 };
++    struct xrl_call_input_mode mode_req;
++    struct xrl_pump pump = { 0 };
++    char env[8];
++    HMODULE mod;
++    INT status;
++    int forced = -1, mode = -1;
++    DWORD last_check = 0;
++    UINT i;
++
++    SetThreadDescription( GetCurrentThread(), L"wine_xrl_input" );
++    if (!(mod = LoadLibraryW( L"xrlhost.dll" )) || !(call = (void *)GetProcAddress( mod, "XrlCall" )))
++    {
++        WARN( "no xrlhost.dll: no host keyboard/mouse\n" );
++        return 0;
++    }
++    if (GetEnvironmentVariableA( "XRL_MOUSE", env, sizeof(env) ))
++        forced = !strcmp( env, "rel" ) ? XRL_MOUSE_RELATIVE : !strcmp( env, "abs" ) ? XRL_MOUSE_ABSOLUTE : -1;
++    if (!(rd = HeapAlloc( GetProcessHeap(), 0, sizeof(*rd) ))) return 0;
++
++    rd->max = 64;
++    if (call( XRL_CALL_INPUT_READ_EVENTS, rd, &status ) || status == XRL_STATUS_NOTAVAIL)
++    {
++        WARN( "the host has no keyboard/mouse queue (ABI < 3)\n" );
++        HeapFree( GetProcessHeap(), 0, rd );
++        return 0;
++    }
++    WARN( "host keyboard/mouse input is on\n" );
++    for (;;)
++    {
++        DWORD now = GetTickCount();
++        if (now - last_check >= 100)   /* the mouse mode follows the cursor's visibility */
++        {
++            CURSORINFO ci = { sizeof(ci) };
++            int want = forced;
++            if (want < 0) want = (NtUserGetCursorInfo( &ci ) && !(ci.flags & CURSOR_SHOWING)) ? XRL_MOUSE_RELATIVE : XRL_MOUSE_ABSOLUTE;
++            if (want != mode)
++            {
++                mode_req.mode = want;
++                if (!call( XRL_CALL_INPUT_SET_MOUSE_MODE, &mode_req, &status )) mode = want;
++                WARN( "mouse mode %s\n", want == XRL_MOUSE_RELATIVE ? "relative" : "absolute" );
++            }
++            last_check = now;
++        }
++        call( XRL_CALL_INPUT_WAIT_EVENTS, &wait, &status );
++        for (;;)
++        {
++            rd->max = 64;
++            if (call( XRL_CALL_INPUT_READ_EVENTS, rd, &status ) || !rd->count) break;
++            for (i = 0; i < rd->count; i++) xrl_pump_event( &pump, &rd->events[i] );
++            xrl_pump_flush( &pump );
++        }
++    }
++    return 0;
++}
++
++static void xrl_start_input_pump(void)
++{
++    HANDLE thread;
++    char env[4];
++
++    if (GetEnvironmentVariableA( "XRL_KBM", env, sizeof(env) ) && env[0] == '0') return;
++    if ((thread = CreateThread( NULL, 0, xrl_input_thread, NULL, 0, NULL ))) CloseHandle( thread );
++}
++
+ static DWORD WINAPI desktop_thread( void *arg )
+ {
+     GUID guid = {0};  /* the null driver's display GUID, as explorer sets it */
+@@ -259,8 +463,9 @@ static DWORD WINAPI desktop_thread( void *arg )
+     NtUserSetWindowPos( hwnd, 0, GetSystemMetrics( SM_XVIRTUALSCREEN ), GetSystemMetrics( SM_YVIRTUALSCREEN ),
+                         GetSystemMetrics( SM_CXVIRTUALSCREEN ), GetSystemMetrics( SM_CYVIRTUALSCREEN ),
+                         SWP_SHOWWINDOW );
+-    TRACE( "desktop window %p, message loop starting\n", hwnd );
++    WARN( "desktop window %p, message loop starting\n", hwnd );
+     InterlockedExchange( &desktop_state, 2 );
++    xrl_start_input_pump();
+ 
+     while (GetMessageW( &msg, 0, 0, 0 )) DispatchMessageW( &msg );
+     TRACE( "desktop message loop exiting\n" );
+diff --git a/dlls/xrlhost/main.c b/dlls/xrlhost/main.c
+index 5bd1529..3389db0 100644
+--- a/dlls/xrlhost/main.c
++++ b/dlls/xrlhost/main.c
+@@ -94,7 +94,7 @@ static const void *canonical_device( const void *obj )
+     {
+         vtbl = *(const void * const * const *)obj;
+         if (((qi_func)vtbl[0])( obj, &iid_d3d11_device, &unk ) != S_OK) unk = NULL;
+-        else ((release_func)vtbl[2])( unk );
++        else ((release_func)(*(const void * const * const *)unk)[2])( unk );   /* unk's own Release: obj's may adjust `this` for another interface */
+     }
+     __EXCEPT_PAGE_FAULT { unk = NULL; }
+     __ENDTRY
+diff --git a/dlls/xrlhost/unixlib.c b/dlls/xrlhost/unixlib.c
+index 69f8855..30d5665 100644
+--- a/dlls/xrlhost/unixlib.c
++++ b/dlls/xrlhost/unixlib.c
+@@ -36,6 +36,9 @@ WINE_DEFAULT_DEBUG_CHANNEL(xrlhost);
+ #define XRL_SYS_GET_AUDIO_OPS  0x10002
+ #define XRL_SYS_GET_INPUT_OPS  0x10003
+ 
++C_ASSERT( sizeof(struct xrl_ievent) == sizeof(xrl_input_event) );
++C_ASSERT( offsetof(struct xrl_ievent, value) == offsetof(xrl_input_event, value) );
++C_ASSERT( offsetof(struct xrl_ievent, time_ns) == offsetof(xrl_input_event, time_ns) );
+ C_ASSERT( sizeof(struct xrl_pad) == sizeof(xrl_pad_state) );
+ C_ASSERT( offsetof(struct xrl_pad, thumb_lx) == offsetof(xrl_pad_state, thumb_lx) );
+ C_ASSERT( offsetof(struct xrl_pad, connected) == offsetof(xrl_pad_state, connected) );
+@@ -106,6 +109,28 @@ static NTSTATUS xrl_call( void *args )
+         return STATUS_SUCCESS;
+     }
+ 
++    case XRL_CALL_INPUT_READ_EVENTS:
++    {
++        struct xrl_call_input_read *x = p;
++        in = input(); NEED( in, read_events );
++        x->count = in->read_events( (xrl_input_event *)x->events, x->max > 64 ? 64 : x->max );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_INPUT_WAIT_EVENTS:
++    {
++        struct xrl_call_input_wait *x = p;
++        in = input(); NEED( in, wait_events );
++        c->xrl_status = in->wait_events( x->timeout_ms );
++        return STATUS_SUCCESS;
++    }
++    case XRL_CALL_INPUT_SET_MOUSE_MODE:
++    {
++        struct xrl_call_input_mode *x = p;
++        in = input(); NEED( in, set_mouse_mode );
++        c->xrl_status = in->set_mouse_mode( x->mode );
++        return STATUS_SUCCESS;
++    }
++
+     case XRL_CALL_AUDIO_CREATE:
+     {
+         struct xrl_call_audio_create *x = p;
+diff --git a/dlls/xrlhost/xrlhost.h b/dlls/xrlhost/xrlhost.h
+index 92f0feb..9df5df2 100644
+--- a/dlls/xrlhost/xrlhost.h
++++ b/dlls/xrlhost/xrlhost.h
+@@ -46,6 +46,10 @@ enum xrl_call
+     XRL_CALL_GFX_D3D11ON12_CREATE,         /* struct xrl_call_gfx_d3d11on12 */
+     XRL_CALL_GFX_RELEASE,                  /* struct xrl_call_handle */
+     XRL_CALL_GFX_D3D11_CREATE_SWAPCHAIN,   /* struct xrl_call_gfx_swapchain11 */
++    /* keyboard and mouse (ABI v3, xrl_input_ops.read_events & co) */
++    XRL_CALL_INPUT_READ_EVENTS,            /* struct xrl_call_input_read */
++    XRL_CALL_INPUT_WAIT_EVENTS,            /* struct xrl_call_input_wait */
++    XRL_CALL_INPUT_SET_MOUSE_MODE,         /* struct xrl_call_input_mode */
+     XRL_CALL_COUNT
+ };
+ 
+@@ -69,6 +73,20 @@ struct xrl_pad
+ struct xrl_call_pad     { UINT32 slot; struct xrl_pad out; };
+ struct xrl_call_vibrate { UINT32 slot; UINT16 left, right; };
+ 
++/* identical layout to xrl_input_event: Linux evdev vocabulary (type EV_KEY 1 .. see xrl_abi.h XRL_IEV_*) */
++struct xrl_ievent { UINT16 type, code; INT32 value; UINT64 time_ns; };
++#define XRL_IEV_KEY   1
++#define XRL_IEV_REL   2
++#define XRL_IEV_ABS   3
++#define XRL_IEV_TEXT  4
++#define XRL_IEV_FOCUS 5
++#define XRL_ABS_MAX   32767
++#define XRL_MOUSE_ABSOLUTE 0
++#define XRL_MOUSE_RELATIVE 1
++struct xrl_call_input_read { UINT32 max; UINT32 count; struct xrl_ievent events[64]; };   /* max in, count out */
++struct xrl_call_input_wait { UINT32 timeout_ms; };                                         /* status: OK, or NOTAVAIL on timeout */
++struct xrl_call_input_mode { UINT32 mode; };
++
+ struct xrl_call_handle        { xrl_handle_t h; };
+ struct xrl_call_audio_create  { xrl_handle_t out_xaudio2; };
+ struct xrl_call_audio_voice   { xrl_handle_t xaudio2; UINT32 channels, sample_rate, bits_per_sample; xrl_handle_t out_voice; };

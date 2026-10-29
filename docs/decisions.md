@@ -144,6 +144,80 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-26 — Keyboard, mouse and a framebuffer for a Linux desktop: ABI v3, evdev devices, `/dev/fb0`.**
+  Branch `claude/linux-display`. The spec for the guest-visible parts is in `docs/syscall-abi.md` ("ABI v3").
+  - **Events speak Linux.** `xrl_input_event` uses evdev's types and codes (`KEY_*`/`BTN_*`, `REL_*`, `ABS_*`) rather
+    than SDL scancodes or Win32 virtual keys: the layer's `/dev/input/event*` then pass them through almost
+    verbatim, Wine's xrlhost needs one table (Linux key -> PS/2 scancode) for `SendInput`, and each front-end
+    needs one table into the common vocabulary (SDL: `host/src/input_keymap.h`, USB HID usage -> Linux key, which
+    is positional like the codes; Win32 test window: set-1 scancode, identical to Linux below 0x59, a short table
+    for the E0 keys). Text (`XRL_IEV_TEXT`) is separate because Linux guests have their own keymap (X) and Wine makes
+    `WM_CHAR` itself. SDL text input is not started on the console (it would raise the on-screen keyboard);
+    TEXT events appear only if a front-end sends them.
+  - **A queue with one consumer, and the state kept in the queue.** Key repeat, held-key release on focus loss and
+    motion coalescing/dropping live in `input_queue.cpp`, once, so every front-end and consumer gets the same
+    behaviour. `wait_events` gives the guest something to block on without the host knowing about guest threads;
+    the layer's pump thread turns it into `xrl_io_notify()` so `poll`/`epoll` on the evdev fds work. The cost of a
+    single consumer is that evdev and Wine's xrlhost cannot both be live; Wine on the same desktop as Linux apps
+    would need the layer to be the one consumer and Wine to read evdev too (not needed yet).
+  - **Two pointer devices, mode chosen by who is listening.** A relative mouse (`event1`) needs the host to capture
+    the cursor; an absolute pointer (`event2`, a VM tablet's shape) follows the host cursor and is what a desktop
+    wants. The layer puts the host in relative mode only while `event1` is open and `event2` is not; opening
+    `event2` (or neither) keeps the cursor free. Left Ctrl+Left Alt releases a capture so the user can leave the
+    window. Absolute positions are normalized over the aspect-fitted picture (`set_content_size`), so the guest sees
+    pixel-exact pointing whatever the window size or letterboxing.
+  - **`/dev/fb0` as live memory, presented by polling.** The layer's file mmaps are copies (read at map time,
+    written back at unmap), useless for a framebuffer. Two small hooks (`xfile_ops.mapped/unmapped`, called from
+    `map_range`/`vma_unmap_range` under the memory lock) tell the device where the guest's mapping is, and a
+    presenter thread then reads that memory directly. There is no scan-out to ask about dirty pixels (Windows'
+    write-watch needs memory allocated with a flag; ours is the layer's arena), so the thread compares the visible
+    rows with its last snapshot (8 MB of reads per 8 ms at 1080p while the picture is idle) and presents only on a
+    change; `present_framebuffer` waits for vblank, so a moving picture is paced at the refresh rate. The snapshot is
+    taken under the device lock so `munmap` never frees pixels the presenter is reading, then the lock is released
+    before the vblank wait. Read faults (the guest `mprotect`ed the mapping) are caught and drop the mapping.
+  - **The host blit is a native D3D11 fullscreen triangle** (`gfx/src/fbpresent.cpp`, two shader-model-4.0 blobs
+    compiled offline with fxc and embedded, `gfx/src/fb_shaders.h`): same swapchain code as the guest's native
+    D3D11 path (`HostSwapchainCreate11`, CoreWindow on the console, the test HWND on the laptop), bilinear, black
+    bars computed in the viewport. Chosen over D3D12 (needs queues, fences, root signatures for the same result) and
+    over `DXGI_SCALING_ASPECT_RATIO_STRETCH` (CoreWindow only; the laptop path would differ). The window has one
+    swapchain: a Windows game's own swapchain and this cannot share a window.
+  - **Verified on the laptop (not on the console):** `layer/tests/fbdemo-test.sh` (XRL_REAL_GFX=1 window; the fbdemo
+    guest checks the device ioctls, mmap/pread/pwrite coherence, and the exact event sequences injected through
+    `XRL_INPUT_SCRIPT`) passes with TOTAL FAILS=0, and a screenshot of the window shows the picture with the pointer
+    where the events put it (`results/display-fbdemo.png`); `xrl_inq_test` covers the queue and the HID map; the
+    layer's regression suite stays at 0 fails; the UWP builds of the layer and gfx compile and link; `sdl_main.cpp`
+    compiles against the vendored SDL headers. The console path (SDL input, CoreWindow swapchain for the blit) has
+    not been run.
+  - **Windows games (Wine): `patches/wine/0027-kbm-input-pump.patch`.** The desktop thread of 0026 starts one more
+    thread per process (`wine_xrl_input`, in user32) that loads `xrlhost.dll`, waits on the host queue
+    (`xrl_input_ops.wait_events`, 100 ms slices) and replays the events with `NtUserSendInput`: keys become PS/2
+    scancodes (Linux code == set-1 scancode for the main block, a table for the E0 keys) plus the layout's virtual
+    key, so the wineserver does focus routing, key repeat (the pump ignores the host's value-2 repeats), `WM_CHAR`
+    and `WM_INPUT` itself; `ABS` events (0..32767) become `MOUSEEVENTF_ABSOLUTE` (0..65535), `REL` a relative move,
+    wheels `WHEEL_DELTA` notches. The pump puts the host in relative mode while the application hides the cursor
+    (`GetCursorInfo` flags, polled every 100 ms; the usual state of a game with mouse look) and in absolute mode
+    otherwise (`XRL_MOUSE=abs|rel` forces one, `XRL_KBM=0` switches the pump off). Not done: ClipCursor/SetCursorPos
+    do not reach the host (no cursor warp), no IME/TEXT use, no gamepad change. **Needs 0026** (it hangs off the
+    desktop thread) and a restaged rootfs: the shared `~/xrl-work/rootfs` predates 0026, so the pump is dormant
+    there until the next stage. `wine/tests/kbm-test.sh` (XRL_ROOTFS=<tree with the 0026/0027 build>) runs a Windows
+    window that logs what it receives while the test host injects events: key A with `WM_CHAR`, Shift+B, an extended
+    key, a wheel notch, a click at the centre of the screen from an absolute position, a relative move arriving as
+    raw input - 10/10 on the laptop (`XRL_DISPLAY` 1920x1200) with the build tree's win32u/user32/xrlhost
+    overlaid on a hard-linked copy of the shared rootfs. Console not run.
+  - **An X server on `/dev/fb0` (`layer/tests/guest/xbridge.c`, `layer/tests/xbridge-test.sh`).** One single-threaded guest, no libc, no Xlib:
+    it polls an Xvfb `-fbdir` screen file (XWD: big-endian header, `header_size + ncolors*12` to the pixels, 32 bpp BGRX = our framebuffer's
+    format, so rows are copied verbatim; it first resizes /dev/fb0 to the X screen and writes only runs of changed rows), and reads
+    event0/event2 to send XTest `FakeInput` requests it encodes itself (key code = evdev + 8, buttons 1/2/3, wheels as buttons 4-7, ABS -> an
+    absolute warp scaled to the X screen, REL -> relative motion), after `QueryExtension("XTEST")`. It talks TCP today (the layer's Winsock),
+    AF_UNIX once the layer has it. Chosen over linking Xlib/libXtst because the guest needs nothing but the syscall gateway, and over Xorg's
+    fbdev + evdev drivers because those need udev, `/sys/class/input` and `/proc/bus/input/devices`, which the layer does not have (nor the
+    fork/exec an Xorg session needs; a second process for the bridge likewise waits for the process model). Laptop proof with the X server in
+    WSL (Alpine's Xvfb 21.1.25, twm, xterm, unpacked from the verified minirootfs into RAM through `apk`): 23 injected requests, QueryPointer
+    returned the injected position (300,250), the xterm showed the typed "hello world", and `/dev/fb0` read back inside the layer held the
+    X desktop (`results/display-xbridge-fb0.png`). Notes: Xvfb cannot mmap its `-fbdir` file on a Windows drive (SIGBUS), so the screen file
+    is copied Windows-side by a loop; the guest reopens it each poll because a writer replacing it in place fails while it is held open
+    (Windows sharing); the test host's GPU init took more than a minute once while another agent ran its own tests (not reproduced).
+
 - **2026-10-27 - The X11 desktop runs on the layer: Xvfb + twm + xterm as guest processes, a screenshot of it
   (`results/userland-xvfb-twm-xterm.png`).** Needs both the procs branch (fork/exec) and this one (AF_UNIX, pty,
   shm, modes/owners, timers). Checked on a scratch merge of `claude/linux-procs` and `claude/linux-userland`

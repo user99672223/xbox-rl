@@ -6,14 +6,18 @@
  *
  * Env: XRL_TRACE=1 traces every syscall. XRL_REAL_GFX=1 replaces the stub gfx
  * table with gfx/'s real one on a desktop window. Audio goes to XAudio2 through the console
- * host's own op table unless XRL_NO_AUDIO=1. Exit code = guest exit code.
+ * host's own op table unless XRL_NO_AUDIO=1. Keyboard and mouse: the real queue of host/src/input_queue.cpp
+ * (the XRL_REAL_GFX=1 window feeds it); XRL_INPUT_SCRIPT injects synthetic events (see input_script_init).
+ * Exit code = guest exit code.
  */
 #include <windows.h>
 #include <stdio.h>
 #include <string.h>
 #include "xrl_abi.h"
+#include "input_queue.h"
 
 static void pad_script_event(const char *msg);
+static void input_script_event(const char *msg);
 
 static void log_cb(int level, const char *tag, const char *msg)
 {
@@ -21,6 +25,7 @@ static void log_cb(int level, const char *tag, const char *msg)
     printf("[%s %-9s] %s\n", lv[level & 3], tag, msg);
     fflush(stdout);
     pad_script_event(msg);
+    input_script_event(msg);
 }
 
 /* Win64 host functions the guest reaches through generated SysV stubs. */
@@ -97,6 +102,57 @@ static xrl_status host_pad(uint32_t slot, xrl_pad_state *o)
     if (m & PAD_RT) o->right_trigger = 255;
     return XRL_OK;
 }
+/* XRL_INPUT_SCRIPT="1.0:key:30:1,1.1:key:30:0,1.5:rel:0:10,2:abs:0:16000,2.1:text:0:97": pushes those events
+ * into the keyboard/mouse queue N seconds after the clock starts (at launch, or at the first log line
+ * containing XRL_INPUT_AFTER). kinds: key (code, value 1/0), rel, abs, text, focus (value 1/0, 0 = lost).
+ * A synthetic stand-in for typing on the keyboard, for a guest that checks what arrives. */
+static struct { double at; int type, code, value; } g_in_steps[256];
+static int g_in_nsteps;
+static char g_in_after[128];
+static volatile LONG g_in_armed;
+static volatile ULONGLONG g_in_t0;
+static void input_script_event(const char *msg)
+{
+    if (g_in_after[0] && !g_in_armed && strstr(msg, g_in_after) && !InterlockedExchange(&g_in_armed, 1)) {
+        g_in_t0 = GetTickCount64();
+        printf("[host] input script: clock starts now (\"%s\")\n", g_in_after);
+        fflush(stdout);
+    }
+}
+static DWORD WINAPI input_script_thread(void *arg)
+{
+    (void)arg;
+    for (int i = 0; i < g_in_nsteps; i++) {
+        for (;;) {
+            if (g_in_after[0] && !g_in_armed) { Sleep(5); continue; }
+            double t = (double)(GetTickCount64() - g_in_t0) / 1000.0;
+            if (t >= g_in_steps[i].at) break;
+            Sleep(2);
+        }
+        if (g_in_steps[i].type == XRL_IEV_FOCUS && !g_in_steps[i].value) xrl_inq_focus_lost();
+        else xrl_inq_push((uint16_t)g_in_steps[i].type, (uint16_t)g_in_steps[i].code, g_in_steps[i].value);
+    }
+    return 0;
+}
+static void input_script_init(void)
+{
+    static char s[8192];
+    g_in_t0 = GetTickCount64();
+    GetEnvironmentVariableA("XRL_INPUT_AFTER", g_in_after, sizeof g_in_after);
+    if (!GetEnvironmentVariableA("XRL_INPUT_SCRIPT", s, sizeof s)) return;
+    for (char *tok = strtok(s, ","); tok && g_in_nsteps < 256; tok = strtok(NULL, ",")) {
+        char kind[16]; double at; int code = 0, value = 0;
+        if (sscanf(tok, "%lf:%15[a-z]:%d:%d", &at, kind, &code, &value) < 2) continue;
+        int type = !strcmp(kind, "key") ? XRL_IEV_KEY : !strcmp(kind, "rel") ? XRL_IEV_REL : !strcmp(kind, "abs") ? XRL_IEV_ABS :
+                   !strcmp(kind, "text") ? XRL_IEV_TEXT : !strcmp(kind, "focus") ? XRL_IEV_FOCUS : 0;
+        if (!type) continue;
+        g_in_steps[g_in_nsteps].at = at; g_in_steps[g_in_nsteps].type = type;
+        g_in_steps[g_in_nsteps].code = code; g_in_steps[g_in_nsteps].value = value;
+        g_in_nsteps++;
+    }
+    printf("[host] input script: %d synthetic events\n", g_in_nsteps);
+    CloseHandle(CreateThread(NULL, 0, input_script_thread, NULL, 0, NULL));
+}
 static xrl_status host_xaudio_create(xrl_handle *o) { *o = 0xA0D10ull; return XRL_OK; }
 
 const xrl_gfx_ops *xrl_desktop_gfx(void (*log)(int, const char *, const char *));   /* desktop_gfx.cpp */
@@ -130,7 +186,10 @@ int main(int argc, char **argv)
     gfx.create_swapchain_for_corewindow = host_swapchain; gfx.release = host_release;
     audio.struct_size = sizeof audio; audio.xaudio2_create = host_xaudio_create; audio.release = host_release;
     input.struct_size = sizeof input; input.get_pad_state = host_pad;
+    input.read_events = xrl_inq_read_events; input.wait_events = xrl_inq_wait_events;
+    input.set_mouse_mode = xrl_inq_set_mouse_mode; input.set_content_size = xrl_inq_set_content_size;
     pad_script_init();
+    input_script_init();
 
     const char *gargv[32]; int n = 0;
     gargv[n++] = argv[2];

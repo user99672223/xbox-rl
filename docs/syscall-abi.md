@@ -177,3 +177,58 @@ line says otherwise.
   `root`, `limits`) for every live process; `/proc` lists them. `maps` shows only that process's mappings.
 - **Not provided**: ptrace, namespaces, `unshare`/`setns`, pidfds, `process_vm_*`, `kcmp`, `sched_setaffinity` per
   process (accepted, ignored), a forked child that computes concurrently with its parent (see decisions.md).
+
+## ABI v3: keyboard/mouse and framebuffer (2026-10-26)
+
+`XRL_ABI_VERSION` is 3. Everything is appended: existing members keep their offsets, an older host
+(v1/v2 `struct_size`) simply lacks the new slots and the layer answers `-ENODEV` when a guest opens a device
+that needs one; a v3 layer accepts hosts of any version.
+
+### Host side (`include/xrl_abi.h`)
+
+- **`xrl_input_event`** (16 bytes): `type` (u16), `code` (u16), `value` (s32), `time_ns` (u64, host monotonic).
+  The vocabulary is Linux evdev's (numbers from `linux/input-event-codes.h`):
+  - `XRL_IEV_KEY`: `code` = `KEY_*` (< 0x100) or `BTN_*` (`BTN_LEFT` 0x110 .. `BTN_EXTRA` 0x114); `value` 0 up, 1 down,
+    2 autorepeat.
+  - `XRL_IEV_REL`: `REL_X` 0, `REL_Y` 1, `REL_HWHEEL` 6, `REL_WHEEL` 8; counts, or notches for the wheels (+ up/right).
+    X/Y only in `XRL_MOUSE_RELATIVE`; the wheels always.
+  - `XRL_IEV_ABS`: `ABS_X` 0, `ABS_Y` 1, `0..XRL_ABS_MAX` (32767) over the picture the guest shows (see
+    `set_content_size`), over the whole window before. Only in `XRL_MOUSE_ABSOLUTE`.
+  - `XRL_IEV_TEXT`: `value` = Unicode code point, the OS layout's translation (SDL/Win32 text input).
+  - `XRL_IEV_FOCUS`: 1 gained, 0 lost; held keys were released (as `KEY` value 0 events) just before a loss.
+- **`xrl_input_ops`** gains `read_events(buf, max)` (non-blocking, returns the count), `wait_events(timeout_ms)`
+  (`XRL_OK` when at least one event is queued, `XRL_ERR_NOTAVAIL` on timeout, `0xFFFFFFFF` = forever, any thread),
+  `set_mouse_mode(XRL_MOUSE_ABSOLUTE | XRL_MOUSE_RELATIVE)` (the host shows/hides and captures the cursor; Left Ctrl +
+  Left Alt releases a capture until the next click) and `set_content_size(w, h)`. The queue has **one consumer**:
+  events are removed as they are read, so the layer's evdev devices and Wine's xrlhost must not both read it.
+  The queue (`host/src/input_queue.cpp`) turns a press of a held key into a value-2 repeat, drops a release of a key
+  that is not held, sums neighbouring `REL` events of the same axis, drops motion first when it is 3/4 full, and
+  releases every held key on focus loss. The gamepad path (`get_pad_state`, `set_pad_vibration`) is unchanged.
+- **`xrl_gfx_ops::present_framebuffer(pixels, width, height, stride, flags)`**: `pixels` is guest memory, 32 bits per
+  pixel in B,G,R,X byte order, `stride` in bytes. The host draws it aspect-fitted (black bars) into the window's
+  swapchain (`gfx/src/fbpresent.cpp`: native D3D11, dynamic texture, one draw, `Present(1)`), so it returns after
+  vblank unless `XRL_PRESENT_NOWAIT`. The host owns the window's swapchain for this: do not mix with a guest swapchain.
+
+### Guest side (layer VFS)
+
+- **`/dev/input/event0` keyboard** (`KEY_ESC`..`KEY_MICMUTE`, `EV_REP`), **`event1` mouse** (`BTN_LEFT..BTN_EXTRA`,
+  `REL_X/Y/HWHEEL/WHEEL`), **`event2` absolute pointer** (the same buttons, wheels, `ABS_X/ABS_Y` 0..32767, like a VM's
+  USB tablet). Character devices, major 13, minor 64..66. `read` returns `struct input_event` (24 bytes on x86-64) in
+  whole events, with a `SYN_REPORT` after every event except between the two axes of one motion; blocking, or
+  `EAGAIN` under `O_NONBLOCK`; `poll`/`epoll` work. Each open file has its own 512-event ring filled while it is open
+  (overflow gives `SYN_DROPPED`). ioctls: `EVIOCGVERSION`, `EVIOCGID`, `EVIOCGNAME`, `EVIOCGPHYS`, `EVIOCGPROP`,
+  `EVIOCGBIT(ev)`, `EVIOCGABS`, `EVIOCGKEY`, `EVIOCGREP`/`SREP`, `EVIOCGRAB`, `EVIOCREVOKE`, `EVIOCSCLOCKID`.
+  Routing: motion goes to the device of its kind; buttons and wheels go to `event2` while any client has it open
+  (and the host mouse mode is absolute), else to `event1`, which puts the host in relative mode while open.
+  Not provided: `/dev/input` directory listing, `/sys/class/input`, `/proc/bus/input/devices` (udev-based
+  hotplug stacks will not find the devices; open them by path, or use Xorg's `evdev` driver with explicit `Device`).
+- **`/dev/fb0`**: 32 bpp, B,G,R,X (red offset 16, green 8, blue 0), default 1280x720 (`XRL_FB=WxH` before boot,
+  `FBIOPUT_VSCREENINFO` after; virtual height up to 4x enables `FBIOPAN_DISPLAY` flipping). `FBIOGET_VSCREENINFO`,
+  `FBIOPUT_VSCREENINFO` (`FB_ACTIVATE_TEST` honoured), `FBIOGET_FSCREENINFO` (truecolor, `smem_len`, `line_length`),
+  `FBIOPAN_DISPLAY`, `FBIO_WAITFORVSYNC`, `FBIOBLANK`, `read`/`write`/`pread`/`pwrite`/`lseek`, and `mmap`
+  (`MAP_SHARED`, `PROT_WRITE`, offset 0) as live memory: there is no scan-out hardware, so a presenter thread watches
+  the visible rows and hands a snapshot to `present_framebuffer` whenever they changed (at most once per vblank,
+  idle polling every 8 ms). One framebuffer and one live mapping; a second mapping replaces the first as the
+  source. No palette (`FBIOGETCMAP` is `EINVAL`), no 16/24 bpp modes.
+- New optional `xfile_ops` members `mapped(f, addr, len, off)` / `unmapped(f, addr, len)` (layer-private): called from
+  `mmap`/`munmap` for `MAP_SHARED|PROT_WRITE` mappings of a file whose mapping is live memory (fbdev.c).

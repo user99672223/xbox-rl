@@ -10,3 +10,4 @@ decision point only (not built).
 - **`ABI-CHANGE-REQUESTS.md`** — what the frozen ABI v1 cannot express.
 - `include/xrl_gfx.h` — the host-facing entry API (A links this).
 - `src/` — implementation. `harness/` — desktop test. `build.ps1` — build + test.
+- `src/fbpresent.cpp` — `present_framebuffer` (ABI v3): a guest framebuffer (BGRX in memory) drawn aspect-fitted into the host window with a native D3D11 blit; used by the layer's /dev/fb0 (docs/syscall-abi.md).

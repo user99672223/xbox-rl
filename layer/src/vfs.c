@@ -1115,6 +1115,11 @@ static slong open_special(const char *gabs, int flags, int *handled)
     else if (!strncmp(gabs, "/dev/pts/", 9)) { int err = 0; char *e; long n = strtol(gabs + 9, &e, 10); if (e == gabs + 9 || *e) { *handled = 0; return 0; } f = xrl_pty_open_slave((int)n, flags, &err); if (!f) return -err; }
     else if (!strcmp(gabs, "/dev/full")) f = xrl_dev_null(flags);
     else if (!strcmp(gabs, "/dev/ntsync")) f = xrl_dev_ntsync(flags);
+    else if (!strncmp(gabs, "/dev/input/event", 16) || !strcmp(gabs, "/dev/fb0")) {   /* evdev.c, fbdev.c */
+        int err = 0;
+        f = gabs[5] == 'f' ? xrl_dev_fb_open(gabs, flags, &err) : xrl_dev_evdev_open(gabs, flags, &err);
+        if (!f) return err ? -err : -LX_ENOENT;
+    }
     if (f) {
         f->gpath = _strdup(gabs);
         int fd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
@@ -1410,6 +1415,7 @@ slong xrl_vfs_stat(int dirfd, const char *path, int atflags, lx_stat *st)
     if (!strcmp(gabs, "/dev/zero")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 5, 0); st->st_rdev = (1u << 8) | 5; return 0; }
     if (!strcmp(gabs, "/dev/urandom") || !strcmp(gabs, "/dev/random")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 9, 0); st->st_rdev = (1u << 8) | 9; return 0; }
     if (!strcmp(gabs, "/dev/tty") || !strcmp(gabs, "/dev/console")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 11, 0); st->st_rdev = (5u << 8); return 0; }
+    if (xrl_dev_evdev_stat(gabs, st) || xrl_dev_fb_stat(gabs, st)) return 0;
 
     wchar_t hp[PATHBUF];
     r = xrl_vfs_host_path(gabs, hp, ARRAY_LEN(hp));

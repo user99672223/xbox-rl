@@ -26,6 +26,8 @@
 #include <thread>
 
 #include "xrl_host.h"
+#include "input_queue.h"
+#include "input_keymap.h"
 
 namespace {
 
@@ -52,6 +54,8 @@ std::atomic<bool> g_worker_done{false};
 std::atomic<int>  g_exit_code{0};
 std::bitset<512>  g_keys;   // indexed by SDL_Scancode; written/read on the UI thread + any reader (benign race, bool-ish)
 SDL_GameController* g_pads[4] = {};
+bool g_relative = false;   // SDL relative mouse mode currently on (the guest asked for XRL_MOUSE_RELATIVE)
+bool g_released = false;   // Left Ctrl + Left Alt: capture suspended until the next click, so the user can leave the window
 
 void sdl_log_cb(void*, int category, SDL_LogPriority prio, const char* msg) {
     int lvl = prio >= SDL_LOG_PRIORITY_ERROR ? xrl::kError : prio == SDL_LOG_PRIORITY_WARN ? xrl::kWarn : prio >= SDL_LOG_PRIORITY_INFO ? xrl::kInfo : xrl::kTrace;
@@ -79,6 +83,77 @@ void open_pad(int joy_index) {
             XLOGI("sdl", "controller %d opened: %s", joy_index, p ? SDL_GameControllerName(p) : SDL_GetError());
             return;
         }
+    }
+}
+
+// Keyboard and mouse -> the queue behind xrl_input_ops (input_queue.cpp). Keys are positional: SDL scancodes
+// are USB HID usages, the queue speaks Linux KEY_* codes. SDL's key repeats arrive as further KEYDOWNs; the
+// queue turns them into value-2 repeats. ABS positions are normalized over the aspect-fitted picture once
+// the guest has told the host its size (set_content_size), over the whole window before.
+void apply_mouse_mode() {
+    bool want = xrl_inq_mouse_mode() == XRL_MOUSE_RELATIVE && !g_released;
+    if (want != g_relative) { g_relative = want; SDL_SetRelativeMouseMode(want ? SDL_TRUE : SDL_FALSE); }
+}
+
+uint16_t mouse_button_code(Uint8 b) {
+    switch (b) {
+        case SDL_BUTTON_LEFT:   return 0x110;
+        case SDL_BUTTON_RIGHT:  return 0x111;
+        case SDL_BUTTON_MIDDLE: return 0x112;
+        case SDL_BUTTON_X1:     return 0x113;
+        case SDL_BUTTON_X2:     return 0x114;
+        default:                return 0;
+    }
+}
+
+void push_text(const char* u8) {   // UTF-8 -> code points
+    const unsigned char* p = (const unsigned char*)u8;
+    while (*p) {
+        unsigned c = *p++, n = 0;
+        if (c >= 0xF0) { c &= 7; n = 3; } else if (c >= 0xE0) { c &= 15; n = 2; } else if (c >= 0xC0) { c &= 31; n = 1; }
+        while (n-- && (*p & 0xC0) == 0x80) c = (c << 6) | (*p++ & 63);
+        if (c >= 0x20 && c != 0x7f) xrl_inq_push(XRL_IEV_TEXT, 0, (int32_t)c);
+    }
+}
+
+void handle_input_event(const SDL_Event& e, int win_w, int win_h) {
+    switch (e.type) {
+        case SDL_KEYDOWN: case SDL_KEYUP: {
+            bool down = e.type == SDL_KEYDOWN;
+            if (down && (e.key.keysym.scancode == SDL_SCANCODE_LCTRL || e.key.keysym.scancode == SDL_SCANCODE_LALT) && g_relative) {
+                const Uint8* ks = SDL_GetKeyboardState(nullptr);
+                if (ks[SDL_SCANCODE_LCTRL] && ks[SDL_SCANCODE_LALT]) { g_released = true; apply_mouse_mode(); }
+            }
+            if (uint16_t k = xrl_hid_to_linux_key((unsigned)e.key.keysym.scancode)) xrl_inq_push(XRL_IEV_KEY, k, down ? 1 : 0);
+            break;
+        }
+        case SDL_TEXTINPUT: push_text(e.text.text); break;
+        case SDL_MOUSEMOTION:
+            if (g_relative) {
+                if (e.motion.xrel) xrl_inq_push(XRL_IEV_REL, 0, e.motion.xrel);
+                if (e.motion.yrel) xrl_inq_push(XRL_IEV_REL, 1, e.motion.yrel);
+            } else {
+                int32_t ax, ay;
+                xrl_inq_abs_from_client(e.motion.x, e.motion.y, win_w, win_h, &ax, &ay);
+                xrl_inq_push(XRL_IEV_ABS, 0, ax);
+                xrl_inq_push(XRL_IEV_ABS, 1, ay);
+            }
+            break;
+        case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP:
+            if (e.type == SDL_MOUSEBUTTONDOWN && g_released) { g_released = false; apply_mouse_mode(); }
+            if (uint16_t b = mouse_button_code(e.button.button)) xrl_inq_push(XRL_IEV_KEY, b, e.type == SDL_MOUSEBUTTONDOWN ? 1 : 0);
+            break;
+        case SDL_MOUSEWHEEL: {
+            int dir = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1 : 1;
+            if (e.wheel.y) xrl_inq_push(XRL_IEV_REL, 8, e.wheel.y * dir);
+            if (e.wheel.x) xrl_inq_push(XRL_IEV_REL, 6, e.wheel.x * dir);
+            break;
+        }
+        case SDL_WINDOWEVENT:
+            if (e.window.event == SDL_WINDOWEVENT_FOCUS_LOST) { xrl_inq_focus_lost(); g_released = false; apply_mouse_mode(); }
+            else if (e.window.event == SDL_WINDOWEVENT_FOCUS_GAINED) xrl_inq_push(XRL_IEV_FOCUS, 0, 1);
+            break;
+        default: break;
     }
 }
 
@@ -158,6 +233,7 @@ int sdl_main(int, char**) {
     bool quit = false;
     while (!quit && !g_worker_done.load()) {
         SDL_Event e;
+        apply_mouse_mode();   // the guest may have switched between the absolute pointer and a captured mouse
         while (SDL_WaitEventTimeout(&e, 10)) {
             switch (e.type) {
                 case SDL_QUIT:
@@ -167,6 +243,10 @@ int sdl_main(int, char**) {
                     break;
                 case SDL_KEYDOWN: case SDL_KEYUP:
                     if (e.key.keysym.scancode < 512) g_keys[e.key.keysym.scancode] = (e.type == SDL_KEYDOWN);
+                    handle_input_event(e, (int)wi.width, (int)wi.height);
+                    break;
+                case SDL_TEXTINPUT: case SDL_MOUSEMOTION: case SDL_MOUSEBUTTONDOWN: case SDL_MOUSEBUTTONUP: case SDL_MOUSEWHEEL:
+                    handle_input_event(e, (int)wi.width, (int)wi.height);
                     break;
                 case SDL_CONTROLLERDEVICEADDED:  open_pad(e.cdevice.which); break;
                 case SDL_CONTROLLERDEVICEREMOVED:
@@ -174,6 +254,7 @@ int sdl_main(int, char**) {
                         if (p && SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(p)) == e.cdevice.which) { SDL_GameControllerClose(p); p = nullptr; XLOGI("sdl", "controller removed"); }
                     break;
                 case SDL_WINDOWEVENT:
+                    handle_input_event(e, (int)wi.width, (int)wi.height);
                     if (e.window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
                         wi.width = (uint32_t)e.window.data1; wi.height = (uint32_t)e.window.data2;
                         xrl::window_info_set(wi);
