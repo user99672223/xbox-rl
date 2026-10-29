@@ -436,6 +436,7 @@ typedef struct xfile_ops {
     u32  (*poll)(xfile *f, u32 events);                      /* ready mask */
     void (*close)(xfile *f);
     slong (*mmap_read)(xfile *f, void *dst, u64 n, s64 off);  /* for file mmap */
+    u32  (*edge)(xfile *f);   /* optional: a counter that changes whenever new data/state arrives, for EPOLLET (see ipc.c) */
 } xfile_ops;
 
 struct xfile {
@@ -479,6 +480,17 @@ slong xrl_vfs_link(int olddirfd, const char *oldp, int newdirfd, const char *new
 slong xrl_vfs_chdir(const char *path);
 slong xrl_vfs_getcwd(char *buf, u64 cap);
 slong xrl_vfs_truncate(const char *path, s64 len);
+slong xrl_vfs_chmod(int dirfd, const char *path, u32 mode, int flags);
+slong xrl_vfs_fchmod(int fd, u32 mode);
+slong xrl_vfs_chown(int dirfd, const char *path, u32 uid, u32 gid, int flags);   /* uid/gid (u32)-1: leave */
+slong xrl_vfs_fchown(int fd, u32 uid, u32 gid);
+u32 xrl_cur_uid(void);   /* util.c: the caller's effective ids (XRL_UID/XRL_GID, default 1000) */
+u32 xrl_cur_gid(void);
+u32 xrl_env_uid(void);
+u32 xrl_env_gid(void);
+int xrl_cur_pid(void);   /* the calling process (G.pid until proc.c) */
+void xrl_signal_pid(int pid, int sig);   /* a signal for a process (a process that is gone: dropped) */
+u32 xrl_cur_umask(void);   /* the caller's umask (G.umask until proc.c holds one per process) */
 slong xrl_vfs_utimens(int dirfd, const char *path, const lx_timespec *ts, int flags);
 slong xrl_vfs_statfs(const char *path, lx_statfs *st);
 int  xrl_vfs_host_path(const char *guest_abs, wchar_t *out, size_t cap);   /* -> \\?\ wide */
@@ -498,10 +510,6 @@ int    xrl_proc_is_virtual(const char *guest_abs);
 /* ipc fds */
 slong xrl_pipe_create(int flags, int fds[2]);
 slong xrl_eventfd_create(u32 initval, int flags);
-slong xrl_socketpair_create(int type, int flags, int fds[2]);
-slong xrl_sendmsg(int fd, u64 msg, int flags);
-slong xrl_recvmsg(int fd, u64 msg, int flags);
-slong xrl_shutdown(int fd, int how);
 slong xrl_epoll_create(int flags);
 slong xrl_epoll_ctl(int epfd, int op, int fd, u64 ev);
 slong xrl_epoll_wait(int epfd, u64 events, int maxevents, int timeout_ms, int *intr);
@@ -529,6 +537,64 @@ slong xrl_net_sendmmsg(int fd, u64 vec, u32 vlen, int flags);
 slong xrl_net_recvmmsg(int fd, u64 vec, u32 vlen, int flags);
 slong xrl_net_setsockopt(int fd, int level, int opt, u64 val, u64 len);
 slong xrl_net_getsockopt(int fd, int level, int opt, u64 val, u64 lenp);
+
+/* unix.c: AF_UNIX sockets (stream, dgram, seqpacket) as in-memory objects. Same convention as
+ * net.c: XRL_NOT_NET when `fd` (or the domain) is not an AF_UNIX socket. */
+slong xrl_unix_socket(int domain, int type, int proto);
+slong xrl_unix_socketpair(int type, int flags, int fds[2]);
+slong xrl_unix_bind(int fd, u64 addr, u64 len);
+slong xrl_unix_listen(int fd, int backlog);
+slong xrl_unix_accept(int fd, u64 addr, u64 lenp, int flags);
+slong xrl_unix_connect(int fd, u64 addr, u64 len);
+slong xrl_unix_getsockname(int fd, u64 addr, u64 lenp);
+slong xrl_unix_getpeername(int fd, u64 addr, u64 lenp);
+slong xrl_unix_shutdown(int fd, int how);
+slong xrl_unix_sendto(int fd, u64 buf, u64 len, int flags, u64 addr, u64 addrlen);
+slong xrl_unix_recvfrom(int fd, u64 buf, u64 len, int flags, u64 addr, u64 lenp);
+slong xrl_unix_sendmsg(int fd, u64 msg, int flags);
+slong xrl_unix_recvmsg(int fd, u64 msg, int flags);
+slong xrl_unix_sendmmsg(int fd, u64 vec, u32 vlen, int flags);
+slong xrl_unix_recvmmsg(int fd, u64 vec, u32 vlen, int flags);
+slong xrl_unix_setsockopt(int fd, int level, int opt, u64 val, u64 len);
+slong xrl_unix_getsockopt(int fd, int level, int opt, u64 val, u64 lenp);
+slong xrl_unix_iov(int fd, u64 iov, u64 cnt, int is_write);   /* readv/writev: one message on a datagram socket */
+/* vfs.c: nodes that exist only in the layer's tables (no host file): the socket files bind() makes.
+ * `ref`/`unref` keep `obj` alive for as long as the node is listed. */
+slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *));
+slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj);   /* ENOENT, or 0 with type 0 for an ordinary file */
+
+/* timers.c: timerfd, setitimer/alarm, inotify */
+slong xrl_timerfd_create(int clock, int flags);
+slong xrl_timerfd_settime(int fd, int flags, u64 unew, u64 uold);
+slong xrl_timerfd_gettime(int fd, u64 ucur);
+slong xrl_setitimer(int which, u64 unew, u64 uold);
+slong xrl_getitimer(int which, u64 ucur);
+slong xrl_alarm(unsigned seconds);
+slong xrl_inotify_init(int flags);
+slong xrl_inotify_add_watch(int fd, const char *path, u32 mask);
+slong xrl_inotify_rm_watch(int fd, int wd);
+
+/* pty.c: /dev/ptmx and /dev/pts/N. xrl_tty_signal is proc.c's (signal a process group); pty.c links a logging default. */
+xfile *xrl_pty_open_master(int flags, int *err);              /* NULL + positive errno */
+xfile *xrl_pty_open_slave(int index, int flags, int *err);
+int    xrl_pty_stat(const char *guest_abs, lx_stat *st);      /* 1 if handled; st_nlink 0 = no such pty */
+int    xrl_tty_signal(int pgrp, int sig);
+
+/* shm.c: SysV shared memory, and one set of pages behind every shared mapping of a memfd or /dev/shm file.
+ * The mem.c hooks answer XRL_NOT_NET when the file / range is not shm.c's. */
+slong xrl_shm_map_file(xfile *f, u64 len, s64 off);       /* the address to return for mmap(MAP_SHARED, f, off), or -errno */
+slong xrl_shm_munmap(u64 addr, u64 len);
+int   xrl_shm_overlaps(u64 addr, u64 len);                /* mem.c: a MAP_FIXED range touching a shared region is refused */
+slong xrl_shmget(int key, u64 size, int flags);
+slong xrl_shmat(int id, u64 addr, int flags);
+slong xrl_shmdt(u64 addr);
+slong xrl_shmctl(int id, int cmd, u64 buf);
+slong xrl_memfd_seals(xfile *f, int op, u32 seals);       /* fcntl F_ADD_SEALS (op 1) / F_GET_SEALS (op 0) on a memfd; -EINVAL if f is not one */
+int   xrl_memfd_sealed(const xfile *f, u32 seal);         /* a write/truncate must be refused: the seal is set on this memfd */
+void  xrl_shm_proc_gone(int pid);                       /* proc.c: process pid ended or exec'd (its attaches and mappings go) */
+void  xrl_shm_memfd_gone(u32 n);                      /* vfs.c: the last description of memfd n was closed */
+u64   xrl_mem_shared_alloc(u64 len, const char *name);   /* mem.c: backing pages for shm.c */
+void  xrl_mem_shared_free(u64 addr, u64 len);
 
 /* -------------------------------------------------------------- signals */
 void xrl_sig_init(void);

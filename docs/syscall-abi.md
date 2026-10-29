@@ -56,17 +56,33 @@ Grouped by the subsystem in the layer that owns them. Numbers are x86-64.
   `getppid`(110), `getuid`/`geteuid`/`getgid`/`getegid`, `prctl`(157),
   `arch_prctl`(158) [FSBASE/GSBASE — real, needed for TLS],
   `uname`(63), `sysinfo`(99), `getrandom`(318).
-- **Sockets:** `socketpair`(53) AF_UNIX (in-memory, SCM_RIGHTS; ipc.c) and real
-  **AF_INET / AF_INET6 TCP and UDP over Winsock** (net.c, added for Easy
-  Anti-Cheat's module and any Linux program): `socket`(41), `connect`(42),
+- **Sockets:** real **AF_INET / AF_INET6 TCP and UDP over Winsock** (net.c, added for Easy
+  Anti-Cheat's module and any Linux program) and **AF_UNIX** (unix.c): `socket`(41), `connect`(42),
   `accept`(43)/`accept4`(288), `sendto`(44), `recvfrom`(45), `sendmsg`(46),
   `recvmsg`(47), `sendmmsg`(307), `recvmmsg`(299), `shutdown`(48), `bind`(49),
-  `listen`(50), `getsockname`(51), `getpeername`(52), `setsockopt`(54),
+  `listen`(50), `getsockname`(51), `getpeername`(52), `socketpair`(53), `setsockopt`(54),
   `getsockopt`(55); sockets are fds, so `read`/`write`/`readv`/`writev`/`poll`/
   `epoll`/`fcntl`/`ioctl(FIONBIO,FIONREAD)`/`dup`/`close` work on them. Linux
   constants and errnos are translated; blocking is done in the layer (interruptible,
-  `SO_RCVTIMEO`/`SO_SNDTIMEO`), never inside Winsock. Not provided: AF_UNIX by
-  path, raw/packet/netlink sockets (`-EAFNOSUPPORT`/`-EPERM`), ancillary data.
+  `SO_RCVTIMEO`/`SO_SNDTIMEO`), never inside Winsock. Not provided for the INET families:
+  raw/packet/netlink sockets (`-EAFNOSUPPORT`/`-EPERM`), ancillary data.
+  AF_UNIX: `SOCK_STREAM`, `SOCK_DGRAM`, `SOCK_SEQPACKET`; path names (a node in the layer's vnode table: `stat`
+  says `S_IFSOCK`, `getdents` `DT_SOCK`, `unlink`/`rename` work, `open` is `-ENXIO`; never a host file) and
+  abstract names (`\0name`, per socket type), autobind (`bind` with just the family); `SCM_RIGHTS` (up to 253
+  fds, in flight as open-file-description references) and `SCM_CREDENTIALS`; `SO_PEERCRED`, `SO_PASSCRED`,
+  `SO_TYPE/ERROR/ACCEPTCONN/DOMAIN/SNDBUF/RCVBUF/RCVTIMEO/SNDTIMEO`; `MSG_PEEK/DONTWAIT/WAITALL/TRUNC/
+  CMSG_CLOEXEC`; `readv`/`writev` on a datagram or seqpacket socket are one message. Not provided: `MSG_OOB`,
+  `SO_PEERSEC`/`SO_PEERGROUPS`, `SIGPIPE` (a write to a closed peer is `-EPIPE`, as for pipes).
+- **Shared memory** (shm.c): `shmget`(29)/`shmat`(30)/`shmctl`(31)/`shmdt`(67) and `mmap(MAP_SHARED)` of a `memfd`
+  or a `/dev/shm` file: one set of pages per object, the **same address for every attach/mapping** (so
+  `shmat` at a chosen address other than the segment's, `MAP_FIXED` over it and a second mapping at another
+  address are not shared: -EINVAL / the old private-copy mapping). `memfd_create`(319) flags `MFD_CLOEXEC`,
+  `MFD_ALLOW_SEALING`; `fcntl` `F_ADD_SEALS`/`F_GET_SEALS` with `F_SEAL_SEAL/SHRINK/GROW/WRITE` enforced on
+  `write`/`ftruncate`.
+- **File modes and owners**: `chmod`(90)/`fchmod`(91)/`fchmodat`(268)/`fchmodat2`(452), `chown`(92)/`fchown`(93)/
+  `lchown`(94)/`fchownat`(260) are real when the VFS root has a `.xrl-meta` table (vfs.c); otherwise accepted and
+  ignored as before. `getuid`/`geteuid`/`getgid`/`getegid`/`getresuid`/`getresgid` answer `XRL_UID`/`XRL_GID`
+  (host environment; default 1000). `sendfile`(40) copies through a bounce buffer.
 
 ## wineserver channel
 

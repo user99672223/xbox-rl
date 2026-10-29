@@ -144,6 +144,69 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-27 - The X11 desktop runs on the layer: Xvfb + twm + xterm as guest processes, a screenshot of it
+  (`results/userland-xvfb-twm-xterm.png`).** Needs both the procs branch (fork/exec) and this one (AF_UNIX, pty,
+  shm, modes/owners, timers). Checked on a scratch merge of `claude/linux-procs` and `claude/linux-userland`
+  (6 of 6 runs; `layer/tests/xsession-test.sh`, `tools/xwd2png.py`): xdpyinfo lists 22 extensions incl. MIT-SHM,
+  xwininfo shows twm's frames and xterm's window, xterm's shell prints `id` through the pty. Found by running it
+  and fixed in this branch: (1) **EPOLLET** lost a wake-up when a socket was drained and refilled between two
+  `epoll_wait`s (the old code compared ready masks; now a file with an edge counter reports when it moved, the
+  rest when the I/O epoch did) - xorg's `ospoll` uses it for every client; (2) **ITIMER_REAL/alarm are per process**
+  (Xvfb's SIGALRM killed the shell); (3) the load-time rewriter let a window run from `__restore_rt`'s `syscall`
+  into `__sigsetjmp`, so every `sigsetjmp()` crashed (xterm's child); (4) `setgroups`/`setfsuid`/`setfsgid` were
+  ENOSYS and xterm's pty child exits 28 on that. **To merge the two branches** (conflicts are all in
+  `syscall.c` identity code, `CMakeLists.txt`, `build.sh`, `decisions.md`): keep procs' `getuid..getresgid/umask/
+  getpid` bodies; make `xrl_cur_uid/gid/umask/pid` in util.c read `xrl_curproc()` (euid, egid, umask, pid),
+  `xrl_signal_pid` call `xrl_sys_kill`, give proc.c's first process `xrl_env_uid()/xrl_env_gid()` (XRL_UID/XRL_GID)
+  and define `xrl_tty_signal(pgrp, sig)` there as `xrl_sys_kill(-pgrp, sig)`. The exact script that does it,
+  with every conflict rule, is `xrl-work/linux-agents/userland/remerge.py`.
+- **2026-10-26 - Alpine 3.24 is the userland rootfs; packages come from `apk`.** `alpine-minirootfs` 3.24.3
+  (x86_64, sha256 checked against the mirror's `.sha256`) is unpacked by `tools/xrl-rootfs-unpack.py` (tar
+  stream or file -> NTFS tree + `.xrl-symlinks` + `.xrl-meta`; hard links become copies) into a tree outside
+  the repo (`xrl-work/alpine/rootfs`). More packages are installed with Alpine's own `apk` signature checks,
+  either inside the guest (`apk add --no-scripts`: works over the layer's Winsock + TLS, verified with
+  `apk add figlet` / `apk del`; post-install scripts need fork/exec, i.e. proc.c) or with apk in a WSL chroot
+  whose result is piped through the unpacker. Musl PIE binaries need nothing special: the load-time rewriter
+  (rewrite.c) patches `syscall` and `%fs:` sites; one bug found by Alpine's tiny musl wrappers (no FDEs) is
+  fixed in rewrite_core.c (a window never spans a `ret`/`jmp`).
+- **2026-10-26 - AF_UNIX is its own module (`unix.c`), process-independent.** A socket is a refcounted `usock`;
+  the open file description holds one reference, so do a connected peer, the accept queue, the abstract-name
+  table and the VFS node of a bound path. Data is queued in the receiver as chunks (one send, one datagram,
+  one record) that carry the passed fds (open-file-description references: no fd number is in flight, so it
+  works between threads and between guest processes alike, whichever fd table receives it), the sender's
+  credentials and for datagrams the sender's address. One global lock; waits sleep on the layer's I/O epoch
+  like pipes. It replaced the pipe-based socketpair of ipc.c. Pathname sockets are **vnodes** (vfs.c): rows
+  in a table that `stat`/`getdents`/`unlink`/`rename`/`open` consult, not host files, so a crashed run
+  leaves nothing behind and `/tmp` stays clean. Costs: a closed peer's object lives until its partner closes
+  too (getpeername/SO_PEERCRED keep working, as on Linux); fds in flight are not garbage collected if a
+  socket is passed over itself. `cur_cred()` in unix.c is the one place that names the caller's pid/uid/gid.
+- **2026-10-26 - Unix modes and owners over NTFS: the `.xrl-meta` journal, on only where the file exists.**
+  NTFS holds neither, so vfs.c keeps a table (`path -> mode, uid, gid`, hashed) loaded from
+  `<vfs_root>\.xrl-meta` and appended to on every change (a later line wins, `-<TAB>path` forgets), with a
+  `#default<TAB>uid<TAB>gid` line for unlisted files. With it: stat/fstat report it, chmod/chown change it
+  under Linux's rules (owner or root; chown to another user only for root; setuid/setgid dropped), files and
+  directories are created `mode & ~umask` owned by the caller, rename (also of a directory tree), unlink and
+  link carry entries, `open`/`access` check the bits for a non-root caller. Without the file (the Wine prefix,
+  trees baked before) nothing changes - chmod stays a no-op and everything is 1000:1000 - so Rocket League's
+  prefix keeps today's behaviour. The caller's ids are `XRL_UID`/`XRL_GID` (default 1000) until proc.c's
+  per-process ids replace `xrl_cur_uid()`/`xrl_cur_gid()`. Alpine runs as root (Xvfb refuses to create
+  `/tmp/.X11-unix` otherwise). Not checked: directory search/write permission along a path.
+- **2026-10-26 - Shared memory by address sharing, not by Windows sections (`shm.c`).** mem.c owns one reserved
+  arena with a VMA list, lazy commit and a swap file, and the guest processes share one address space; a
+  Windows section view cannot be placed inside the reserved arena without redoing all of that. So the
+  pages of a SysV segment, a memfd or a `/dev/shm` file are one ordinary `MAP_SHARED` anonymous region, and every
+  attach/mapping of the object returns the same address (Linux allows any address). Cannot: two addresses
+  for one object (MAP_FIXED over it, `shmat` at a chosen address, a ring buffer mapped twice) - those get
+  -EINVAL or the old private-copy mapping. Protection is per object. A memfd's pages live while a description
+  or a mapping does, a `/dev/shm` file's while mapped and are written back at the last munmap (up to 64 MiB);
+  The pages of a file object are reserved with 8x headroom (1 MiB..1 GiB, committed only when touched) so the file can grow
+  after its first mapping (a Wayland-style pool resize); beyond that mmap fails -ENOMEM. A MAP_FIXED mapping over a region is
+  refused (-EINVAL). read()/write() on the file while it is mapped do not see the mapping's writes. **For proc.c / integration:** a
+  process that exits or execs must not unmap these regions while another process maps them; `xrl_shm_munmap`
+  claims the range and keeps the pages (its answer is `XRL_NOT_NET` for anything else). Bug found on the way
+  (old): munmap/msync of a writable shared *file* mapping deadlocked on mem.c's own lock (the write-back's
+  populate); fixed.
+
 - **2026-10-26 — Guest processes: many Linux processes inside the one Windows process (branch `claude/linux-procs`).**
   The layer was one guest process (threads only; `fork`/`vfork` returned `-ENOSYS`). The console app is UWP and cannot
   create Windows processes, so every guest process must live in our one OS process and one address space. Design:

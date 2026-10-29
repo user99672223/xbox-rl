@@ -122,7 +122,7 @@ void xrl_proc_init(void)
     p->mm = mm_new();
     strcpy_s(p->cwd, sizeof p->cwd, "/");
     p->umask = 022;
-    p->uid = p->euid = p->suid = p->gid = p->egid = p->sgid = 1000;
+    p->uid = p->euid = p->suid = xrl_env_uid(); p->gid = p->egid = p->sgid = xrl_env_gid();
     rlim_defaults(p->rlim);
     p->argc = G.argc; p->argv = strv_dup(G.argv, G.argc);
     p->envc = G.envc; p->envp = strv_dup(G.envp, G.envc);
@@ -397,6 +397,7 @@ void xrl_proc_exec_done(xrl_proc *p) { xrl_proc_vfork_release(p); }
 void xrl_proc_exec_mm(xrl_proc *p)
 {
     xrl_mm *old = p->mm;
+    xrl_shm_proc_gone(p->pid);   /* userland: exec detaches shm */
     swap_leave(p);
     if (old->refs > 1) {
         p->mm = mm_new();
@@ -552,6 +553,7 @@ void xrl_proc_exit(xrl_proc *p, int wstatus, xrl_thread *self)
     xrl_files *files = p->files;
     p->files = NULL;
     xrl_files_put(files);
+    xrl_shm_proc_gone(p->pid);   /* userland: its shm attaches and shared mappings go */
     xrl_heapcheck("exit: files closed");
     swap_leave(p);
     xrl_heapcheck("exit: left the group");   /* before the mm (and the fork group it owns) can go */
@@ -867,3 +869,6 @@ int xrl_tty_set_pgrp(int pgrp)
     g_tty_pgrp = pgrp;
     return 0;
 }
+
+/* pty.c: the line discipline signals the foreground group (^C, ^Z, ^backslash, SIGWINCH, SIGHUP) */
+int xrl_tty_signal(int pgrp, int sig) { return pgrp > 0 ? (int)xrl_sys_kill(-pgrp, sig) : 0; }

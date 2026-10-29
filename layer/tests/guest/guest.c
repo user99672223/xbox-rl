@@ -1654,9 +1654,769 @@ static void test_net(void)
     /* what is not a network socket */
     int pf2[2]; sc2(293, pf2, 0);
     CHECK(sc3(S_bind, pf2[0], &a, 16) == -88, "bind on a pipe -> -ENOTSOCK");
-    CHECK(sc3(S_socket, 1, 1, 0) == -97, "socket(AF_UNIX) (not socketpair) -> -EAFNOSUPPORT");
+    CHECK(sc3(S_socket, 1, 7, 0) == -94 && sc3(S_socket, 1, 1, 5) == -93, "socket(AF_UNIX): bad type -> -ESOCKTNOSUPPORT, bad protocol -> -EPROTONOSUPPORT");
     CHECK(sc3(S_socket, 2, 3, 0) == -1, "socket(AF_INET, SOCK_RAW) -> -EPERM");
     sc1(3, ls);
+}
+
+/* ---- AF_UNIX sockets (layer/src/unix.c) ------------------------------------ */
+struct sun { u16 fam; char p[108]; };
+struct ucred_ { int pid; u32 uid, gid; };
+struct cm_fd { u64 len; int lvl, type; int fd; int pad; };
+struct cm_cred { u64 len; int lvl, type; struct ucred_ c; int pad; };
+
+/* a path address (len counts the NUL) or, with a leading '@', an abstract name */
+static u32 mkun(struct sun *a, const char *name)
+{
+    memset(a, 0, sizeof *a);
+    a->fam = 1;
+    u32 n = (u32)slen(name);
+    if (name[0] == '@') { memcpy(a->p + 1, name + 1, n - 1); return 2 + n; }
+    memcpy(a->p, name, n);
+    return 2 + n + 1;
+}
+
+static volatile int un_cdone;
+static struct sun un_addr; static u32 un_alen;
+
+static int un_client_thr(void *arg)   /* blocking connect, then a greeting and the answer */
+{
+    (void)arg;
+    nap_ms(60);
+    long c = sc3(S_socket, 1, 1, 0);
+    long r = sc3(S_connect, c, &un_addr, un_alen);
+    char b[16]; memset(b, 0, sizeof b);
+    if (r == 0) { sc3(1, c, "hello-unix", 10); r = sc3(0, c, b, 16) == 4 && !memcmp(b, "pong", 4) ? 0 : -1; }
+    sc1(3, c);
+    un_cdone = r == 0 ? 1 : -1;
+    return 0;
+}
+
+#define UN_TOTAL (2u << 20)
+static int un_sender_thr(void *arg)   /* UN_TOTAL bytes of a known pattern; the queue is far smaller, so this blocks */
+{
+    long fd = (long)arg;
+    static u8 buf[30000];
+    u32 sent = 0;
+    while (sent < UN_TOTAL) {
+        u32 n = UN_TOTAL - sent < sizeof buf ? UN_TOTAL - sent : (u32)sizeof buf;
+        for (u32 i = 0; i < n; i++) buf[i] = PAT(sent + i);
+        long r = sc3(1, fd, buf, n);
+        if (r <= 0) { un_cdone = -1; return 1; }
+        sent += (u32)r;
+    }
+    sc2(S_shutdown, fd, 1);
+    un_cdone = 1;
+    return 0;
+}
+
+static long sendm(long fd, struct msg_ *m, int fl) { return sc3(S_sendmsg, fd, m, fl); }
+static long recvm(long fd, struct msg_ *m, int fl) { return sc3(S_recvmsg, fd, m, fl); }
+
+static void test_unix(void)
+{
+    out("AF_UNIX sockets:\n");
+    char buf[256]; long r;
+    struct sun a, b; u32 al, bl;
+    int sp[2];
+    long me = sc(39, 0, 0, 0, 0, 0, 0);
+
+    /* stream socketpair */
+    CHECK(sc4(53, 1, 1, 0, sp) == 0, "socketpair(SOCK_STREAM)");
+    CHECK(sc3(1, sp[0], "abc", 3) == 3 && sc3(1, sp[0], "def", 3) == 3, "stream: two writes");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, sp[1], buf, 100) == 6 && !memcmp(buf, "abcdef", 6), "stream: one read returns both (bytes merge)");
+    struct ucred_ pc = { -1, 0, 0 }; u32 pl = 12;
+    CHECK(sc(S_getsockopt, sp[0], 1, 17 /*SO_PEERCRED*/, &pc, &pl, 0) == 0 && pl == 12 && pc.pid == me && pc.uid == 1000, "SO_PEERCRED: the creator (pid, uid)");
+    int ty = 0; pl = 4;
+    CHECK(sc(S_getsockopt, sp[0], 1, 3 /*SO_TYPE*/, &ty, &pl, 0) == 0 && ty == 1, "SO_TYPE == SOCK_STREAM");
+    struct pfd pp = { sp[1], 1 | 4, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 1 && pp.rev == 4, "poll: writable, nothing to read");
+    u64 st[18]; memset(st, 0, sizeof st);
+    CHECK(sc2(5, sp[0], st) == 0 && (st[3] & 0170000) == 0140000, "fstat: S_ISSOCK");
+    sc1(3, sp[0]);
+    pp.rev = 0;
+    CHECK(sc3(7, &pp, 1, 0) == 1 && (pp.rev & 0x11) == 0x11, "poll after the peer closed: POLLIN|POLLHUP");
+    CHECK(sc3(0, sp[1], buf, 10) == 0, "read after the peer closed: EOF");
+    CHECK(sc3(1, sp[1], "x", 1) == -32, "write after the peer closed: -EPIPE");
+    sc1(3, sp[1]);
+
+    /* shutdown(SHUT_WR) leaves the other direction open */
+    sc4(53, 1, 1, 0, sp);
+    sc3(1, sp[0], "last", 4);
+    CHECK(sc2(S_shutdown, sp[0], 1) == 0, "shutdown(SHUT_WR)");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, sp[1], buf, 10) == 4 && sc3(0, sp[1], buf, 10) == 0, "peer reads the data, then EOF");
+    CHECK(sc3(1, sp[1], "back", 4) == 4 && sc3(0, sp[0], buf, 10) == 4, "the other direction still works");
+    sc1(3, sp[0]); sc1(3, sp[1]);
+
+    /* datagram and seqpacket keep message boundaries */
+    sc4(53, 1, 2, 0, sp);
+    sc3(1, sp[0], "one", 3); sc3(1, sp[0], "second", 6);
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, sp[1], buf, 100) == 3 && !memcmp(buf, "one", 3), "dgram: a read returns one datagram");
+    struct iov_ siv[2] = { { (u64)"ab", 2 }, { (u64)"cde", 3 } };
+    sc3(0, sp[1], buf, 100);   /* drain "second" */
+    CHECK(sc3(20, sp[0], siv, 2) == 5, "dgram: writev of two iovecs");
+    struct iov_ riv[2] = { { (u64)buf, 2 }, { (u64)buf + 2, 8 } };
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(19, sp[1], riv, 2) == 5 && !memcmp(buf, "abcde", 5), "dgram: the writev was ONE datagram (readv gets all 5)");
+    sc3(1, sp[0], "0123456789", 10);
+    struct iov_ tiv = { (u64)buf, 4 };
+    struct msg_ tm = { 0, 0, 0, (u64)&tiv, 1, 0, 0, 0, 0 };
+    CHECK(recvm(sp[1], &tm, 0) == 4 && (tm.fl & 0x20), "dgram: a short buffer truncates and sets MSG_TRUNC");
+    CHECK(recvm(sp[1], &tm, 0x40) == -11, "dgram: the truncated rest is gone (-EAGAIN with MSG_DONTWAIT)");
+    sc3(1, sp[0], "keep", 4);
+    CHECK(sc(S_recvfrom, sp[1], buf, 100, 2 /*MSG_PEEK*/, 0, 0) == 4 && sc(S_recvfrom, sp[1], buf, 100, 0, 0, 0) == 4, "MSG_PEEK leaves the datagram queued");
+    CHECK(sc(S_recvfrom, sp[1], buf, 100, 0x40, 0, 0) == -11, "MSG_DONTWAIT on an empty queue -> -EAGAIN");
+    sc1(3, sp[0]); sc1(3, sp[1]);
+    CHECK(sc4(53, 1, 5, 0, sp) == 0, "socketpair(SOCK_SEQPACKET)");
+    sc3(1, sp[0], "rec1", 4); sc3(1, sp[0], "record-two", 10);
+    CHECK(sc3(0, sp[1], buf, 100) == 4 && sc3(0, sp[1], buf, 100) == 10, "seqpacket: records stay separate");
+    sc1(3, sp[0]);
+    CHECK(sc3(0, sp[1], buf, 100) == 0, "seqpacket: EOF after the peer closed");
+    sc1(3, sp[1]);
+
+    /* a named stream server: bind, listen, accept, with a client thread */
+    long ls = sc3(S_socket, 1, 1, 0);
+    al = mkun(&a, "/tmp/xrl_unix_test.sock");
+    sc1(87, "/tmp/xrl_unix_test.sock");
+    CHECK(sc3(S_bind, ls, &a, al) == 0, "bind(/tmp/xrl_unix_test.sock)");
+    memset(st, 0, sizeof st);
+    CHECK(sc2(4, "/tmp/xrl_unix_test.sock", st) == 0 && (st[3] & 0170000) == 0140000, "stat of the path: S_ISSOCK");
+    CHECK(sc3(2, "/tmp/xrl_unix_test.sock", 0, 0) == -6, "open() of a socket file -> -ENXIO");
+    long ls2 = sc3(S_socket, 1, 1, 0);
+    CHECK(sc3(S_bind, ls2, &a, al) == -98, "bind to a taken path -> -EADDRINUSE");
+    sc1(3, ls2);
+    CHECK(sc3(S_bind, ls, &a, al) == -22, "bind twice -> -EINVAL");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getsockname, ls, &b, &bl) == 0 && bl == al && !memcmp(&b, &a, al), "getsockname returns the bound path");
+    CHECK(sc2(S_listen, ls, 5) == 0, "listen");
+    {   /* readdir sees the socket */
+        long dfd = sc3(2, "/tmp", 0200000 /*O_DIRECTORY*/, 0);
+        static char db[8192]; int seen = 0;
+        long n;
+        while (dfd >= 0 && (n = sc3(217, dfd, db, sizeof db)) > 0)
+            for (long o = 0; o < n;) { u16 rl = *(u16 *)(db + o + 16); u8 t = *(u8 *)(db + o + 18); if (!memcmp(db + o + 19, "xrl_unix_test.sock", 19) && t == 12) seen = 1; o += rl; }
+        CHECK(seen, "getdents lists it as DT_SOCK");
+        if (dfd >= 0) sc1(3, dfd);
+    }
+    un_addr = a; un_alen = al; un_cdone = 0;
+    volatile int ct1; spawn_thread(un_client_thr, 0, &ct1);
+    pp = (struct pfd){ (int)ls, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 3000) == 1 && (pp.rev & 1), "poll(POLLIN) on the listener wakes when a client connects");
+    memset(&b, 0, sizeof b); bl = 110;
+    long cs = sc3(S_accept, ls, &b, &bl);
+    CHECK(cs >= 3 && bl == 2 && b.fam == 1, "accept: the client is unnamed (address length 2)");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, cs, buf, 16) == 10 && !memcmp(buf, "hello-unix", 10), "blocking read gets what the client thread wrote");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getsockname, cs, &b, &bl) == 0 && bl == al && !memcmp(&b, &a, al), "accepted socket's name is the listener's path");
+    pc = (struct ucred_){ -1, 0, 0 }; pl = 12;
+    CHECK(sc(S_getsockopt, cs, 1, 17, &pc, &pl, 0) == 0 && pc.pid == me && pc.uid == 1000 && pc.gid == 1000, "SO_PEERCRED on the accepted socket: the connector");
+    CHECK(sc3(1, cs, "pong", 4) == 4, "write back");
+    for (int i = 0; i < 100 && !un_cdone; i++) nap_ms(10);
+    CHECK(un_cdone == 1, "the client thread read 'pong'");
+    sc1(3, cs);
+    long lsn = sc3(S_socket, 1, 1 | SOCK_NB, 0);
+    struct sun a2; u32 al2 = mkun(&a2, "/tmp/xrl_unix_test2.sock");
+    sc1(87, "/tmp/xrl_unix_test2.sock");
+    sc3(S_bind, lsn, &a2, al2); sc2(S_listen, lsn, 0);
+    CHECK(sc3(S_accept, lsn, 0, 0) == -11, "accept on a non-blocking listener with nothing pending -> -EAGAIN");
+    long c1 = sc3(S_socket, 1, 1 | SOCK_NB, 0);
+    CHECK(sc3(S_connect, c1, &a2, al2) == 0, "non-blocking connect to a listener completes at once");
+    long c2 = sc3(S_socket, 1, 1 | SOCK_NB, 0);
+    CHECK(sc3(S_connect, c2, &a2, al2) == -11, "backlog 0 queues one connection; a second one is refused for now (-EAGAIN)");
+    CHECK(sc3(S_connect, c1, &a2, al2) == -106, "connect on a connected socket -> -EISCONN");
+    long ac = sc3(S_accept, lsn, 0, 0);
+    CHECK(ac >= 3, "accept the first");
+    CHECK(sc3(S_connect, c2, &a2, al2) == 0, "now the second connects");
+    long c3 = c2;
+    sc1(3, ac); sc1(3, c1); sc1(3, c2); sc1(3, c3);
+    sc1(3, lsn);
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &a2, al2) == -111, "connect to a socket file nobody listens on -> -ECONNREFUSED");
+    CHECK(sc1(87, "/tmp/xrl_unix_test2.sock") == 0 && sc2(4, "/tmp/xrl_unix_test2.sock", st) == -2, "unlink removes the socket file");
+    struct sun nx; u32 nxl = mkun(&nx, "/tmp/xrl_no_such.sock");
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &nx, nxl) == -2, "connect to a missing path -> -ENOENT");
+    long rf = sc3(2, "/tmp/xrl_un_plain", 0102, 0644); sc1(3, rf);
+    struct sun pf_; u32 pfl = mkun(&pf_, "/tmp/xrl_un_plain");
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &pf_, pfl) == -111, "connect to a regular file -> -ECONNREFUSED");
+    CHECK(sc3(S_bind, sc3(S_socket, 1, 1, 0), &pf_, pfl) == -98, "bind onto a regular file -> -EADDRINUSE");
+    sc1(87, "/tmp/xrl_un_plain");
+    struct sun nd; u32 ndl = mkun(&nd, "/tmp/xrl_no_dir/x.sock");
+    CHECK(sc3(S_bind, sc3(S_socket, 1, 1, 0), &nd, ndl) == -2, "bind in a missing directory -> -ENOENT");
+    sc1(3, ls);
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &a, al) == -111, "connect after the listener closed -> -ECONNREFUSED (node still there)");
+    sc1(87, "/tmp/xrl_unix_test.sock");
+
+    /* abstract names, per socket type; autobind */
+    long as_ = sc3(S_socket, 1, 1, 0);
+    struct sun ab; u32 abl = mkun(&ab, "@xrl-abs-test");
+    CHECK(sc3(S_bind, as_, &ab, abl) == 0 && sc2(S_listen, as_, 4) == 0, "bind+listen on an abstract name");
+    long ad = sc3(S_socket, 1, 2, 0);
+    CHECK(sc3(S_bind, ad, &ab, abl) == 0, "the same abstract name for a datagram socket is a different socket");
+    long as2 = sc3(S_socket, 1, 1, 0);
+    CHECK(sc3(S_bind, as2, &ab, abl) == -98, "same name, same type -> -EADDRINUSE");
+    sc1(3, as2);
+    long ac1 = sc3(S_socket, 1, 1, 0);
+    CHECK(sc3(S_connect, ac1, &ab, abl) == 0, "connect to the abstract name");
+    long acs = sc3(S_accept, as_, 0, 0);
+    CHECK(acs >= 3 && sc3(1, ac1, "abs", 3) == 3 && sc3(0, acs, buf, 8) == 3, "data through an abstract socket");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getpeername, ac1, &b, &bl) == 0 && bl == abl && !memcmp(&b, &ab, abl), "getpeername of the connector shows the abstract name");
+    sc1(3, ac1); sc1(3, acs); sc1(3, as_);
+    CHECK(sc3(S_connect, sc3(S_socket, 1, 1, 0), &ab, abl) == -111, "the name is gone once its socket closed");
+    sc1(3, ad);
+    long au = sc3(S_socket, 1, 2, 0);
+    struct sun ua; memset(&ua, 0, sizeof ua); ua.fam = 1;
+    CHECK(sc3(S_bind, au, &ua, 2) == 0, "bind with just the family autobinds");
+    memset(&b, 0x55, sizeof b); bl = 110;
+    CHECK(sc3(S_getsockname, au, &b, &bl) == 0 && bl == 8 && b.fam == 1 && b.p[0] == 0, "autobound name: abstract, 5 hex digits");
+
+    /* datagrams to an address; the receiver learns the sender's name */
+    long dr = sc3(S_socket, 1, 2, 0);
+    struct sun da; u32 dal = mkun(&da, "/tmp/xrl_unix_dg.sock");
+    sc1(87, "/tmp/xrl_unix_dg.sock");
+    sc3(S_bind, dr, &da, dal);
+    CHECK(sc(S_sendto, au, "dgram-to", 8, 0, &da, dal) == 8, "sendto(path) from an autobound datagram socket");
+    memset(&b, 0, sizeof b); bl = 110; memset(buf, 0, sizeof buf);
+    CHECK(sc(S_recvfrom, dr, buf, 64, 0, &b, &bl) == 8 && !memcmp(buf, "dgram-to", 8) && bl == 8, "recvfrom reports the sender's (autobound) address");
+    long dc = sc3(S_socket, 1, 2, 0);
+    CHECK(sc(S_sendto, dc, "x", 1, 0, 0, 0) == -107, "send without a destination -> -ENOTCONN");
+    CHECK(sc3(S_connect, dc, &da, dal) == 0 && sc3(1, dc, "conn", 4) == 4, "connect() sets the default destination; write works");
+    bl = 110;
+    CHECK(sc(S_recvfrom, dr, buf, 64, 0, &b, &bl) == 4 && bl == 0, "an unbound sender has no address");
+    struct sun un_ = { 0, {0} };
+    CHECK(sc3(S_connect, dc, &un_, 110) == 0, "connect(AF_UNSPEC) dissolves the destination");
+    CHECK(sc3(1, dc, "x", 1) == -107, "...so a write fails with -ENOTCONN again");
+    sc1(3, dc); sc1(3, dr); sc1(3, au);
+    sc1(87, "/tmp/xrl_unix_dg.sock");
+
+    /* fds and credentials in ancillary data */
+    int pf[2]; sc2(293, pf, 0);
+    sc4(53, 1, 1, 0, sp);
+    struct iov_ iv1 = { (u64)"F", 1 };
+    struct cm_fd cm = { 20, 1, 1, pf[1], 0 };
+    struct msg_ m1 = { 0, 0, 0, (u64)&iv1, 1, (u64)&cm, 24, 0, 0 };
+    CHECK(sendm(sp[0], &m1, 0) == 1, "sendmsg(SCM_RIGHTS)");
+    sc1(3, pf[1]);   /* the fd in flight keeps the pipe's write end alive */
+    char rb[8]; struct iov_ riv1 = { (u64)rb, 4 };
+    struct cm_fd rcm; memset(&rcm, 0, sizeof rcm);
+    struct msg_ rm = { 0, 0, 0, (u64)&riv1, 1, (u64)&rcm, 24, 0, 0 };
+    r = recvm(sp[1], &rm, 0);
+    CHECK(r == 1 && rcm.type == 1 && rcm.fd >= 3 && rm.ctllen == 24, "recvmsg: the fd arrives");
+    CHECK(sc3(1, rcm.fd, "via-unix", 8) == 8 && sc3(0, pf[0], buf, 16) == 8 && !memcmp(buf, "via-unix", 8), "the received fd is the pipe's write end");
+    /* two sends carrying fds are never merged into one read */
+    int pf2[2]; sc2(293, pf2, 0);
+    struct cm_fd cmb = { 20, 1, 1, pf2[1], 0 };
+    struct iov_ iv2 = { (u64)"G", 1 };
+    struct msg_ m2 = { 0, 0, 0, (u64)&iv2, 1, (u64)&cm, 24, 0, 0 };
+    cm.fd = pf2[0];
+    sendm(sp[0], &m2, 0);
+    m2.ctl = (u64)&cmb; sendm(sp[0], &m2, 0);
+    struct iov_ riv2 = { (u64)rb, 8 };
+    struct msg_ rm2 = { 0, 0, 0, (u64)&riv2, 1, (u64)&rcm, 24, 0, 0 };
+    CHECK(recvm(sp[1], &rm2, 0) == 1 && recvm(sp[1], &rm2, 0) == 1, "a stream read stops at each chunk that carries fds");
+    /* control buffer too small: MSG_CTRUNC and the fd is closed */
+    struct msg_ m3 = { 0, 0, 0, (u64)&iv2, 1, (u64)&cm, 24, 0, 0 };
+    sendm(sp[0], &m3, 0);
+    struct msg_ rm3 = { 0, 0, 0, (u64)&riv2, 1, (u64)&rcm, 8, 0, 0 };
+    CHECK(recvm(sp[1], &rm3, 0) == 1 && (rm3.fl & 8) && rm3.ctllen == 0, "no room for the control message: MSG_CTRUNC");
+    struct cm_fd bad = { 20, 1, 1, 999, 0 };
+    struct msg_ m4 = { 0, 0, 0, (u64)&iv2, 1, (u64)&bad, 24, 0, 0 };
+    CHECK(sendm(sp[0], &m4, 0) == -9, "SCM_RIGHTS with a bad fd -> -EBADF");
+    /* credentials */
+    int one_ = 1;
+    CHECK(sc(S_setsockopt, sp[1], 1, 16 /*SO_PASSCRED*/, &one_, 4, 0) == 0, "setsockopt(SO_PASSCRED)");
+    sc3(1, sp[0], "c", 1);
+    struct cm_cred ccm; memset(&ccm, 0, sizeof ccm);
+    struct msg_ crm = { 0, 0, 0, (u64)&riv2, 1, (u64)&ccm, 32, 0, 0 };
+    CHECK(recvm(sp[1], &crm, 0) == 1 && ccm.type == 2 && ccm.c.pid == me && ccm.c.uid == 1000, "SCM_CREDENTIALS: the sender's pid/uid/gid");
+    struct cm_cred scm = { 28, 1, 2, { (int)me, 1000, 1000 }, 0 };
+    struct msg_ m5 = { 0, 0, 0, (u64)&iv2, 1, (u64)&scm, 32, 0, 0 };
+    CHECK(sendm(sp[0], &m5, 0) == 1, "sendmsg with our own credentials");
+    scm.c.uid = 0;
+    CHECK(sendm(sp[0], &m5, 0) == -1, "...but not somebody else's -> -EPERM");
+    sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf2[0]); sc1(3, pf2[1]);
+
+    /* epoll on sockets; FIONREAD; flow control between two threads */
+    sc4(53, 1, 1, 0, sp);
+    long ep = sc1(291, 0);
+    struct { u32 e; u64 d; } __attribute__((packed)) ev1 = { 1, 0xabc }, evo;
+    sc4(233, ep, 1, sp[1], &ev1);
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "epoll: nothing readable yet");
+    sc3(1, sp[0], "12345", 5);
+    CHECK(sc4(232, ep, &evo, 1, 1000) == 1 && evo.d == 0xabc && (evo.e & 1), "epoll: EPOLLIN once data is queued");
+    int nread = 0;
+    CHECK(sc3(16, sp[1], 0x541B, &nread) == 0 && nread == 5, "ioctl(FIONREAD)");
+    sc3(0, sp[1], buf, 16);
+    un_cdone = 0;
+    volatile int ct2; spawn_thread(un_sender_thr, (void *)(long)sp[0], &ct2);
+    u32 got_ = 0, bad_ = 0;
+    static u8 rbuf[50000];
+    for (;;) {
+        long n = sc3(0, sp[1], rbuf, sizeof rbuf);
+        if (n <= 0) break;
+        for (long i = 0; i < n; i++) if (rbuf[i] != PAT(got_ + (u32)i)) bad_++;
+        got_ += (u32)n;
+    }
+    CHECK(got_ == UN_TOTAL && bad_ == 0, "2 MiB streamed between two threads (the sender blocks on a full queue), every byte intact");
+    for (int i = 0; i < 100 && !un_cdone; i++) nap_ms(10);
+    CHECK(un_cdone == 1, "...and shutdown(SHUT_WR) gave the reader its EOF");
+    sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, ep);
+
+    /* what is not a socket */
+    int pf3[2]; sc2(293, pf3, 0);
+    CHECK(sc3(S_connect, pf3[0], &a, al) == -88 && sc2(S_listen, pf3[0], 1) == -88, "connect/listen on a pipe -> -ENOTSOCK");
+}
+
+/* ---- shared memory: SysV segments, memfd / /dev/shm mappings (layer/src/shm.c) ------- */
+static void test_shm(void)
+{
+    out("shared memory:\n");
+    long id = sc3(29 /*shmget*/, 0 /*IPC_PRIVATE*/, 100000, 01000 | 0600);
+    CHECK(id >= 0, "shmget(IPC_PRIVATE, 100000)");
+    u8 ds[112]; memset(ds, 0xff, sizeof ds);
+    CHECK(sc3(31 /*shmctl*/, id, 2 /*IPC_STAT*/, ds) == 0 && *(u64 *)(ds + 48) == 100000 && *(u64 *)(ds + 88) == 0 && (*(u32 *)(ds + 20) & 0777) == 0600, "IPC_STAT: size as asked, no attaches, mode 0600");
+    u8 *a = (u8 *)sc3(30 /*shmat*/, id, 0, 0);
+    CHECK((long)a > 0 && !((u64)a & 4095), "shmat(NULL) -> a page-aligned address");
+    CHECK(a[0] == 0 && a[99999] == 0, "a new segment reads as zeros");
+    for (int i = 0; i < 100000; i += 4096) a[i] = (u8)(i >> 12) + 1;
+    u8 *b = (u8 *)sc3(30, id, 0, 0);
+    CHECK(b == a && b[4096] == 2 && b[8192] == 3, "a second attach shows the same pages");
+    sc3(31, id, 2, ds);
+    CHECK(*(u64 *)(ds + 88) == 2 && *(int *)(ds + 84) == (int)sc(39, 0, 0, 0, 0, 0, 0), "nattch == 2, lpid is us");
+    CHECK(sc1(67 /*shmdt*/, a) == 0, "shmdt");
+    sc3(31, id, 2, ds);
+    CHECK(*(u64 *)(ds + 88) == 1, "nattch == 1");
+    CHECK(sc3(31, id, 0 /*IPC_RMID*/, 0) == 0, "IPC_RMID with one attach left");
+    CHECK(a[4096] == 2, "the segment lives on while attached");
+    CHECK(sc1(67, a) == 0, "last shmdt destroys it");
+    CHECK(sc3(30, id, 0, 0) == -22, "shmat of a destroyed id -> -EINVAL");
+    CHECK(sc1(67, 0x1000) == -22, "shmdt of a non-attach -> -EINVAL");
+    CHECK(sc3(30, 12345, 0, 0) == -22, "shmat of an id that never existed -> -EINVAL");
+
+    long k1 = sc3(29, 0x58524c31, 8192, 01000 | 0666);
+    CHECK(k1 >= 0 && sc3(29, 0x58524c31, 4096, 0) == k1, "shmget with a key: the same segment again");
+    CHECK(sc3(29, 0x58524c31, 4096, 01000 | 02000) == -17, "IPC_CREAT|IPC_EXCL on an existing key -> -EEXIST");
+    CHECK(sc3(29, 0x58524c31, 16384, 0) == -22, "asking for a bigger size than it has -> -EINVAL");
+    CHECK(sc3(29, 0x58524c32, 4096, 0) == -2, "an unknown key without IPC_CREAT -> -ENOENT");
+    CHECK(sc3(29, 0x58524c33, 0, 01000) == -22, "creating with size 0 -> -EINVAL");
+    sc3(31, k1, 0, 0);
+    CHECK(sc3(29, 0x58524c31, 4096, 0) == -2, "after IPC_RMID the key is free");
+
+    /* memfd: every shared mapping shows the same pages, whatever the offset */
+    long fd = sc3(319 /*memfd_create*/, "xrl-shm", 3 /*CLOEXEC|ALLOW_SEALING*/, 0);
+    CHECK(fd >= 0 && sc2(77 /*ftruncate*/, fd, 16384) == 0, "memfd_create + ftruncate(16 KiB)");
+    u8 *m1 = (u8 *)sc(9, 0, 16384, 3, 1 /*MAP_SHARED*/, fd, 0);
+    CHECK((long)m1 > 0, "mmap(MAP_SHARED) of the memfd");
+    m1[0] = 0x11; m1[5000] = 0x22;
+    u8 *m2 = (u8 *)sc(9, 0, 8192, 3, 1, fd, 4096);
+    CHECK(m2 == m1 + 4096 && m2[904] == 0x22, "a mapping at offset 4096 is the same pages (sees the write at 5000)");
+    m2[0] = 0x33;
+    CHECK(m1[4096] == 0x33, "and a write through it shows in the first mapping");
+    sc1(3, fd);
+    m1[100] = 0x44;
+    CHECK(m1[100] == 0x44, "close(fd) leaves the mappings usable");
+    CHECK(sc2(11, m2, 8192) == 0 && m1[4096] == 0x33, "munmap of the second mapping keeps the first");
+    CHECK(sc2(11, m1, 16384) == 0, "munmap of the first");
+
+    /* the content survives 'unmap everything, map again' while the fd is open; seals */
+    long f2 = sc3(319, "xrl-keep", 2, 0);
+    sc2(77, f2, 8192);
+    u8 *k = (u8 *)sc(9, 0, 8192, 3, 1, f2, 0);
+    k[10] = 0x5a; k[8000] = 0x6b;
+    sc2(11, k, 8192);
+    u8 *k2 = (u8 *)sc(9, 0, 8192, 3, 1, f2, 0);
+    CHECK((long)k2 > 0 && k2[10] == 0x5a && k2[8000] == 0x6b, "unmap and map again: the data is still there (fd open)");
+    CHECK(sc3(72, f2, 1034 /*F_GET_SEALS*/, 0) == 0, "no seals yet");
+    CHECK(sc3(72, f2, 1033 /*F_ADD_SEALS*/, 2 | 4) == 0 && sc3(72, f2, 1034, 0) == 6, "F_ADD_SEALS(SHRINK|GROW)");
+    CHECK(sc2(77, f2, 4096) == -1 && sc2(77, f2, 16384) == -1, "ftruncate smaller or bigger -> -EPERM");
+    CHECK(sc2(77, f2, 8192) == 0, "ftruncate to the same size is fine");
+    CHECK(sc3(72, f2, 1033, 8) == 0 && sc3(1, f2, "x", 1) == -1, "F_SEAL_WRITE: write() -> -EPERM");
+    CHECK(sc3(72, f2, 1033, 1) == 0 && sc3(72, f2, 1033, 8) == -1, "F_SEAL_SEAL: no more seals -> -EPERM");
+    long f3 = sc3(319, "xrl-nosealing", 0, 0);
+    CHECK(sc3(72, f3, 1033, 2) == -1 && sc3(72, f3, 1034, 0) == 1, "a memfd without MFD_ALLOW_SEALING: adding -> -EPERM, GET shows F_SEAL_SEAL");
+    CHECK(sc3(319, "x", 0x1000, 0) == -22, "memfd_create with an unknown flag -> -EINVAL");
+    long pf = sc3(2, "/tmp/xrl_not_a_memfd", 0102, 0600);
+    CHECK(sc3(72, pf, 1034, 0) == -22, "F_GET_SEALS on a regular file -> -EINVAL");
+    sc1(3, pf); sc1(87, "/tmp/xrl_not_a_memfd");
+    sc2(11, k2, 8192); sc1(3, f2); sc1(3, f3);
+
+    /* a /dev/shm file: shared while mapped, written back when the last mapping goes */
+    long sf = sc3(2, "/dev/shm/xrl_shm_test", 0102, 0600);
+    sc2(77, sf, 8192);
+    u8 *s1 = (u8 *)sc(9, 0, 8192, 3, 1, sf, 0);
+    u8 *s2 = (u8 *)sc(9, 0, 4096, 3, 1, sf, 0);
+    s1[7] = 0x77;
+    CHECK(s2 == s1 && s2[7] == 0x77, "/dev/shm file: two mappings, one set of pages");
+    sc2(11, s1, 8192);
+    char rb[4]; rb[0] = 0;
+    sc2(11, s2, 4096);
+    CHECK(sc4(17, sf, rb, 1, 7) == 1 && (u8)rb[0] == 0x77, "after the last munmap the file holds what was written");
+    sc1(3, sf); sc1(87, "/dev/shm/xrl_shm_test");
+    /* a file elsewhere is not shared memory: the ordinary private-copy mapping */
+    long of = sc3(2, "/tmp/xrl_plain_map", 0102, 0600);
+    sc2(77, of, 4096);
+    u8 *p1 = (u8 *)sc(9, 0, 4096, 3, 1, of, 0);
+    u8 *p2 = (u8 *)sc(9, 0, 4096, 3, 1, of, 0);
+    CHECK((long)p1 > 0 && (long)p2 > 0 && p1 != p2, "a regular file's shared mapping is its own copy (not shm.c's)");
+    sc2(11, p1, 4096); sc2(11, p2, 4096); sc1(3, of); sc1(87, "/tmp/xrl_plain_map");
+}
+
+/* ---- pseudo-terminals (layer/src/pty.c) ---------------------------------------- */
+struct ktio { u32 iflag, oflag, cflag, lflag; u8 line; u8 cc[19]; };
+struct wsz_ { u16 row, col, xp, yp; };
+
+static long rd_all(long fd, char *b, long cap)   /* what is readable now (non-blocking read loop) */
+{
+    long n = 0, r;
+    while (n < cap && (r = sc3(0, fd, b + n, cap - n)) > 0) n += r;
+    return n;
+}
+
+static void test_pty(void)
+{
+    out("pseudo-terminals:\n");
+    char buf[256], path[32] = "/dev/pts/";
+    long m = sc3(2, "/dev/ptmx", 02 | 04000 /* O_RDWR|O_NONBLOCK */, 0);
+    CHECK(m >= 3, "open /dev/ptmx");
+    u32 n = 99;
+    CHECK(sc3(16, m, 0x80045430 /*TIOCGPTN*/, &n) == 0 && n < 4096, "TIOCGPTN");
+    { char d[12]; int k = 0, t = (int)n; do d[k++] = (char)('0' + t % 10); while ((t /= 10)); int o = 9; while (k) path[o++] = d[--k]; path[o] = 0; }
+    CHECK(sc3(2, path, 02, 0) == -5, "opening a locked slave -> -EIO");
+    int zero = 0;
+    CHECK(sc3(16, m, 0x40045431 /*TIOCSPTLCK*/, &zero) == 0, "TIOCSPTLCK(0): unlockpt");
+    u64 st[18]; memset(st, 0, sizeof st);
+    CHECK(sc2(4, path, st) == 0 && (st[3] & 0170000) == 0020000 && (u32)(st[5] >> 8) == 136, "stat /dev/pts/N: a character device, major 136");
+    long s = sc3(2, path, 02 | 04000, 0);
+    CHECK(s >= 3, "open the slave");
+    CHECK(sc3(16, s, 0x5413 /*TIOCGWINSZ*/, buf) == 0, "TIOCGWINSZ on the slave (isatty)");
+    struct wsz_ w = { 40, 132, 0, 0 };
+    CHECK(sc3(16, m, 0x5414 /*TIOCSWINSZ*/, &w) == 0, "TIOCSWINSZ on the master");
+    struct wsz_ g; memset(&g, 0, sizeof g);
+    CHECK(sc3(16, s, 0x5413, &g) == 0 && g.row == 40 && g.col == 132, "the slave sees the size");
+    struct ktio t;
+    CHECK(sc3(16, s, 0x5401 /*TCGETS*/, &t) == 0 && (t.lflag & 2 /*ICANON*/) && (t.lflag & 8 /*ECHO*/) && (t.oflag & 4 /*ONLCR*/) && t.cc[0] == 3 && t.cc[4] == 4, "default termios: ICANON|ECHO, ONLCR, ^C ^D");
+
+    /* canonical mode: a line becomes readable at the newline, and is echoed */
+    CHECK(sc3(1, m, "hel", 3) == 3, "the master types 'hel'");
+    CHECK(sc3(0, s, buf, 100) == -11, "the slave sees nothing yet (no newline): -EAGAIN");
+    memset(buf, 0, sizeof buf);
+    long e = rd_all(m, buf, 100);
+    CHECK(e == 3 && !memcmp(buf, "hel", 3), "echo of the typed characters");
+    sc3(1, m, "lo\r", 3);
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, s, buf, 100) == 6 && !memcmp(buf, "hello\n", 6), "'\\r' became '\\n' (ICRNL); the whole line is readable now");
+    memset(buf, 0, sizeof buf);
+    e = rd_all(m, buf, 100);
+    CHECK(e == 4 && !memcmp(buf, "lo\r\n", 4), "echo of 'lo' and the newline as CR LF");
+    sc3(1, m, "abc\x7f" "d\n", 6);   /* backspace erases 'c' */
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, s, buf, 100) == 4 && !memcmp(buf, "abd\n", 4), "VERASE edits the line");
+    rd_all(m, buf, 100);
+    sc3(1, m, "x\ny\n", 4);
+    CHECK(sc3(0, s, buf, 100) == 2 && sc3(0, s, buf, 100) == 2, "two lines are two reads");
+    rd_all(m, buf, 100);
+    sc3(1, m, "\x04", 1);   /* ^D on an empty line */
+    CHECK(sc3(0, s, buf, 100) == 0, "^D on an empty line: the slave reads 0 (EOF)");
+    CHECK(sc3(0, s, buf, 100) == -11, "...once");
+    sc3(1, m, "par", 3); sc3(1, m, "\x04", 1);
+    CHECK(sc3(0, s, buf, 100) == 3, "^D after text delivers the text without a newline");
+    rd_all(m, buf, 100);
+
+    /* output side */
+    CHECK(sc3(1, s, "out\n", 4) == 4, "the slave writes");
+    memset(buf, 0, sizeof buf);
+    CHECK(rd_all(m, buf, 100) == 5 && !memcmp(buf, "out\r\n", 5), "the master reads it with ONLCR (CR LF)");
+
+    /* raw mode */
+    struct ktio r = t;
+    r.lflag &= ~(2u | 8u | 1u);   /* ~ICANON & ~ECHO & ~ISIG */
+    r.iflag &= ~0400u;            /* ~ICRNL */
+    r.oflag &= ~1u;               /* ~OPOST */
+    r.cc[6] = 1; r.cc[5] = 0;
+    CHECK(sc3(16, s, 0x5402 /*TCSETS*/, &r) == 0, "TCSETS: raw");
+    sc3(1, m, "q\r\x03", 3);
+    memset(buf, 0, sizeof buf);
+    CHECK(sc3(0, s, buf, 100) == 3 && buf[0] == 'q' && buf[1] == '\r' && buf[2] == 3, "raw: bytes arrive at once, untranslated, ^C is a byte");
+    CHECK(rd_all(m, buf, 100) == 0, "raw without ECHO: no echo");
+    sc3(1, s, "a\n", 2);
+    memset(buf, 0, sizeof buf);
+    CHECK(rd_all(m, buf, 100) == 2 && buf[1] == '\n', "raw without OPOST: no CR added");
+    struct pfd pp = { (int)s, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 0, "poll: slave has nothing to read");
+    sc3(1, m, "z", 1);
+    pp.rev = 0;
+    CHECK(sc3(7, &pp, 1, 0) == 1 && (pp.rev & 1), "poll: POLLIN once a byte arrives");
+    int nb = 0;
+    CHECK(sc3(16, s, 0x541B /*FIONREAD*/, &nb) == 0 && nb == 1, "FIONREAD on the slave");
+    sc3(0, s, buf, 10);
+    r.cc[6] = 4;   /* VMIN = 4 */
+    sc3(16, s, 0x5402, &r);
+    sc3(1, m, "12", 2);
+    CHECK(sc3(0, s, buf, 100) == -11, "VMIN=4 with 2 bytes queued: a non-blocking read -> -EAGAIN");
+    sc3(1, m, "34", 2);
+    CHECK(sc3(0, s, buf, 100) == 4, "...and 4 bytes are delivered together");
+
+    /* signals: ISIG on, ^C flushes and signals the foreground group (no process model here: logged, dropped) */
+    r.lflag |= 1u | 2u | 8u; r.cc[6] = 1;
+    sc3(16, s, 0x5402, &r);
+    sc3(1, m, "abc", 3);
+    sc3(1, m, "\x03", 1);
+    memset(buf, 0, sizeof buf);
+    e = rd_all(m, buf, 100);
+    CHECK(e == 5 && !memcmp(buf, "abc^C", 5), "^C is echoed as ^C and the typed-ahead line is discarded");
+    sc3(1, m, "\n", 1);
+    CHECK(sc3(0, s, buf, 100) == 1, "(the line discipline is clean after it)");
+
+    /* peer going away */
+    sc1(3, s);
+    CHECK(sc3(0, m, buf, 100) >= 0, "(echo of the last newline is still readable)");
+    rd_all(m, buf, 100);
+    CHECK(sc3(0, m, buf, 100) == -5, "master read after the last slave closed -> -EIO");
+    pp = (struct pfd){ (int)m, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 1 && (pp.rev & 0x10), "poll(master): POLLHUP");
+    long m2 = sc3(2, "/dev/ptmx", 02, 0);
+    u32 n2 = 99; sc3(16, m2, 0x80045430, &n2);
+    CHECK(n2 != n, "a second pty gets another number");
+    sc3(16, m2, 0x40045431, &zero);
+    { char p2[32] = "/dev/pts/"; char d[12]; int k = 0, tt = (int)n2; do d[k++] = (char)('0' + tt % 10); while ((tt /= 10)); int o = 9; while (k) p2[o++] = d[--k]; p2[o] = 0;
+      long s2 = sc3(2, p2, 02, 0);
+      sc1(3, m2);
+      CHECK(sc3(0, s2, buf, 10) == 0, "slave read after the master closed: EOF");
+      CHECK(sc3(1, s2, "x", 1) == -5, "slave write after the master closed: -EIO");
+      sc1(3, s2); }
+    sc1(3, m);
+    CHECK(sc3(2, path, 02, 0) == -2, "after both closed the pty is gone: open -> -ENOENT");
+}
+
+/* ---- timerfd, itimers, inotify, copy_file_range/splice (layer/src/timers.c, syscall.c) --- */
+static void test_timers(void)
+{
+    out("timers and file copying:\n");
+    char buf[64];
+    long tf = sc3(283 /*timerfd_create*/, 1 /*CLOCK_MONOTONIC*/, 04000, 0);
+    CHECK(tf >= 3, "timerfd_create(MONOTONIC, NONBLOCK)");
+    u64 cnt = 0;
+    CHECK(sc3(0, tf, &cnt, 8) == -11, "read of an unarmed timerfd -> -EAGAIN");
+    long its[4] = { 0, 0, 0, 50000000 };   /* one shot, 50 ms */
+    u64 t0 = mono_ns();
+    CHECK(sc4(286 /*timerfd_settime*/, tf, 0, its, 0) == 0, "timerfd_settime(50 ms one-shot)");
+    long cur[4]; memset(cur, 0xff, sizeof cur);
+    CHECK(sc2(287 /*timerfd_gettime*/, tf, cur) == 0 && cur[2] == 0 && cur[3] > 0 && cur[3] <= 50000000 && cur[0] == 0 && cur[1] == 0, "timerfd_gettime: the time left, no interval");
+    struct pfd pp = { (int)tf, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 0) == 0, "poll: not yet");
+    CHECK(sc3(7, &pp, 1, 2000) == 1 && (pp.rev & 1), "poll(POLLIN) wakes when it expires");
+    u64 dt = mono_ns() - t0;
+    CHECK(dt >= 45000000ull && dt < 1000000000ull, "...after about 50 ms");
+    CHECK(sc3(0, tf, &cnt, 8) == 8 && cnt == 1, "read -> 1 expiration");
+    CHECK(sc3(0, tf, &cnt, 8) == -11, "...and it is consumed (a one-shot does not repeat)");
+    long iv[4] = { 0, 20000000, 0, 20000000 };   /* every 20 ms */
+    sc4(286, tf, 0, iv, 0);
+    nap_ms(130);
+    CHECK(sc3(0, tf, &cnt, 8) == 8 && cnt >= 4 && cnt <= 8, "an interval timer counts the expirations it missed (130 ms / 20 ms)");
+    long ep = sc1(291, 0);
+    struct { u32 e; u64 d; } __attribute__((packed)) ev = { 1, 0x7f }, evo;
+    sc4(233, ep, 1, tf, &ev);
+    CHECK(sc4(232, ep, &evo, 1, 1000) == 1 && evo.d == 0x7f, "epoll_wait wakes on the timerfd");
+    long off[4] = { 0, 0, 0, 0 };
+    CHECK(sc4(286, tf, 0, off, cur) == 0 && cur[1] == 20000000, "settime(0) disarms and returns the old setting");
+    sc3(0, tf, &cnt, 8);
+    nap_ms(60);
+    CHECK(sc3(0, tf, &cnt, 8) == -11, "a disarmed timer stays quiet");
+    long abs_[4] = { 0, 0, 0, 0 };
+    { long ts[2]; sc2(228, 1, ts); u64 nowns = (u64)ts[0] * 1000000000ull + (u64)ts[1] + 30000000ull; abs_[2] = (long)(nowns / 1000000000ull); abs_[3] = (long)(nowns % 1000000000ull); }
+    sc4(286, tf, 1 /*TIMER_ABSTIME*/, abs_, 0);
+    pp.rev = 0;
+    CHECK(sc3(7, &pp, 1, 2000) == 1 && (pp.rev & 1), "TFD_TIMER_ABSTIME on the monotonic clock");
+    CHECK(sc2(287, 99, cur) == -9 && sc4(286, 0, 0, off, 0) == -22, "timerfd calls on a bad fd / a non-timerfd");
+    sc1(3, tf); sc1(3, ep);
+
+    /* setitimer/alarm: SIGALRM runs a handler */
+    sigact(14, h_info, 0);
+    h_count = 0; h_sig = 0;
+    long itv[4] = { 0, 0, 0, 30000 };   /* 30 ms */
+    CHECK(sc3(38 /*setitimer*/, 0, itv, 0) == 0, "setitimer(ITIMER_REAL, 30 ms)");
+    long cv[4]; memset(cv, 0xff, sizeof cv);
+    CHECK(sc2(36 /*getitimer*/, 0, cv) == 0 && cv[0] == 0 && cv[3] > 0 && cv[3] <= 30000, "getitimer: time left");
+    for (int i = 0; i < 200 && !h_count; i++) nap_ms(10);
+    CHECK(h_count == 1 && h_sig == 14, "SIGALRM ran the handler once (one-shot)");
+    CHECK(sc1(37 /*alarm*/, 5) == 0, "alarm(5): nothing was pending");
+    CHECK(sc1(37, 0) == 5, "alarm(0) returns the 5 seconds that were left (rounded up)");
+
+    /* inotify: descriptors that never report */
+    long in_ = sc1(294 /*inotify_init1*/, 04000);
+    CHECK(in_ >= 3, "inotify_init1");
+    CHECK(sc3(254 /*add_watch*/, in_, "/tmp", 0x2 | 0x100) >= 1, "inotify_add_watch(/tmp) -> a watch number");
+    CHECK(sc3(254, in_, "/tmp/xrl_no_such_dir", 0x2) == -2, "...of a missing path -> -ENOENT");
+    CHECK(sc3(0, in_, buf, 64) == -11, "read: no events -> -EAGAIN");
+    pp = (struct pfd){ (int)in_, 1, 0 };
+    CHECK(sc3(7, &pp, 1, 20) == 0, "poll: never readable");
+    CHECK(sc2(255 /*rm_watch*/, in_, 1) == 0, "inotify_rm_watch");
+    sc1(3, in_);
+
+    /* copy_file_range / splice / sendfile with offsets */
+    long a = sc3(2, "/tmp/xrl_cfr_a", 0102, 0600);
+    sc3(1, a, "0123456789abcdef", 16);
+    long b = sc3(2, "/tmp/xrl_cfr_b", 0102, 0600);
+    long oi = 4, oo = 2;
+    CHECK(sc(326 /*copy_file_range*/, a, &oi, b, &oo, 6, 0) == 6 && oi == 10 && oo == 8, "copy_file_range with both offsets: moves them");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc4(17, b, buf, 8, 0) == 8 && !memcmp(buf + 2, "456789", 6), "...and the bytes landed at offset 2");
+    sc3(8, a, 0, 0);
+    sc3(8, b, 0, 0);
+    CHECK(sc(326, a, 0, b, 0, 4, 0) == 4 && sc3(8, a, 0, 1) == 4 && sc3(8, b, 0, 1) == 4, "copy_file_range without offsets moves the file positions");
+    long so = 0;
+    CHECK(sc(40 /*sendfile*/, b, a, &so, 16, 0, 0) == 16 && so == 16, "sendfile with an offset pointer");
+    int p1[2], p2[2]; sc2(293, p1, 0); sc2(293, p2, 0);
+    sc3(1, p1[1], "pipeline", 8);
+    CHECK(sc(275 /*splice*/, p1[0], 0, p2[1], 0, 8, 0) == 8 && sc3(0, p2[0], buf, 16) == 8 && !memcmp(buf, "pipeline", 8), "splice from a pipe to a pipe");
+    CHECK(sc(275, a, &oi, p2[1], &oo, 4, 0) == -29, "splice with an offset on a pipe end -> -ESPIPE");
+    sc1(3, a); sc1(3, b); sc1(87, "/tmp/xrl_cfr_a"); sc1(87, "/tmp/xrl_cfr_b");
+    sc1(3, p1[0]); sc1(3, p1[1]); sc1(3, p2[0]); sc1(3, p2[1]);
+}
+
+/* ---- EPOLLET: new data is an edge even when the fd was ready before and was drained in between --- */
+static void test_epoll_et(void)
+{
+    out("edge-triggered epoll:\n");
+    struct { u32 e; u64 d; } __attribute__((packed)) ev = { 1 | (1u << 31), 0x11 }, evo;
+    char b[16];
+    int sp[2], pf[2];
+    long ep = sc1(291, 0);
+    sc4(53, 1, 1, 0, sp);
+    sc4(233, ep, 1, sp[1], &ev);
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET: a socket with nothing to read is quiet");
+    sc3(1, sp[0], "a", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1 && evo.d == 0x11, "ET: data arrives -> one event");
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET: not reported again while nothing new came");
+    CHECK(sc3(0, sp[1], b, 16) == 1, "(drain it)");
+    sc3(1, sp[0], "b", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET: drained and refilled between two waits is a new edge (the lost-wake-up an X server hit)");
+    sc3(0, sp[1], b, 16);
+    sc3(1, sp[0], "c", 1);
+    sc3(1, sp[0], "d", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1 && sc4(232, ep, &evo, 1, 0) == 0, "ET: two more writes before the wait are still one report");
+    sc1(3, ep);
+    /* a pipe */
+    ep = sc1(291, 0);
+    sc2(293, pf, 04000);
+    sc4(233, ep, 1, pf[0], &ev);
+    sc3(1, pf[1], "x", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET pipe: data -> event");
+    sc3(0, pf[0], b, 16);
+    sc3(1, pf[1], "y", 1);
+    CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET pipe: drained and refilled -> event");
+    sc1(3, ep); sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf[1]);
+}
+
+/* ---- regressions found by review: control buffer sizes, WAITALL + bad iovec, shm sizes, pty mode switch, memfd seals --- */
+static void test_review_fixes(void)
+{
+    out("review regressions:\n");
+    char b[64];
+    int sp[2];
+    sc4(53, 1, 1, 0, sp);
+    int pf[2]; sc2(293, pf, 0);
+
+    /* a control buffer of exactly CMSG_LEN(4) = 20 bytes: nothing is written past it, controllen is 20 */
+    struct { u8 buf[32]; } ctl;
+    memset(&ctl, 0x7e, sizeof ctl);
+    struct cm_fd cm1 = { 20, 1, 1, pf[1], 0 };
+    struct iov_ iv1 = { (u64)"F", 1 };
+    struct msg_ m1 = { 0, 0, 0, (u64)&iv1, 1, (u64)&cm1, 24, 0, 0 };
+    sc3(S_sendmsg, sp[0], &m1, 0);
+    struct iov_ riv = { (u64)b, 4 };
+    struct msg_ rm = { 0, 0, 0, (u64)&riv, 1, (u64)ctl.buf, 20, 0, 0 };
+    long r = sc3(S_recvmsg, sp[1], &rm, 0);
+    CHECK(r == 1 && rm.ctllen == 20 && ctl.buf[20] == 0x7e && ctl.buf[23] == 0x7e && *(int *)(ctl.buf + 16) >= 3, "recvmsg with a 20-byte control buffer: fd delivered, controllen 20, no write past it");
+    sc1(3, *(int *)(ctl.buf + 16));
+
+    /* MSG_WAITALL with a bad second iovec returns EFAULT instead of spinning */
+    sc3(1, sp[0], "abc", 3);
+    struct iov_ biv[2] = { { (u64)b, 2 }, { 1, 8 } };
+    struct msg_ bm = { 0, 0, 0, (u64)biv, 2, 0, 0, 0, 0 };
+    CHECK(sc3(S_recvmsg, sp[1], &bm, 0x100 /*MSG_WAITALL*/) == -14, "MSG_WAITALL with an unwritable iovec -> -EFAULT (no spin)");
+    { struct msg_ dm = { 0, 0, 0, (u64)&riv, 1, 0, 0, 0, 0 }; sc3(S_recvmsg, sp[1], &dm, 0x40); }
+
+    /* shmget compares with the size asked for, not the page-rounded one */
+    long id = sc3(29, 0x58524c40, 100, 01000 | 0600);
+    CHECK(id >= 0 && sc3(29, 0x58524c40, 4000, 0) == -22 && sc3(29, 0x58524c40, 100, 0) == id, "shmget(existing, bigger than asked but within the page) -> -EINVAL");
+    sc3(31, id, 0, 0);
+
+    /* raw -> canonical: what was typed ahead becomes one complete line */
+    long m = sc3(2, "/dev/ptmx", 02 | 04000, 0);
+    int zero = 0; sc3(16, m, 0x40045431, &zero);
+    u32 n = 0; sc3(16, m, 0x80045430, &n);
+    char path[32] = "/dev/pts/"; { char d[12]; int k = 0, t = (int)n; do d[k++] = (char)('0' + t % 10); while ((t /= 10)); int o = 9; while (k) path[o++] = d[--k]; path[o] = 0; }
+    long s = sc3(2, path, 02 | 04000, 0);
+    struct ktio t0, t1;
+    sc3(16, s, 0x5401, &t0);
+    t1 = t0; t1.lflag &= ~(2u | 8u); t1.cc[6] = 1;
+    sc3(16, s, 0x5402, &t1);
+    sc3(1, m, "ab", 2);
+    sc3(16, s, 0x5402, &t0);   /* ICANON back on */
+    CHECK(sc3(0, s, b, 16) == 2 && b[0] == 'a' && b[1] == 'b', "raw -> canonical: typed-ahead bytes are readable at once as one line");
+    sc1(3, s); sc1(3, m);
+
+    /* memfd seals as the kernel's shmem: GROW stops a write past the end, WRITE/FUTURE_WRITE any write, truncation checks only SHRINK/GROW */
+    long f = sc3(319, "xrl-seals", 2, 0);
+    sc2(77, f, 4096);
+    sc3(72, f, 1033, 4 /*F_SEAL_GROW*/);
+    CHECK(sc4(18 /*pwrite64*/, f, "x", 1, 4095) == 1 && sc4(18, f, "xy", 2, 4095) == -1, "F_SEAL_GROW: a write inside the file works, one past its end -> -EPERM");
+    sc3(72, f, 1033, 8 /*F_SEAL_WRITE*/);
+    CHECK(sc2(77, f, 4096) == 0, "F_SEAL_WRITE does not forbid a same-size ftruncate");
+    sc1(3, f);
+    long g = sc3(319, "xrl-fw", 2, 0);
+    sc2(77, g, 4096);
+    sc3(72, g, 1033, 0x10 /*F_SEAL_FUTURE_WRITE*/);
+    CHECK(sc3(1, g, "x", 1) == -1, "F_SEAL_FUTURE_WRITE: write() -> -EPERM");
+    sc1(3, g);
+    sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]);
+}
+
+/* ---- second review round: MSG_DONTWAIT on send, shm file growth/offsets/identity, MAP_FIXED over a region, read-only slave --- */
+static void test_review_fixes2(void)
+{
+    out("review regressions (2):\n");
+    static u8 big[65536];
+    int sp[2];
+    sc4(53, 1, 1, 0, sp);
+    long total = 0, r = 0;
+    for (int i = 0; i < 64 && r >= 0; i++) { r = sc4(S_sendto, sp[0], big, sizeof big, 0x40 /*MSG_DONTWAIT*/); if (r > 0) total += r; }
+    CHECK(r == -11 && total > 65536, "send(MSG_DONTWAIT) on a full blocking stream socket -> -EAGAIN instead of blocking");
+    sc1(3, sp[0]); sc1(3, sp[1]);
+
+    long fd = sc3(319, "xrl-grow", 0, 0);
+    sc2(77, fd, 4096);
+    u8 *a = (u8 *)sc(9, 0, 4096, 3, 1, fd, 0);
+    a[10] = 0x42;
+    CHECK(sc(9, 0, 4096, 3, 1, fd, -4096) == -22, "mmap(MAP_SHARED, memfd, negative offset) -> -EINVAL");
+    sc2(77, fd, 1 << 20);   /* the file grows after it was mapped */
+    u8 *b = (u8 *)sc(9, 0, 1 << 20, 3, 1, fd, 0);
+    CHECK((long)b > 0 && b == a && b[10] == 0x42 && (b[900000] = 7) == 7, "growing the memfd and mapping it larger works (same pages, headroom)");
+    long fx = sc(9, a, 4096, 3, 0x11 /*MAP_SHARED|MAP_FIXED*/, fd, 0);
+    CHECK(fx == -22, "MAP_FIXED over a shared region -> -EINVAL (the pages are shared with others)");
+    sc2(11, a, 4096); sc2(11, b, 1 << 20); sc1(3, fd);
+
+    long s1 = sc3(2, "/dev/shm/xrl_ident", 0102, 0600);
+    sc2(77, s1, 4096);
+    u8 *p1 = (u8 *)sc(9, 0, 4096, 3, 1, s1, 0);
+    p1[0] = 0x11;
+    sc1(87, "/dev/shm/xrl_ident");
+    long s2 = sc3(2, "/dev/shm/xrl_ident", 0102, 0600);
+    sc2(77, s2, 4096);
+    u8 *p2 = (u8 *)sc(9, 0, 4096, 3, 1, s2, 0);
+    CHECK((long)p2 > 0 && p2 != p1 && p2[0] == 0, "a /dev/shm file unlinked and recreated is a new object, not the old pages");
+    sc2(11, p1, 4096); sc2(11, p2, 4096); sc1(3, s1); sc1(3, s2); sc1(87, "/dev/shm/xrl_ident");
+
+    long m = sc3(2, "/dev/ptmx", 02, 0);
+    int zero = 0; u32 n = 0; sc3(16, m, 0x40045431, &zero); sc3(16, m, 0x80045430, &n);
+    char path[32] = "/dev/pts/"; { char d[12]; int k = 0, t = (int)n; do d[k++] = (char)('0' + t % 10); while ((t /= 10)); int o = 9; while (k) path[o++] = d[--k]; path[o] = 0; }
+    long ro = sc3(2, path, 0 /*O_RDONLY*/, 0);
+    CHECK(ro >= 0 && (sc3(72, ro, 3 /*F_GETFL*/, 0) & 3) == 0, "open(/dev/pts/N, O_RDONLY) stays read-only (F_GETFL)");
+    sc1(3, ro); sc1(3, m);
 }
 
 void cstart(u64 *sp)
@@ -1695,6 +2455,13 @@ void cstart(u64 *sp)
     test_inject_call();
     test_threads();
     test_net();
+    test_unix();
+    test_epoll_et();
+    test_shm();
+    test_pty();
+    test_timers();
+    test_review_fixes();
+    test_review_fixes2();
     test_ntsync();
     test_signals();
     if (!no_swap) test_swap();

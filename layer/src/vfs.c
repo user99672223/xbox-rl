@@ -25,6 +25,8 @@
  */
 #include "xrl_internal.h"
 
+static void meta_load(const wchar_t *file_w);
+
 /* ============================================================== symlinks */
 typedef struct sym { char *path; char *target; } sym;
 static sym *g_sym;
@@ -223,13 +225,14 @@ slong xrl_vfs_init(const char *root)
             return -LX_ENOENT;
         }
     }
-    static const wchar_t *dirs[] = { L"\\tmp", L"\\dev", L"\\dev\\shm", L"\\var", L"\\var\\tmp", L"\\run", L"\\home", L"\\etc" };
+    static const wchar_t *dirs[] = { L"\\tmp", L"\\dev", L"\\dev\\shm", L"\\dev\\pts", L"\\var", L"\\var\\tmp", L"\\run", L"\\home", L"\\etc" };
     for (size_t i = 0; i < ARRAY_LEN(dirs); i++) {
         wchar_t p[1100]; wcscpy_s(p, 1100, G.vfs_root_w); wcscat_s(p, 1100, dirs[i]);
         CreateDirectoryW(p, NULL);
     }
     wcscpy_s(g_symfile_w, 1024, G.vfs_root_w); wcscat_s(g_symfile_w, 1024, L"\\.xrl-symlinks");
     sym_load(NULL);
+    { wchar_t mf[1024]; wcscpy_s(mf, 1024, G.vfs_root_w); wcscat_s(mf, 1024, L"\\.xrl-meta"); meta_load(mf); }
     /* conventional device symlinks */
     sym_add("/dev/stdin", "/proc/self/fd/0", 0);
     sym_add("/dev/stdout", "/proc/self/fd/1", 0);
@@ -364,6 +367,10 @@ static void ft_to_ts(FILETIME ft, lx_timespec *ts)
     ts->tv_nsec = (s64)(t % 10000000ull) * 100;
 }
 
+static int g_meta_on;
+static int memfd_sealed(const xfile *f, u32 seal);
+static void meta_apply(const char *gpath, lx_stat *st);
+
 static u64 hash_str(const char *s)
 {
     u64 h = 1469598103934665603ull;
@@ -409,7 +416,395 @@ static slong fstat_handle(HANDLE h, const char *gpath, lx_stat *st)
         st->st_dev = 1;
     }
     if (!st->st_ino) st->st_ino = 1;
+    if (g_meta_on && gpath) meta_apply(gpath, st);
     return 0;
+}
+
+/* ================================================================ vnodes
+ * Nodes that exist only in the layer: the socket files bind(2) makes (unix.c). They are not host files:
+ * stat says S_IFSOCK, getdents lists them as DT_SOCK, unlink/rename move them, open fails with ENXIO,
+ * and connect looks them up here. Each holds a reference on its object (ref/unref callbacks). */
+typedef struct vnode { char *path; u32 type, mode; void *obj; void (*ref)(void *); void (*unref)(void *); } vnode;
+static vnode *g_vn;
+static size_t g_nvn, g_capvn;
+static SRWLOCK g_vn_lock = SRWLOCK_INIT;
+
+static int vn_find(const char *path)   /* caller holds lock */
+{
+    for (size_t i = 0; i < g_nvn; i++) if (!strcmp(g_vn[i].path, path)) return (int)i;
+    return -1;
+}
+
+static int vn_exists(const char *path)
+{
+    AcquireSRWLockShared(&g_vn_lock);
+    int r = vn_find(path) >= 0;
+    ReleaseSRWLockShared(&g_vn_lock);
+    return r;
+}
+
+static int vn_stat(const char *path, lx_stat *st)
+{
+    int r = 0;
+    AcquireSRWLockShared(&g_vn_lock);
+    int i = vn_find(path);
+    if (i >= 0) { xrl_stat_synth(st, g_vn[i].type | g_vn[i].mode, hash_str(path), 0); r = 1; }
+    ReleaseSRWLockShared(&g_vn_lock);
+    return r;
+}
+
+static int vn_remove(const char *path)
+{
+    void (*unref)(void *) = NULL; void *obj = NULL;
+    int r = -LX_ENOENT;
+    AcquireSRWLockExclusive(&g_vn_lock);
+    int i = vn_find(path);
+    if (i >= 0) { unref = g_vn[i].unref; obj = g_vn[i].obj; free(g_vn[i].path); g_vn[i] = g_vn[--g_nvn]; r = 0; }
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    if (unref) unref(obj);
+    return r;
+}
+
+static int vn_rename(const char *from, const char *to)
+{
+    char *np = _strdup(to);
+    int r = -LX_ENOENT;
+    void (*unref)(void *) = NULL; void *obj = NULL;
+    AcquireSRWLockExclusive(&g_vn_lock);
+    int i = vn_find(from);
+    if (i >= 0) {
+        int j = vn_find(to);
+        if (j >= 0 && j != i) { unref = g_vn[j].unref; obj = g_vn[j].obj; free(g_vn[j].path); g_vn[j] = g_vn[--g_nvn]; if (i == (int)g_nvn) i = j; }
+        free(g_vn[i].path); g_vn[i].path = np; np = NULL; r = 0;
+    }
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    free(np);
+    if (unref) unref(obj);
+    return r;
+}
+
+slong xrl_vfs_vnode_add(int dirfd, const char *path, u32 type, u32 mode, void *obj, void (*ref)(void *), void (*unref)(void *))
+{
+    char gabs[PATHBUF], par[PATHBUF];
+    slong r = xrl_vfs_resolve(dirfd, path, 0, gabs, sizeof gabs);
+    if (r) return r;
+    lx_stat st;
+    r = xrl_vfs_stat(LX_AT_FDCWD, gabs, LX_AT_SYMLINK_NOFOLLOW, &st);
+    if (r == 0) return -LX_EEXIST;
+    if (r != -LX_ENOENT) return r;
+    strcpy_s(par, sizeof par, gabs);
+    char *sl = strrchr(par, '/');
+    if (!sl || !sl[1]) return -LX_EINVAL;
+    if (sl == par) par[1] = 0; else *sl = 0;
+    r = xrl_vfs_stat(LX_AT_FDCWD, par, 0, &st);
+    if (r) return r;
+    if ((st.st_mode & LX_S_IFMT) != LX_S_IFDIR) return -LX_ENOTDIR;
+    AcquireSRWLockExclusive(&g_vn_lock);
+    if (vn_find(gabs) >= 0) r = -LX_EEXIST;
+    else {
+        if (g_nvn == g_capvn) {
+            size_t nc = g_capvn ? g_capvn * 2 : 16;
+            vnode *n = (vnode *)realloc(g_vn, nc * sizeof(vnode));
+            if (!n) { ReleaseSRWLockExclusive(&g_vn_lock); return -LX_ENOMEM; }
+            g_vn = n; g_capvn = nc;
+        }
+        g_vn[g_nvn] = (vnode){ _strdup(gabs), type, mode, obj, ref, unref };
+        g_nvn++;
+        ref(obj);
+        r = 0;
+    }
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    return r;
+}
+
+slong xrl_vfs_vnode_lookup(int dirfd, const char *path, u32 *type, void **obj)
+{
+    char gabs[PATHBUF];
+    slong r = xrl_vfs_resolve(dirfd, path, 1, gabs, sizeof gabs);
+    if (r) return r;
+    *type = 0; *obj = NULL;
+    AcquireSRWLockShared(&g_vn_lock);
+    int i = vn_find(gabs);
+    if (i >= 0) { *type = g_vn[i].type; *obj = g_vn[i].obj; g_vn[i].ref(*obj); }
+    ReleaseSRWLockShared(&g_vn_lock);
+    if (i >= 0) return 0;
+    lx_stat st;
+    return xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);   /* an ordinary file: type 0 */
+}
+
+/* ================================================================= meta
+ * Unix modes and owners. NTFS has neither, so a table keeps them: <vfs_root>\.xrl-meta, one
+ * "guest_path<TAB>mode(octal)<TAB>uid<TAB>gid" per file whose mode/owner differs from the default (0644 file,
+ * 0755 directory or executable-looking name, owner = the "#default<TAB>uid<TAB>gid" line that
+ * tools/xrl-rootfs-unpack.py writes for a rootfs whose files belong to root). A change is appended to the file
+ * as a line of the same form ("-<TAB>path" forgets a path); a later line wins, so the file is a journal that
+ * load replays. The mechanism is ON only when .xrl-meta exists: the Wine prefix and every tree baked before
+ * this keep today's behaviour (everything 1000:1000, chmod/chown accepted and ignored). With it on: stat and
+ * fstat report the table, chmod/chown change it (with Linux's permission rules), new files and directories get
+ * (mode & ~umask) owned by the caller, unlink/rename/link carry the entries, open() and access() check the
+ * permission bits for a non-root caller. Directory permissions along the path are not checked. */
+typedef struct mentry { struct mentry *next; char *path; u32 mode, uid, gid; u64 h; } mentry;
+static mentry **g_mb;
+static size_t g_mbn, g_mcount;
+static int g_meta_on;
+static u32 g_mdef_uid, g_mdef_gid;
+static SRWLOCK g_meta_lock = SRWLOCK_INIT;
+static HANDLE g_meta_h = INVALID_HANDLE_VALUE;
+
+static mentry *meta_find(const char *path, u64 h)   /* lock held */
+{
+    if (!g_mbn) return NULL;
+    for (mentry *e = g_mb[h % g_mbn]; e; e = e->next) if (e->h == h && !strcmp(e->path, path)) return e;
+    return NULL;
+}
+
+static void meta_unlink_entry(mentry *e)   /* lock held */
+{
+    mentry **pp = &g_mb[e->h % g_mbn];
+    while (*pp != e) pp = &(*pp)->next;
+    *pp = e->next;
+    free(e->path); free(e);
+    g_mcount--;
+}
+
+static void meta_set_mem(const char *path, u32 mode, u32 uid, u32 gid)   /* lock held */
+{
+    u64 h = hash_str(path);
+    mentry *e = meta_find(path, h);
+    if (!e) {
+        if (g_mcount >= g_mbn * 2) {   /* grow */
+            size_t nb = g_mbn ? g_mbn * 4 : 1024;
+            mentry **n = (mentry **)calloc(nb, sizeof *n);
+            if (!n) return;
+            for (size_t i = 0; i < g_mbn; i++) for (mentry *x = g_mb[i], *nx; x; x = nx) { nx = x->next; x->next = n[x->h % nb]; n[x->h % nb] = x; }
+            free(g_mb); g_mb = n; g_mbn = nb;
+        }
+        e = (mentry *)calloc(1, sizeof *e);
+        if (!e) return;
+        e->path = _strdup(path); e->h = h;
+        e->next = g_mb[h % g_mbn]; g_mb[h % g_mbn] = e;
+        g_mcount++;
+    }
+    e->mode = mode; e->uid = uid; e->gid = gid;
+}
+
+static void meta_journal_set(const char *path, u32 mode, u32 uid, u32 gid)   /* lock held */
+{
+    if (g_meta_h == INVALID_HANDLE_VALUE || strpbrk(path, "\t\n")) return;
+    char line[PATHBUF + 64];
+    int n = snprintf(line, sizeof line, "%s\t%o\t%u\t%u\n", path, mode, uid, gid);
+    DWORD w;
+    if (n > 0 && n < (int)sizeof line) WriteFile(g_meta_h, line, (DWORD)n, &w, NULL);
+}
+
+static void meta_journal_del(const char *path)   /* lock held */
+{
+    if (g_meta_h == INVALID_HANDLE_VALUE || strpbrk(path, "\t\n")) return;
+    char line[PATHBUF + 8];
+    int n = snprintf(line, sizeof line, "-\t%s\n", path);
+    DWORD w;
+    if (n > 0 && n < (int)sizeof line) WriteFile(g_meta_h, line, (DWORD)n, &w, NULL);
+}
+
+static int meta_lookup(const char *path, u32 *mode, u32 *uid, u32 *gid)
+{
+    int r = 0;
+    AcquireSRWLockShared(&g_meta_lock);
+    mentry *e = meta_find(path, hash_str(path));
+    if (e) { *mode = e->mode; *uid = e->uid; *gid = e->gid; r = 1; }
+    ReleaseSRWLockShared(&g_meta_lock);
+    return r;
+}
+
+static u32 default_perm(const char *path, int isdir) { return isdir ? 0755 : is_exec_name(path) ? 0755 : 0644; }
+
+static void meta_put(const char *path, u32 mode, u32 uid, u32 gid, int isdir)
+{
+    AcquireSRWLockExclusive(&g_meta_lock);
+    if (mode == default_perm(path, isdir) && uid == g_mdef_uid && gid == g_mdef_gid) {   /* the default: no entry */
+        mentry *e = meta_find(path, hash_str(path));
+        if (e) { meta_unlink_entry(e); meta_journal_del(path); }
+    } else { meta_set_mem(path, mode, uid, gid); meta_journal_set(path, mode, uid, gid); }
+    ReleaseSRWLockExclusive(&g_meta_lock);
+}
+
+static void meta_drop(const char *path)
+{
+    if (!g_meta_on) return;
+    AcquireSRWLockExclusive(&g_meta_lock);
+    mentry *e = meta_find(path, hash_str(path));
+    if (e) { meta_unlink_entry(e); meta_journal_del(path); }
+    ReleaseSRWLockExclusive(&g_meta_lock);
+}
+
+/* rename: the entry of `from` and, for a directory, everything below it, now live under `to` */
+static void meta_move(const char *from, const char *to, int isdir)
+{
+    if (!g_meta_on || !strcmp(from, to)) return;
+    size_t fl = strlen(from);
+    AcquireSRWLockExclusive(&g_meta_lock);
+    mentry *e = meta_find(to, hash_str(to));
+    if (e) { meta_unlink_entry(e); meta_journal_del(to); }
+    size_t nmv = 0, cap = 0;
+    mentry **list = NULL;   /* collected first: moving changes the table under the walk */
+    for (size_t i = 0; i < g_mbn; i++)
+        for (mentry *x = g_mb[i]; x; x = x->next)
+            if (!strncmp(x->path, from, fl) && (x->path[fl] == 0 || (isdir && x->path[fl] == '/'))) {
+                if (nmv == cap) { cap = cap ? cap * 2 : 16; list = (mentry **)realloc(list, cap * sizeof *list); }
+                list[nmv++] = x;
+            }
+    for (size_t i = 0; i < nmv; i++) {
+        char np[PATHBUF], op[PATHBUF];
+        strcpy_s(op, sizeof op, list[i]->path);
+        snprintf(np, sizeof np, "%s%s", to, op + fl);
+        u32 m = list[i]->mode, u = list[i]->uid, g = list[i]->gid;
+        meta_unlink_entry(list[i]); meta_journal_del(op);
+        meta_set_mem(np, m, u, g); meta_journal_set(np, m, u, g);
+    }
+    free(list);
+    ReleaseSRWLockExclusive(&g_meta_lock);
+}
+
+/* hard link: the new name starts with the mode and owner of the old one */
+static void meta_copy(const char *from, const char *to)
+{
+    u32 m, u, g;
+    if (g_meta_on && meta_lookup(from, &m, &u, &g)) {
+        AcquireSRWLockExclusive(&g_meta_lock);
+        meta_set_mem(to, m, u, g); meta_journal_set(to, m, u, g);
+        ReleaseSRWLockExclusive(&g_meta_lock);
+    }
+}
+
+static void meta_apply(const char *gpath, lx_stat *st)
+{
+    u32 mode, uid, gid;
+    if (meta_lookup(gpath, &mode, &uid, &gid)) { st->st_mode = (st->st_mode & LX_S_IFMT) | (mode & 07777); st->st_uid = uid; st->st_gid = gid; }
+    else { st->st_uid = g_mdef_uid; st->st_gid = g_mdef_gid; }
+}
+
+/* a file or directory was just created: (requested mode & ~umask), owned by the caller */
+static void meta_created(const char *gabs, int isdir, u32 mode)
+{
+    if (!g_meta_on) return;
+    meta_put(gabs, mode & ~xrl_cur_umask() & 07777, xrl_cur_uid(), xrl_cur_gid(), isdir);
+}
+
+static void meta_load(const wchar_t *file_w)
+{
+    g_mdef_uid = xrl_cur_uid(); g_mdef_gid = xrl_cur_gid();
+    HANDLE h = CreateFile2(file_w, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;   /* no table: meta stays off */
+    g_meta_on = 1;
+    LARGE_INTEGER sz;
+    if (GetFileSizeEx(h, &sz) && sz.QuadPart < (64ll << 20)) {
+        char *buf = (char *)malloc((size_t)sz.QuadPart + 1);
+        DWORD got = 0;
+        if (buf && ReadFile(h, buf, (DWORD)sz.QuadPart, &got, NULL)) {
+            buf[got] = 0;
+            AcquireSRWLockExclusive(&g_meta_lock);
+            for (char *p = buf; *p;) {
+                char *nl = strchr(p, '\n');
+                if (nl) *nl = 0;
+                size_t ln = strlen(p);
+                if (ln && p[ln - 1] == '\r') p[ln - 1] = 0;
+                if (!strncmp(p, "#default\t", 9)) { unsigned u, g; if (sscanf(p + 9, "%u\t%u", &u, &g) == 2) { g_mdef_uid = u; g_mdef_gid = g; } }
+                else if (!strncmp(p, "-\t/", 3)) { mentry *e = meta_find(p + 2, hash_str(p + 2)); if (e) meta_unlink_entry(e); }
+                else if (p[0] == '/') {
+                    char *t1 = strchr(p, '\t');
+                    unsigned m, u, g;
+                    if (t1 && sscanf(t1 + 1, "%o\t%u\t%u", &m, &u, &g) == 3) { *t1 = 0; meta_set_mem(p, m, u, g); }
+                }
+                if (!nl) break;
+                p = nl + 1;
+            }
+            ReleaseSRWLockExclusive(&g_meta_lock);
+        }
+        free(buf);
+    }
+    CloseHandle(h);
+    g_meta_h = CreateFile2(file_w, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, OPEN_EXISTING, NULL);
+    LOGI("vfs: modes and owners on: %zu entries from .xrl-meta (default owner %u:%u)", g_mcount, g_mdef_uid, g_mdef_gid);
+}
+
+/* permission bits against the caller: want = 4 read, 2 write, 1 execute */
+static int perm_ok(const lx_stat *st, int want)
+{
+    u32 euid = xrl_cur_uid(), egid = xrl_cur_gid();
+    u32 m = st->st_mode & 0777;
+    if (euid == 0) return !(want & 1) || (st->st_mode & LX_S_IFMT) == LX_S_IFDIR || (m & 0111);
+    u32 cls = euid == st->st_uid ? (m >> 6) & 7 : egid == st->st_gid ? (m >> 3) & 7 : m & 7;
+    return (cls & (u32)want) == (u32)want;
+}
+
+static slong chmod_gabs(const char *gabs, u32 mode)
+{
+    lx_stat st;
+    slong r = xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);
+    if (r) return r;
+    if (!g_meta_on) return 0;
+    u32 euid = xrl_cur_uid();
+    if (euid != 0 && euid != st.st_uid) return -LX_EPERM;
+    meta_put(gabs, mode & 07777, st.st_uid, st.st_gid, (st.st_mode & LX_S_IFMT) == LX_S_IFDIR);
+    AcquireSRWLockExclusive(&g_vn_lock);
+    int i = vn_find(gabs);
+    if (i >= 0) g_vn[i].mode = mode & 07777;
+    ReleaseSRWLockExclusive(&g_vn_lock);
+    return 0;
+}
+
+static slong chown_gabs(const char *gabs, u32 uid, u32 gid)   /* (u32)-1 = leave */
+{
+    lx_stat st;
+    slong r = xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &st);
+    if (r) return r;
+    if (!g_meta_on) return 0;
+    u32 euid = xrl_cur_uid();
+    u32 nu = uid == (u32)-1 ? st.st_uid : uid, ng = gid == (u32)-1 ? st.st_gid : gid;
+    if (euid != 0 && (euid != st.st_uid || nu != st.st_uid || (ng != st.st_gid && ng != xrl_cur_gid()))) return -LX_EPERM;
+    u32 mode = st.st_mode & 07777;
+    if ((nu != st.st_uid || ng != st.st_gid) && (st.st_mode & LX_S_IFMT) != LX_S_IFDIR) mode &= ~06000u;   /* an ownership change drops setuid/setgid */
+    meta_put(gabs, mode, nu, ng, (st.st_mode & LX_S_IFMT) == LX_S_IFDIR);
+    return 0;
+}
+
+static int gpath_is_file(const xfile *f) { return f->gpath && f->gpath[0] == '/' && strncmp(f->gpath, "/memfd:", 7) != 0; }
+
+slong xrl_vfs_chmod(int dirfd, const char *path, u32 mode, int flags)
+{
+    char gabs[PATHBUF];
+    if (flags & ~(LX_AT_SYMLINK_NOFOLLOW | LX_AT_EMPTY_PATH)) return -LX_EINVAL;
+    if ((flags & LX_AT_EMPTY_PATH) && !path[0]) return xrl_vfs_fchmod(dirfd, mode);
+    slong r = xrl_vfs_resolve(dirfd, path, 1, gabs, sizeof gabs);
+    if (r) return r;
+    return chmod_gabs(gabs, mode);
+}
+
+slong xrl_vfs_fchmod(int fd, u32 mode)
+{
+    xfile *f = xrl_fd_get(fd);
+    if (!f) return -LX_EBADF;
+    slong r = gpath_is_file(f) ? chmod_gabs(f->gpath, mode) : 0;
+    xfile_unref(f);
+    return r;
+}
+
+slong xrl_vfs_chown(int dirfd, const char *path, u32 uid, u32 gid, int flags)
+{
+    char gabs[PATHBUF];
+    if ((flags & LX_AT_EMPTY_PATH) && !path[0]) return xrl_vfs_fchown(dirfd, uid, gid);
+    slong r = xrl_vfs_resolve(dirfd, path, !(flags & LX_AT_SYMLINK_NOFOLLOW), gabs, sizeof gabs);
+    if (r) return r;
+    return chown_gabs(gabs, uid, gid);
+}
+
+slong xrl_vfs_fchown(int fd, u32 uid, u32 gid)
+{
+    xfile *f = xrl_fd_get(fd);
+    if (!f) return -LX_EBADF;
+    slong r = gpath_is_file(f) ? chown_gabs(f->gpath, uid, gid) : 0;
+    xfile_unref(f);
+    return r;
 }
 
 /* ============================================================ disk files */
@@ -460,6 +855,12 @@ static slong dfile_write(xfile *f, const void *buf, u64 n, s64 off)
 {
     if (f->h == INVALID_HANDLE_VALUE || f->mode != 0) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EBADF;
+    if (memfd_sealed(f, 8 /*F_SEAL_WRITE*/ | 0x10 /*F_SEAL_FUTURE_WRITE*/)) return -LX_EPERM;
+    if (memfd_sealed(f, 4 /*F_SEAL_GROW*/)) {   /* a write may not extend the file */
+        LARGE_INTEGER cur;
+        s64 at = off >= 0 ? off : (f->flags & LX_O_APPEND) ? (GetFileSizeEx(f->h, &cur) ? cur.QuadPart : 0) : f->pos;
+        if (GetFileSizeEx(f->h, &cur) && at + (s64)n > cur.QuadPart) return -LX_EPERM;
+    }
     slong pr = xrl_mem_populate((u64)(uintptr_t)buf, n);   /* the kernel reads buf: no lazy pages */
     if (pr) return pr;
     int use_pos = off < 0;
@@ -522,6 +923,10 @@ static slong dfile_ftruncate(xfile *f, s64 len)
 {
     if (f->mode == 1) return -LX_EISDIR;
     if ((f->flags & LX_O_ACCMODE) == LX_O_RDONLY) return -LX_EINVAL;
+    if (f->gpath && !strncmp(f->gpath, "/memfd:", 7)) {   /* a sealed memfd keeps its size (and its contents) */
+        LARGE_INTEGER cur;
+        if (GetFileSizeEx(f->h, &cur) && ((len < cur.QuadPart && memfd_sealed(f, 2 /*F_SEAL_SHRINK*/)) || (len > cur.QuadPart && memfd_sealed(f, 4 /*F_SEAL_GROW*/)))) return -LX_EPERM;   /* only SHRINK and GROW count for a truncation */
+    }
     FILE_END_OF_FILE_INFO e; e.EndOfFile.QuadPart = len;
     if (!SetFileInformationByHandle(f->h, FileEndOfFileInfo, &e, sizeof e)) return xrl_lasterr();
     return 0;
@@ -642,7 +1047,26 @@ static slong dir_getdents(xfile *f, void *ubuf, u64 cap)
             ReleaseSRWLockShared(&g_sym_lock);
             (void)emitted;
             if (stop) break;
-            d->phase = 4;
+            d->phase = 4; d->vidx = 0;
+        }
+        if (d->phase == 4) {
+            /* ... and the layer's socket nodes */
+            int stop = 0;
+            AcquireSRWLockShared(&g_vn_lock);
+            for (; d->vidx < g_nvn; d->vidx++) {
+                const char *sp = g_vn[d->vidx].path;
+                const char *sl = strrchr(sp, '/');
+                if (!sl) continue;
+                size_t plen = (size_t)(sl - sp);
+                const char *me = f->gpath;
+                size_t ml = strcmp(me, "/") ? strlen(me) : 0;
+                if (plen != ml || strncmp(sp, me, ml)) continue;
+                if (!put_dirent(kbuf, cap, &used, hash_str(sp), d->cookie + 1, LX_DT_SOCK, sl + 1)) { stop = 1; break; }
+                d->cookie++;
+            }
+            ReleaseSRWLockShared(&g_vn_lock);
+            if (stop) break;
+            d->phase = 5;
         }
         break;
     }
@@ -655,6 +1079,8 @@ static slong dir_getdents(xfile *f, void *ubuf, u64 cap)
 }
 
 static const xfile_ops g_file_ops = { "file", dfile_read, dfile_write, dfile_lseek, dfile_fstat, NULL, dfile_ioctl, dfile_ftruncate, dfile_fsync, dfile_poll, NULL, dfile_read };
+static void memfd_close(xfile *f);
+static const xfile_ops g_memfd_ops = { "memfd", dfile_read, dfile_write, dfile_lseek, dfile_fstat, NULL, dfile_ioctl, dfile_ftruncate, dfile_fsync, dfile_poll, memfd_close, dfile_read };
 static const xfile_ops g_dir_ops = { "dir", NULL, NULL, dfile_lseek, dfile_fstat, dir_getdents, dfile_ioctl, NULL, NULL, dfile_poll, dir_close, NULL };
 
 static xfile *wrap_handle(HANDLE h, int flags, const char *gpath, int isdir, const wchar_t *hostpath)
@@ -684,7 +1110,9 @@ static slong open_special(const char *gabs, int flags, int *handled)
     if (!strcmp(gabs, "/dev/null")) f = xrl_dev_null(flags);
     else if (!strcmp(gabs, "/dev/zero")) f = xrl_dev_zero(flags);
     else if (!strcmp(gabs, "/dev/urandom") || !strcmp(gabs, "/dev/random")) f = xrl_dev_urandom(flags);
-    else if (!strcmp(gabs, "/dev/tty") || !strcmp(gabs, "/dev/console") || !strcmp(gabs, "/dev/ptmx")) f = xrl_dev_tty(flags);
+    else if (!strcmp(gabs, "/dev/tty") || !strcmp(gabs, "/dev/console")) f = xrl_dev_tty(flags);
+    else if (!strcmp(gabs, "/dev/ptmx")) { int err = 0; f = xrl_pty_open_master(flags, &err); if (!f) return -err; }
+    else if (!strncmp(gabs, "/dev/pts/", 9)) { int err = 0; char *e; long n = strtol(gabs + 9, &e, 10); if (e == gabs + 9 || *e) { *handled = 0; return 0; } f = xrl_pty_open_slave((int)n, flags, &err); if (!f) return -err; }
     else if (!strcmp(gabs, "/dev/full")) f = xrl_dev_null(flags);
     else if (!strcmp(gabs, "/dev/ntsync")) f = xrl_dev_ntsync(flags);
     if (f) {
@@ -709,7 +1137,6 @@ static slong memfd_reopen(const char *gabs, int flags);
 
 static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
 {
-    (void)mode;
     char gabs[PATHBUF];
     int follow = !(flags & LX_O_NOFOLLOW);
     slong r = xrl_vfs_resolve(dirfd, path, follow, gabs, sizeof gabs);
@@ -724,6 +1151,7 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
         if (n > 0 && follow) { tgt[n] = 0; r = xrl_vfs_resolve(LX_AT_FDCWD, tgt, 1, gabs, sizeof gabs); if (r) return r; }
     }
 
+    if (vn_exists(gabs)) return -LX_ENXIO;   /* a socket file cannot be opened */
     int handled;
     r = open_special(gabs, flags, &handled);
     if (handled) return r;
@@ -742,6 +1170,15 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
     } else if (flags & LX_O_TRUNC) disp = TRUNCATE_EXISTING;
     else disp = OPEN_EXISTING;
 
+    if (g_meta_on) {   /* permission bits of an existing file (a root caller passes) */
+        lx_stat ps;
+        if (xrl_vfs_stat(LX_AT_FDCWD, gabs, 0, &ps) == 0) {
+            int want = acc == LX_O_RDONLY ? 4 : acc == LX_O_WRONLY ? 2 : 6;
+            if (flags & LX_O_TRUNC) want |= 2;
+            if (!perm_ok(&ps, want)) return -LX_EACCES;
+        }
+    }
+
     /* is it a directory? */
     DWORD attr = GetFileAttributesW(hp);
     int isdir = attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY);
@@ -757,15 +1194,18 @@ static slong vfs_open_impl(int dirfd, const char *path, int flags, int mode)
     }
     if (flags & LX_O_DIRECTORY) return (attr == INVALID_FILE_ATTRIBUTES) ? -LX_ENOENT : -LX_ENOTDIR;
 
+    SetLastError(0);
     HANDLE h = hopen(hp, access, disp, FILE_ATTRIBUTE_NORMAL);
+    DWORD open_err = GetLastError();
     if (h == INVALID_HANDLE_VALUE) {
-        DWORD e = GetLastError();
+        DWORD e = open_err;
         if (e == ERROR_ACCESS_DENIED && (flags & LX_O_CREAT)) {
             DWORD a2 = GetFileAttributesW(hp);
             if (a2 != INVALID_FILE_ATTRIBUTES && (a2 & FILE_ATTRIBUTE_DIRECTORY)) return -LX_EISDIR;
         }
         return -(slong)xrl_win_to_errno(e);
     }
+    if (disp == CREATE_NEW || ((disp == OPEN_ALWAYS || disp == CREATE_ALWAYS) && open_err != ERROR_ALREADY_EXISTS)) meta_created(gabs, 0, (u32)mode);
     xfile *f = wrap_handle(h, flags & ~(LX_O_CREAT | LX_O_EXCL | LX_O_TRUNC), gabs, 0, hp);
     if (!f) { CloseHandle(h); return -LX_ENOMEM; }
     int fd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
@@ -790,9 +1230,73 @@ static slong memfd_host_path(u64 key, char *g, size_t cap, wchar_t *hp, size_t h
     return xrl_vfs_host_path(g, hp, hpcap);
 }
 
+/* Per memfd: how many open file descriptions refer to it (the pages behind a shared mapping, shm.c, live until the
+ * last one is closed and the last mapping is gone) and its seals. */
+typedef struct mfd_state { u32 n; int opens; u32 seals; int sealable; } mfd_state;
+static mfd_state *g_mfd;
+static size_t g_nmfd, g_capmfd;
+static SRWLOCK g_mfd_lock = SRWLOCK_INIT;
+
+static mfd_state *mfd_find(u32 n)   /* lock held */
+{
+    for (size_t i = 0; i < g_nmfd; i++) if (g_mfd[i].n == n) return &g_mfd[i];
+    return NULL;
+}
+
+static void mfd_open(u32 n, int sealable)
+{
+    AcquireSRWLockExclusive(&g_mfd_lock);
+    mfd_state *m = mfd_find(n);
+    if (!m) {
+        if (g_nmfd == g_capmfd) { g_capmfd = g_capmfd ? g_capmfd * 2 : 16; g_mfd = (mfd_state *)realloc(g_mfd, g_capmfd * sizeof *g_mfd); }
+        m = &g_mfd[g_nmfd++];
+        *m = (mfd_state){ n, 0, 0, sealable };
+    }
+    m->opens++;
+    ReleaseSRWLockExclusive(&g_mfd_lock);
+}
+
+static void memfd_close(xfile *f)
+{
+    u32 n = (u32)(uintptr_t)f->priv;
+    int gone = 0;
+    AcquireSRWLockExclusive(&g_mfd_lock);
+    mfd_state *m = mfd_find(n);
+    if (m && --m->opens <= 0) { *m = g_mfd[--g_nmfd]; gone = 1; }
+    ReleaseSRWLockExclusive(&g_mfd_lock);
+    if (gone) xrl_shm_memfd_gone(n);
+}
+
+static int memfd_sealed(const xfile *f, u32 seal)
+{
+    if (f->ops != &g_memfd_ops) return 0;
+    AcquireSRWLockShared(&g_mfd_lock);
+    mfd_state *m = mfd_find((u32)(uintptr_t)f->priv);
+    int r = m && (m->seals & seal);
+    ReleaseSRWLockShared(&g_mfd_lock);
+    return r;
+}
+
+/* fcntl(F_ADD_SEALS = op 1, F_GET_SEALS = op 0) */
+slong xrl_memfd_seals(xfile *f, int op, u32 seals)
+{
+    if (f->ops != &g_memfd_ops) return -LX_EINVAL;
+    slong r = 0;
+    AcquireSRWLockExclusive(&g_mfd_lock);
+    mfd_state *m = mfd_find((u32)(uintptr_t)f->priv);
+    if (!m) r = -LX_EINVAL;
+    else if (op == 0) r = m->sealable ? (slong)m->seals : 0x1 /*F_SEAL_SEAL: no sealing allowed*/;
+    else if (!m->sealable || (m->seals & 1)) r = -LX_EPERM;
+    else if (seals & ~0x1fu) r = -LX_EINVAL;
+    else m->seals |= seals;
+    ReleaseSRWLockExclusive(&g_mfd_lock);
+    return r;
+}
+
 slong xrl_memfd_create(const char *name, unsigned flags)
 {
     static volatile LONG ctr;
+    if (flags & ~(1u | 2u | 4u | (0x3fu << 26))) return -LX_EINVAL;   /* MFD_CLOEXEC, MFD_ALLOW_SEALING, MFD_HUGETLB (+ size bits, ignored) */
     unsigned n = (unsigned)InterlockedIncrement(&ctr);
     char g[128], disp[300];
     wchar_t hp[PATHBUF];
@@ -803,7 +1307,9 @@ slong xrl_memfd_create(const char *name, unsigned flags)
     if (h == INVALID_HANDLE_VALUE) return xrl_lasterr();
     snprintf(disp, sizeof disp, "/memfd:%.249s (deleted)", name ? name : "");
     xfile *f = wrap_handle(h, LX_O_RDWR, disp, 0, hp);
-    f->priv = (void *)(uintptr_t)key;
+    f->ops = &g_memfd_ops;
+    f->priv = (void *)(uintptr_t)key;   /* the seal state is keyed by n, the low 32 bits (mfd_find) */
+    mfd_open(n, (flags & 2) != 0);
     int fd = xrl_fd_install(f, (flags & 1) != 0, 0);
     xfile_unref(f);
     return fd;
@@ -850,7 +1356,7 @@ static slong memfd_reopen(const char *gabs, int flags)
     if (fd < 0) return -1;
     xfile *of = xrl_fd_get(fd);
     if (!of) { LOGW("memfd_reopen(%s): fd %d not found", gabs, fd); return -1; }
-    if (of->ops != &g_file_ops || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) {
+    if ((of->ops != &g_memfd_ops && of->ops != &g_file_ops) || !of->gpath || strncmp(of->gpath, "/memfd:", 7)) {
         LOGW("memfd_reopen(%s): fd %d not a memfd (gpath=%s)", gabs, fd, of->gpath ? of->gpath : "(null)");
         xfile_unref(of); return -1;
     }
@@ -862,7 +1368,9 @@ static slong memfd_reopen(const char *gabs, int flags)
     HANDLE h = hopen(hp, acc == LX_O_RDONLY ? GENERIC_READ : acc == LX_O_WRONLY ? GENERIC_WRITE : (GENERIC_READ | GENERIC_WRITE), OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL);
     if (h == INVALID_HANDLE_VALUE) { xfile_unref(of); return xrl_lasterr(); }
     xfile *f = wrap_handle(h, flags & ~(LX_O_CREAT | LX_O_EXCL | LX_O_TRUNC), of->gpath, 0, hp);
+    f->ops = &g_memfd_ops;
     f->priv = of->priv;
+    mfd_open((u32)(uintptr_t)of->priv, 0);
     xfile_unref(of);
     int nfd = xrl_fd_install(f, (flags & LX_O_CLOEXEC) != 0, 0);
     xfile_unref(f);
@@ -894,7 +1402,10 @@ slong xrl_vfs_stat(int dirfd, const char *path, int atflags, lx_stat *st)
             return 0;
         }
     }
+    if (vn_stat(gabs, st)) return 0;
     if (xrl_proc_stat(gabs, st)) return st->st_nlink ? 0 : -LX_ENOENT;
+    if (xrl_pty_stat(gabs, st)) return st->st_nlink ? 0 : -LX_ENOENT;
+    if (!strcmp(gabs, "/dev/ptmx")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 13, 0); st->st_rdev = (5u << 8) | 2; return 0; }
     if (!strcmp(gabs, "/dev/null")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 3, 0); st->st_rdev = (1u << 8) | 3; return 0; }
     if (!strcmp(gabs, "/dev/zero")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 5, 0); st->st_rdev = (1u << 8) | 5; return 0; }
     if (!strcmp(gabs, "/dev/urandom") || !strcmp(gabs, "/dev/random")) { xrl_stat_synth(st, LX_S_IFCHR | 0666, 9, 0); st->st_rdev = (1u << 8) | 9; return 0; }
@@ -915,6 +1426,10 @@ slong xrl_vfs_access(int dirfd, const char *path, int mode)
     lx_stat st;
     slong r = xrl_vfs_stat(dirfd, path, 0, &st);
     if (r) return r;
+    if (g_meta_on) {
+        int want = (mode & 4) | (mode & 2) | (mode & 1);
+        return want && !perm_ok(&st, want) ? -LX_EACCES : 0;
+    }
     if ((mode & 2) && !(st.st_mode & 0222)) return -LX_EACCES;
     return 0;
 }
@@ -942,13 +1457,13 @@ slong xrl_vfs_readlink(int dirfd, const char *path, char *buf, u64 cap)
 /* ============================================================== mutation */
 slong xrl_vfs_mkdir(int dirfd, const char *path, int mode)
 {
-    (void)mode;
     char gabs[PATHBUF]; wchar_t hp[PATHBUF];
     slong r = xrl_vfs_resolve(dirfd, path, 0, gabs, sizeof gabs);
     if (r) return r;
     r = xrl_vfs_host_path(gabs, hp, ARRAY_LEN(hp));
     if (r) return r;
     if (!CreateDirectoryW(hp, NULL)) return xrl_lasterr();
+    meta_created(gabs, 1, (u32)mode);
     return 0;
 }
 
@@ -958,17 +1473,22 @@ slong xrl_vfs_unlink(int dirfd, const char *path, int flags)
     slong r = xrl_vfs_resolve(dirfd, path, 0, gabs, sizeof gabs);
     if (r) return r;
     if (!(flags & LX_AT_REMOVEDIR) && sym_remove(gabs) == 0) return 0;
+    if (vn_exists(gabs)) return (flags & LX_AT_REMOVEDIR) ? -LX_ENOTDIR : vn_remove(gabs);
     r = xrl_vfs_host_path(gabs, hp, ARRAY_LEN(hp));
     if (r) return r;
     DWORD a = GetFileAttributesW(hp);
     if (a == INVALID_FILE_ATTRIBUTES) return xrl_lasterr();
     if (a & FILE_ATTRIBUTE_DIRECTORY) {
         if (!(flags & LX_AT_REMOVEDIR)) return -LX_EISDIR;
-        return RemoveDirectoryW(hp) ? 0 : xrl_lasterr();
+        if (!RemoveDirectoryW(hp)) return xrl_lasterr();
+        meta_drop(gabs);
+        return 0;
     }
     if (flags & LX_AT_REMOVEDIR) return -LX_ENOTDIR;
     if (a & FILE_ATTRIBUTE_READONLY) SetFileAttributesW(hp, a & ~FILE_ATTRIBUTE_READONLY);
-    return DeleteFileW(hp) ? 0 : xrl_lasterr();
+    if (!DeleteFileW(hp)) return xrl_lasterr();
+    meta_drop(gabs);
+    return 0;
 }
 
 slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *newp, int flags)
@@ -982,6 +1502,7 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
     if (t) { /* renaming a symlink entry */
         sym_remove(go); sym_add(gn, t, 1); free(t); return 0;
     }
+    if (vn_exists(go)) return (flags & 1) && vn_exists(gn) ? -LX_EEXIST : vn_rename(go, gn);
     if ((r = xrl_vfs_host_path(go, ho, ARRAY_LEN(ho))) || (r = xrl_vfs_host_path(gn, hn, ARRAY_LEN(hn)))) return r;
     DWORD an = GetFileAttributesW(hn);
     if ((flags & 1 /*RENAME_NOREPLACE*/) && an != INVALID_FILE_ATTRIBUTES) return -LX_EEXIST;
@@ -992,6 +1513,7 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
         if (!RemoveDirectoryW(hn)) return xrl_lasterr();   /* ENOTEMPTY if not empty */
     } else if (an != INVALID_FILE_ATTRIBUTES && (ao & FILE_ATTRIBUTE_DIRECTORY)) return -LX_ENOTDIR;
     if (!MoveFileExW(ho, hn, MOVEFILE_REPLACE_EXISTING)) return xrl_lasterr();
+    meta_move(go, gn, (ao & FILE_ATTRIBUTE_DIRECTORY) != 0);
     return 0;
 }
 
@@ -1013,7 +1535,9 @@ slong xrl_vfs_link(int olddirfd, const char *oldp, int newdirfd, const char *new
     r = xrl_vfs_resolve(newdirfd, newp, 0, gn, sizeof gn);
     if (r) return r;
     if ((r = xrl_vfs_host_path(go, ho, ARRAY_LEN(ho))) || (r = xrl_vfs_host_path(gn, hn, ARRAY_LEN(hn)))) return r;
-    return CreateHardLinkW(hn, ho, NULL) ? 0 : xrl_lasterr();
+    if (!CreateHardLinkW(hn, ho, NULL)) return xrl_lasterr();
+    meta_copy(go, gn);
+    return 0;
 }
 
 slong xrl_vfs_chdir(const char *path)

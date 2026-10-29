@@ -211,9 +211,12 @@ static void pipe_close(xfile *f)
     if (e->tx) pb_unref(e->tx);
     free(e);
 }
-static const xfile_ops g_pipe_ops = { "pipe", pipe_read, pipe_write, pipe_lseek, pipe_fstat, NULL, pipe_ioctl, NULL, NULL, pipe_poll, pipe_close, NULL };
-static const xfile_ops g_sock_ops = { "socket", pipe_read, pipe_write, pipe_lseek, pipe_fstat, NULL, pipe_ioctl, NULL, NULL, pipe_poll, pipe_close, NULL };
-
+static u32 pipe_edge(xfile *f)   /* the bytes ever written to what this end reads, and writers going away */
+{
+    pipeend *e = (pipeend *)f->priv;
+    return e->rx ? (u32)e->rx->wpos + (u32)e->rx->writers * 0x10000001u : 0;
+}
+static const xfile_ops g_pipe_ops = { "pipe", pipe_read, pipe_write, pipe_lseek, pipe_fstat, NULL, pipe_ioctl, NULL, NULL, pipe_poll, pipe_close, NULL, pipe_edge };
 static xfile *mk_end(const xfile_ops *ops, pipebuf *rx, pipebuf *tx, int flags, int is_sock, int type)
 {
     pipeend *e = (pipeend *)calloc(1, sizeof *e);
@@ -239,147 +242,9 @@ slong xrl_pipe_create(int flags, int fds[2])
     return 0;
 }
 
-slong xrl_socketpair_create(int type, int flags, int fds[2])
-{
-    pipebuf *a = pb_new(), *b = pb_new();
-    int fl = LX_O_RDWR | (flags & LX_O_NONBLOCK);
-    xfile *x = mk_end(&g_sock_ops, a, b, fl, 1, type);
-    xfile *y = mk_end(&g_sock_ops, b, a, fl, 1, type);
-    pb_unref(a); pb_unref(b);
-    int cl = (flags & LX_O_CLOEXEC) != 0;
-    fds[0] = xrl_fd_install(x, cl, 0);
-    fds[1] = fds[0] >= 0 ? xrl_fd_install(y, cl, 0) : fds[0];
-    xfile_unref(x); xfile_unref(y);
-    if (fds[0] < 0 || fds[1] < 0) { if (fds[0] >= 0) xrl_fd_close(fds[0]); return fds[0] < 0 ? fds[0] : fds[1]; }
-    return 0;
-}
-
-slong xrl_shutdown(int fd, int how)
-{
-    xfile *f = xrl_fd_get(fd);
-    if (!f) return -LX_EBADF;
-    slong r = 0;
-    if (f->ops != &g_sock_ops) r = -LX_ENOTSOCK;
-    else {
-        pipeend *e = (pipeend *)f->priv;
-        if ((how == LX_SHUT_WR || how == LX_SHUT_RDWR) && e->tx) { AcquireSRWLockExclusive(&e->tx->lock); if (e->tx->writers > 0) e->tx->writers--; ReleaseSRWLockExclusive(&e->tx->lock); }
-        if ((how == LX_SHUT_RD || how == LX_SHUT_RDWR) && e->rx) { AcquireSRWLockExclusive(&e->rx->lock); if (e->rx->readers > 0) e->rx->readers--; ReleaseSRWLockExclusive(&e->rx->lock); }
-        xrl_io_notify();
-    }
-    xfile_unref(f);
-    return r;
-}
-
-/* sendmsg/recvmsg with iovec + SCM_RIGHTS */
-slong xrl_sendmsg(int fd, u64 umsg, int flags)
-{
-    (void)flags;
-    xfile *f = xrl_fd_get(fd);
-    if (!f) return -LX_EBADF;
-    if (f->ops != &g_sock_ops) { xfile_unref(f); return -LX_ENOTSOCK; }
-    pipeend *e = (pipeend *)f->priv;
-    lx_msghdr m;
-    if (xrl_cfu(&m, umsg, sizeof m)) { xfile_unref(f); return -LX_EFAULT; }
-    fdmsg *att = NULL;
-    if (m.msg_control && m.msg_controllen >= sizeof(lx_cmsghdr)) {
-        u8 cbuf[512];
-        u64 cl = m.msg_controllen < sizeof cbuf ? m.msg_controllen : sizeof cbuf;
-        if (xrl_cfu(cbuf, m.msg_control, (size_t)cl)) { xfile_unref(f); return -LX_EFAULT; }
-        u64 off = 0;
-        while (off + sizeof(lx_cmsghdr) <= cl) {
-            lx_cmsghdr *h = (lx_cmsghdr *)(cbuf + off);
-            if (h->cmsg_len < sizeof(lx_cmsghdr) || off + h->cmsg_len > cl) break;
-            if (h->cmsg_level == LX_SOL_SOCKET && h->cmsg_type == LX_SCM_RIGHTS) {
-                int nf = (int)((h->cmsg_len - sizeof(lx_cmsghdr)) / 4);
-                if (nf > 8) nf = 8;
-                if (!att) { att = (fdmsg *)calloc(1, sizeof *att); }
-                for (int i = 0; i < nf && att->n < 8; i++) {
-                    int sfd; memcpy(&sfd, cbuf + off + sizeof(lx_cmsghdr) + 4 * i, 4);
-                    xfile *sf = xrl_fd_get(sfd);
-                    if (!sf) { for (int k = 0; k < att->n; k++) xfile_unref(att->files[k]); free(att); xfile_unref(f); return -LX_EBADF; }
-                    att->files[att->n++] = sf;
-                }
-            }
-            off += (h->cmsg_len + 7) & ~7ull;
-        }
-    }
-    lx_iovec iov[64];
-    u64 niov = m.msg_iovlen > 64 ? 64 : m.msg_iovlen;
-    if (xrl_cfu(iov, m.msg_iov, (size_t)(niov * sizeof(lx_iovec)))) { xfile_unref(f); return -LX_EFAULT; }
-    slong total = 0;
-    int first = 1;
-    for (u64 i = 0; i < niov; i++) {
-        if (!iov[i].iov_len) continue;
-        slong r = pb_write(f, e->tx, (const void *)iov[i].iov_base, iov[i].iov_len, first ? att : NULL);
-        if (first) att = NULL;
-        first = 0;
-        if (r < 0) { total = total ? total : r; break; }
-        total += r;
-        if ((u64)r < iov[i].iov_len) break;
-    }
-    if (att) {   /* no data iovecs: attach to an empty send */
-        slong r = pb_write(f, e->tx, NULL, 0, att);
-        if (r < 0) total = r;
-    }
-    xfile_unref(f);
-    return total;
-}
-
-slong xrl_recvmsg(int fd, u64 umsg, int flags)
-{
-    xfile *f = xrl_fd_get(fd);
-    if (!f) return -LX_EBADF;
-    if (f->ops != &g_sock_ops) { xfile_unref(f); return -LX_ENOTSOCK; }
-    pipeend *e = (pipeend *)f->priv;
-    lx_msghdr m;
-    if (xrl_cfu(&m, umsg, sizeof m)) { xfile_unref(f); return -LX_EFAULT; }
-    lx_iovec iov[64];
-    u64 niov = m.msg_iovlen > 64 ? 64 : m.msg_iovlen;
-    if (xrl_cfu(iov, m.msg_iov, (size_t)(niov * sizeof(lx_iovec)))) { xfile_unref(f); return -LX_EFAULT; }
-    int saved = f->flags;
-    int want_msgs = 1;
-    if (flags & LX_MSG_DONTWAIT) f->flags |= LX_O_NONBLOCK;
-    slong total = 0;
-    fdmsg *got = NULL;
-    for (u64 i = 0; i < niov; i++) {
-        if (!iov[i].iov_len) continue;
-        if (total > 0) f->flags |= LX_O_NONBLOCK;     /* only block for the first byte */
-        slong r = pb_read(f, e->rx, (void *)iov[i].iov_base, iov[i].iov_len, &want_msgs, &got);
-        if (r < 0) { if (!total) total = (r == -LX_EAGAIN && total) ? total : r; break; }
-        total += r;
-        if (r == 0 || (u64)r < iov[i].iov_len || got) break;
-    }
-    f->flags = saved;
-    u32 outflags = 0;
-    u64 cused = 0;
-    if (got) {
-        u8 cbuf[512] = {0};
-        lx_cmsghdr *h = (lx_cmsghdr *)cbuf;
-        int installed[8], ni = 0;
-        for (int i = 0; i < got->n; i++) {
-            int nfd = xrl_fd_install(got->files[i], (flags & 0x40000000 /*MSG_CMSG_CLOEXEC*/) != 0, 0);
-            xfile_unref(got->files[i]);
-            if (nfd >= 0) installed[ni++] = nfd;
-        }
-        u64 need = sizeof(lx_cmsghdr) + 4ull * ni;
-        if (m.msg_control && m.msg_controllen >= need && ni) {
-            h->cmsg_len = need; h->cmsg_level = LX_SOL_SOCKET; h->cmsg_type = LX_SCM_RIGHTS;
-            memcpy(cbuf + sizeof(lx_cmsghdr), installed, 4 * ni);
-            xrl_ctu(m.msg_control, cbuf, (size_t)need);
-            cused = (need + 7) & ~7ull;
-        } else { for (int i = 0; i < ni; i++) xrl_fd_close(installed[i]); outflags |= LX_MSG_CTRUNC; }
-        free(got);
-    }
-    m.msg_controllen = cused;
-    m.msg_flags = outflags;
-    m.msg_namelen = 0;
-    xrl_ctu(umsg, &m, sizeof m);
-    xfile_unref(f);
-    return total;
-}
 
 /* ============================================================== eventfd */
-typedef struct efd { SRWLOCK lock; u64 count; int sem; } efd;
+typedef struct efd { SRWLOCK lock; u64 count; int sem; u32 gen; } efd;
 
 static slong ev_read(xfile *f, void *b, u64 n, s64 o)
 {
@@ -418,7 +283,7 @@ static slong ev_write(xfile *f, const void *b, u64 n, s64 o)
             if (xrl_io_wait(seen, -1) < 0) return -LX_EINTR;
             continue;
         }
-        e->count += v;
+        e->count += v; e->gen++;
         ReleaseSRWLockExclusive(&e->lock);
         xrl_io_notify();
         return 8;
@@ -442,7 +307,8 @@ static slong ev_ioctl(xfile *f, u64 req, u64 arg)
     return -LX_ENOTTY;
 }
 static void ev_close(xfile *f) { free(f->priv); }
-static const xfile_ops g_ev_ops = { "eventfd", ev_read, ev_write, pipe_lseek, ev_fstat, NULL, ev_ioctl, NULL, NULL, ev_poll, ev_close, NULL };
+static u32 ev_edge(xfile *f) { return ((efd *)f->priv)->gen; }
+static const xfile_ops g_ev_ops = { "eventfd", ev_read, ev_write, pipe_lseek, ev_fstat, NULL, ev_ioctl, NULL, NULL, ev_poll, ev_close, NULL, ev_edge };
 
 slong xrl_eventfd_create(u32 initval, int flags)
 {
@@ -515,7 +381,7 @@ slong xrl_poll(u64 ufds, u64 nfds, s64 timeout_ns, u64 sigmask)
 }
 
 /* ================================================================ epoll */
-typedef struct epi { int fd; xfile *f; u32 events; u64 data; u32 last; int disabled; } epi;
+typedef struct epi { int fd; xfile *f; u32 events; u64 data; u32 last; int disabled; u32 gen; } epi;
 typedef struct epoll { SRWLOCK lock; epi *e; size_t n, cap; } epoll;
 
 static slong ep_nop_rw(xfile *f, void *b, u64 n, s64 o) { (void)f; (void)b; (void)n; (void)o; return -LX_EINVAL; }
@@ -571,10 +437,10 @@ slong xrl_epoll_ctl(int epfd, int op, int fd, u64 uev)
         else {
             if (p->n == p->cap) { p->cap = p->cap ? p->cap * 2 : 16; p->e = (epi *)realloc(p->e, p->cap * sizeof(epi)); }
             xfile_ref(tf);
-            p->e[p->n++] = (epi){ fd, tf, ev.events, ev.data, 0, 0 };
+            p->e[p->n++] = (epi){ fd, tf, ev.events, ev.data, 0, 0, 0 };
         }
     } else if (op == LX_EPOLL_CTL_MOD) {
-        if (i >= p->n) r = -LX_ENOENT; else { p->e[i].events = ev.events; p->e[i].data = ev.data; p->e[i].disabled = 0; p->e[i].last = 0; }
+        if (i >= p->n) r = -LX_ENOENT; else { p->e[i].events = ev.events; p->e[i].data = ev.data; p->e[i].disabled = 0; p->e[i].last = 0; p->e[i].gen = 0; }
     } else if (op == LX_EPOLL_CTL_DEL) {
         if (i >= p->n) r = -LX_ENOENT; else { xfile_unref(p->e[i].f); p->e[i] = p->e[--p->n]; }
     } else r = -LX_EINVAL;
@@ -605,7 +471,15 @@ slong xrl_epoll_wait(int epfd, u64 uevents, int maxevents, int timeout_ms, int *
             if (e->disabled) continue;
             u32 mask = (e->events & 0xffff) | LX_POLLERR | LX_POLLHUP;
             u32 r = file_ready(e->f, mask) & mask;
-            u32 report = (e->events & LX_EPOLLET) ? (r & ~e->last) : r;
+            u32 report = r;
+            if (e->events & LX_EPOLLET) {
+                /* An edge is new data, not only a change of the ready mask: a socket that was drained and refilled between
+                 * two waits is ready both times. A file with an edge counter reports when it moved; any other one when
+                 * something in the layer woke sleepers since (a spurious extra report is allowed, a lost one is not). */
+                u32 g = e->f->ops->edge ? e->f->ops->edge(e->f) : (u32)xrl_io_epoch;
+                report = (r & ~e->last) | (g != e->gen ? r : 0);
+                e->gen = g;
+            }
             e->last = r;
             if (report) {
                 out[n].events = report; out[n].data = e->data; n++;

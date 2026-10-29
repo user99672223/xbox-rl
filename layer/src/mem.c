@@ -315,6 +315,8 @@ static int vma_split(u64 addr)
     return vma_insert_at(i + 1, &right);
 }
 
+static __declspec(thread) int t_mem_locked;   /* this thread holds g_lock (file_fill, vma_flush_shared): xrl_mem_populate must not take it again */
+
 static void vma_flush_shared(const vma *v, u64 s, u64 e)
 {
     if (!v->file || !v->shared || !(v->prot & LX_PROT_WRITE)) return;
@@ -322,7 +324,9 @@ static void vma_flush_shared(const vma *v, u64 s, u64 e)
     if (e > v->end) e = v->end;
     if (s >= e) return;
     s64 off = v->foff + (s64)(s - v->start);
+    t_mem_locked = 1;   /* the write's populate would take g_lock, which munmap/msync hold: self-deadlock; the pages are committed */
     v->file->ops->write(v->file, (const void *)s, e - s, off);
+    t_mem_locked = 0;
 }
 
 static slong file_fill(xfile *f, u64 dst, u64 len, s64 off);
@@ -1427,7 +1431,6 @@ static int op_copy_committed(u64 s, u64 e, DWORD state, void *ctx)
     return 0;
 }
 
-static __declspec(thread) int t_mem_locked;   /* this thread holds g_lock (file_fill) */
 
 static slong file_fill(xfile *f, u64 dst, u64 len, s64 off)
 {
@@ -1527,6 +1530,7 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
     if (mtype != LX_MAP_SHARED && mtype != LX_MAP_PRIVATE && mtype != LX_MAP_SHARED_VALIDATE) return -LX_EINVAL;
     int fixed = (flags & (LX_MAP_FIXED | LX_MAP_FIXED_NOREPLACE)) != 0;
     if (fixed && (addr & (LX_PAGE - 1))) return -LX_EINVAL;
+    if (fixed && xrl_shm_overlaps(addr, len)) return -LX_EINVAL;
     if (fixed && (addr < 0x10000 || addr + len > 0x7fffffff0000ull || addr + len < addr)) return -LX_ENOMEM;
 
     xfile *f = NULL;
@@ -1539,6 +1543,14 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
         if ((flags & LX_MAP_SHARED) && (prot & LX_PROT_WRITE) && !(f->flags & LX_O_RDWR)) { xfile_unref(f); return -LX_EACCES; }
         if (f->gpath) name = f->gpath;      /* the full guest path, as /proc/self/maps shows it */
     } else if (flags & LX_MAP_STACK) name = "[stack]";
+
+    /* a memfd or /dev/shm file: every mapping shows the same pages (shm.c). Not with XRL_FORK_TASKS (Rocket League through
+     * EAC): EAC maps its module memfd twice, writable and executable, at different addresses, and the copy path below
+     * (with the read-only sibling synced at translation time) is what it runs on */
+    if (f && (flags & LX_MAP_SHARED) && !fixed && !xrl_fork_tasks_enabled()) {
+        slong sr = xrl_shm_map_file(f, len, off);
+        if (sr != XRL_NOT_NET) { xfile_unref(f); return sr; }
+    }
 
     slong res;
     AcquireSRWLockExclusive(&g_lock);
@@ -1588,6 +1600,8 @@ slong xrl_mem_munmap(u64 addr, u64 len)
     if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
     len = ALIGN_UP(len, LX_PAGE);
     if (addr + len < addr) return -LX_EINVAL;
+    slong sr = xrl_shm_munmap(addr, len);   /* inside a shared segment: only the attachment goes away (shm.c) */
+    if (sr != XRL_NOT_NET) return sr;
     AcquireSRWLockExclusive(&g_lock);
     slong r = vma_unmap_range(addr, addr + len, 1);
     ReleaseSRWLockExclusive(&g_lock);
@@ -1613,6 +1627,26 @@ static int interp_rw_covers(u64 addr, u64 end)   /* caller holds g_lock */
 {
     for (int i = 0; i < g_interp_rw_n; i++) if (addr >= g_interp_rw[i].lo && end <= g_interp_rw[i].hi) return 1;
     return 0;
+}
+
+/* The pages behind shm.c's segments: a zero-filled MAP_SHARED anonymous mapping (lazily committed like any
+ * large one), found a gap like an address-less mmap. The guest's own munmap reaches it only through
+ * xrl_shm_munmap; shm.c frees it with xrl_mem_shared_free once nobody maps it. 0 = no memory. */
+u64 xrl_mem_shared_alloc(u64 len, const char *name)
+{
+    len = ALIGN_UP(len, LX_PAGE);
+    AcquireSRWLockExclusive(&g_lock);
+    u64 t = find_gap(len, g_arena_end);
+    slong r = t ? map_range(t, len, LX_PROT_READ | LX_PROT_WRITE, 1, NULL, 0, name, len >= LAZY_MIN) : -LX_ENOMEM;
+    ReleaseSRWLockExclusive(&g_lock);
+    return r < 0 ? 0 : (u64)r;
+}
+
+void xrl_mem_shared_free(u64 addr, u64 len)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    vma_unmap_range(addr, addr + ALIGN_UP(len, LX_PAGE), 1);
+    ReleaseSRWLockExclusive(&g_lock);
 }
 
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot)

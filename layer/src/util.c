@@ -383,3 +383,19 @@ static slong sleep_ns_raw(u64 ns, int *interrupted)
     Sleep(ms);
     return 0;
 }
+
+/* The caller's effective uid/gid. One identity for the whole layer for now: XRL_UID/XRL_GID in the host
+ * environment, 1000 when unset (what getuid always answered). proc.c's per-process ids replace this. */
+static u32 env_id(const char *name)
+{
+    char b[16];
+    DWORD n = GetEnvironmentVariableA(name, b, sizeof b);
+    return n && n < sizeof b ? (u32)strtoul(b, NULL, 10) : 1000;
+}
+u32 xrl_env_uid(void) { static u32 v = ~0u; if (v == ~0u) v = env_id("XRL_UID"); return v; }
+u32 xrl_cur_uid(void) { return xrl_curproc()->euid; }
+u32 xrl_env_gid(void) { static u32 v = ~0u; if (v == ~0u) v = env_id("XRL_GID"); return v; }
+u32 xrl_cur_gid(void) { return xrl_curproc()->egid; }
+u32 xrl_cur_umask(void) { return xrl_curproc()->umask; }
+int xrl_cur_pid(void) { return xrl_curproc()->pid; }
+void xrl_signal_pid(int pid, int sig) { if (pid > 0) xrl_sys_kill(pid, sig); }
