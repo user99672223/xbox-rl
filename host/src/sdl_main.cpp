@@ -19,13 +19,27 @@
 #include <SDL_main.h>
 #include <SDL_syswm.h>
 
+#include <windows.h>
 #include <atomic>
 #include <bitset>
 #include <cstdio>
+#include <thread>
 
 #include "xrl_host.h"
 
 namespace {
+
+// Spawned-tracee diagnostics: the child (EAC's game process) dies with exit 0x40010006.
+// This UEF fires ONLY for a truly unhandled exception in THIS process (right before it dies) -
+// it is NOT called when the OS externally terminates us (TerminateProcess on a PLM suspend). So:
+//   UEF logs 0x40010006 -> the child died from an unhandled OutputDebugString exception (internal).
+//   UEF never fires, child just vanishes -> the OS reaped it (external; PLM/suspend).
+LONG WINAPI child_uef(PEXCEPTION_POINTERS ep) {
+    XLOGE("host", "tracee child: UNHANDLED exception code=0x%08lx addr=%p flags=0x%lx -> process will die",
+          ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress,
+          ep->ExceptionRecord->ExceptionFlags);
+    return EXCEPTION_CONTINUE_SEARCH;   // keep default behaviour (die); we only wanted the record
+}
 
 std::atomic<bool> g_worker_done{false};
 std::atomic<int>  g_exit_code{0};
@@ -106,8 +120,19 @@ int sdl_main(int, char**) {
     for (int i = 0; i < SDL_NumJoysticks(); ++i) open_pad(i);
 
     xrl::gfx_thread_start();
+    // Keep the CoreWindow presenting so the Xbox PLM does not suspend the package while the EAC
+    // bootstrapper (which renders nothing) runs and injects the game in a 2nd process.
+    xrl::gfx_keepalive_start();
 
     void* worker = xrl::start_thread("boot", 256u << 20, [] {
+        xrl::request_extended_execution();   // don't let the OS suspend us mid-EAC-inject
+        // procprobe: spawn bare child processes and watch what the Xbox does to them,
+        // while THIS process holds the window/foreground (keepalive already running).
+        { char v[256]; if (GetEnvironmentVariableA("XRL_PROCPROBE", v, sizeof v)) {
+            SetEnvironmentVariableA("XRL_PP_DIR", xrl::local_state_utf8().c_str());
+            xrl::procprobe_parent(v);
+            return;   // stay foreground; do not boot the guest
+        } }
         const auto& cfg = xrl::config();
         if (cfg.probe_mode != "none") {
             xrl::ProbeOptions opt = cfg.probe_mode == "all" ? xrl::ProbeOptions::all() : xrl::ProbeOptions::quick();
@@ -169,7 +194,31 @@ int xrl_sdl_entry() {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    // procprobe child: a bare 2nd process that only heartbeats (no layer, no UWP,
+    // no log.txt). Detected before anything else so it stays minimal.
+    { char v[64]; if (GetEnvironmentVariableA("XRL_PROCCHILD", v, sizeof v)) { xrl::procprobe_child_main(v); return 0; } }
     xrl::host_early_init("full");
+    // A spawned tracee child (EAC's game process) gets no UWP activation, so SDL_WinRTRunApp would
+    // return at once and the process would exit right after config. Run the layer HEADLESS instead
+    // (no CoreWindow): enough for the game to start and EAC to inject. Rendering needs a surface and
+    // is a later step; here the point is to keep the process alive and boot the guest.
+    if (GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0)) {
+        XLOGW("host", "tracee child: no UWP activation; booting the layer headless");
+        SetUnhandledExceptionFilter(child_uef);            // learn if the child dies internally vs is reaped
+        xrl::request_extended_execution();                 // let the windowless child resist OS suspend too
+        // Heartbeat: shows the EXACT instant the child stops making progress (external kill = abrupt stop).
+        std::thread([] {
+            ULONGLONG t0 = GetTickCount64();
+            for (;;) { Sleep(100); XLOGW("host", "tracee child: alive +%llu ms", GetTickCount64() - t0); }
+        }).detach();
+        xrl::WindowInfo wi; wi.core_window = nullptr; wi.width = 1920; wi.height = 1080; wi.valid = false;
+        xrl::window_info_set(wi);
+        xrl::gfx_thread_start();
+        int rc = xrl::boot_layer();
+        XLOGW("host", "tracee child: layer finished, rc=%d", rc);
+        xrl::host_exit();
+        return rc;
+    }
     return xrl_sdl_entry();
 }
 

@@ -279,12 +279,27 @@ slong xrl_sys_times(u64 ubuf)
     return (slong)(xrl_mono_ns() / 10000000ull);
 }
 
+/* DIAG (XRL_SPINLOG=1): throttled logging of what read/write/poll touch, to find what a stuck
+ * thread spins on. Off unless the env var is set, so no overhead or noise in normal runs. */
+int xrl_spinlog_on(void)
+{
+    static int on = -1;
+    if (on < 0) { char v[4]; on = GetEnvironmentVariableA("XRL_SPINLOG", v, sizeof v) && v[0] == '1'; }
+    return on;
+}
+
 slong xrl_sys_getrusage(int who, u64 ubuf)
 {
-    (void)who;
     FILETIME c, e, k, u;
     lx_rusage r; memset(&r, 0, sizeof r);
-    if (GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u)) {
+    /* RUSAGE_THREAD (1) is the CALLING THREAD's CPU time, not the whole process's. In the in-process
+     * injection model the EAC bootstrapper and the game share ONE OS process, so returning process time
+     * for a per-thread query inflates it by every other thread and breaks a thread's own timing/spin loop
+     * (e.g. "spin-yield until my own CPU time advances by N"). Honor `who`. */
+    BOOL got = (who == 1 /*RUSAGE_THREAD*/)
+                   ? GetThreadTimes(GetCurrentThread(), &c, &e, &k, &u)
+                   : GetProcessTimes(GetCurrentProcess(), &c, &e, &k, &u);
+    if (got) {
         u64 un = ft_ns(u), kn = ft_ns(k);
         r.ru_utime.tv_sec = (s64)(un / 1000000000ull); r.ru_utime.tv_usec = (s64)((un % 1000000000ull) / 1000);
         r.ru_stime.tv_sec = (s64)(kn / 1000000000ull); r.ru_stime.tv_usec = (s64)((kn % 1000000000ull) / 1000);

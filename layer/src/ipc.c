@@ -482,6 +482,17 @@ slong xrl_poll(u64 ufds, u64 nfds, s64 timeout_ns, u64 sigmask)
             if (p[i].revents) ready++;
         }
         if (ready) { ret = ready; break; }
+        if (xrl_spinlog_on()) { static volatile LONG c; if ((InterlockedIncrement(&c) & 0x1ff) == 1) {
+            char b[400]; int bn = 0;
+            for (u64 i = 0; i < nfds && i < 6; i++) {
+                if (p[i].fd < 0) continue;
+                xfile *f = xrl_fd_get(p[i].fd);
+                const char *nm = f ? (f->gpath ? f->gpath : (f->ops && f->ops->name ? f->ops->name : "?")) : "closed";
+                bn += snprintf(b + bn, sizeof b - bn, " fd%d=%s(ev%x)", p[i].fd, nm, (unsigned)p[i].events);
+                if (f) xfile_unref(f);
+            }
+            LOGW("spin-poll nfds=%llu:%s", (unsigned long long)nfds, b);
+        } }
         s64 left = -1;
         if (deadline != ~0ull) {
             u64 now = xrl_mono_ns();

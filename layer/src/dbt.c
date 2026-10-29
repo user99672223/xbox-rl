@@ -463,14 +463,214 @@ static volatile LONG g_has_gen;
 
 /* instruction fetch from a translated image (or a watched page of generated code); a write to a page of
  * generated code that is translated */
+/* Diagnostic: an exception in guest code the DBT is about to let escape (to Wine's handler, then
+ * winedbg). CALLED FROM THE VEH (exception context), so it must be deadlock-safe: NO locks, NO logger
+ * (the logger takes a lock a faulting thread may already hold -- that froze the console), NO memory
+ * queries. It only does plain stores into a static array and a within-page read of the instruction
+ * bytes at rip (rip's page is present, as it is the code that was executing). xrl_dbt_dump_faults()
+ * prints the array later from a safe context (boot exit). */
+#define FCAP_N 64
+typedef struct { LONG seq; u32 code, why, tid; u64 rip, acc, addr; u8 nb, b[16]; u64 reg[16]; u8 snaplen[16], snap[16][48]; } dbt_fault_rec;
+/* Safe lock-free read of up to `cap` bytes at guest address p (VEH context): VirtualQuery confirms the
+ * page is committed+readable and bounds the read to its region, so no nested fault. Returns bytes read. */
+static u8 dbt_snap_at(u64 p, u8 *out, u8 cap)
+{
+    if (p < 0x1000) return 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (!VirtualQuery((void *)p, &mbi, sizeof mbi) || mbi.State != MEM_COMMIT) return 0;
+    if (!(mbi.Protect & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_WRITECOPY))) return 0;
+    u64 avail = (u64)mbi.BaseAddress + mbi.RegionSize - p;
+    if (avail > cap) avail = cap;
+    const u8 *s = (const u8 *)p;
+    for (u64 i = 0; i < avail; i++) out[i] = s[i];
+    return (u8)avail;
+}
+static dbt_fault_rec g_fcap[FCAP_N];
+static volatile LONG g_nfcap;    /* number of real (error-severity) faults seen */
+static volatile LONG g_nskip;    /* benign exceptions skipped (OutputDebugString etc.) */
+static void dbt_log_escape(PEXCEPTION_POINTERS ep, int why)
+{
+    if (!policy_on()) return;
+    EXCEPTION_RECORD *r = ep->ExceptionRecord;
+    /* Skip benign/continuable exceptions that are NOT crashes: the EAC module raises thousands of
+     * DBG_PRINTEXCEPTION_C (0x40010006, OutputDebugString), its wide form, and thread-name (0x406D1388).
+     * Only error-severity codes (0xC.......: access violation, illegal/privileged instruction, ...) are
+     * real faults. Keep the LAST FCAP_N of those in a ring, so the one that actually crashes is captured. */
+    if (((u32)r->ExceptionCode & 0xF0000000u) != 0xC0000000u) { InterlockedIncrement(&g_nskip); return; }
+    LONG seq = InterlockedIncrement(&g_nfcap) - 1;
+    dbt_fault_rec *f = &g_fcap[seq & (FCAP_N - 1)];
+    f->seq  = seq;
+    f->code = (u32)r->ExceptionCode;
+    f->why  = (u32)why;
+    f->tid  = GetCurrentThreadId();
+    f->rip  = ep->ContextRecord ? (u64)ep->ContextRecord->Rip : 0;
+    f->acc  = r->NumberParameters >= 1 ? (u64)r->ExceptionInformation[0] : (u64)-1;
+    f->addr = r->NumberParameters >= 2 ? (u64)r->ExceptionInformation[1] : 0;
+    f->nb   = 0;
+    if (f->rip) {
+        u32 avail = (u32)(LX_PAGE - (f->rip & (LX_PAGE - 1)));
+        if (avail > 16) avail = 16;
+        const u8 *b = (const u8 *)f->rip;          /* within rip's own (present) page: no fault, no query */
+        for (u32 k = 0; k < avail; k++) f->b[k] = b[k];
+        f->nb = (u8)avail;
+    }
+    CONTEXT *c = ep->ContextRecord;
+    if (c) { u64 g[16] = { c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp,
+                           c->R8,c->R9,c->R10,c->R11,c->R12,c->R13,c->R14,c->R15 };
+             for (int k = 0; k < 16; k++) f->reg[k] = g[k];
+             if (f->addr < 0x10000)   /* a NULL-ish deref: snapshot what each register points to (strings name the object) */
+                 for (int k = 0; k < 16; k++) f->snaplen[k] = dbt_snap_at(g[k], f->snap[k], 48);
+    }
+}
+/* Print the captured faults in sequence order; call only from a safe context (not the VEH). */
+void xrl_dbt_dump_faults(void)
+{
+    static const char *whys[] = { "non-AV", "AV-data", "AV-exec-unwatched", "no-translation" };
+    LONG total = g_nfcap;
+    LONG first = total > FCAP_N ? total - FCAP_N : 0;   /* ring kept the last FCAP_N */
+    LOGW("dbt-fault: %ld real fault(s), %ld benign exception(s) skipped; last fault is the crash:", (long)total, (long)g_nskip);
+    for (LONG s = first; s < total; s++) {
+        dbt_fault_rec *f = &g_fcap[s & (FCAP_N - 1)];
+        char hex[64]; int o = 0;
+        for (u8 k = 0; k < f->nb && o < (int)sizeof hex - 3; k++) o += snprintf(hex + o, sizeof hex - o, "%02x ", f->b[k]);
+        LOGW("dbt-fault[%ld] tid=%x %s: code=%08x rip=%llx acc=%lld addr=%llx bytes: %s",
+             (long)f->seq, f->tid, f->why < 4 ? whys[f->why] : "?", f->code, f->rip, (long long)f->acc, f->addr, hex);
+        if (f->addr < 0x10000) {   /* a NULL-ish deref: print the registers so what computed the bad pointer is visible */
+            LOGW("dbt-fault[%ld] regs rax=%llx rbx=%llx rcx=%llx rdx=%llx rsi=%llx rdi=%llx rbp=%llx rsp=%llx",
+                 (long)f->seq, f->reg[0], f->reg[1], f->reg[2], f->reg[3], f->reg[4], f->reg[5], f->reg[6], f->reg[7]);
+            LOGW("dbt-fault[%ld] regs r8=%llx r9=%llx r10=%llx r11=%llx r12=%llx r13=%llx r14=%llx r15=%llx",
+                 (long)f->seq, f->reg[8], f->reg[9], f->reg[10], f->reg[11], f->reg[12], f->reg[13], f->reg[14], f->reg[15]);
+            static const char *rn[16] = { "rax","rbx","rcx","rdx","rsi","rdi","rbp","rsp","r8","r9","r10","r11","r12","r13","r14","r15" };
+            for (int k = 0; k < 16; k++) {
+                if (!f->snaplen[k]) continue;
+                char hx[160]; int o = 0; char as[56]; int ao = 0;
+                for (u8 j = 0; j < f->snaplen[k] && o < (int)sizeof hx - 3; j++) {
+                    o += snprintf(hx + o, sizeof hx - o, "%02x", f->snap[k][j]);
+                    if (ao < (int)sizeof as - 1) as[ao++] = (f->snap[k][j] >= 32 && f->snap[k][j] < 127) ? (char)f->snap[k][j] : '.';
+                }
+                as[ao] = 0;
+                LOGW("dbt-fault[%ld] [%s=%llx]: %s | %s", (long)f->seq, rn[k], f->reg[k], hx, as);
+            }
+        }
+    }
+}
+
+/* --- emulate a read from the unbacked null page as reading zero ----------------------------
+ * EAC's in-process init path dereferences a pointer that is NULL on this host (a value it
+ * elsewhere treats as "empty" -- the faulting cmp's own fall-through is its empty-value branch).
+ * The read of address 0 cannot be backed (Windows reserves the low 64K), so without this it
+ * escapes to Wine's crash handler and the process dies at ~2s. We decode the faulting
+ * instruction, supply 0 for the loaded byte/word/dword/qword (zeroing the destination register,
+ * or setting flags for cmp/test), and step past it. Only the common load/compare forms are
+ * handled; anything else returns 0 and escapes exactly as before. */
+static int policy_on(void);
+static u64 *emu_gpr(CONTEXT *c, int idx)
+{
+    switch (idx) {
+    case 0:  return &c->Rax; case 1:  return &c->Rcx; case 2:  return &c->Rdx; case 3:  return &c->Rbx;
+    case 4:  return &c->Rsp; case 5:  return &c->Rbp; case 6:  return &c->Rsi; case 7:  return &c->Rdi;
+    case 8:  return &c->R8;  case 9:  return &c->R9;  case 10: return &c->R10; case 11: return &c->R11;
+    case 12: return &c->R12; case 13: return &c->R13; case 14: return &c->R14; case 15: return &c->R15;
+    }
+    return 0;
+}
+static u64 emu_mask(int size) { return size >= 8 ? ~0ull : ((1ull << (size * 8)) - 1); }
+static int emu_parity(u8 v) { int p = 1; for (int b = 0; b < 8; b++) p ^= (v >> b) & 1; return p; }
+static void emu_setf(CONTEXT *c, int cf, int pf, int af, int zf, int sf, int of)
+{
+    u64 f = c->EFlags & ~0x8d5ull;   /* CF(1) PF(4) AF(10) ZF(40) SF(80) OF(800) */
+    if (cf) f |= 0x1; if (pf) f |= 0x4; if (af) f |= 0x10; if (zf) f |= 0x40; if (sf) f |= 0x80; if (of) f |= 0x800;
+    c->EFlags = (DWORD)f;
+}
+static void emu_flags_sub(CONTEXT *c, u64 a, u64 b, int size)   /* flags for (a - b) */
+{
+    u64 m = emu_mask(size); a &= m; b &= m;
+    u64 r = (a - b) & m, sign = 1ull << (size * 8 - 1);
+    emu_setf(c, a < b, emu_parity((u8)r), ((a ^ b ^ r) & 0x10) != 0, r == 0,
+             (r & sign) != 0, (((a ^ b) & (a ^ r)) & sign) != 0);
+}
+static void emu_flags_log(CONTEXT *c, u64 r, int size)          /* flags for a logical result (test) */
+{
+    u64 m = emu_mask(size); r &= m; u64 sign = 1ull << (size * 8 - 1);
+    emu_setf(c, 0, emu_parity((u8)r), 0, r == 0, (r & sign) != 0, 0);
+}
+static int emulate_null_read(CONTEXT *c)
+{
+    const u8 *p = (const u8 *)c->Rip;
+    int i = 0, rex = 0, op66 = 0;
+    for (;;) {
+        u8 b = p[i];
+        if (b == 0x66) { op66 = 1; i++; }
+        else if (b == 0x67 || b == 0xF0 || b == 0xF2 || b == 0xF3 ||
+                 b == 0x2E || b == 0x36 || b == 0x3E || b == 0x26 || b == 0x64 || b == 0x65) i++;
+        else break;
+        if (i > 8) return 0;
+    }
+    if ((p[i] & 0xF0) == 0x40) { rex = p[i]; i++; }
+    int twob = 0; u8 op = p[i++];
+    if (op == 0x0F) { twob = 1; op = p[i++]; }
+    u8 modrm = p[i++];
+    int mod = modrm >> 6, reg = ((modrm >> 3) & 7) + ((rex & 4) ? 8 : 0), rm = modrm & 7;
+    if (mod == 3) return 0;                                 /* register operand, not a memory read */
+    if (rm == 4) { u8 sib = p[i++]; if ((sib & 7) == 5 && mod == 0) i += 4; }   /* SIB */
+    else if (rm == 5 && mod == 0) i += 4;                   /* rip-relative disp32 */
+    if (mod == 1) i += 1; else if (mod == 2) i += 4;
+    int byteop = 0, size = op66 ? 2 : 4; if (rex & 8) size = 8;
+    if (!twob) {
+        switch (op) {
+        case 0x8A: byteop = 1;                              /* mov r8, r/m8 */
+        case 0x8B: {                                        /* mov r, r/m */
+            u64 *d = emu_gpr(c, reg); if (!d) return 0;
+            if (byteop) *d = *d & ~0xffull; else if (size == 2) *d = *d & ~0xffffull; else *d = 0;
+            c->Rip += i; return 1;
+        }
+        case 0x38: byteop = 1;                              /* cmp r/m8, r8 */
+        case 0x39: { u64 *s = emu_gpr(c, reg); if (!s) return 0;   /* cmp r/m, r : mem(0) - reg */
+            emu_flags_sub(c, 0, *s, byteop ? 1 : size); c->Rip += i; return 1; }
+        case 0x3A: byteop = 1;                              /* cmp r8, r/m8 */
+        case 0x3B: { u64 *s = emu_gpr(c, reg); if (!s) return 0;   /* cmp r, r/m : reg - mem(0) */
+            emu_flags_sub(c, *s, 0, byteop ? 1 : size); c->Rip += i; return 1; }
+        case 0x84: byteop = 1;                              /* test r/m8, r8 */
+        case 0x85: emu_flags_log(c, 0, byteop ? 1 : size); c->Rip += i; return 1;   /* 0 & reg = 0 */
+        case 0x80: byteop = 1;                              /* grp1 r/m8, imm8 */
+        case 0x83:                                          /* grp1 r/m, imm8 (sign-ext) */
+        case 0x81: {                                        /* grp1 r/m, imm16/32 */
+            int opsz = byteop ? 1 : size, grp = (modrm >> 3) & 7; u64 imm;
+            if (op == 0x80) { imm = p[i]; i += 1; }
+            else if (op == 0x83) { imm = (u64)(long long)(signed char)p[i]; i += 1; }
+            else if (op66) { imm = (u16)(p[i] | (p[i + 1] << 8)); i += 2; }
+            else { imm = (u32)(p[i] | (p[i + 1] << 8) | (p[i + 2] << 16) | ((u32)p[i + 3] << 24)); i += 4; }
+            if (grp == 7) { emu_flags_sub(c, 0, imm & emu_mask(opsz), opsz); c->Rip += i; return 1; }  /* cmp */
+            return 0;                                       /* add/or/and/sub/xor also write memory: don't emulate */
+        }
+        default: return 0;
+        }
+    }
+    switch (op) {                                           /* two-byte 0F */
+    case 0xB6: case 0xB7: case 0xBE: case 0xBF: {            /* movzx/movsx r, r/m8|r/m16 : 0 either way */
+        u64 *d = emu_gpr(c, reg); if (!d) return 0; *d = 0; c->Rip += i; return 1;
+    }
+    default: return 0;
+    }
+}
+
 static LONG CALLBACK dbt_veh(PEXCEPTION_POINTERS ep)
 {
     EXCEPTION_RECORD *r = ep->ExceptionRecord;
-    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2) return EXCEPTION_CONTINUE_SEARCH;
+    if (r->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || r->NumberParameters < 2) { dbt_log_escape(ep, 0); return EXCEPTION_CONTINUE_SEARCH; }
     u64 acc = (u64)r->ExceptionInformation[0];
     u64 pc = (u64)r->ExceptionInformation[1];
-    if (acc != 8 && !(acc == 1 && g_has_gen)) return EXCEPTION_CONTINUE_SEARCH;
-    if (acc == 8 && !img_of(pc) && !g_nwatch) return EXCEPTION_CONTINUE_SEARCH;
+    if (acc != 8 && !(acc == 1 && g_has_gen)) {
+        /* A read of the null page (addr < 64K, which no VMA can back on Windows): emulate it as
+         * reading zero and step over it, so EAC's init doesn't die on a null deref its own
+         * fall-through already treats as an empty value. Everything else -> the lazy-commit handler. */
+        if (acc == 0 && pc < 0x10000 && policy_on() && emulate_null_read(ep->ContextRecord)) {
+            InterlockedIncrement64(&g_nfault);
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+        dbt_log_escape(ep, 1); return EXCEPTION_CONTINUE_SEARCH;
+    }
+    if (acc == 8 && !img_of(pc) && !g_nwatch) { dbt_log_escape(ep, 2); return EXCEPTION_CONTINUE_SEARCH; }
     xrl_thread *t = xrl_cur();
     u64 stk[2];
     int g = xrl_teb_enter_host(t);
@@ -483,7 +683,7 @@ static LONG CALLBACK dbt_veh(PEXCEPTION_POINTERS ep)
     xrl_teb_stack_back(stk);
     xrl_teb_restore(t, g);
     if (retry) return EXCEPTION_CONTINUE_EXECUTION;
-    if (!tr) return EXCEPTION_CONTINUE_SEARCH;
+    if (!tr) { dbt_log_escape(ep, 3); return EXCEPTION_CONTINUE_SEARCH; }
     InterlockedIncrement64(&g_nfault);
     ep->ContextRecord->Rip = tr;
     return EXCEPTION_CONTINUE_EXECUTION;
@@ -588,6 +788,44 @@ int xrl_dbt_exec_hint(u64 addr, u64 len)
     return 0;
 }
 
+/* A non-PE anonymous region that becomes executable but NOT writable: the anti-cheat's own module
+ * (an ELF payload the bootstrapper downloaded) unpacks itself into memory and mprotect()s the code
+ * R+X. Like a Windows image's syscall pages, this native code issues raw Linux `syscall`s that must
+ * reach the layer, but it carries no "MZ" header (so xrl_dbt_exec_hint does not see it) and is not
+ * writable (so xrl_dbt_generated's write-watch does not cover it) -- it simply ran untranslated and
+ * faulted. Scan it for raw `syscall`s and translate the pages that have them (the rest runs native);
+ * no write-watch is needed as a read-only-executable region is not rewritten in place (a later
+ * mprotect back to writable re-enters the generated-code path). */
+void xrl_dbt_attach_exec(u64 addr, u64 len)
+{
+    if (!policy_on() || len < LX_PAGE || len > (64u << 20) || (addr & (LX_PAGE - 1))) return;
+    if (img_of(addr) || !xrl_mem_is_mapped(addr)) return;
+    u32 npg = (u32)((len + LX_PAGE - 1) / LX_PAGE);
+    u8 *mark = (u8 *)calloc(npg ? npg : 1, 1);
+    if (!mark) return;
+    const u8 *p = (const u8 *)addr;
+    size_t i = 0, found = 0;
+    while (i + 2 <= len) {
+        x86i in;
+        size_t avail = len - i < 15 ? len - i : 15;
+        int l = x86_decode(p + i, avail, &in);
+        if (!l) { i++; continue; }
+        if (!in.vex && in.map == 1 && in.opcode == 0x05) { mark[i / LX_PAGE] = 1; found++; }
+        i += (size_t)l;
+    }
+    for (u32 pg = 0; pg < npg;) {
+        if (!mark[pg]) { pg++; continue; }
+        u32 e = pg;
+        while (e < npg && mark[e]) e++;
+        char name[96];
+        snprintf(name, sizeof name, "exec-unpacked at %llx", addr);
+        LOGI("dbt: %zu raw `syscall`(s) in an R+X region; translating pages %llx-%llx", found, addr + (u64)pg * LX_PAGE, addr + (u64)e * LX_PAGE);
+        xrl_dbt_attach(name, addr + (u64)pg * LX_PAGE, (u64)(e - pg) * LX_PAGE);
+        pg = e;
+    }
+    free(mark);
+}
+
 /* The mapping [addr, addr+len) of `name` becomes translated code. */
 int xrl_dbt_attach(const char *name, u64 addr, u64 len)
 {
@@ -669,7 +907,14 @@ out:
 static int policy_on(void)
 {
     static int mode = -1;
-    if (mode < 0) mode = G.argc > 1 && G.argv[1] && xrl_dbt_wanted(G.argv[1]);
+    if (mode < 0) {
+        mode = G.argc > 1 && G.argv[1] && xrl_dbt_wanted(G.argv[1]);
+        /* A process its tracer injects anti-cheat code into (XRL_DBT_MEMFD=1, set for every
+         * spawned/traced process in task.c) runs that code even though its own program name
+         * (e.g. RocketLeague.exe) does not match the policy.  The injected module calls through
+         * Wine's native-syscall pages, which must be translated too, so turn the policy fully on. */
+        if (!mode) { char v[4]; mode = GetEnvironmentVariableA("XRL_DBT_MEMFD", v, sizeof v) && v[0] == '1'; }
+    }
     return mode;
 }
 

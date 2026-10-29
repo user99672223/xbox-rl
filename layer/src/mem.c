@@ -349,9 +349,9 @@ static void sync_memfd_readonly(xfile *f, u64 ino)
         u64 len = v->end - v->start;
         LOGW("memfd-sync: refresh [%llx,%llx) prot=%d moff=%lld ino=%llu", v->start, v->end, v->prot, (long long)v->moff, v->ino);
         DWORD old;
-        VirtualProtect((void *)v->start, (SIZE_T)len, PAGE_READWRITE, &old);
+        w_protect((void *)v->start, len, PAGE_READWRITE, &old);
         file_fill(f, v->start, len, v->moff);
-        VirtualProtect((void *)v->start, (SIZE_T)len, old, &old);
+        w_protect((void *)v->start, len, old, &old);
     }
 }
 
@@ -381,9 +381,9 @@ int xrl_mem_sync_shared_page(u64 addr, u64 len)
         u64 s_addr = src->start + (u64)(ov_start - s_fstart);
         u64 copy_len = (u64)(ov_end - ov_start);
         DWORD old;
-        VirtualProtect((void *)t_addr, (SIZE_T)copy_len, PAGE_READWRITE, &old);
+        w_protect((void *)t_addr, copy_len, PAGE_READWRITE, &old);
         memcpy((void *)t_addr, (const void *)s_addr, (size_t)copy_len);
-        VirtualProtect((void *)t_addr, (SIZE_T)copy_len, old, &old);
+        w_protect((void *)t_addr, copy_len, old, &old);
         synced = 1;
         LOGW("memfd-sync: copied %llu bytes from [%llx] to [%llx] (ino=%llu)", copy_len, s_addr, t_addr, target->ino);
     }
@@ -1482,6 +1482,8 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
         if (vma_insert_at(i, &v)) { r = -LX_ENOMEM; goto fail_commit; }
         vma_try_merge(i);
     }
+    if (addr >= 0x100000000ull && addr < 0x200000000ull)   /* DIAG: EAC's console-only module low region (write-faults read-only) */
+        LOGW("mmap-lo: [%llx,%llx) prot=%d lazy=%d committed=%d", addr, end, prot, lazy, committed);
     return (slong)addr;
 fail_commit:
     if (committed) { win_decommit(addr, end); InterlockedAdd64(&g_committed, -(LONG64)len); }
@@ -1567,6 +1569,27 @@ slong xrl_mem_munmap(u64 addr, u64 len)
     return r;
 }
 
+/* Interpreter (musl) writable PT_LOAD spans, registered by elf.c at interp load. A traced tracee relocates
+ * its OWN libc; musl then applies PT_GNU_RELRO (mprotect PROT_READ) over part of that RW segment, and a
+ * later RELATIVE relocation into the region faults on the now-read-only page and, in a ptraced process, is
+ * mis-reported to the tracer (EAC) as a crash -> 210. Keep these spans writable so the relocation lands and
+ * musl's bookkeeping stays consistent (on real Linux the relocation completes before RELRO; our load path's
+ * ordering exposes the write). Not a security-sensitive region for EAC, and avoids a spurious tracer crash. */
+static struct { u64 lo, hi; } g_interp_rw[4];
+static int g_interp_rw_n;
+void xrl_mem_interp_rw_reset(void) { AcquireSRWLockExclusive(&g_lock); g_interp_rw_n = 0; ReleaseSRWLockExclusive(&g_lock); }
+void xrl_mem_interp_rw_add(u64 lo, u64 hi)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    if (g_interp_rw_n < (int)(sizeof g_interp_rw / sizeof g_interp_rw[0])) { g_interp_rw[g_interp_rw_n].lo = lo; g_interp_rw[g_interp_rw_n].hi = hi; g_interp_rw_n++; }
+    ReleaseSRWLockExclusive(&g_lock);
+}
+static int interp_rw_covers(u64 addr, u64 end)   /* caller holds g_lock */
+{
+    for (int i = 0; i < g_interp_rw_n; i++) if (addr >= g_interp_rw[i].lo && end <= g_interp_rw[i].hi) return 1;
+    return 0;
+}
+
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
 {
     if ((addr & (LX_PAGE - 1)) || (prot & ~(7 | 0x01000000 | 0x02000000))) return -LX_EINVAL;
@@ -1577,6 +1600,7 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
     if (end < addr) return -LX_ENOMEM;
     slong r = 0;
     AcquireSRWLockExclusive(&g_lock);
+    if ((prot & (LX_PROT_READ | LX_PROT_WRITE)) == LX_PROT_READ && interp_rw_covers(addr, end)) prot |= LX_PROT_WRITE;
     /* coverage check */
     for (u64 p = addr; p < end;) {
         size_t i = vma_lower(p);
@@ -1616,6 +1640,17 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
 out:
     ReleaseSRWLockExclusive(&g_lock);
     return r;
+}
+
+void xrl_mem_rename_range(u64 lo, u64 hi, const char *new_name)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    for (size_t i = 0; i < g_n; i++) {
+        vma *v = &g_v[i];
+        if (v->start >= lo && v->end <= hi)
+            vma_name(v, new_name);
+    }
+    ReleaseSRWLockExclusive(&g_lock);
 }
 
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr)
@@ -1884,34 +1919,80 @@ int xrl_mem_lazy_fault(u64 addr, int access)
     return ok;
 }
 
+/* Lock-free capture of lazy-commit faults the handler CANNOT back (ok==0): these escape to Wine and
+ * crash. Records why -- the VMA (if any) at the address and the host VirtualQuery state -- so the
+ * reason the write is dropped is proven, not guessed. Dumped from a safe context (boot exit). */
+typedef struct { LONG seq; u64 addr; int access, covers, vprot, vlazy, vcomm; u64 vlo, vhi; u32 qstate, qprot; } memfail_rec;
+static memfail_rec g_mf[64];
+static volatile LONG g_nmf;
+static void memfail_capture(u64 addr, int access, const vma *v)   /* g_lock held */
+{
+    LONG s = InterlockedIncrement(&g_nmf) - 1;
+    memfail_rec *m = &g_mf[s & 63];
+    m->seq = s; m->addr = addr; m->access = access;
+    if (v) { m->vlo = v->start; m->vhi = v->end; m->vprot = v->prot; m->vlazy = v->lazy; m->vcomm = v->committed;
+             m->covers = (v->start <= addr && v->end > addr) ? 1 : 0; }
+    else   { m->vlo = m->vhi = 0; m->vprot = m->vlazy = m->vcomm = 0; m->covers = -1; }
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((void *)addr, &mbi, sizeof mbi)) { m->qstate = mbi.State; m->qprot = mbi.Protect; }
+    else { m->qstate = 0; m->qprot = 0; }
+    /* Inline log for the first few: a ptraced tracee killed by a re-delivered signal never reaches the
+     * boot-exit dump, so print the reason here too (why the handler could not back the escaping write). */
+    if (s < 8)
+        LOGW("mem-fail[%ld] addr=%llx access=%d vma=%s [%llx,%llx) prot=%d lazy=%d committed=%d host(state=%x prot=%x)",
+             (long)m->seq, m->addr, m->access, m->covers == 1 ? "COVERS" : m->covers == 0 ? "NEAR" : "NONE",
+             m->vlo, m->vhi, m->vprot, m->vlazy, m->vcomm, m->qstate, m->qprot);
+}
+void xrl_mem_dump_faults(void)
+{
+    LONG total = g_nmf, first = total > 64 ? total - 64 : 0;
+    LOGW("mem-fail: %ld lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:", (long)total);
+    for (LONG s = first; s < total; s++) {
+        memfail_rec *m = &g_mf[s & 63];
+        LOGW("mem-fail[%ld] addr=%llx access=%d vma=%s [%llx,%llx) prot=%d lazy=%d committed=%d host(state=%x prot=%x)",
+             (long)m->seq, m->addr, m->access,
+             m->covers == 1 ? "COVERS" : m->covers == 0 ? "NEAR" : "NONE",
+             m->vlo, m->vhi, m->vprot, m->vlazy, m->vcomm, m->qstate, m->qprot);
+    }
+    size_t cap = 1u << 20; char *b = (char *)malloc(cap);
+    if (b) {
+        size_t n = xrl_mem_format_maps(b, cap);
+        LOGW("mem-fail: full guest memory map (%zu bytes) follows:", n);
+        for (size_t o = 0; o < n;) { size_t c = n - o > 1800 ? 1800 : n - o; LOGW("MAP %.*s", (int)c, b + o); o += c; }
+        free(b);
+    }
+}
 static int lazy_fault_locked_entry(u64 addr, int access)
 {
     int ok = 0;
     AcquireSRWLockExclusive(&g_lock);
     size_t i = vma_lower(addr);
-    if (i < g_n && g_v[i].start <= addr && g_v[i].lazy) {
+    if (i < g_n && g_v[i].start <= addr) {
         vma *v = &g_v[i];
         int need = access == 1 ? LX_PROT_WRITE : access == 8 ? LX_PROT_EXEC : LX_PROT_READ;
         MEMORY_BASIC_INFORMATION mbi;
         int si = g_nsp ? sp_find(ALIGN_DOWN(addr, SPAN)) : -1;
         if (!(v->prot & need)) ok = 0;
-        else if (si >= 0 && g_sp[si].state == SP_OUT) {   /* swapped out: read it back */
+        else if (v->lazy && si >= 0 && g_sp[si].state == SP_OUT) {   /* swapped out: read it back */
             t_commit_src = access == 1 ? CS_WRITE_FAULT : access == 8 ? CS_EXEC_FAULT : CS_READ_FAULT;
             ok = swapin_ahead((u32)si, need != LX_PROT_WRITE) == 0;
             t_commit_src = CS_IO;
             if (!ok) LOGE("mem: cannot swap in %llx (%llu MiB committed, budget %llu MiB)", addr, (u64)g_committed >> 20, g_budget >> 20);
         } else if (VirtualQuery((void *)addr, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT) {
-            /* probed by the swap clock (or left read-only by a failed eviction):
-             * back to the mapping's protection; otherwise another thread won */
+            /* Committed but under-protected: probed read-only by the swap clock, left read-only by a
+             * failed eviction, or a file-backed private page not yet made writable. Restore the
+             * mapping's protection so the access retries. This path covers NON-lazy VMAs too (e.g. a
+             * writable PT_LOAD segment of libc that a traced tracee relocates); otherwise the write
+             * faults forever and, in a ptraced process, is mis-reported to the tracer as a crash. */
             if (mbi.Protect == PAGE_NOACCESS || (need == LX_PROT_WRITE && mbi.Protect == PAGE_READONLY)) {
-                if (si >= 0) {
+                if (v->lazy && si >= 0) {
                     if (need == LX_PROT_WRITE) span_dirty((u32)si);   /* first write after a read-back */
                     span_unprobe((u32)si);
                 }
                 else { DWORD old; w_protect((void *)ALIGN_DOWN(addr, LX_PAGE), LX_PAGE, winprot(v->prot, NULL), &old); }
             }
             ok = 1;
-        } else {
+        } else if (v->lazy) {
             u64 s = ALIGN_DOWN(addr, g_lazy_chunk), e = s + g_lazy_chunk;
             if (s < v->start) s = v->start;
             if (e > v->end) e = v->end;
@@ -1927,6 +2008,7 @@ static int lazy_fault_locked_entry(u64 addr, int access)
             }
         }
     }
+    if (!ok) memfail_capture(addr, access, (i < g_n) ? &g_v[i] : NULL);
     ReleaseSRWLockExclusive(&g_lock);
     return ok;
 }
@@ -1969,6 +2051,53 @@ int xrl_mem_is_mapped(u64 addr)
     return r;
 }
 
+/* A WRITE to `addr` is a genuine guest-protection fault: a VMA covers it, the VMA lacks WRITE permission
+ * (the GUEST mprotected it read-only), and the page is really there (committed/non-lazy, or a committed
+ * lazy page). This is the EAC write-watch case: the guest set the page RO to catch its own writes, so the
+ * fault must go to the guest's SIGSEGV handler, NOT be backed and NOT reported to a ptrace tracer. Distinct
+ * from a lazy-commit fault (VMA has WRITE, just not committed yet) and from an unmapped fault (no VMA, e.g.
+ * EAC's injected-call sentinel at address 9). */
+/* 1 iff a VMA covers `addr` and it is guest-writable. task.c's fork stack snapshot uses this to stop
+ * extending across the end of the (writable) stack into an adjacent read-only mapping -- on the console the
+ * guest stack abuts EAC's module, whose read-only guard page the snapshot restore must NOT write. */
+int xrl_mem_page_writable(u64 addr)
+{
+    AcquireSRWLockShared(&g_lock);
+    size_t i = vma_lower(addr);
+    int r = i < g_n && g_v[i].start <= addr && (g_v[i].prot & LX_PROT_WRITE);
+    ReleaseSRWLockShared(&g_lock);
+    return r;
+}
+
+/* EAC write-watch fallback: the guest wrote to a page it marked read-only (to catch its own writes) but no
+ * guest SIGSEGV handler is up yet to flip it (early 2nd process). Do what the guest's handler would: make
+ * the host page writable so the write (self-decryption/self-modification) completes and the guest resumes.
+ * The VMA's recorded prot is left read-only, so the page re-faults on a later write and is re-flipped, and
+ * /proc/self/maps still shows what the guest set. 1 = flipped, 0 = not a committed guest-read-only page. */
+int xrl_mem_writewatch_allow(u64 addr)
+{
+    int ok = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    size_t i = vma_lower(addr);
+    if (i < g_n && g_v[i].start <= addr && addr < g_v[i].end && !(g_v[i].prot & LX_PROT_WRITE)) {
+        u64 ps = addr & ~(u64)(LX_PAGE - 1);
+        DWORD old, wp = winprot(g_v[i].prot | LX_PROT_WRITE, NULL);
+        if (w_protect((void *)ps, LX_PAGE, wp, &old)) ok = 1;
+        else {
+            /* The page is reserved-but-not-committed in the host view, or was placed by Wine's own
+             * NtAllocateVirtualMemory (console AppContainer low-VA, e.g. EAC's 0x1xxxxxxxx module arena)
+             * so a bare re-protect is refused. Commit it writable; then the retry takes the write. */
+            DWORD e1 = GetLastError();
+            if (w_alloc((void *)ps, LX_PAGE, MEM_COMMIT, wp)) ok = 1;
+            else { static volatile LONG once; if (!InterlockedExchange(&once, 1))
+                LOGW("writewatch_allow: %llx protect err=%lu commit err=%lu vma[prot=%d lazy=%d committed=%d]",
+                     ps, e1, GetLastError(), g_v[i].prot, g_v[i].lazy, g_v[i].committed); }
+        }
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    return ok;
+}
+
 u64 xrl_mem_stack_alloc(u64 size)
 {
     size = ALIGN_UP(size, LX_PAGE);
@@ -1985,19 +2114,47 @@ void xrl_mem_stack_free(u64 base, u64 size)
 
 size_t xrl_mem_format_maps(char *buf, size_t cap)
 {
-    size_t n = 0;
+    static const struct { u64 start; u64 end; const char *perm; const char *name; } pseudo[] = {
+        { 0x7ffff7fc3000ULL, 0x7ffff7fc5000ULL, "r--p", "[vvar]" },
+        { 0x7ffff7fc5000ULL, 0x7ffff7fc7000ULL, "r-xp", "[vdso]" },
+        { 0xffffffffff600000ULL, 0xffffffffff601000ULL, "--xp", "[vsyscall]" },
+    };
+    size_t n = 0, pi = 0;
     AcquireSRWLockShared(&g_lock);
+    /* find the stack: highest anonymous rw-p VMA above 0x7fff_0000_0000 */
+    size_t stack_idx = (size_t)-1;
+    for (size_t j = g_n; j-- > 0; ) {
+        vma *v = &g_v[j];
+        if (!v->name[0] && (v->prot & (LX_PROT_READ | LX_PROT_WRITE)) == (LX_PROT_READ | LX_PROT_WRITE)
+            && !v->shared && v->start >= 0x7fff00000000ULL) {
+            stack_idx = j;
+            break;
+        }
+    }
     for (size_t i = 0; i < g_n && n + 300 < cap; i++) {
         vma *v = &g_v[i];
+        while (pi < 3 && pseudo[pi].start < v->start && n + 300 < cap) {
+            n += (size_t)snprintf(buf + n, cap - n, "%08llx-%08llx %s 00000000 00:00 0                          %s\n",
+                                  pseudo[pi].start, pseudo[pi].end, pseudo[pi].perm, pseudo[pi].name);
+            pi++;
+        }
+        const char *name = v->name;
+        const char *pad  = v->name[0] ? "                       " : "";
+        if (i == stack_idx) { name = "[stack]"; pad = "                          "; }
         int w = snprintf(buf + n, cap - n, "%08llx-%08llx %c%c%c%c %08llx 00:00 %llu %s%s\n",
                          v->start, v->end,
                          v->prot & LX_PROT_READ ? 'r' : '-', v->prot & LX_PROT_WRITE ? 'w' : '-',
                          v->prot & LX_PROT_EXEC ? 'x' : '-', v->shared ? 's' : 'p',
-                         (u64)(v->name[0] && v->name[0] != '[' ? v->moff : 0), v->ino, v->name[0] ? "                       " : "", v->name);
+                         (u64)(name[0] && name[0] != '[' ? v->moff : 0), v->ino, pad, name);
         if (w < 0) break;
         n += (size_t)w;
     }
     ReleaseSRWLockShared(&g_lock);
+    while (pi < 3 && n + 300 < cap) {
+        n += (size_t)snprintf(buf + n, cap - n, "%08llx-%08llx %s 00000000 00:00 0                          %s\n",
+                              pseudo[pi].start, pseudo[pi].end, pseudo[pi].perm, pseudo[pi].name);
+        pi++;
+    }
     return n;
 }
 

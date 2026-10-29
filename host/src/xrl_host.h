@@ -191,6 +191,19 @@ void host_exit();
 // Early process init shared by both entry paths (log, crash logger, config).
 namespace xrl { void host_early_init(const char* mode_name); }
 
+// Request an extended-execution session so the OS does not suspend the app when it backgrounds
+// (EAC's multi-second inject must not be cut off). Call while foreground; safe to call once.
+namespace xrl { void request_extended_execution(); }
+
+// procprobe (probe.cpp): process-lifecycle evidence. Child runs procprobe_child_main
+// (XRL_PROCCHILD set); the foreground app runs procprobe_parent (XRL_PROCPROBE set).
+namespace xrl { void procprobe_child_main(const char* spec); void procprobe_parent(const char* spec); }
+
+// Keep-alive present loop (gfx_ops_default.cpp): clears+presents the CoreWindow from a dedicated
+// MTA thread so the Xbox PLM keeps the app foreground/active while the EAC bootstrapper (which
+// renders nothing) runs and injects. No-op if there is no CoreWindow (e.g. the headless tracee).
+namespace xrl { void gfx_keepalive_start(); void gfx_keepalive_stop(); }
+
 // ---------------------------------------------------------------------------
 // Full-build only: SDL front-end  (sdl_main.cpp, compiled WINAPI_FAMILY_APP)
 // ---------------------------------------------------------------------------

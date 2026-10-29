@@ -52,7 +52,7 @@ int xrl_tr_recv(HANDLE h, u32 *op, u64 *a, u64 *b, void **p, u32 *len)
     return 0;
 }
 
-static HANDLE g_tr;
+static HANDLE g_tr_r, g_tr_w;   /* read from the tracer, write to the tracer (two anonymous pipes) */
 static volatile LONG g_tr_on;
 int xrl_tracee_active(void) { return g_tr_on; }
 
@@ -60,11 +60,11 @@ static int poke(u64 addr, const void *src, size_t n)
 {
     DWORD old = 0, tmp;
     u64 lo = addr & ~(u64)(LX_PAGE - 1), hi = ALIGN_UP(addr + n, LX_PAGE);
-    if (!VirtualProtect((void *)lo, (SIZE_T)(hi - lo), PAGE_EXECUTE_READWRITE, &old)) return -LX_EIO;
+    if (xrl_host_protect((void *)lo, (size_t)(hi - lo), PAGE_EXECUTE_READWRITE, &old)) return -LX_EIO;
     int r = 0;
     __try { memcpy((void *)addr, src, n); } __except (EXCEPTION_EXECUTE_HANDLER) { r = -LX_EIO; }
     FlushInstructionCache(GetCurrentProcess(), (void *)addr, n);
-    VirtualProtect((void *)lo, (SIZE_T)(hi - lo), old, &tmp);
+    xrl_host_protect((void *)lo, (size_t)(hi - lo), old, &tmp);
     return r;
 }
 
@@ -101,34 +101,43 @@ static int serve(u64 regs[27], u8 fp[512])
 {
     for (;;) {
         u32 op, len; u64 a, b; void *p;
-        if (xrl_tr_recv(g_tr, &op, &a, &b, &p, &len)) ExitProcess(137);   /* the tracer is gone: a tracee dies with it (PTRACE_O_EXITKILL's effect) */
+        if (xrl_tr_recv(g_tr_r, &op, &a, &b, &p, &len)) ExitProcess(137);   /* the tracer is gone: a tracee dies with it (PTRACE_O_EXITKILL's effect) */
+        /* The tracer (EAC) reads this process's libc dynamic section to find dlopen/dlsym and
+         * expects glibc-style ABSOLUTE DT_ pointers. The deferred fixup normally fires when the
+         * guest reads /proc/self/maps, but a ptrace-stopped tracee never gets that far on its own.
+         * Apply it the first time the tracer actually reads memory/regs (always after musl's own
+         * init, which ran before this stop), so EAC sees absolute pointers instead of offsets. */
+        if (op == TR_PEEK || op == TR_GETREGS || op == TR_MAPS) {
+            static volatile LONG dynfix_once;
+            if (!InterlockedExchange(&dynfix_once, 1)) xrl_boot_apply_dynfix();
+        }
         switch (op) {
         case TR_PEEK: {
             u32 n = (u32)(b > (1u << 20) ? (1u << 20) : b);
             u8 *buf = (u8 *)malloc(n ? n : 1);
             int e = xrl_cfu(buf, a, n);
-            xrl_tr_send(g_tr, TR_RESP, (u64)(s64)e, 0, buf, e ? 0 : n);
+            xrl_tr_send(g_tr_w, TR_RESP, (u64)(s64)e, 0, buf, e ? 0 : n);
             free(buf);
             break; }
-        case TR_POKE: xrl_tr_send(g_tr, TR_RESP, (u64)(s64)poke(a, p, len), 0, NULL, 0); break;
-        case TR_GETREGS: xrl_tr_send(g_tr, TR_RESP, 0, 0, regs, 27 * 8); break;
-        case TR_SETREGS: xrl_tr_send(g_tr, TR_RESP, (u64)(len == 27 * 8 ? set_regs(regs, (const u64 *)p) : -LX_EINVAL), 0, NULL, 0); break;
-        case TR_GETFP: xrl_tr_send(g_tr, TR_RESP, 0, 0, fp, 512); break;
+        case TR_POKE: xrl_tr_send(g_tr_w, TR_RESP, (u64)(s64)poke(a, p, len), 0, NULL, 0); break;
+        case TR_GETREGS: xrl_tr_send(g_tr_w, TR_RESP, 0, 0, regs, 27 * 8); break;
+        case TR_SETREGS: xrl_tr_send(g_tr_w, TR_RESP, (u64)(len == 27 * 8 ? set_regs(regs, (const u64 *)p) : -LX_EINVAL), 0, NULL, 0); break;
+        case TR_GETFP: xrl_tr_send(g_tr_w, TR_RESP, 0, 0, fp, 512); break;
         case TR_SETFP: {
             slong e = len != 512 ? -LX_EINVAL : (*(u32 *)((u8 *)p + 24) & ~g_mxcsr_mask) ? -LX_EINVAL : 0;
             if (!e) memcpy(fp, p, 512);
-            xrl_tr_send(g_tr, TR_RESP, (u64)e, 0, NULL, 0);
+            xrl_tr_send(g_tr_w, TR_RESP, (u64)e, 0, NULL, 0);
             break; }
         case TR_MAPS: {
             size_t cap = 1 << 20; char *t = (char *)malloc(cap);
             size_t n = xrl_mem_format_maps(t, cap);
-            xrl_tr_send(g_tr, TR_RESP, 0, 0, t, (u32)n);
+            xrl_tr_send(g_tr_w, TR_RESP, 0, 0, t, (u32)n);
             free(t);
             break; }
         case TR_KILL: ExitProcess(137);
         case TR_DETACH: InterlockedExchange(&g_tr_on, 0); /* fall through */
-        case TR_CONT: xrl_tr_send(g_tr, TR_RESP, 0, 0, NULL, 0); { int s = (int)a; free(p); return s; }
-        default: xrl_tr_send(g_tr, TR_RESP, (u64)(s64)-LX_EIO, 0, NULL, 0); break;
+        case TR_CONT: xrl_tr_send(g_tr_w, TR_RESP, 0, 0, NULL, 0); { int s = (int)a; free(p); return s; }
+        default: xrl_tr_send(g_tr_w, TR_RESP, (u64)(s64)-LX_EIO, 0, NULL, 0); break;
         }
         free(p);
     }
@@ -137,20 +146,20 @@ static int serve(u64 regs[27], u8 fp[512])
 /* boot.c: before the first guest instruction, if this process was started to be traced */
 void xrl_tracee_boot(u64 *entry, u64 *sp)
 {
-    char name[128];
-    if (!GetEnvironmentVariableA("XRL_TRACEE", name, sizeof name)) return;
-    for (int i = 0; i < 200 && g_tr == NULL; i++) {
-        HANDLE h = CreateFileA(name, GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL);
-        if (h != INVALID_HANDLE_VALUE) g_tr = h; else Sleep(50);
-    }
-    if (!g_tr) { LOGE("tracee: cannot reach the tracer's pipe %s", name); ExitProcess(2); }
+    /* the tracer passes the two anonymous-pipe ends it created as inheritable handles, by value:
+     * XRL_TRACEE_R = this process's read end (tracer->tracee), XRL_TRACEE_W = its write end (tracee->tracer). */
+    char rs[64], ws[64];
+    if (!GetEnvironmentVariableA("XRL_TRACEE_R", rs, sizeof rs) || !GetEnvironmentVariableA("XRL_TRACEE_W", ws, sizeof ws)) return;
+    g_tr_r = (HANDLE)(uintptr_t)_strtoui64(rs, NULL, 10);
+    g_tr_w = (HANDLE)(uintptr_t)_strtoui64(ws, NULL, 10);
+    if (!g_tr_r || !g_tr_w) { LOGE("tracee: bad tracer pipe handles R=%s W=%s", rs, ws); ExitProcess(2); }
     InterlockedExchange(&g_tr_on, 1);
     if (G.trace_syscalls >= 2) xrl_systrace_arm();
     u64 regs[27] = { 0 };
     regs[15] = 59; regs[16] = *entry; regs[17] = 0x33; regs[18] = 0x202; regs[19] = *sp; regs[20] = 0x2b;   /* orig_rax: Linux reports the execve syscall number (59) at the exec stop, confirmed on WSL2 */
     u8 fp[512] = { 0 };
     *(u16 *)fp = 0x37f; *(u32 *)(fp + 24) = 0x1f80; *(u32 *)(fp + 28) = 0xffff;   /* the state a new process starts with */
-    xrl_tr_send(g_tr, TR_HELLO, *entry, *sp, NULL, 0);
+    xrl_tr_send(g_tr_w, TR_HELLO, *entry, *sp, NULL, 0);
     (void)serve(regs, fp);
     *entry = regs[16]; *sp = regs[19];
     LOGW("tracee: continues at %llx, stack %llx", *entry, *sp);
@@ -179,7 +188,7 @@ static void stop_and_serve(CONTEXT *c, xrl_thread *t, int sig)
     }
     u8 fp[512];
     memcpy(fp, &c->FltSave, sizeof fp);   /* XMM_SAVE_AREA32 is the FXSAVE layout, as Linux's user_fpregs_struct */
-    xrl_tr_send(g_tr, TR_STOP, (u64)sig, 0, NULL, 0);
+    xrl_tr_send(g_tr_w, TR_STOP, (u64)sig, 0, NULL, 0);
     int cont_sig = serve(r, fp);
     if (cont_sig > 0 && cont_sig <= 31) {
         u64 ign, cgt;
@@ -203,6 +212,14 @@ static void stop_and_serve(CONTEXT *c, xrl_thread *t, int sig)
         LOGW("tracee: rip %llx -> %llx (translation %llx)", r[16], (u64)c->Rip, tr);
     }
     LOGW("tracee: resumes at rip=%llx rsp=%llx eflags=%llx rdi=%llx rsi=%llx fs_base=%llx mxcsr=%x cw=%x", r[16], r[19], r[18], r[14], r[13], r[21], c->MxCsr, *(u16 *)fp);
+    xrl_memfd_trace_arm(800);   /* DIAG: log this injected call's syscalls (where it returns, or hangs) */
+    if (xrl_spinlog_on()) {   /* DIAG: the exact code + stack args of an injected call, to compare console vs laptop */
+        u8 cb[16]; u64 stk[4];
+        memset(cb, 0, sizeof cb); memset(stk, 0, sizeof stk);
+        xrl_cfu(cb, r[16], sizeof cb); xrl_cfu(stk, r[19], sizeof stk);
+        LOGW("inj-call rip=%llx code: %02x %02x %02x %02x %02x %02x %02x %02x | ret[rsp]=%llx arg0/rdi=%llx stk1=%llx stk2=%llx",
+             r[16], cb[0],cb[1],cb[2],cb[3],cb[4],cb[5],cb[6],cb[7], stk[0], r[14], stk[1], stk[2]);
+    }
     {   MEMORY_BASIC_INFORMATION mi, ms;
         VirtualQuery((void *)c->Rip, &mi, sizeof mi); VirtualQuery((void *)c->Rsp, &ms, sizeof ms);
         LOGW("tracee: CONTEXT flags=%lx cs=%x ss=%x ds=%x es=%x fs=%x gs=%x eflags=%lx mxcsr=%x/%x rip-page prot=%lx state=%lx rsp-page prot=%lx state=%lx rax=%llx rcx=%llx rdx=%llx rbx=%llx rbp=%llx r8=%llx",

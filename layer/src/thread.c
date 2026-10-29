@@ -200,9 +200,20 @@ static int start_os_thread(xrl_thread *t)
 
 int xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out)
 {
+    return xrl_threads_start_main_fdt(entry, guest_rsp, NULL, 0, 0, out);
+}
+
+/* Like xrl_threads_start_main, but the new main thread uses its OWN fd table `fdt` (NULL = the process's
+ * shared table). The in-process EAC game (task.c) needs its own table so its memfds do not collide with the
+ * still-running launcher's fds in the same OS process. The fd table must outlive this thread. */
+int xrl_threads_start_main_fdt(u64 entry, u64 guest_rsp, void *fdt, int proc_pid, int proc_ppid, xrl_thread **out)
+{
     xrl_thread *t = xrl_thread_new();
     if (!t) return -1;
     t->is_main = 1;
+    t->fdt = fdt;
+    t->proc_pid = proc_pid;    /* getpid()/getppid() for this in-process guest and its thread clones */
+    t->proc_ppid = proc_ppid;
     t->resume[6] = entry;
     t->child_rsp = guest_rsp;
     if (start_os_thread(t)) { thread_unlink(t); free(t); return -1; }
@@ -238,7 +249,13 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
     xrl_thread *p = xrl_cur();
     if (!p) return -LX_ENOSYS;
     const u64 need = LX_CLONE_VM | LX_CLONE_THREAD;
-    if (!(flags & LX_CLONE_VM) && xrl_fork_tasks_enabled()) return xrl_do_fork();   /* glibc's fork() */
+    /* fork() (no CLONE_VM) and vfork() (CLONE_VM|CLONE_VFORK, not a thread) both run as a task:
+     * the task model shares the parent's memory and runs parent/child strictly one at a time, which is
+     * exactly vfork's contract (the parent is suspended until the child execs or exits, and the child
+     * execs almost immediately). EAC's bootstrapper calls vfork after it injects the module. */
+    if (xrl_fork_tasks_enabled() && !(flags & LX_CLONE_THREAD) &&
+        (!(flags & LX_CLONE_VM) || (flags & LX_CLONE_VFORK)))
+        return xrl_do_fork();
     if ((flags & need) != need) {
         LOGW("clone: flags=0x%llx is not a thread clone (CLONE_VM|CLONE_THREAD required); fork/vfork unsupported", flags);
         return -LX_ENOSYS;
@@ -263,6 +280,8 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
     if (child_stack) xrl_mem_populate_containing(child_stack - 1);
     t->guest_tp = (flags & LX_CLONE_SETTLS) ? tls : p->guest_tp;
     t->sigmask = p->sigmask;
+    t->proc_pid = p->proc_pid;     /* a thread of the same process shares getpid() */
+    t->proc_ppid = p->proc_ppid;
     t->clone_flags = (u32)flags;
     if (flags & LX_CLONE_CHILD_CLEARTID) t->clear_child_tid = ctid;
     t->guest_stack_lo = 0;
@@ -429,6 +448,11 @@ void xrl_threads_init(void)
     InitializeSRWLock(&G.thread_lock);
     G.next_tid = 1000;
     G.pid = (int)GetCurrentProcessId();   /* see create_os_thread */
+    {   /* execve preserves the pid: a process spawned by a traced/forked exec keeps the fork
+         * child's pid (task.c sends it as XRL_PID). EAC's launcher and the game hand off through
+         * /tmp/eac_wine_pid_<pid>, which only matches if getpid() stays the same across the exec. */
+        char pv[32]; if (GetEnvironmentVariableA("XRL_PID", pv, sizeof pv)) { int p = atoi(pv); if (p > 0) G.pid = p; }
+    }
     int cpuid[4];
     __cpuidex(cpuid, 7, 0);
     int has = (cpuid[1] & 1) != 0;   /* EBX bit 0: FSGSBASE */

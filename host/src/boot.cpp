@@ -27,10 +27,50 @@ std::atomic<bool> g_layer_running{false};
 
 namespace xrl {
 
+// The package install folder. Package::Current() throws in a non-UWP-activated 2nd process
+// (the EAC bootstrapper's spawned tracee): fall back to this exe's own directory, which for a
+// loose install IS the install folder. Cached so both call sites agree.
+static std::string pkg_install_path() {
+    static std::string cached;
+    if (!cached.empty()) return cached;
+    try { cached = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path()); }
+    catch (...) {
+        wchar_t exe[MAX_PATH]; DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+        std::wstring w(exe, n); size_t s = w.find_last_of(L"\\/");
+        if (s != std::wstring::npos) w.resize(s);
+        cached = winrt::to_string(w);
+        XLOGW("boot", "Package::Current() unavailable (2nd process); install path from exe dir: %s", cached.c_str());
+    }
+    return cached;
+}
+
+// Log the first error-severity SEH exception (an access violation here is not caught by catch(...)
+// under /EHsc, so a crash in a spawned child vanishes with no trace). CONTINUE_SEARCH lets it crash
+// as before, but now the code+address are flushed to the log first.
+static LONG CALLBACK host_crash_veh(PEXCEPTION_POINTERS ep) {
+    static std::atomic<bool> logged{false};
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if ((code & 0xF0000000u) == 0xC0000000u && !logged.exchange(true)) {
+        void* at = ep->ExceptionRecord->ExceptionAddress;
+        void* addr = ep->ExceptionRecord->NumberParameters >= 2 ? (void*)ep->ExceptionRecord->ExceptionInformation[1] : nullptr;
+        XLOGW("crash", "first SEH 0x%08lx at rip=%p accessing %p (tid 0x%lx)", code, at, addr, GetCurrentThreadId());
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 int boot_layer() {
+    static std::atomic<bool> veh_done{false};
+    if (!veh_done.exchange(true) && GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0))
+        AddVectoredExceptionHandler(1, host_crash_veh);   // only in a spawned tracee child
     const HostConfig& cfg = load_config();
+    XLOGW("boot", "config loaded; resolving paths (tracee=%d)", GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0) ? 1 : 0);
 
     g_vfs_root    = cfg.vfs_root.empty()    ? local_state_utf8() + "\\rootfs" : cfg.vfs_root;
+    // Support pkg: prefix for vfs_root (same as mounts)
+    if (g_vfs_root.rfind("pkg:", 0) == 0) {
+        g_vfs_root = pkg_install_path() + "\\" + g_vfs_root.substr(4);
+    }
+    XLOGW("boot", "vfs_root resolved: %s", g_vfs_root.c_str());
     g_prefix_path = cfg.prefix_path.empty() ? "/prefix" : cfg.prefix_path;
     g_game_path   = cfg.game_path.empty()   ? "/game"   : cfg.game_path;
 
@@ -55,7 +95,7 @@ int boot_layer() {
     // mounts -> XRL_MOUNTS for the layer's VFS (layer/src/vfs.c). "pkg:" is the install folder:
     // a big read-only tree (the game) ships in the package, not in LocalState's small data area.
     if (!cfg.mounts.empty()) {
-        std::string pkg = winrt::to_string(winrt::Windows::ApplicationModel::Package::Current().InstalledLocation().Path());
+        std::string pkg = pkg_install_path();
         std::string all;
         for (const auto& m : cfg.mounts) {
             size_t eq = m.find('=');

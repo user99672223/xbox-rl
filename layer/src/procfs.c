@@ -45,6 +45,7 @@ static char *dupfmt(size_t *len, const char *fmt, ...)
 static char *g_maps(const char *p, size_t *len)
 {
     (void)p;
+    xrl_boot_apply_dynfix();   /* convert interpreter DT entries to absolute (once) before EAC reads maps */
     size_t cap = 1 << 20;
     char *b = (char *)malloc(cap);
     *len = xrl_mem_format_maps(b, cap);
@@ -272,6 +273,62 @@ static char *g_filemax(const char *p, size_t *len) { (void)p; return dupfmt(len,
 static char *g_cpurange(const char *p, size_t *len) { (void)p; return dupfmt(len, "0-%d\n", xrl_nprocs() - 1); }
 static char *g_never(const char *p, size_t *len) { (void)p; return dupfmt(len, "always madvise [never]\n"); }
 static char *g_auxv(const char *p, size_t *len) { (void)p; *len = 0; return (char *)malloc(1); }
+/* ---- /sys/class/dmi/id/* : a faithful SMBIOS/DMI identity.
+ * Real Linux exposes the machine's firmware identity here; EAC's launcher reads
+ * sys_vendor + product_name (and tools read the rest) for hardware/container
+ * detection. We present an ordinary self-built desktop's DMI: ASUS board, AMI
+ * BIOS, with the system fields left at the vendor defaults ("System manufacturer"
+ * / "System Product Name") exactly as millions of DIY Linux machines report them.
+ * No value here names the real host hardware. The identifying fields the kernel
+ * makes root-only (product_uuid, *_serial, product_sku) return EACCES for our
+ * non-root uid, as they would on a real machine read by a normal user. */
+#define DMI_BIOS_VENDOR  "American Megatrends International, LLC."
+#define DMI_BIOS_VERSION "2803"
+#define DMI_BIOS_DATE    "10/18/2022"
+#define DMI_BIOS_RELEASE "5.17"
+#define DMI_SYS_VENDOR   "System manufacturer"
+#define DMI_PRODUCT_NAME "System Product Name"
+#define DMI_PRODUCT_VER  "System Version"
+#define DMI_PRODUCT_FAM  "To be filled by O.E.M."
+#define DMI_BOARD_VENDOR "ASUSTeK COMPUTER INC."
+#define DMI_BOARD_NAME   "TUF GAMING B550-PLUS"
+#define DMI_BOARD_VER    "Rev X.0x"
+#define DMI_CHASSIS_VEN  "Default string"
+#define DMI_CHASSIS_VER  "Default string"
+#define DMI_CHASSIS_TYPE "3"   /* SMBIOS chassis type 3 = Desktop */
+
+static char *g_dmi(const char *p, size_t *len)
+{
+    const char *leaf = strrchr(p, '/') + 1;
+    const char *v = "";
+    if      (!strcmp(leaf, "bios_vendor"))      v = DMI_BIOS_VENDOR;
+    else if (!strcmp(leaf, "bios_version"))     v = DMI_BIOS_VERSION;
+    else if (!strcmp(leaf, "bios_date"))        v = DMI_BIOS_DATE;
+    else if (!strcmp(leaf, "bios_release"))     v = DMI_BIOS_RELEASE;
+    else if (!strcmp(leaf, "sys_vendor"))       v = DMI_SYS_VENDOR;
+    else if (!strcmp(leaf, "product_name"))     v = DMI_PRODUCT_NAME;
+    else if (!strcmp(leaf, "product_version"))  v = DMI_PRODUCT_VER;
+    else if (!strcmp(leaf, "product_family"))   v = DMI_PRODUCT_FAM;
+    else if (!strcmp(leaf, "board_vendor"))     v = DMI_BOARD_VENDOR;
+    else if (!strcmp(leaf, "board_name"))       v = DMI_BOARD_NAME;
+    else if (!strcmp(leaf, "board_version"))    v = DMI_BOARD_VER;
+    else if (!strcmp(leaf, "chassis_vendor"))   v = DMI_CHASSIS_VEN;
+    else if (!strcmp(leaf, "chassis_version"))  v = DMI_CHASSIS_VER;
+    else if (!strcmp(leaf, "chassis_type"))     v = DMI_CHASSIS_TYPE;
+    else if (!strcmp(leaf, "modalias")) {
+        return dupfmt(len, "dmi:bvn" DMI_BIOS_VENDOR ":bvr" DMI_BIOS_VERSION ":bd" DMI_BIOS_DATE
+            ":br" DMI_BIOS_RELEASE ":svn" DMI_SYS_VENDOR ":pn" DMI_PRODUCT_NAME ":pvr" DMI_PRODUCT_VER
+            ":rvn" DMI_BOARD_VENDOR ":rn" DMI_BOARD_NAME ":rvr" DMI_BOARD_VER
+            ":cvn" DMI_CHASSIS_VEN ":ct" DMI_CHASSIS_TYPE ":cvr" DMI_CHASSIS_VER ":\n");
+    }
+    else if (!strcmp(leaf, "uevent")) {
+        return dupfmt(len, "MODALIAS=dmi:bvn" DMI_BIOS_VENDOR ":bvr" DMI_BIOS_VERSION ":bd" DMI_BIOS_DATE
+            ":br" DMI_BIOS_RELEASE ":svn" DMI_SYS_VENDOR ":pn" DMI_PRODUCT_NAME ":pvr" DMI_PRODUCT_VER
+            ":rvn" DMI_BOARD_VENDOR ":rn" DMI_BOARD_NAME ":rvr" DMI_BOARD_VER
+            ":cvn" DMI_CHASSIS_VEN ":ct" DMI_CHASSIS_TYPE ":cvr" DMI_CHASSIS_VER ":\n");
+    }
+    return dupfmt(len, "%s\n", v);
+}
 static char *g_cpuid_n(const char *p, size_t *len)
 {
     /* /sys/devices/system/cpu/cpuN/topology/<leaf> */
@@ -374,6 +431,33 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     padd("/sys/kernel/mm", K_DIR, NULL);
     padd("/sys/kernel/mm/transparent_hugepage", K_DIR, NULL);
     padd("/sys/kernel/mm/transparent_hugepage/enabled", K_FILE, g_never);
+    /* SMBIOS/DMI identity (see g_dmi). On real Linux the files live under
+     * /sys/devices/virtual/dmi/id and /sys/class/dmi/id symlinks to it; EAC reads
+     * both spellings, so we expose the tree under BOTH prefixes. */
+    static const char *dmi_pub[] = {
+        "bios_vendor", "bios_version", "bios_date", "bios_release",
+        "sys_vendor", "product_name", "product_version", "product_family",
+        "board_vendor", "board_name", "board_version",
+        "chassis_vendor", "chassis_version", "chassis_type", "modalias", "uevent" };
+    /* ...and the identifying fields the kernel makes root-only (0400): a normal
+     * user gets EACCES here, so gen==NULL (xrl_proc_open maps that to EACCES). */
+    static const char *dmi_priv[] = {
+        "product_uuid", "product_serial", "board_serial", "chassis_serial",
+        "product_sku", "chassis_asset_tag" };
+    static const char *dmi_dirs[] = { "/sys/class", "/sys/class/dmi", "/sys/class/dmi/id",
+        "/sys/devices/virtual", "/sys/devices/virtual/dmi", "/sys/devices/virtual/dmi/id" };
+    for (size_t k = 0; k < ARRAY_LEN(dmi_dirs); k++) padd(dmi_dirs[k], K_DIR, NULL);
+    static const char *dmi_bases[] = { "/sys/class/dmi/id", "/sys/devices/virtual/dmi/id" };
+    for (size_t b = 0; b < ARRAY_LEN(dmi_bases); b++) {
+        for (size_t k = 0; k < ARRAY_LEN(dmi_pub); k++) {
+            char p[96]; snprintf(p, sizeof p, "%s/%s", dmi_bases[b], dmi_pub[k]);
+            padd(p, K_FILE, g_dmi);
+        }
+        for (size_t k = 0; k < ARRAY_LEN(dmi_priv); k++) {
+            char p[96]; snprintf(p, sizeof p, "%s/%s", dmi_bases[b], dmi_priv[k]);
+            padd(p, K_FILE, NULL);
+        }
+    }
     (void)g_two;
     int n = xrl_nprocs();
     for (int i = 0; i < n; i++) {
@@ -582,6 +666,7 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
         return NULL;
     }
     if (e && !strncmp(norm, "/proc/1/", 8) && (!e->gen || !strcmp(norm, "/proc/1/fd"))) { *err = LX_EACCES; return NULL; }   /* root's, as for a normal user */
+    if (e && e->kind == K_FILE && !e->gen && strstr(norm, "/dmi/id/")) { *err = LX_EACCES; return NULL; }   /* root-only DMI ids */
     if (kind == K_DIR) return open_dir(norm, gabs);
     if (kind == K_LINK) { *err = LX_ENOENT; return NULL; }   /* callers resolve links via readlink first */
     char *data; size_t len;
@@ -594,6 +679,13 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
         } else if (!strcmp(leaf, "status")) data = g_status(norm, &len);
         else if (!strcmp(leaf, "statm")) data = g_statm(norm, &len);
         else data = g_stat(norm, &len);
+    }
+    if (!strcmp(norm, "/proc/self/maps") && data && len > 0) {
+        LOGW("proc maps: %zu bytes, first 400: %.400s", len, data);
+        if (len > 400) LOGW("proc maps tail: ...%.400s", data + len - (len > 400 ? 400 : len));
+        LOGW("proc maps check: libc=%d ld=%d stack=%d vdso=%d",
+             strstr(data, "libc") != NULL, strstr(data, "ld-") != NULL,
+             strstr(data, "[stack]") != NULL, strstr(data, "[vdso]") != NULL);
     }
     memfile *m = (memfile *)calloc(1, sizeof *m);
     m->data = data; m->len = len;

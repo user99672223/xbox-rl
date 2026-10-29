@@ -109,8 +109,19 @@ bool log_init() {
     QueryPerformanceFrequency(&g.freq);
     QueryPerformanceCounter(&g.t0);
 
-    std::wstring cur  = g_ls_wide + L"\\log.txt";
-    std::wstring prev = g_ls_wide + L"\\log.prev.txt";
+    // A spawned child (a traced tracee, or any spawn at depth>0) must NOT clobber the parent's
+    // log.txt (CREATE_ALWAYS truncates it): give it its own log-child-<pid>.txt so both survive.
+    std::wstring base = L"log";
+    {
+        char d[16];
+        if (GetEnvironmentVariableA("XRL_TRACEE_R", d, sizeof d) ||
+            (GetEnvironmentVariableA("XRL_SPAWN_DEPTH", d, sizeof d) && atoi(d) > 0)) {
+            wchar_t nm[48]; swprintf(nm, 48, L"log-child-%lu", GetCurrentProcessId());
+            base = nm;
+        }
+    }
+    std::wstring cur  = g_ls_wide + L"\\" + base + L".txt";
+    std::wstring prev = g_ls_wide + L"\\" + base + L".prev.txt";
     MoveFileExW(cur.c_str(), prev.c_str(), MOVEFILE_REPLACE_EXISTING);   // ok if cur absent
 
     g.path_wide = cur;

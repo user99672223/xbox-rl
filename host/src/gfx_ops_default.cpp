@@ -25,6 +25,8 @@
 #include <dxgi1_4.h>
 #include <wrl/client.h>
 #include <memory>
+#include <thread>
+#include <atomic>
 
 using Microsoft::WRL::ComPtr;
 
@@ -204,10 +206,141 @@ xrl_gfx_host_services g_services = {
 
 }  // namespace
 
+// ---------------------------------------------------------------------------
+// Keep-alive present loop  (host-internal; not part of the gfx seam)
+// ---------------------------------------------------------------------------
+// The EAC path runs the bootstrapper (RocketLeague_EAC.exe) in THIS windowed
+// process; the bootstrapper renders nothing, and the real game renders in a
+// headless 2nd process. So the CoreWindow never presents a frame, and the Xbox
+// PLM suspends the whole package at ~3 s (APP_WILLENTERBACKGROUND, extended
+// execution revoked, process exits 0x40010006) - right in the middle of EAC's
+// ptrace injection, so EAC never reaches "301 loaded".
+//
+// Fix: drive a real D3D12 clear+present loop on the CoreWindow from a dedicated
+// MTA thread so the compositor keeps seeing frames and the OS leaves us
+// foreground/active. Entirely self-contained (its own device/queue/swapchain),
+// so it never races the layer's own gfx objects.
+namespace {
+
+std::atomic<bool> g_keepalive_run{false};
+std::thread       g_keepalive_th;
+
+void keepalive_loop() {
+    try { winrt::init_apartment(winrt::apartment_type::multi_threaded); } catch (...) {}
+
+    void* cw = g_host ? g_host->get_core_window() : (xrl::window_info_get().core_window);
+    if (!cw) cw = xrl::window_info_get().core_window;
+    if (!cw) { XLOGW("gfx", "keepalive: no CoreWindow; not presenting"); return; }
+
+    uint32_t w = 0, h = 0;
+    { auto wi = xrl::window_info_get(); w = wi.width ? wi.width : 1920; h = wi.height ? wi.height : 1080; }
+
+    HRESULT hr = ensure_factory();
+    if (FAILED(hr)) { XLOGE("gfx", "keepalive: CreateDXGIFactory2 0x%08x", (unsigned)hr); return; }
+
+    ComPtr<ID3D12Device> dev;
+    hr = D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));
+    if (FAILED(hr)) { XLOGE("gfx", "keepalive: D3D12CreateDevice 0x%08x", (unsigned)hr); return; }
+
+    D3D12_COMMAND_QUEUE_DESC qd{};
+    qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    ComPtr<ID3D12CommandQueue> queue;
+    hr = dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue));
+    if (FAILED(hr)) { XLOGE("gfx", "keepalive: CreateCommandQueue 0x%08x", (unsigned)hr); return; }
+
+    const UINT kBuffers = 2;
+    DXGI_SWAP_CHAIN_DESC1 d{};
+    d.Width = w; d.Height = h; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.SampleDesc.Count = 1; d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    d.BufferCount = kBuffers; d.Scaling = DXGI_SCALING_NONE;
+    d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    ComPtr<IDXGISwapChain1> sc1;
+    hr = g_factory->CreateSwapChainForCoreWindow(queue.Get(), (IUnknown*)cw, &d, nullptr, &sc1);
+    if (FAILED(hr)) { XLOGE("gfx", "keepalive: CreateSwapChainForCoreWindow(%ux%u) 0x%08x", w, h, (unsigned)hr); return; }
+    ComPtr<IDXGISwapChain3> sc;
+    if (FAILED(sc1.As(&sc))) { XLOGE("gfx", "keepalive: no IDXGISwapChain3"); return; }
+
+    D3D12_DESCRIPTOR_HEAP_DESC hd{};
+    hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = kBuffers;
+    ComPtr<ID3D12DescriptorHeap> rtvHeap;
+    if (FAILED(dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&rtvHeap)))) { XLOGE("gfx", "keepalive: RTV heap"); return; }
+    UINT rtvStep = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    ComPtr<ID3D12Resource> bufs[kBuffers];
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv0 = rtvHeap->GetCPUDescriptorHandleForHeapStart();
+    for (UINT i = 0; i < kBuffers; ++i) {
+        if (FAILED(sc->GetBuffer(i, IID_PPV_ARGS(&bufs[i])))) { XLOGE("gfx", "keepalive: GetBuffer %u", i); return; }
+        D3D12_CPU_DESCRIPTOR_HANDLE h2 = rtv0; h2.ptr += (SIZE_T)i * rtvStep;
+        dev->CreateRenderTargetView(bufs[i].Get(), nullptr, h2);
+    }
+
+    ComPtr<ID3D12CommandAllocator> alloc;
+    ComPtr<ID3D12GraphicsCommandList> cl;
+    if (FAILED(dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc)))) { XLOGE("gfx", "keepalive: alloc"); return; }
+    if (FAILED(dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc.Get(), nullptr, IID_PPV_ARGS(&cl)))) { XLOGE("gfx", "keepalive: cmdlist"); return; }
+    cl->Close();
+
+    ComPtr<ID3D12Fence> fence;
+    if (FAILED(dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)))) { XLOGE("gfx", "keepalive: fence"); return; }
+    HANDLE fenceEvt = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    UINT64 fenceVal = 0;
+
+    XLOGI("gfx", "keepalive: presenting %ux%u to keep the app foreground", w, h);
+    const float kClear[4] = { 0.f, 0.f, 0.f, 1.f };   // black
+    while (g_keepalive_run.load()) {
+        UINT idx = sc->GetCurrentBackBufferIndex();
+        alloc->Reset();
+        cl->Reset(alloc.Get(), nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = bufs[idx].Get();
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        cl->ResourceBarrier(1, &b);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv0; rtv.ptr += (SIZE_T)idx * rtvStep;
+        cl->ClearRenderTargetView(rtv, kClear, 0, nullptr);
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        cl->ResourceBarrier(1, &b);
+        cl->Close();
+        ID3D12CommandList* lists[] = { cl.Get() };
+        queue->ExecuteCommandLists(1, lists);
+        HRESULT ph = sc->Present(1, 0);
+        if (FAILED(ph)) { XLOGW("gfx", "keepalive: Present 0x%08x; stopping", (unsigned)ph); break; }
+        const UINT64 want = ++fenceVal;
+        queue->Signal(fence.Get(), want);
+        if (fence->GetCompletedValue() < want) {
+            fence->SetEventOnCompletion(want, fenceEvt);
+            WaitForSingleObject(fenceEvt, 1000);
+        }
+    }
+    if (fenceEvt) CloseHandle(fenceEvt);
+    XLOGI("gfx", "keepalive: present loop ended");
+}
+
+}  // namespace
+
 extern "C" const xrl_gfx_ops* xrl_gfx_ops_get_default(const xrl_gfx_host_services* host) {
     g_host = host;
     return &g_ops;
 }
+
+namespace xrl {
+
+void gfx_keepalive_start() {
+    bool was = g_keepalive_run.exchange(true);
+    if (was) return;   // already running
+    try {
+        g_keepalive_th = std::thread(keepalive_loop);
+        g_keepalive_th.detach();
+    } catch (...) {
+        g_keepalive_run.store(false);
+        XLOGE("gfx", "keepalive: could not start thread");
+    }
+}
+
+void gfx_keepalive_stop() { g_keepalive_run.store(false); }
+
+}  // namespace xrl
 
 extern "C" const xrl_gfx_ops* xrl_host_gfx_ops(void) {
     const xrl_gfx_ops* ops = xrl_gfx_ops_get(&g_services);

@@ -755,9 +755,70 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
     }
     if (g_trace_faults) trace_fault(ep, t);
     if (!t) return EXCEPTION_CONTINUE_SEARCH;
+    /* Handler-first fault ordering: a fault the layer owns and can fix must be resolved BEFORE it is
+     * reported to a ptrace tracer. Windows zeroes the guest FS base on context switches; a traced
+     * guest's TLS (%fs) access then faults. Rearm FS and retry here, or the fault below is mis-delivered
+     * to the tracer (EAC) as a SIGSEGV and its injected libc call "crashes" mid-execution instead of
+     * returning to its sentinel. (The sentinel SIGSEGV itself has FS already armed, so it still falls
+     * through to the tracer.) */
+    if (code == EXCEPTION_ACCESS_VIOLATION && G.fsgsbase && t->guest_tp && t->in_sys == 0 &&
+        t->teb_guest_live && (u64)_readfsbase_u64() != t->guest_tp) {
+        _writefsbase_u64(t->guest_tp);
+        InterlockedIncrement64(&xrl_fs_rearms);
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    /* Benign, continuable debug exceptions are NOT signals: OutputDebugString (DBG_PRINTEXCEPTION_C /
+     * its wide form) and the thread-name exception. With no debugger present the correct behaviour is to
+     * swallow them and resume (the RaiseException just returns to its caller). We must CONTINUE_EXECUTION
+     * here rather than CONTINUE_SEARCH: letting one travel onward reaches EAC's own handler, which
+     * mishandles the bogus signal and makes the process EXIT with the raised code (0x40010006) -- that is
+     * exactly what killed the game's 2nd process at ~3 s (NOT an OS reap). Swallowing it here keeps the
+     * multi-process game alive. */
+    if (code == 0x40010006u || code == 0x4001000Au || code == 0x406D1388u) return EXCEPTION_CONTINUE_EXECUTION;
+    /* EAC write-watch: a WRITE to a page the GUEST itself marked read-only (committed, VMA lacks WRITE) to
+     * catch its own writes (self-decryption / self-modification). Per design this must go to the GUEST, never
+     * the ptrace tracer (reporting it to EAC's bootstrapper and re-delivering a Unix signal with no handler
+     * is what crashed the 2nd-process game). If the guest has a SIGSEGV handler up (Wine -> EAC's VEH),
+     * deliver there; if not (early 2nd process, before Wine's exception dispatch is live), emulate the
+     * write-watch flip ourselves so the write completes and the guest resumes. */
+    if (code == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2 && r->ExceptionInformation[0] == 1) {
+        u64 wa = (u64)r->ExceptionInformation[1];
+        if (xrl_mem_is_mapped(wa) && !xrl_mem_page_writable(wa)) {
+            int tg = xrl_teb_enter_host(t); u64 wstk[2]; xrl_teb_stack_here(wstk);
+            int handled = 0, delivered = 0;
+            /* Prefer the guest's OWN SIGSEGV handler (Wine -> EAC's VEH) when it is up and this thread is
+             * running guest code -- that keeps EAC's own write-watch bookkeeping consistent. */
+            if (t->in_sys == 0 && t->teb_guest_live
+                && g_act[LX_SIGSEGV].handler > LX_SIG_IGN && !(t->sigmask & SIGBIT(LX_SIGSEGV)))
+                handled = delivered = deliver_fault(t, ep, LX_SIGSEGV, 2 /*SEGV_ACCERR*/, wa, 14, 6 /*user|write*/);
+            /* No handler up yet (early injection, before Wine's exception dispatch is live, or the fault is
+             * on a transitional/serve thread): emulate the flip so the write completes and the guest resumes.
+             * Safe from any thread state -- it only flips one host page; the VMA stays read-only. Not gated on
+             * teb_guest_live, because on the console the write-watch fires on a thread whose TEB view is not
+             * yet the guest's, and gating it there left the write to ESCAPE and the injection to deadlock. */
+            if (!handled) handled = xrl_mem_writewatch_allow(wa);
+            static volatile LONG wwcount;
+            if (InterlockedIncrement(&wwcount) <= 16)
+                LOGW("writewatch: addr=%llx rip=%llx in_sys=%d guest_live=%d hdlr=%d -> %s",
+                     wa, (u64)ep->ContextRecord->Rip, t->in_sys, t->teb_guest_live,
+                     (int)(g_act[LX_SIGSEGV].handler > LX_SIG_IGN),
+                     delivered ? "delivered" : handled ? "allowed" : "ESCAPED");
+            xrl_teb_stack_back(wstk); xrl_teb_restore(t, tg);
+            if (handled) return EXCEPTION_CONTINUE_EXECUTION;
+        }
+    }
     /* A traced process: a fault in guest code is a signal-delivery-stop for its tracer, whatever the faulting
      * address is (a tracer that makes an injected call return to address 9 waits for exactly this SIGSEGV). */
     if (xrl_tracee_active() && code != EXCEPTION_BREAKPOINT && t->in_sys == 0 && t->teb_guest_live && xrl_mem_is_mapped(ep->ContextRecord->Rsp)) {
+        if (code == EXCEPTION_ACCESS_VIOLATION && r->NumberParameters >= 2) {   /* DIAG: why a guest fault reached the tracer */
+            u64 fa = (u64)r->ExceptionInformation[1];
+            MEMORY_BASIC_INFORMATION mbi; SIZE_T qr = VirtualQuery((void *)fa, &mbi, sizeof mbi);
+            static volatile LONG dcount;
+            if (InterlockedIncrement(&dcount) <= 6)
+                LOGW("tracee-fault: acc=%lld addr=%llx rip=%llx host{state=%lx prot=%lx base=%p rs=%llx}",
+                     (long long)r->ExceptionInformation[0], fa, (u64)ep->ContextRecord->Rip,
+                     qr ? mbi.State : 0, qr ? mbi.Protect : 0, qr ? mbi.BaseAddress : 0, qr ? (u64)mbi.RegionSize : 0);
+        }
         int tsig = code == EXCEPTION_ACCESS_VIOLATION || code == EXCEPTION_STACK_OVERFLOW ? LX_SIGSEGV :
                    code == EXCEPTION_ILLEGAL_INSTRUCTION || code == EXCEPTION_PRIV_INSTRUCTION ? LX_SIGILL :
                    code == EXCEPTION_SINGLE_STEP ? LX_SIGTRAP :

@@ -95,6 +95,8 @@ static slong do_wake(u64 key, int n, u32 bitset)
         for (int i = 0; i < cnt; i++) WakeByAddressSingle((PVOID)wake_list[i]);
         if (cnt < 64) break;
     }
+    if (xrl_spinlog_on() && woken == 0) { static volatile LONG c; if ((InterlockedIncrement(&c) & 0x3f) == 1)
+        LOGW("futex WAKE key=%llx woke=0 (no waiter)", (unsigned long long)key); }
     return woken;
 }
 
@@ -115,6 +117,8 @@ static slong do_wait(u64 uaddr, u32 val, u64 timeout_ns_rel /* ~0 = infinite */,
     if (cur != val) { ReleaseSRWLockExclusive(&b->lock); return -LX_EAGAIN; }
     q_add(b, &w);
     ReleaseSRWLockExclusive(&b->lock);
+
+    if (xrl_spinlog_on()) LOGW("futex WAIT key=%llx val=%x cur=%x bits=%x to=%s", (unsigned long long)uaddr, val, cur, bitset, timeout_ns_rel == ~0ull ? "inf" : "fin");
 
     xrl_thread *t = xrl_cur();
     if (t) t->futex_node = &w;

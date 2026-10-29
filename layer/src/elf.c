@@ -106,6 +106,10 @@ static int map_segment(int fd, const Phdr *p, u64 bias)
         slong r = xrl_mem_mmap(start, mem_end - start, prot, LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_FIXED, -1, 0);
         if (r < 0) { LOGE("elf: bss mmap failed (%lld)", r); return -1; }
     }
+    if (xrl_spinlog_on() && (p->flags & PF_W))
+        LOGW("map_segment: PF_W seg vaddr=%llx+%llx (skew %llx) -> pages[%llx,%llx) prot=%d(%s%s%s)",
+             p->vaddr, p->memsz, skew, ALIGN_DOWN(p->vaddr + bias, LX_PAGE), mem_end, prot,
+             prot & LX_PROT_READ ? "R" : "", prot & LX_PROT_WRITE ? "W" : "", prot & LX_PROT_EXEC ? "X" : "");
     return 0;
 }
 
@@ -143,6 +147,17 @@ static int load_one(const char *gpath, int is_interp, loaded *L)
         L->bias = (u64)base - lo;
     } else L->bias = 0;
     for (int i = 0; i < e->phnum; i++) if (L->ph[i].type == PT_LOAD && map_segment(L->fd, &L->ph[i], L->bias)) return -1;
+    /* Track the interpreter's (musl's) writable PT_LOAD span. A traced tracee relocates its OWN libc; musl
+     * applies PT_GNU_RELRO (mprotect PROT_READ) over part of that RW segment, and a later RELATIVE relocation
+     * into it then faults on a read-only page and, in a ptraced process, is mis-reported to the tracer (EAC)
+     * as a crash. Keeping this span writable (mem.c honors it in mprotect) lets musl's relocation complete. */
+    if (is_interp) {
+        xrl_mem_interp_rw_reset();
+        for (int i = 0; i < e->phnum; i++)
+            if (L->ph[i].type == PT_LOAD && (L->ph[i].flags & PF_W))
+                xrl_mem_interp_rw_add(ALIGN_DOWN(L->ph[i].vaddr + L->bias, LX_PAGE),
+                                      ALIGN_UP(L->ph[i].vaddr + L->ph[i].memsz + L->bias, LX_PAGE));
+    }
     L->entry = e->entry + L->bias;
     L->phent = e->phentsize; L->phnum = e->phnum;
     L->phdr_addr = 0;
@@ -306,6 +321,8 @@ int xrl_elf_load(const char *gpath, xrl_elf_image *out)
         if (load_one(main.interp, 1, &interp)) return -1;
         out->base = interp.bias;
         out->entry = interp.entry;
+        out->interp_lo = ALIGN_DOWN(interp.min_vaddr + interp.bias, LX_PAGE);
+        out->interp_hi = ALIGN_UP(interp.max_vaddr + interp.bias, LX_PAGE);
         install_gateway(&interp, "interpreter");
         free(interp.ph);
         xrl_fd_close(interp.fd);

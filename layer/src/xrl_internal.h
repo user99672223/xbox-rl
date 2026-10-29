@@ -125,6 +125,8 @@ struct xrl_thread {
     u64 teb_host[XRL_TEB_SWAP_QWORDS];
     u64 teb_guest[XRL_TEB_SWAP_QWORDS];
     struct xrl_task *task; /* non-NULL: the body of a fork()ed task (task.c, XRL_FORK_TASKS=1) */
+    int  proc_pid;         /* non-zero: getpid() for this thread (an in-process exec'd guest; task.c). Inherited by thread clones. */
+    int  proc_ppid;        /* non-zero: getppid() for such a thread (its launcher) */
     void *fdt;             /* its fd table (fd.c); NULL: the process's */
     void *tr_park;         /* tracee.c: this thread's copy of its CONTEXT while a tracer has it stopped */
 };
@@ -186,6 +188,7 @@ void xrl_tracee_boot(u64 *entry, u64 *sp);
 void xrl_tracee_stop(CONTEXT *c, xrl_thread *t, int sig);
 void xrl_wake_ctid(xrl_thread *t);
 int  xrl_threads_start_main(u64 entry, u64 guest_rsp, xrl_thread **out);
+int  xrl_threads_start_main_fdt(u64 entry, u64 guest_rsp, void *fdt, int proc_pid, int proc_ppid, xrl_thread **out);   /* own fd table + getpid identity (task.c in-process game) */
 void xrl_threads_terminate_all(void);
 void xrl_thread_reap(xrl_thread *t);       /* drop the record of a thread that was terminated from outside */
 void xrl_thread_die(xrl_thread *t);        /* the calling thread ends quietly (execve, exec kill); no return */
@@ -269,6 +272,8 @@ int  xrl_mem_init(u64 budget);
 slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off);
 slong xrl_mem_munmap(u64 addr, u64 len);
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot);
+void  xrl_mem_rename_range(u64 lo, u64 hi, const char *new_name);
+void  xrl_boot_apply_dynfix(void);
 int   xrl_mem_sync_shared_page(u64 addr, u64 len);
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr);
 slong xrl_mem_brk(u64 addr);
@@ -282,6 +287,10 @@ u64  xrl_mem_committed(void);
 u64  xrl_mem_arena_base(void);
 u64  xrl_mem_arena_size(void);
 int  xrl_mem_is_mapped(u64 addr);
+int  xrl_mem_page_writable(u64 addr);
+int  xrl_mem_writewatch_allow(u64 addr);   /* task.c: cap the fork stack snapshot at the writable stack end */
+void xrl_mem_interp_rw_reset(void);          /* RELRO-safe: keep the interpreter's RW PT_LOAD writable */
+void xrl_mem_interp_rw_add(u64 lo, u64 hi);
 
 /* --------------------------------------------------------------- futex */
 void xrl_futex_init(void);
@@ -325,6 +334,7 @@ struct xfile {
     HANDLE h;
     char  *gpath;          /* guest path (for /proc/self/fd, fstat, mmap)      */
     u32    mode;           /* st_mode type bits for synthesized objects        */
+    u32    seals;          /* memfd F_ADD_SEALS bitmask                        */
     void  *priv;           /* type-specific                                    */
 };
 
@@ -428,6 +438,8 @@ slong xrl_sys_prlimit(int pid, int res, u64 newp, u64 oldp);
 slong xrl_sys_sched_getaffinity(int pid, u64 size, u64 mask);
 int  xrl_nprocs(void);
 const char *xrl_hostname(void);
+int   xrl_spinlog_on(void);   /* DIAG: XRL_SPINLOG=1 enables throttled read/write/poll fd logging */
+void  xrl_memfd_trace_arm(int n);   /* DIAG: trace the current thread's next n syscalls */
 /* signal.c: delivery (see the "signal delivery" comment there) */
 void  xrl_sig_at_return(xrl_thread *t, slong nr, const slong *args, const u64 *gframe, slong res, xrl_sigregs *from);
 slong xrl_sig_return(xrl_thread *t, u64 uc_addr);
@@ -486,10 +498,12 @@ typedef struct xrl_elf_image {
     u64 brk_start;
     int is_dyn;
     char interp[256];
+    u64 interp_lo, interp_hi;         /* interpreter span (0 if none)   */
     u64 exports_xrl_wineserver_main;  /* dynsym lookup, 0 if absent */
 } xrl_elf_image;
 int xrl_elf_load(const char *guest_path, xrl_elf_image *out);
 u64 xrl_elf_build_stack(const xrl_elf_image *img, u64 *out_stack_lo, u64 *out_stack_hi);
+void xrl_boot_move_libc_to_game(const xrl_elf_image *img);   /* Plan C: give EAC the game's musl, not the launcher's */
 
 /* -------------------------------------------------------------- rewrite */
 /* rewrite.c: load-time rewriting of foreign ELF images (`syscall`, `%fs:`). Called for every
@@ -508,6 +522,9 @@ int   xrl_dbt_attach(const char *name, u64 addr, u64 len);
 void  xrl_dbt_attach_pe(const char *name, u64 addr, u64 len);
 int   xrl_dbt_exec_hint(u64 addr, u64 len);   /* a range just became executable (mprotect); 1: it is part of a Windows image */
 void  xrl_dbt_generated(u64 addr, u64 len);   /* a writable+executable anonymous range (generated code) */
+void  xrl_dbt_attach_exec(u64 addr, u64 len); /* a read-only+executable non-PE range (anti-cheat's unpacked module code) */
+void  xrl_dbt_dump_faults(void);              /* print faults the DBT let escape (call from a safe context, e.g. boot exit) */
+void  xrl_mem_dump_faults(void);              /* print lazy-commit faults the handler could not back, + the full guest map */
 void  xrl_dbt_unmapped(u64 addr, u64 len);    /* a range was unmapped or remapped */
 u64   xrl_dbt_translate(u64 pc);
 u64   xrl_dbt_reverse(u64 ca);            /* cache address → original (for the tracee) */

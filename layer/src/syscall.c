@@ -13,6 +13,13 @@
 #define UNUSED6 (void)a1; (void)a2; (void)a3; (void)a4; (void)a5; (void)a6
 #define PATH_MAX_ 4096
 
+static volatile DWORD g_memfd_trace_tid;
+static volatile LONG  g_memfd_trace_n;
+
+/* DIAG (XRL_SPINLOG): arm the per-thread syscall trace for the CURRENT thread, so an injected ptrace
+ * call (tracee.c) can log exactly what it does and where it hangs. */
+void xrl_memfd_trace_arm(int n) { if (xrl_spinlog_on()) { g_memfd_trace_tid = GetCurrentThreadId(); g_memfd_trace_n = n; } }
+
 /* from misc.c */
 slong xrl_sys_clock_gettime(int clk, u64 uts);
 extern void xrl_vclock(void);
@@ -43,6 +50,8 @@ static slong do_read(int fd, u64 buf, u64 n, s64 off)
         if (n > 0x7ffff000ull) n = 0x7ffff000ull;
         r = f->ops->read(f, (void *)buf, n, off);
     }
+    if (xrl_spinlog_on()) { static volatile LONG c; if ((InterlockedIncrement(&c) & 0x1ff) == 1)
+        LOGW("spin-rd fd=%d %s r=%lld n=%llu", fd, f->gpath ? f->gpath : (f->ops && f->ops->name ? f->ops->name : "?"), (long long)r, (unsigned long long)n); }
     xfile_unref(f);
     return r;
 }
@@ -59,8 +68,11 @@ static slong do_write(int fd, u64 buf, u64 n, s64 off)
             const u8 *d = (const u8 *)buf;
             LOGW("write memfd: fd=%d off=%lld n=%llu wrote=%lld first16: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
                  fd, (long long)off, n, (long long)r, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],d[10],d[11],d[12],d[13],d[14],d[15]);
+            if (n > 1000000) { g_memfd_trace_tid = GetCurrentThreadId(); g_memfd_trace_n = 300; }
         }
     }
+    if (xrl_spinlog_on()) { static volatile LONG c; if ((InterlockedIncrement(&c) & 0x1ff) == 1)
+        LOGW("spin-wr fd=%d %s r=%lld n=%llu", fd, f->gpath ? f->gpath : (f->ops && f->ops->name ? f->ops->name : "?"), (long long)r, (unsigned long long)n); }
     xfile_unref(f);
     return r;
 }
@@ -93,7 +105,10 @@ SYS(pwritev) { UNUSED6; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
 /* preadv2/pwritev2(fd, iov, cnt, pos_l, pos_h, flags): on x86-64 pos_l is the whole
  * offset and -1 means "current position". The sync/priority flags need nothing
  * extra here; RWF_NOWAIT (8) and RWF_APPEND (0x10) are not supported. */
-#define LX_RWF_SUPPORTED (0x1 /*HIPRI*/ | 0x2 /*DSYNC*/ | 0x4 /*SYNC*/)
+/* HIPRI/DSYNC/SYNC are honoured as no-ops; NOWAIT/APPEND are accepted (the write proceeds
+ * normally — NOWAIT's non-blocking hint is best-effort), since real Linux supports them and
+ * returning EOPNOTSUPP breaks callers (Wine/EAC use pwritev2 with RWF_NOWAIT). */
+#define LX_RWF_SUPPORTED (0x1 /*HIPRI*/ | 0x2 /*DSYNC*/ | 0x4 /*SYNC*/ | 0x8 /*NOWAIT*/ | 0x10 /*APPEND*/)
 SYS(preadv2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 0); }
 SYS(pwritev2) { UNUSED6; if ((u64)a6 & ~(u64)LX_RWF_SUPPORTED) return -LX_EOPNOTSUPP; return do_iov((int)a1, (u64)a2, (u64)a3, a4, 1); }
 
@@ -113,7 +128,10 @@ SYS(openat)
     char p[PATH_MAX_];
     slong r = getpath(p, (u64)a2);
     if (r) return r;
-    return xrl_vfs_open((int)a1, p, (int)a3, (int)a4);
+    r = xrl_vfs_open((int)a1, p, (int)a3, (int)a4);
+    if (g_memfd_trace_n > 0 && GetCurrentThreadId() == g_memfd_trace_tid)
+        LOGW("memfd-trace OPEN: path=%s flags=%x fd=%lld", p, (int)a3, (long long)r);
+    return r;
 }
 SYS(open)
 {
@@ -121,7 +139,10 @@ SYS(open)
     char p[PATH_MAX_];
     slong r = getpath(p, (u64)a1);
     if (r) return r;
-    return xrl_vfs_open(LX_AT_FDCWD, p, (int)a2, (int)a3);
+    r = xrl_vfs_open(LX_AT_FDCWD, p, (int)a2, (int)a3);
+    if (g_memfd_trace_n > 0 && GetCurrentThreadId() == g_memfd_trace_tid)
+        LOGW("memfd-trace OPEN: path=%s flags=%x fd=%lld", p, (int)a2, (long long)r);
+    return r;
 }
 SYS(creat)
 {
@@ -131,7 +152,16 @@ SYS(creat)
     if (r) return r;
     return xrl_vfs_open(LX_AT_FDCWD, p, LX_O_CREAT | LX_O_WRONLY | LX_O_TRUNC, (int)a2);
 }
-SYS(close) { UNUSED6; return xrl_fd_close((int)a1); }
+SYS(close) {
+    UNUSED6;
+    xfile *cf = xrl_fd_get((int)a1);
+    if (cf) {
+        if (cf->gpath && !strncmp(cf->gpath, "/memfd:", 7))
+            LOGW("close memfd: fd=%d gpath=%s", (int)a1, cf->gpath);
+        xfile_unref(cf);
+    }
+    return xrl_fd_close((int)a1);
+}
 SYS(close_range) { UNUSED6; return xrl_fd_close_range((unsigned)a1, (unsigned)a2, (unsigned)a3); }
 SYS(dup) { UNUSED6; return xrl_fd_dup((int)a1, 0, 0, 1); }
 SYS(dup2)
@@ -169,8 +199,18 @@ SYS(fcntl)
     }
     case LX_F_SETLK: case LX_F_SETLKW:
         f = xrl_fd_get(fd); if (!f) return -LX_EBADF; xfile_unref(f); return 0;   /* advisory locks: no-ops */
-    case LX_F_SETOWN: case LX_F_ADD_SEALS: return 0;
-    case LX_F_GETOWN: case LX_F_GET_SEALS: return 0;
+    case LX_F_SETOWN: return 0;
+    case LX_F_GETOWN: return 0;
+    case LX_F_ADD_SEALS:
+        f = xrl_fd_get(fd); if (!f) return -LX_EBADF;
+        f->seals |= (u32)a3;
+        LOGW("fcntl F_ADD_SEALS fd=%d seals=0x%x -> 0x%x gpath=%s", fd, (unsigned)a3, f->seals, f->gpath ? f->gpath : "?");
+        xfile_unref(f); return 0;
+    case LX_F_GET_SEALS:
+        f = xrl_fd_get(fd); if (!f) return -LX_EBADF;
+        r = f->seals;
+        LOGW("fcntl F_GET_SEALS fd=%d -> 0x%llx gpath=%s", fd, (unsigned long long)r, f->gpath ? f->gpath : "?");
+        xfile_unref(f); return r;
     case 1031: return 65536;      /* F_SETPIPE_SZ */
     case 1032: return 65536;      /* F_GETPIPE_SZ */
     default: return -LX_EINVAL;
@@ -568,16 +608,16 @@ SYS(mmap)
     UNUSED6;
     slong r = xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6);
     if (r > 0 && (a4 & LX_MAP_FIXED)) xrl_dbt_unmapped((u64)r, (u64)a2);   /* dbt.c: generated code replaced */
-    if (r > 0 && !(a4 & LX_MAP_ANONYMOUS)) {
+    if (!(a4 & LX_MAP_ANONYMOUS)) {
         xfile *mf = xrl_fd_get((int)a5);
         if (mf && mf->gpath && !strncmp(mf->gpath, "/memfd:", 7)) {
             LARGE_INTEGER fsz; fsz.QuadPart = -1;
             GetFileSizeEx(mf->h, &fsz);
-            LOGW("mmap memfd: fd=%d prot=%x flags=%x off=%lld addr=%llx len=%llu file_size=%lld shared=%d",
-                 (int)a5, (int)a3, (int)a4, (long long)a6, (u64)r, (u64)a2, (long long)fsz.QuadPart, (int)(a4 & 1));
+            LOGW("mmap memfd: fd=%d prot=%x flags=%x off=%lld addr=%llx len=%llu file_size=%lld shared=%d r=%lld",
+                 (int)a5, (int)a3, (int)a4, (long long)a6, r > 0 ? (u64)r : 0, (u64)a2, (long long)fsz.QuadPart, (int)(a4 & 1), (long long)r);
         }
         if (mf) xfile_unref(mf);
-        if (a3 & LX_PROT_EXEC)
+        if (r > 0 && (a3 & LX_PROT_EXEC))
             xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
     }
     if (r > 0 && (a3 & LX_PROT_EXEC) && (a3 & LX_PROT_WRITE) && (a4 & LX_MAP_ANONYMOUS)) xrl_dbt_generated((u64)r, (u64)a2);   /* dbt.c */
@@ -604,9 +644,15 @@ SYS(mprotect)
     UNUSED6;
     if (a3 & LX_PROT_EXEC)
         LOGW("mprotect: addr=%llx len=%llu prot=%x", (u64)a1, (u64)a2, (int)a3);
+    else if ((u64)a1 >= 0x100000000ull && (u64)a1 < 0x200000000ull)   /* DIAG: EAC module low region (the read-only write-fault) */
+        LOGW("mprotect-lo: addr=%llx len=%llu prot=%x", (u64)a1, (u64)a2, (int)a3);
     slong r = xrl_mem_mprotect((u64)a1, (u64)a2, (int)a3);
-    if (!r && (a3 & LX_PROT_EXEC) && !xrl_dbt_exec_hint((u64)a1, (u64)a2) && (a3 & LX_PROT_WRITE))   /* dbt.c: Windows images loaded by Wine */
-        xrl_dbt_generated((u64)a1, (u64)a2);                                                          /* ... else generated code (rwx) */
+    if (g_memfd_trace_n > 0 && GetCurrentThreadId() == g_memfd_trace_tid)
+        LOGW("memfd-trace MPROT: addr=%llx len=%llx prot=%x r=%lld", (u64)a1, (u64)a2, (int)a3, (long long)r);
+    if (!r && (a3 & LX_PROT_EXEC) && !xrl_dbt_exec_hint((u64)a1, (u64)a2)) {   /* dbt.c: Windows images loaded by Wine */
+        if (a3 & LX_PROT_WRITE) xrl_dbt_generated((u64)a1, (u64)a2);            /* ... generated code (rwx): write-watch */
+        else xrl_dbt_attach_exec((u64)a1, (u64)a2);                            /* ... the anti-cheat's unpacked module code (r+x): scan now */
+    }
     return r;
 }
 SYS(mremap) { UNUSED6; return xrl_mem_mremap((u64)a1, (u64)a2, (u64)a3, (int)a4, (u64)a5); }
@@ -658,8 +704,8 @@ SYS(exit)
 }
 SYS(exit_group) { UNUSED6; xrl_do_exit((int)a1, 1); return 0; }
 SYS(gettid) { UNUSED6; xrl_thread *t = xrl_cur(); return t ? t->tid : G.pid; }
-SYS(getpid) { UNUSED6; int pp, k = xrl_task_pid(xrl_cur(), &pp); return k ? k : G.pid; }
-SYS(getppid) { UNUSED6; int pp = 1; xrl_task_pid(xrl_cur(), &pp); return pp; }
+SYS(getpid) { UNUSED6; xrl_thread *t = xrl_cur(); if (t && t->proc_pid) return t->proc_pid; int pp, k = xrl_task_pid(t, &pp); return k ? k : G.pid; }
+SYS(getppid) { UNUSED6; xrl_thread *t = xrl_cur(); if (t && t->proc_ppid) return t->proc_ppid; int pp = 1; xrl_task_pid(t, &pp); return pp; }
 SYS(uid) { UNUSED6; return 1000; }
 SYS(set_tid_address) { UNUSED6; xrl_thread *t = xrl_cur(); if (t) t->clear_child_tid = (u64)a1; return t ? t->tid : G.pid; }
 SYS(set_robust_list) { UNUSED6; xrl_thread *t = xrl_cur(); if (a2 != 24) return -LX_EINVAL; if (t) { t->robust_list = (u64)a1; t->robust_len = (u64)a2; } return 0; }
@@ -901,6 +947,8 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     LARGE_INTEGER t0 = {0}, t1;
     if (g_prof) QueryPerformanceCounter(&t0);
     if (t && t->task) { const slong ta[6] = { a1, a2, a3, a4, a5, a6 }; xrl_task_syscall_stop(t, nr, ta, 0, 1); }
+    if (g_memfd_trace_n > 0 && GetCurrentThreadId() == g_memfd_trace_tid)   /* DIAG: entry, so a hung syscall is visible */
+        LOGW("memfd-trace ENTER: %s(%llx,%llx,%llx)", xrl_sysname(nr), (unsigned long long)a1, (unsigned long long)a2, (unsigned long long)a3);
     if (nr == 15 && t) r = xrl_sig_return(t, (u64)a1);   /* rt_sigreturn: never a plain return */
     else if ((u64)nr < XRL_NR_MAX && g_tab[nr]) r = g_tab[nr](a1, a2, a3, a4, a5, a6);
     else if (nr >= XRL_SYS_GET_GFX_OPS && nr <= XRL_SYS_GET_LOG_FN) r = xrl_pseudo(nr);
@@ -910,6 +958,11 @@ slong xrl_syscall_dispatch(slong nr, slong a1, slong a2, slong a3, slong a4, slo
     }
     else if (nr == XRL_SYS_DBT_ENTER) r = xrl_dbt_enter_sys((u64)a1);   /* dbt.asm */
     else r = enosys(nr, a1, a2, a3);
+    if (g_memfd_trace_n > 0 && GetCurrentThreadId() == g_memfd_trace_tid) {
+        LONG left = InterlockedDecrement(&g_memfd_trace_n);
+        if (left >= 0)
+            LOGW("memfd-trace[%d]: %s(%llx,%llx,%llx,%llx) = %lld", (int)(80-left), xrl_sysname(nr), (unsigned long long)a1,(unsigned long long)a2,(unsigned long long)a3,(unsigned long long)a4, (long long)r);
+    }
     if (g_prof && (u64)nr < XRL_NR_MAX) {
         QueryPerformanceCounter(&t1);
         InterlockedIncrement64(&g_prof_n[nr]);

@@ -508,6 +508,7 @@ typedef struct lx_stack_t { u64 ss_sp; s32 ss_flags; s32 pad; u64 ss_size; } lx_
 #define LX_CLONE_FS 0x00000200
 #define LX_CLONE_FILES 0x00000400
 #define LX_CLONE_SIGHAND 0x00000800
+#define LX_CLONE_VFORK 0x00004000
 #define LX_CLONE_PARENT 0x00008000
 #define LX_CLONE_THREAD 0x00010000
 #define LX_CLONE_SYSVSEM 0x00040000

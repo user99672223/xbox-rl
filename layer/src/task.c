@@ -26,7 +26,7 @@ typedef struct xrl_task {
     u64 lo_p, lo_c, hi;
     int exited, killed, reaped, sigdeath, execd, status;
     HANDLE proc;                               /* the host process an exec started */
-    HANDLE pipe;                               /* traced exec: the tracer's end of the control pipe (tracee.c) */
+    HANDLE pipe_r, pipe_w;                     /* traced exec: the tracer's ends of the two control pipes (tracee.c): read from / write to the tracee */
     int remote, running;                       /* traced exec: the task stands for a second process; it runs between a CONT and the next stop */
     char exe[256];
     int traced, opts, resumed, mode;          /* mode: 0 PTRACE_CONT, 1 PTRACE_SYSCALL */
@@ -46,6 +46,153 @@ int xrl_fork_tasks_enabled(void)
     static int on = -1;
     if (on < 0) { char v[4]; on = GetEnvironmentVariableA("XRL_FORK_TASKS", v, sizeof v) && v[0] == '1'; }
     return on;
+}
+
+/* XRL_INPROC_INJECT=1 (Plan C): when a traced fork child execve's the game, DON'T spawn a 2nd OS process
+ * (the Xbox reaps a windowless 2nd process at ~3s). Instead run the game as a second guest in THIS OS
+ * process, so the one surviving window-owning process carries the game + EAC. Increment 1 here only probes
+ * whether a 2nd wine64 guest can even start in-process sharing G (the dominant unknown); ptrace-injection
+ * wiring comes next once that is known. See the design note in memory. */
+int xrl_inproc_inject_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) { char v[4]; on = GetEnvironmentVariableA("XRL_INPROC_INJECT", v, sizeof v) && v[0] == '1'; }
+    return on;
+}
+
+/* read a NULL-terminated user char* vector into a freshly malloc'd char** (NULL-terminated); caller frees. */
+static char **strv_dup_from_user(u64 uv, int *count)
+{
+    char **v = (char **)calloc(1, sizeof(char *));
+    int n = 0;
+    if (!v) return NULL;
+    for (; uv; n++) {
+        u64 p;
+        if (n >= 8192 || xrl_cfu(&p, uv + 8ull * (u64)n, 8)) break;
+        if (!p) break;
+        char *s = (char *)malloc(1 << 17);
+        if (!s) break;
+        if (xrl_strfu(s, p, 1 << 17) < 0) { free(s); break; }
+        char **nv = (char **)realloc(v, ((size_t)n + 2) * sizeof(char *));
+        if (!nv) { free(s); break; }
+        v = nv; v[n] = s; v[n + 1] = NULL;
+    }
+    if (count) *count = n;
+    return v;
+}
+
+static void strv_free_local(char **v) { if (v) { for (int i = 0; v[i]; i++) free(v[i]); free(v); } }
+
+/* The game runs in-process as a TRACED tracee: a helper thread loads nothing (the fork-child already loaded
+ * the image), serves the launcher's ptrace over an IN-PROCESS pipe via the same tracee.c serve() the 2nd
+ * process uses, and on CONT starts the game's guest main thread. The launcher drives it with the unchanged
+ * remote_ptrace/remote_wait over k->pipe_r/w. */
+struct inproc_boot { u64 entry, sp, slo, shi; void *fdt; int traced, proc_pid, proc_ppid; };
+static DWORD WINAPI inproc_game_boot_thread(void *arg)
+{
+    struct inproc_boot *b = (struct inproc_boot *)arg;
+    u64 entry = b->entry, sp = b->sp, slo = b->slo, shi = b->shi; void *fdt = b->fdt;
+    int traced = b->traced, proc_pid = b->proc_pid, proc_ppid = b->proc_ppid;
+    free(b);
+    /* Only the EAC-traced game waits to be injected: HELLO over the in-process pipe, then serve the
+     * launcher's injection until CONT. A non-traced execve is wine's own plumbing (the preloader's loader
+     * re-exec, a helper, wineserver): it has no tracer and no CONT will ever come, so it must NOT wait --
+     * it runs in-process immediately. Running it in-process (not as a 2nd OS process) keeps the whole wine
+     * stack in the one window-owning process, so the console does not background/reap a windowless 2nd one. */
+    if (traced) xrl_tracee_boot(&entry, &sp);
+    xrl_thread *mt = NULL;
+    /* The game gets its OWN fd table: EAC's injected code creates the in-game module as a memfd (fd 3) and
+     * reopens /proc/self/fd/3 to dlopen it; sharing the launcher's table let the launcher clobber fd 3. */
+    if (xrl_threads_start_main_fdt(entry, sp, fdt, proc_pid, proc_ppid, &mt) == 0 && mt) { mt->guest_stack_lo = slo; mt->guest_stack_hi = shi; }
+    else LOGE("inproc: could not start the game main thread after injection");
+    return 0;
+}
+
+/* Plan C: run the game as a traced 2nd guest IN THIS OS PROCESS (no 2nd process, so the Xbox has nothing
+ * windowless to reap). The launcher injects it over an in-process pipe exactly as it injects a 2nd process.
+ * Returns 0 with k set up as a remote (pipe-backed) tracee at its exec stop, <0 on a load error. */
+static slong task_exec_inproc(xrl_task *k, const char *gpath, u64 uargv, u64 uenvp)
+{
+    LOGW("inproc: running \"%s\" as a %s 2nd guest in this process (shared G%s), no 2nd process",
+         gpath, k->traced ? "traced" : "plain", k->traced ? ", in-process pipe" : "");
+
+    /* The game needs its own argv/envp/exec_path. The launcher has forked and will not use its own argv
+     * again, so repoint G to the game's (the stack builder reads G.argv/G.envp). */
+    int ac = 0, ec = 0;
+    char **av = strv_dup_from_user(uargv, &ac);
+    char **ev = strv_dup_from_user(uenvp, &ec);
+    if (!av || !ev) { strv_free_local(av); strv_free_local(ev); return -LX_ENOMEM; }
+    if (!ac) { strv_free_local(av); av = (char **)calloc(2, sizeof(char *)); av[0] = _strdup(gpath); ac = 1; }
+    char **oldav = G.argv, **oldev = G.envp; char *oldep = G.exec_path;
+    G.argv = av; G.argc = ac; G.envp = ev; G.envc = ec;
+    G.exec_path = _strdup(gpath);
+
+    xrl_elf_image img;
+    if (xrl_elf_load(G.exec_path, &img)) {
+        LOGE("inproc: xrl_elf_load(%s) failed; reverting G", gpath);
+        free(G.exec_path); G.argv = oldav; G.argc = 0; G.envp = oldev; G.exec_path = oldep;
+        strv_free_local(av); strv_free_local(ev);
+        return -LX_ENOEXEC;
+    }
+    u64 slo = 0, shi = 0, sp = xrl_elf_build_stack(&img, &slo, &shi);
+    if (!sp) { LOGE("inproc: build_stack failed"); return -LX_ENOMEM; }
+    strv_free_local(oldav); strv_free_local(oldev); free(oldep);
+    LOGW("inproc: image loaded entry=%llx stack sp=%llx [%llx,%llx)", img.entry, sp, slo, shi);
+    /* NOTE: moving the "libc.so" identity to the game's musl (xrl_boot_move_libc_to_game) was tried and
+     * REGRESSED to 210 — EAC's injected dlopen needs an INITIALIZED musl, and the game's musl is dormant at
+     * the exec-stop. The launcher's musl IS initialized, so EAC must keep using it; the console hang is the
+     * launcher's dl lock being contended, which is fixed separately (not by re-tagging libc). */
+
+    /* two anonymous pipes (in-process): parent reads pr / writes pw; the tracee reads cr / writes cw.
+     * Only the EAC-traced game needs them (and the HELLO handshake); a plain execve just runs. */
+    HANDLE pr = NULL, pw = NULL, cr = NULL, cw = NULL;
+    if (k->traced) {
+        if (!CreatePipe(&cr, &pw, NULL, 0) || !CreatePipe(&pr, &cw, NULL, 0)) {
+            LOGE("inproc: CreatePipe failed %lu", GetLastError());
+            if (cr) CloseHandle(cr); if (pw) CloseHandle(pw); if (pr) CloseHandle(pr); if (cw) CloseHandle(cw);
+            return -LX_EAGAIN;
+        }
+        /* xrl_tracee_boot reads the child ends by value from the environment (same as the 2nd-process path) */
+        char rs[32], ws[32];
+        snprintf(rs, sizeof rs, "%llu", (unsigned long long)(uintptr_t)cr);
+        snprintf(ws, sizeof ws, "%llu", (unsigned long long)(uintptr_t)cw);
+        SetEnvironmentVariableA("XRL_TRACEE_R", rs);
+        SetEnvironmentVariableA("XRL_TRACEE_W", ws);
+    }
+
+    struct inproc_boot *b = (struct inproc_boot *)calloc(1, sizeof *b);
+    if (!b) { if (cr) CloseHandle(cr); if (pw) CloseHandle(pw); if (pr) CloseHandle(pr); if (cw) CloseHandle(cw); return -LX_ENOMEM; }
+    b->entry = img.entry; b->sp = sp; b->slo = slo; b->shi = shi; b->traced = k->traced;
+    b->proc_pid = k->pid; b->proc_ppid = k->ppid;   /* getpid() for the game = its fork-child pid; the launcher polls /tmp/eac_wine_pid_<that pid> */
+    b->fdt = xrl_fd_table_clone();   /* the game's own fd table (copy of this fork-child's), isolated from the launcher */
+    HANDLE th = CreateThread(NULL, 1u << 20, inproc_game_boot_thread, b, 0, NULL);
+    if (!th) { LOGE("inproc: CreateThread failed %lu", GetLastError()); free(b); if (cr) CloseHandle(cr); if (pw) CloseHandle(pw); if (pr) CloseHandle(pr); if (cw) CloseHandle(cw); return -LX_EAGAIN; }
+    CloseHandle(th);
+
+    snprintf(k->exe, sizeof k->exe, "%s", gpath);
+    if (!k->traced) {
+        /* A plain in-process guest: it runs on the boot thread now. The fork-task thread ends here (execd),
+         * so the parent's fork() returns and wine's startup proceeds, all in this one process. */
+        LOGW("inproc: plain guest started (no injection)");
+        return 0;
+    }
+
+    /* wait for the tracee's HELLO (image loaded, injection-ready), like spawn_process's traced branch */
+    u32 op = 0, len; u64 a = 0, b2; void *p = NULL; int ready = 0;
+    for (int i = 0; i < 3000 && !ready; i++) {
+        DWORD avail = 0;
+        if (PeekNamedPipe(pr, NULL, 0, NULL, &avail, NULL) && avail) { ready = 1; break; }
+        Sleep(10);
+    }
+    if (!ready || xrl_tr_recv(pr, &op, &a, &b2, &p, &len) || op != 1 /* HELLO */) {
+        LOGE("inproc: the in-process tracee did not reach its exec stop (op=%u)", op); free(p);
+        CloseHandle(pr); CloseHandle(pw);   /* the serve loop will see the pipe break and exit */
+        return -LX_EAGAIN;
+    }
+    free(p);
+    k->pipe_r = pr; k->pipe_w = pw; k->remote = 1; k->running = 0;
+    LOGW("inproc: tracee HELLO received; launcher will inject over the in-process pipe (entry=%llx sp=%llx)", a, b2);
+    return 0;
 }
 
 int xrl_task_pid(xrl_thread *t, int *ppid)
@@ -106,7 +253,11 @@ slong xrl_do_fork(void)
     u64 rsp = rsp_of(p), lo = (rsp - 256) & ~15ull, hi = (lo & ~(u64)(LX_PAGE - 1)) + LX_PAGE;
     k->snapP = (u8 *)malloc(STACK_MAX); k->snapC = (u8 *)malloc(STACK_MAX);
     if (!k->snapP || !k->snapC || xrl_cfu(k->snapP, lo, (size_t)(hi - lo))) { free(k->snapP); free(k->snapC); free(k); return -LX_EFAULT; }
-    while (hi - lo < STACK_MAX - LX_PAGE && !xrl_cfu(k->snapP + (hi - lo), hi, LX_PAGE)) hi += LX_PAGE;   /* up to the end of this stack mapping */
+    /* Extend up to the end of the WRITABLE stack mapping only. Stopping at readability alone over-reaches:
+     * on the console the guest stack abuts EAC's module, and a readable-but-read-only guard page there got
+     * pulled into the snapshot -- then xrl_task_on_exit's restore wrote that page and faulted, corrupting the
+     * fork hand-off so EAC never injected. A real stack is writable throughout, so this loses no stack. */
+    while (hi - lo < STACK_MAX - LX_PAGE && xrl_mem_page_writable(hi) && !xrl_cfu(k->snapP + (hi - lo), hi, LX_PAGE)) hi += LX_PAGE;
     k->lo_p = lo; k->hi = hi;
     k->parent_go = CreateEventW(NULL, FALSE, FALSE, NULL);
     k->child_go = CreateEventW(NULL, FALSE, FALSE, NULL);
@@ -116,9 +267,10 @@ slong xrl_do_fork(void)
     if (!t) return -LX_EAGAIN;
     k->pid = t->tid;
     AcquireSRWLockExclusive(&g_task_lock); k->next = g_tasks; g_tasks = k; ReleaseSRWLockExclusive(&g_task_lock);
-    LOGW("fork: child task %d runs on the parent's stack and memory (XRL_FORK_TASKS; not a real fork)", k->pid);
+    LOGW("fork: child task %d (ppid %d) runs on the parent's stack and memory (XRL_FORK_TASKS; not a real fork); stack snap [%llx,%llx)", k->pid, k->ppid, k->lo_p, k->hi);
     xrl_task_thread_start(t);
     WaitForSingleObject(k->parent_go, INFINITE);
+    LOGW("fork: parent (task %d) resumes after child %d yielded/exec'd%s", k->ppid, k->pid, k->remote ? " [child now remote]" : "");
     return k->pid;
 }
 
@@ -126,6 +278,7 @@ slong xrl_do_fork(void)
 void xrl_task_on_exit(xrl_thread *t, int code)
 {
     xrl_task *k = t->task;
+    LOGW("task %d (ppid %d) thread ending: code=%d execd=%d traced=%d remote=%d", k->pid, k->ppid, code, k->execd, k->traced, k->remote);
     if (!k->execd) {
         if (!k->sigdeath && !k->exited) k->status = (code & 0xff) << 8;
         k->exited = 1;
@@ -162,7 +315,7 @@ int xrl_task_signal(xrl_thread *t, int sig)
 
 static void print_arg(const char *s)   /* login codes, account names and ids must never reach a log: only these values are shown */
 {
-    static const char *const ok[] = { "-epicapp=", "-epicenv=", "-epiclocale=", "-epicsandboxid=", "-AUTH_LOGIN=", "WINE", "EOS", "XRL", "PROTON", "LD_", "PATH=", "HOME=", "/", "Z:" };
+    static const char *const ok[] = { "-epicapp=", "-epicenv=", "-epiclocale=", "-epicsandboxid=", "-AUTH_LOGIN=", "WINE", "EOS", "EAC", "GNUTLS", "XRL", "PROTON", "LD_", "PATH=", "HOME=", "/", "Z:" };
     char buf[200]; size_t i;
     int show = 0;
     for (size_t k = 0; k < sizeof ok / sizeof *ok; k++) if (!strncmp(s, ok[k], strlen(ok[k]))) show = 1;
@@ -229,7 +382,7 @@ static int spawn_slot_take(void)
     static INIT_ONCE once = INIT_ONCE_STATIC_INIT;
     BOOL CALLBACK init(PINIT_ONCE io, PVOID p, PVOID *c);
     InitOnceExecuteOnce(&once, init, NULL, NULL);
-    if (!g_spawn_sem) return -LX_EAGAIN;
+    if (!g_spawn_sem) { LOGE("exec: no spawn semaphore available: EAGAIN"); return -LX_EAGAIN; }
     if (g_spawn_depth >= env_int("XRL_MAX_SPAWN_DEPTH", 2)) { LOGE("exec: spawn depth %d reached (XRL_MAX_SPAWN_DEPTH): EAGAIN", g_spawn_depth); return -LX_EAGAIN; }
     if (WaitForSingleObject(g_spawn_sem, 0) != WAIT_OBJECT_0) { LOGE("exec: too many live child processes (XRL_MAX_CHILDREN): EAGAIN"); return -LX_EAGAIN; }
     return 0;
@@ -257,6 +410,12 @@ BOOL CALLBACK init(PINIT_ONCE io, PVOID p, PVOID *c)
         }
     }
     g_spawn_sem = CreateSemaphoreA(NULL, cap, cap, g_spawn_group);
+    if (!g_spawn_sem) {   /* an AppContainer (the console) may refuse a named kernel object; an unnamed
+                           * per-process semaphore still caps this process's spawns, which is enough here */
+        DWORD e = GetLastError();
+        g_spawn_sem = CreateSemaphoreA(NULL, cap, cap, NULL);
+        LOGW("exec: named spawn semaphore '%s' failed (%lu); using an unnamed one (%p)", g_spawn_group, e, (void *)g_spawn_sem);
+    }
     return TRUE;
 }
 
@@ -266,8 +425,8 @@ BOOL CALLBACK init(PINIT_ONCE io, PVOID p, PVOID *c)
 static int rcall(xrl_task *k, u32 op, u64 a, u64 b, const void *pl, u32 plen, void **out, u32 *outlen)
 {
     u32 rop, len; u64 ra, rb; void *p = NULL;
-    if (xrl_tr_send(k->pipe, op, a, b, pl, plen)) return -LX_ESRCH;
-    if (xrl_tr_recv(k->pipe, &rop, &ra, &rb, &p, &len) || rop != 3 /* RESP */) { free(p); return -LX_ESRCH; }
+    if (xrl_tr_send(k->pipe_w, op, a, b, pl, plen)) return -LX_ESRCH;
+    if (xrl_tr_recv(k->pipe_r, &rop, &ra, &rb, &p, &len) || rop != 3 /* RESP */) { free(p); return -LX_ESRCH; }
     if (out) { *out = p; if (outlen) *outlen = len; } else free(p);
     return (int)(s64)ra;
 }
@@ -291,7 +450,7 @@ static slong remote_wait(xrl_task *k, u64 ustatus, int options)
             int st = k->status, r = k->pid;
             if (ustatus && xrl_ctu(ustatus, &st, 4)) return -LX_EFAULT;
             k->reaped = 1;
-            CloseHandle(k->proc); k->proc = NULL; CloseHandle(k->pipe); k->pipe = NULL;
+            CloseHandle(k->proc); k->proc = NULL; if (k->pipe_r) CloseHandle(k->pipe_r); if (k->pipe_w) CloseHandle(k->pipe_w); k->pipe_r = k->pipe_w = NULL;
             spawn_slot_give();
             return r;
         }
@@ -304,13 +463,13 @@ static slong remote_wait(xrl_task *k, u64 ustatus, int options)
         if (!k->running) { LOGW("wait4(%d): the tracee is stopped and nobody continued it: this would wait forever", k->pid); return -LX_ECHILD; }
         if (options & 1) {   /* WNOHANG */
             DWORD avail = 0;
-            if (PeekNamedPipe(k->pipe, NULL, 0, NULL, &avail, NULL) && !avail) {
+            if (PeekNamedPipe(k->pipe_r, NULL, 0, NULL, &avail, NULL) && !avail) {
                 if (WaitForSingleObject(k->proc, 0) != WAIT_OBJECT_0) return 0;
                 remote_gone(k); continue;
             }
         }
         u32 op, len; u64 a, b; void *p = NULL;
-        if (xrl_tr_recv(k->pipe, &op, &a, &b, &p, &len)) { remote_gone(k); continue; }
+        if (xrl_tr_recv(k->pipe_r, &op, &a, &b, &p, &len)) { remote_gone(k); continue; }
         free(p);
         if (op == 2 /* STOP */) { LOGW("task %d: its process stopped with signal %llu", k->pid, a); k->sigdeath = 0; k->running = 0; k->stopped = 1; k->reported = 0; k->s_kind = 4; k->s_sig = (int)a; k->status = ((int)a << 8) | 0x7f; }
     }
@@ -332,6 +491,7 @@ static slong remote_ptrace(xrl_task *k, int req, u64 addr, u64 data)
     case 1: case 2: {
         if ((e = rcall(k, 10 /* PEEK */, addr, 8, NULL, 0, &out, &olen))) return -LX_EIO;
         if (olen != 8) { free(out); return -LX_EIO; }
+        LOGW("ptrace-peek %llx -> %016llx", (unsigned long long)addr, (unsigned long long)*(u64 *)out);   /* DIAG: what EAC reads */
         e = xrl_ctu(data, out, 8) ? -LX_EFAULT : 0; free(out); return e; }
     case 4: case 5: return rcall(k, 11 /* POKE */, addr, 0, &data, 8, NULL, NULL) ? -LX_EIO : 0;
     case 14: case 0x4204: if (req == 14 || addr == 2) {   /* GETFPREGS, GETREGSET(NT_PRFPREG) */
@@ -386,7 +546,7 @@ char *xrl_task_remote_proc(int pid, const char *leaf, size_t *len)
 {
     xrl_task *k = NULL;
     AcquireSRWLockShared(&g_task_lock);
-    for (xrl_task *c = g_tasks; c; c = c->next) if (c->pid == pid && c->remote && c->pipe && !c->reaped && !c->exited && !c->running) { k = c; break; }
+    for (xrl_task *c = g_tasks; c; c = c->next) if (c->pid == pid && c->remote && c->pipe_r && !c->reaped && !c->exited && !c->running) { k = c; break; }
     ReleaseSRWLockShared(&g_task_lock);
     if (!k) return NULL;
     if (!strcmp(leaf, "exe")) { char *s = _strdup(k->exe); *len = strlen(s); return s; }
@@ -436,7 +596,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
     wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
     wchar_t *cur = GetEnvironmentStringsW();
     for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
-        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE=", 11) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16) && wcsncmp(e, L"XRL_DBT_MEMFD=", 14)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE", 10) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16) && wcsncmp(e, L"XRL_DBT_MEMFD=", 14) && wcsncmp(e, L"XRL_PID=", 8)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
     FreeEnvironmentStringsW(cur);
     for (int i = 0; i < 256; i++) {
         u64 sp; char s[4096];
@@ -457,40 +617,65 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         }
     }
     {   char inh[3000]; if (xrl_fd_inherit_list(inh, sizeof inh)) { wchar_t *wi = widen(inh); size_t l = wcslen(wi); if ((size_t)(o - blk) + l + 32 < (1u << 19)) { memcpy(o, L"XRL_INHERIT_FDS=", 16 * sizeof(wchar_t)); o += 16; memcpy(o, wi, (l + 1) * sizeof(wchar_t)); o += l + 1; } free(wi); } }
-    char pname[128] = "";
-    HANDLE pipe = INVALID_HANDLE_VALUE;
+    /* The tracer<->tracee control channel is TWO anonymous pipes (not a named pipe): an AppContainer
+     * (the console) refuses CreateNamedPipe in the global namespace with ACCESS_DENIED, but anonymous
+     * pipes have no name and their handles are inherited into the child (bInheritHandles below). The
+     * parent keeps the write-to-child and read-from-child ends; the child's ends travel as handle
+     * values in XRL_TRACEE_R / XRL_TRACEE_W (valid in the child because inherited). */
+    HANDLE pipe_r = NULL, pipe_w = NULL;     /* parent's ends: read from the child, write to the child */
+    HANDLE child_r = NULL, child_w = NULL;   /* the child's ends, closed in the parent after CreateProcess */
     if (traced) {
         { const wchar_t *kv = L"XRL_DBT_MEMFD=1"; size_t kl = wcslen(kv) + 1; memcpy(o, kv, kl * sizeof(wchar_t)); o += kl; }
-        snprintf(pname, sizeof pname, "\\\\.\\pipe\\xrl-tracee-%lu-%llu", GetCurrentProcessId(), (unsigned long long)GetTickCount64());
-        pipe = CreateNamedPipeA(pname, PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_NOWAIT, 1, 1 << 16, 1 << 16, 0, NULL);
-        if (pipe == INVALID_HANDLE_VALUE) { free(blk); spawn_slot_give(); return -LX_EAGAIN; }
-        wchar_t *wn = widen(pname); size_t l = wcslen(wn);
-        memcpy(o, L"XRL_TRACEE=", 11 * sizeof(wchar_t)); o += 11; memcpy(o, wn, (l + 1) * sizeof(wchar_t)); o += l + 1; free(wn);
+        SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+        HANDLE t2c_r = NULL, t2c_w = NULL, c2t_r = NULL, c2t_w = NULL;   /* tracer->child, child->tracer */
+        if (!CreatePipe(&t2c_r, &t2c_w, &sa, 1 << 16) || !CreatePipe(&c2t_r, &c2t_w, &sa, 1 << 16)) {
+            LOGE("exec: CreatePipe failed: %lu (traced spawn): EAGAIN", GetLastError());
+            if (t2c_r) CloseHandle(t2c_r); if (t2c_w) CloseHandle(t2c_w); if (c2t_r) CloseHandle(c2t_r); if (c2t_w) CloseHandle(c2t_w);
+            free(blk); spawn_slot_give(); return -LX_EAGAIN;
+        }
+        SetHandleInformation(t2c_w, 0x1 /* HANDLE_FLAG_INHERIT */, 0);   /* the parent's own ends are not inherited */
+        SetHandleInformation(c2t_r, 0x1 /* HANDLE_FLAG_INHERIT */, 0);
+        pipe_w = t2c_w; pipe_r = c2t_r; child_r = t2c_r; child_w = c2t_w;
+        wchar_t hv[64];
+        int hn = swprintf(hv, 64, L"XRL_TRACEE_R=%llu", (unsigned long long)(uintptr_t)t2c_r); size_t hl = (size_t)hn + 1; memcpy(o, hv, hl * sizeof(wchar_t)); o += hl;
+        hn = swprintf(hv, 64, L"XRL_TRACEE_W=%llu", (unsigned long long)(uintptr_t)c2t_w); hl = (size_t)hn + 1; memcpy(o, hv, hl * sizeof(wchar_t)); o += hl;
     }
     {   u64 a0; char s0[1024];
         if (!xrl_cfu(&a0, uargv, 8) && a0 && !xrl_strfu(s0, a0, sizeof s0)) { wchar_t *wa = widen(s0); size_t l = wcslen(wa); if ((size_t)(o - blk) + l + 16 < (1u << 19)) { memcpy(o, L"XRL_ARGV0=", 10 * sizeof(wchar_t)); o += 10; memcpy(o, wa, (l + 1) * sizeof(wchar_t)); o += l + 1; } free(wa); }
+    }
+    {   /* execve preserves the pid: the exec'd process keeps this fork child's pid (thread.c reads XRL_PID).
+         * EAC's launcher polls /tmp/eac_wine_pid_<child pid> and the game creates it under its own getpid(). */
+        wchar_t pv[40]; int pn = swprintf(pv, 40, L"XRL_PID=%d", k->pid); size_t l = (size_t)pn + 1;
+        if (pn > 0 && (size_t)(o - blk) + l + 4 < (1u << 19)) { memcpy(o, pv, l * sizeof(wchar_t)); o += l; }
     }
     *o++ = 0;
     STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
     BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, blk, NULL, &si, &pi);
     free(blk);
-    if (!ok) { LOGE("exec: CreateProcess failed: %lu", GetLastError()); if (pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe); spawn_slot_give(); return -LX_EAGAIN; }
+    if (!ok) {
+        LOGE("exec: CreateProcess failed: %lu", GetLastError());
+        if (pipe_r) CloseHandle(pipe_r); if (pipe_w) CloseHandle(pipe_w); if (child_r) CloseHandle(child_r); if (child_w) CloseHandle(child_w);
+        spawn_slot_give(); return -LX_EAGAIN;
+    }
     CloseHandle(pi.hThread);
     k->proc = pi.hProcess;
-    if (traced) {   /* wait for the new process to reach its exec stop (HELLO) */
-        int up = 0;
-        for (int i = 0; i < 3000 && !up; i++) {   /* 30 s */
-            if (ConnectNamedPipe(pipe, NULL) || GetLastError() == ERROR_PIPE_CONNECTED) up = 1;
-            else if (WaitForSingleObject(pi.hProcess, 10) == WAIT_OBJECT_0) break;
+    if (child_r) { CloseHandle(child_r); child_r = NULL; }   /* the child has its own inherited copies now */
+    if (child_w) { CloseHandle(child_w); child_w = NULL; }
+    if (traced) {   /* wait for the new process to reach its exec stop (HELLO), or exit first */
+        u32 op = 0, len; u64 a = 0, b; void *p = NULL; int ready = 0;
+        for (int i = 0; i < 3000 && !ready; i++) {   /* up to 30 s */
+            DWORD avail = 0;
+            if (PeekNamedPipe(pipe_r, NULL, 0, NULL, &avail, NULL) && avail) { ready = 1; break; }
+            if (WaitForSingleObject(pi.hProcess, 10) == WAIT_OBJECT_0) break;   /* the child exited before HELLO */
         }
-        u32 op = 0, len; u64 a = 0, b; void *p = NULL;
-        DWORD mode = PIPE_READMODE_BYTE | PIPE_WAIT;
-        if (up) SetNamedPipeHandleState(pipe, &mode, NULL, NULL);
-        if (!up || xrl_tr_recv(pipe, &op, &a, &b, &p, &len) || op != 1 /* HELLO */) {
+        if (!ready || xrl_tr_recv(pipe_r, &op, &a, &b, &p, &len)) op = 0;
+        if (op != 1 /* HELLO */) {
             LOGE("exec: the traced process did not reach its exec stop"); free(p);
-            TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hProcess); CloseHandle(pipe); k->proc = NULL; spawn_slot_give(); return -LX_EAGAIN;
+            TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hProcess);
+            CloseHandle(pipe_r); CloseHandle(pipe_w); k->proc = NULL; spawn_slot_give(); return -LX_EAGAIN;
         }
-        k->pipe = pipe; k->remote = 1; k->running = 0;
+        free(p);
+        k->pipe_r = pipe_r; k->pipe_w = pipe_w; k->remote = 1; k->running = 0;
         snprintf(k->exe, sizeof k->exe, "%s", gpath);
     }
     LOGW("exec: task %d runs \"%s\" as host process %lu", k->pid, path, pi.dwProcessId);
@@ -501,7 +686,18 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
 slong xrl_task_exec(xrl_thread *t, const char *path, u64 uargv, u64 uenvp)
 {
     xrl_task *k = t->task;
-    LOGW("exec: task %d: execve(\"%s\")", k->pid, path);
+    LOGW("exec: task %d (ppid %d) execve(\"%s\") traced=%d", k->pid, k->ppid, path, k->traced);
+    if (xrl_inproc_inject_enabled()) {
+        slong ir = task_exec_inproc(k, path, uargv, uenvp);
+        if (ir < 0) return ir;                 /* load failed: execve fails in the child, as on Linux */
+        if (k->traced) {                       /* the exec stop is the tracee's HELLO: the tracer sees SIGTRAP (| EVENT_EXEC) */
+            k->stopped = 1; k->reported = 0; k->s_kind = 3;
+            k->status = ((k->opts & 0x10) ? (SIGTRAP_ | (4 << 8)) : SIGTRAP_) << 8 | 0x7f;
+        }
+        k->execd = 1;                          /* the fork-child thread ends; the game runs in-process as a traced tracee */
+        xrl_do_exit(0, 1);
+        return 0;
+    }
     for (int pass = 0; pass < 2; pass++) {
         u64 v = pass ? uenvp : uargv; int n = 0;
         LOGW("exec: %s:", pass ? "environment (names; values of WINE*/EOS*/XRL*/PROTON*/LD_*/PATH/HOME)" : "argv");
@@ -546,6 +742,7 @@ slong xrl_task_wait(int pid, u64 ustatus, int options)
 {
     xrl_thread *p = xrl_cur();
     xrl_task *k = find_child(pid);
+    { static volatile LONG wc; if (InterlockedIncrement(&wc) <= 10) LOGW("wait4(pid=%d opt=%x) by task %d -> child %d%s", pid, options, xrl_task_pid(p, NULL), k ? k->pid : -1, k && k->remote ? " [remote]" : ""); }
     if (!k) return -LX_ECHILD;
     for (;;) {
         if (k->remote) return remote_wait(k, ustatus, options);   /* a traced exec made it a second process meanwhile */
@@ -630,6 +827,7 @@ static slong ptrace_impl(int req, int pid, u64 addr, u64 data)
         return xrl_ctu(data, si, sizeof si) ? -LX_EFAULT : 0; }
     case 0x4201: { u64 m = 0; return xrl_ctu(data, &m, 8) ? -LX_EFAULT : 0; }      /* GETEVENTMSG */
     case 1: case 2: { u64 v; if (xrl_cfu(&v, addr, 8)) return -LX_EIO; return xrl_ctu(data, &v, 8) ? -LX_EFAULT : 0; }   /* PEEKTEXT/DATA (shared memory) */
+    case 4: case 5: return xrl_ctu(addr, &data, 8) ? -LX_EIO : 0;   /* POKETEXT/DATA: the child shares our memory, so write it directly */
     default: LOGW("ptrace request 0x%x on task %d: not supported", req, pid); return -LX_EIO;
     }
 }

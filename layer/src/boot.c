@@ -39,6 +39,117 @@ static const char *env_get(const char *name)
     return NULL;
 }
 
+/* ELF types for walking the interpreter's program headers in memory. */
+#pragma pack(push, 1)
+typedef struct { u8 ident[16]; u16 type, machine; u32 version; u64 entry, phoff, shoff;
+                 u32 flags; u16 ehsize, phentsize, phnum, shentsize, shnum, shstrndx; } boot_Ehdr;
+typedef struct { u32 type, flags; u64 offset, vaddr, paddr, filesz, memsz, align; } boot_Phdr;
+typedef struct { s64 tag; u64 val; } boot_Dyn;
+#pragma pack(pop)
+
+#define BOOT_PT_DYNAMIC 2
+#define BOOT_DT_HASH       4
+#define BOOT_DT_STRTAB     5
+#define BOOT_DT_SYMTAB     6
+#define BOOT_DT_GNU_HASH   0x6ffffef5u
+#define BOOT_DT_VERSYM     0x6ffffff0u
+
+/* Make the already-loaded interpreter (musl) visible to the EAC bootstrapper as
+ * "/usr/lib/libc.so" and fix up its dynamic section entries to absolute addresses.
+ *
+ * The bootstrapper's algorithm:
+ *   1. read /proc/<pid>/maps, find the first line whose path contains "libc.so"
+ *   2. read the ELF header at that base address, walk PT_DYNAMIC
+ *   3. DT_HASH/DT_GNU_HASH/DT_SYMTAB/DT_STRTAB/DT_VERSYM are treated as absolute
+ *      pointers (glibc's ld.so leaves them so; musl leaves link-time offsets)
+ *   4. look up "dlopen" and "dlsym" and call them
+ *
+ * The interpreter IS the live musl with an initialized dlopen. We just need:
+ *   (a) its maps entries to say "libc.so" (not "ld-musl-x86_64.so.1")
+ *   (b) its dynamic section entries to be absolute (the glibc-compat shim's job,
+ *       but Wine isn't built with that patch on Xbox)
+ */
+static volatile u64 g_dynfix_base;   /* nonzero = deferred fixup pending */
+static u64 g_boot_libc_lo, g_boot_libc_hi;   /* the first (launcher) musl span, so Plan C can re-tag it */
+
+static void fixup_libc_for_eac(const xrl_elf_image *img)
+{
+    if (!img->base || !img->interp_lo) {
+        LOGW("boot: no interpreter loaded (EAC libc fixup skipped)");
+        return;
+    }
+    u64 lo = img->interp_lo, hi = img->interp_hi;
+
+    /* (a) Rename the interpreter's VMAs so /proc/self/maps says "libc.so" — safe
+     *     to do now; it only touches our VMA name table, not the interpreter's data. */
+    xrl_mem_rename_range(lo, hi, "/usr/lib/libc.so");
+    g_boot_libc_lo = lo; g_boot_libc_hi = hi;
+    LOGI("boot: interpreter VMAs [%llx,%llx) renamed to /usr/lib/libc.so", lo, hi);
+
+    /* (b) Defer the dynamic-section fixup: musl's own startup walks these entries
+     *     as offsets, so we must not convert them to absolute before it has finished
+     *     initialising.  The fixup fires on the first /proc/self/maps read (which is
+     *     when EAC's bootstrapper actually needs the absolute pointers). */
+    g_dynfix_base = img->base;
+    LOGI("boot: interpreter dynamic fixup deferred (base=%llx)", img->base);
+}
+
+/* Plan C (in-process EAC injection): EAC finds libc by the FIRST /proc/<pid>/maps line containing
+ * "libc.so", resolves dlopen there, and injects it into the GAME. With the launcher and game sharing one
+ * address space (two musl instances), the boot-time rename tagged the LAUNCHER's musl "libc.so", so EAC
+ * resolved the launcher's dlopen -- whose dl lock the launcher contends -> the injected call deadlocks on
+ * the console (the laptop only survives by lock-timing luck). Move the "libc.so" identity and the deferred
+ * DT fixup onto the GAME's own musl, and un-tag the launcher's, so EAC injects the game's dlopen instead. */
+void xrl_boot_move_libc_to_game(const xrl_elf_image *img)
+{
+    if (!img || !img->base || !img->interp_lo) { LOGW("inproc: game has no interpreter; libc identity not moved"); return; }
+    if (g_boot_libc_lo) {
+        xrl_mem_rename_range(g_boot_libc_lo, g_boot_libc_hi, "/lib/ld-musl-x86_64.so.1");
+        LOGI("inproc: launcher libc VMAs [%llx,%llx) un-tagged (EAC must not resolve the launcher's dlopen)", g_boot_libc_lo, g_boot_libc_hi);
+    }
+    xrl_mem_rename_range(img->interp_lo, img->interp_hi, "/usr/lib/libc.so");
+    g_dynfix_base = img->base;
+    LOGI("inproc: game libc VMAs [%llx,%llx) renamed to /usr/lib/libc.so; dynfix deferred (base=%llx)",
+         img->interp_lo, img->interp_hi, img->base);
+}
+
+void xrl_boot_apply_dynfix(void)
+{
+    u64 base = (u64)InterlockedExchange64((volatile LONG64 *)&g_dynfix_base, 0);
+    if (!base) return;   /* already applied (or nothing pending) */
+
+    const boot_Ehdr *eh = (const boot_Ehdr *)base;
+    if (memcmp(eh->ident, "\177ELF", 4) || eh->machine != 0x3e || eh->type != 3) {
+        LOGW("boot: interpreter at %llx is not a valid ELF (deferred dynfix skipped)", base);
+        return;
+    }
+    const boot_Phdr *ph = (const boot_Phdr *)(base + eh->phoff);
+    u64 dyn_va = 0, dyn_memsz = 0;
+    for (int i = 0; i < eh->phnum; i++) {
+        if (ph[i].type == BOOT_PT_DYNAMIC) {
+            dyn_va = ph[i].vaddr + base;
+            dyn_memsz = ph[i].memsz;
+            break;
+        }
+    }
+    if (!dyn_va) { LOGW("boot: interpreter has no PT_DYNAMIC (deferred dynfix)"); return; }
+
+    u64 dyn_page = ALIGN_DOWN(dyn_va, LX_PAGE);
+    u64 dyn_end = ALIGN_UP(dyn_va + dyn_memsz, LX_PAGE);
+    xrl_mem_mprotect(dyn_page, dyn_end - dyn_page, LX_PROT_READ | LX_PROT_WRITE);
+    int fixed = 0;
+    for (boot_Dyn *d = (boot_Dyn *)dyn_va; d->tag != 0; d++) {
+        switch ((u32)d->tag) {
+        case BOOT_DT_HASH: case BOOT_DT_GNU_HASH: case BOOT_DT_SYMTAB:
+        case BOOT_DT_STRTAB: case BOOT_DT_VERSYM:
+            if (d->val < base) { d->val += base; fixed++; }
+            break;
+        }
+    }
+    xrl_mem_mprotect(dyn_page, dyn_end - dyn_page, LX_PROT_READ);
+    LOGI("boot: deferred dynfix applied: %d entries converted to absolute (base=%llx)", fixed, base);
+}
+
 int xrl_layer_boot(const xrl_boot_context *ctx)
 {
     static volatile LONG booted;
@@ -101,6 +212,7 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
 
     xrl_elf_image img;
     if (xrl_elf_load(G.exec_path, &img)) { LOGE("boot: failed to load %s", G.exec_path); return XRL_ERR_GENERIC; }
+    fixup_libc_for_eac(&img);
     if (xrl_guest_ctx_build()) { LOGE("boot: failed to build guest ctx"); return XRL_ERR_GENERIC; }
 
     LOGI("boot: building initial stack");
@@ -124,6 +236,8 @@ int xrl_layer_boot(const xrl_boot_context *ctx)
     int code = (int)G.exit_code;
     { extern volatile LONG64 xrl_fs_rearms; LOGI("boot: FS-base re-arm faults handled: %lld", (long long)xrl_fs_rearms); }
     LOGI("boot: guest exiting with code %d; draining %lld thread(s)", code, (slong)G.nthreads);
+    xrl_dbt_dump_faults();   /* dbt.c: print any faults the DBT let escape (safe context) */
+    xrl_mem_dump_faults();   /* mem.c: why the memory handler could not back a faulting write + full map */
     for (int i = 0; i < 50 && G.nthreads > 0; i++) Sleep(10);
     if (G.nthreads > 0) { LOGW("boot: terminating %lld straggler thread(s)", (slong)G.nthreads); xrl_threads_terminate_all(); }
     return code;

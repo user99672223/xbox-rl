@@ -410,8 +410,8 @@ static slong net_fstat(xfile *f, lx_stat *st) { xrl_stat_synth(st, LX_S_IFSOCK |
 static int conn_state(netsock *n)
 {
     WSAPOLLFD p; p.fd = n->s; p.events = POLLWRNORM; p.revents = 0;
-    if (WSAPoll(&p, 1, 0) == SOCKET_ERROR) return -wsa_errno(WSAGetLastError());
-    if (p.revents & (POLLERR | POLLHUP)) {
+    int pr = WSAPoll(&p, 1, 0);
+    if (pr != SOCKET_ERROR && (p.revents & (POLLERR | POLLHUP))) {
         int e = 0, l = sizeof e;
         getsockopt(n->s, SOL_SOCKET, SO_ERROR, (char *)&e, &l);
         n->connecting = 0;
@@ -419,7 +419,22 @@ static int conn_state(netsock *n)
         int r = n->soerr; n->soerr = 0;                    /* reported through connect() itself */
         return -r;
     }
-    if (p.revents & POLLWRNORM) { n->connecting = 0; n->connected = 1; return 1; }
+    if (pr != SOCKET_ERROR && (p.revents & POLLWRNORM)) { n->connecting = 0; n->connected = 1; return 1; }
+    /* WSAPoll(POLLWRNORM) is an unreliable connect-completion signal on a socket that is
+     * registered with WSAEventSelect (the case here) — most visibly for loopback self-IPC,
+     * which the game uses and which otherwise never reports "connected", so it busy-loops on
+     * getsockopt(SO_ERROR). getpeername is authoritative: it succeeds once the connect
+     * completes and returns WSAENOTCONN while still pending (SO_ERROR then carries a failure). */
+    { SOCKADDR_STORAGE sa; int sl = sizeof sa;
+      if (getpeername(n->s, (SOCKADDR *)&sa, &sl) == 0) { n->connecting = 0; n->connected = 1; return 1; }
+      int ge = WSAGetLastError();
+      if (ge == WSAENOTCONN) {
+          int e = 0, l = sizeof e;
+          getsockopt(n->s, SOL_SOCKET, SO_ERROR, (char *)&e, &l);
+          if (e) { n->connecting = 0; n->soerr = wsa_errno(e); int r = n->soerr; n->soerr = 0; return -r; }
+          return 0;   /* genuinely still pending */
+      }
+      if (pr == SOCKET_ERROR) { n->connecting = 0; n->soerr = wsa_errno(ge); int r = n->soerr; n->soerr = 0; return -r; } }
     return 0;
 }
 
@@ -875,7 +890,7 @@ static int ignorable_opt(int level, int opt)
                opt == SO_BINDTODEVICE_L || opt == SO_ATTACH_FILTER_L || opt == SO_TIMESTAMP_L || opt == SO_MARK_L || opt == SO_BUSY_POLL_L ||
                opt == SO_INCOMING_CPU_L || opt == 35 /*SO_TIMESTAMPNS*/ || opt == 37 /*SO_TIMESTAMPING*/ || opt == 28 /*SO_RXQ_OVFL*/;
     if (level == L_IPPROTO_TCP)
-        return opt == 3 /*CORK*/ || opt == 9 /*DEFER_ACCEPT*/ || opt == 12 /*QUICKACK*/ || opt == 13 /*CONGESTION*/ || opt == 18 /*USER_TIMEOUT*/ ||
+        return opt == 3 /*CORK*/ || opt == 7 /*SYNCNT*/ || opt == 9 /*DEFER_ACCEPT*/ || opt == 12 /*QUICKACK*/ || opt == 13 /*CONGESTION*/ || opt == 18 /*USER_TIMEOUT*/ ||
                opt == 23 /*FASTOPEN*/ || opt == 19 /*THIN_LINEAR_TIMEOUTS*/ || opt == 20 /*THIN_DUPACK*/;
     if (level == L_IPPROTO_IP)
         return opt == 10 /*MTU_DISCOVER*/ || opt == 11 /*RECVERR*/ || opt == 12 /*RECVTTL*/ || opt == 13 /*RECVTOS*/ || opt == 15 /*FREEBIND*/ ||

@@ -40,6 +40,9 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <cstring>
+#include <cstdlib>
 
 using Microsoft::WRL::ComPtr;
 
@@ -631,6 +634,107 @@ bool probe_run(const ProbeOptions& opt) {
     if (opt.ceiling)   run_step("ceiling",   false, step_ceiling);
     XLOGI(T, "================ PROBE END (%.0f ms) ================", now_ms() - t0);
     return required_ok;
+}
+
+// ===================================================================
+// procprobe - evidence on whether the Xbox lets a packaged app run extra OS
+// processes, and if not, HOW/when it stops them. A child is this exe re-run
+// with XRL_PROCCHILD=<id>:<behavior>; it only heartbeats GetTickCount64 to
+// <XRL_PP_DIR>\pp-child-<id>.log (pure Win32, no WinRT/log.txt). The parent
+// (the foreground, window-owning app) spawns several and classifies each:
+// ALIVE (heartbeats fresh), FROZEN (process alive but heartbeats stopped =
+// PLM-suspended), or TERMINATED (+exit code). GetTickCount64 (system uptime)
+// shares a base across processes, so staleness is comparable.
+static unsigned long long pp_last_hb(const char* path) {
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    LARGE_INTEGER sz; if (!GetFileSizeEx(f, &sz)) { CloseHandle(f); return 0; }
+    LONG back = sz.QuadPart > 4096 ? 4096 : (LONG)sz.QuadPart;
+    LARGE_INTEGER mv; mv.QuadPart = -(LONGLONG)back; SetFilePointerEx(f, mv, nullptr, FILE_END);
+    char buf[4097]; DWORD rd = 0; ReadFile(f, buf, (DWORD)back, &rd, nullptr);
+    buf[rd < 4096 ? rd : 4096] = 0; CloseHandle(f);
+    unsigned long long last = 0;
+    for (char* p = buf; (p = strstr(p, "t=")) != nullptr; p += 2) last = _strtoui64(p + 2, nullptr, 10);
+    return last;
+}
+
+void procprobe_child_main(const char* spec) {
+    int id = atoi(spec);
+    const char* colon = strchr(spec, ':');
+    std::string beh = colon ? std::string(colon + 1) : "idle";
+    if (beh == "extexec") { try { winrt::init_apartment(winrt::apartment_type::multi_threaded); request_extended_execution(); } catch (...) {} }
+    char dir[600] = "."; GetEnvironmentVariableA("XRL_PP_DIR", dir, sizeof dir);
+    char path[720]; snprintf(path, sizeof path, "%s\\pp-child-%d.log", dir, id);
+    HANDLE f = CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                           nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    auto wr = [&](const char* s) { if (f != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(f, s, (DWORD)strlen(s), &w, nullptr); FlushFileBuffers(f); } };
+    char line[256];
+    snprintf(line, sizeof line, "START pid=%lu beh=%s t=%llu\n",
+             GetCurrentProcessId(), beh.c_str(), (unsigned long long)GetTickCount64());
+    wr(line);
+    for (int n = 0; n < 1500; n++) {   // up to ~150 s of heartbeats
+        unsigned long long t = GetTickCount64();
+        snprintf(line, sizeof line, "HB n=%d t=%llu\n", n, (unsigned long long)t);
+        wr(line);
+        if (beh == "busy") { unsigned long long end = t + 100; volatile unsigned x = 0; while (GetTickCount64() < end) x++; }
+        else Sleep(100);
+    }
+    if (f != INVALID_HANDLE_VALUE) CloseHandle(f);
+}
+
+void procprobe_parent(const char* spec) {
+    XLOGW("procprobe", "START main pid=%lu spec=%s", GetCurrentProcessId(), (spec && *spec) ? spec : "(default)");
+    wchar_t exe[600]; if (!GetModuleFileNameW(nullptr, exe, 600)) { XLOGE("procprobe", "GetModuleFileName failed"); return; }
+    std::vector<std::string> behs;
+    { std::string s = (spec && *spec) ? std::string(spec) : "idle,busy,extexec,idle";
+      size_t p = 0; for (;;) { size_t c = s.find(',', p);
+          behs.push_back(s.substr(p, c == std::string::npos ? std::string::npos : c - p));
+          if (c == std::string::npos) break; p = c + 1; } }
+    int N = (int)behs.size();
+    bool use_job = GetEnvironmentVariableA("XRL_PROCPROBE_JOB", nullptr, 0) != 0;
+    HANDLE job = nullptr;
+    if (use_job) { job = CreateJobObjectW(nullptr, nullptr); XLOGW("procprobe", "job object = %p (err %lu)", job, GetLastError()); }
+    struct Kid { HANDLE h = nullptr; DWORD pid = 0; std::string beh; bool dead = true; char hb[720] = {0}; };
+    std::vector<Kid> kids(N);
+    const std::string& ls = local_state_utf8();
+    unsigned long long t0 = GetTickCount64();
+    for (int i = 0; i < N; i++) {
+        kids[i].beh = behs[i];
+        char v[64]; snprintf(v, sizeof v, "%d:%s", i, behs[i].c_str());
+        SetEnvironmentVariableA("XRL_PROCCHILD", v);
+        STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi = {};
+        BOOL ok = CreateProcessW(exe, nullptr, nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &si, &pi);
+        if (!ok) { XLOGE("procprobe", "child %d (%s): CreateProcess FAILED err=%lu", i, behs[i].c_str(), GetLastError()); continue; }
+        if (job && !AssignProcessToJobObject(job, pi.hProcess)) XLOGW("procprobe", "child %d: AssignProcessToJobObject err=%lu", i, GetLastError());
+        ResumeThread(pi.hThread); CloseHandle(pi.hThread);
+        kids[i].h = pi.hProcess; kids[i].pid = pi.dwProcessId; kids[i].dead = false;
+        snprintf(kids[i].hb, sizeof kids[i].hb, "%s\\pp-child-%d.log", ls.c_str(), i);
+        XLOGW("procprobe", "spawned child %d (%s) pid=%lu", i, behs[i].c_str(), pi.dwProcessId);
+    }
+    SetEnvironmentVariableA("XRL_PROCCHILD", nullptr);
+    for (int s = 1; s <= 70; s++) {
+        Sleep(1000);
+        unsigned long long now = GetTickCount64();
+        char sum[700]; int o = 0; o += snprintf(sum + o, sizeof sum - o, "t=%2ds", s);
+        for (int i = 0; i < N; i++) {
+            Kid& k = kids[i];
+            if (!k.h)   { o += snprintf(sum + o, sizeof sum - o, " c%d=nospawn", i); continue; }
+            if (k.dead) { o += snprintf(sum + o, sizeof sum - o, " c%d=.", i); continue; }
+            if (WaitForSingleObject(k.h, 0) == WAIT_OBJECT_0) {
+                DWORD code = 0; GetExitCodeProcess(k.h, &code);
+                XLOGW("procprobe", "child %d (%s) TERMINATED at +%llums exit=0x%lx (%lu)", i, k.beh.c_str(), now - t0, code, code);
+                o += snprintf(sum + o, sizeof sum - o, " c%d=TERM0x%lx", i, code); k.dead = true; continue;
+            }
+            unsigned long long last = pp_last_hb(k.hb);
+            long long age = last ? (long long)(now - last) : -1;
+            o += snprintf(sum + o, sizeof sum - o, " c%d=%s+%lldms", i, (age >= 0 && age < 1500) ? "ok" : "FROZEN", age);
+        }
+        XLOGW("procprobe", "%s", sum);
+    }
+    for (int i = 0; i < N; i++)
+        XLOGW("procprobe", "VERDICT child %d (%s): %s", i, kids[i].beh.c_str(), kids[i].dead ? "TERMINATED" : "alive-at-end");
+    XLOGW("procprobe", "DONE (main pid=%lu held foreground throughout)", GetCurrentProcessId());
 }
 
 }  // namespace xrl

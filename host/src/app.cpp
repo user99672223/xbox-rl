@@ -15,6 +15,7 @@
 #include "xrl_host.h"
 
 #include <winrt/Windows.Graphics.Display.h>
+#include <winrt/Windows.ApplicationModel.ExtendedExecution.h>
 
 namespace winrt {
     using namespace Windows::ApplicationModel::Core;
@@ -22,6 +23,27 @@ namespace winrt {
 }
 
 namespace xrl {
+
+// Hold an extended-execution session so the OS does not SUSPEND the app when it drops out of the
+// foreground. EAC launches the game as a 2nd process and ptrace-injects it over a couple of seconds;
+// without this the Xbox suspends the app mid-injection (APP_WILLENTERBACKGROUND) and EAC never
+// reaches "301 loaded". Must be requested while foreground; the session is kept alive (static).
+void request_extended_execution() {
+    using namespace winrt::Windows::ApplicationModel::ExtendedExecution;
+    try {
+        static ExtendedExecutionSession s{ nullptr };
+        s = ExtendedExecutionSession();
+        s.Reason(ExtendedExecutionReason::Unspecified);
+        s.Description(L"xbox-rl: EAC in-game load");
+        s.Revoked([](auto&&, ExtendedExecutionRevokedEventArgs const& a) {
+            XLOGW("host", "extended execution revoked (reason %d)", (int)a.Reason());
+        });
+        auto r = s.RequestExtensionAsync().get();
+        XLOGI("host", "extended execution request -> %d (0=Allowed, 1=Denied)", (int)r);
+    } catch (...) {
+        XLOGW("host", "extended execution request threw");
+    }
+}
 
 void host_early_init(const char* mode_name) {
     // MTA on the main thread. CoreApplication::Run creates the ASTA UI thread itself.
