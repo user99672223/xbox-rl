@@ -954,6 +954,12 @@ static LONG CALLBACK xrl_veh_last(PEXCEPTION_POINTERS ep)
     if (code < 0xC0000000u) return EXCEPTION_CONTINUE_SEARCH;   /* informational / warning codes continue */
     xrl_thread *t = xrl_cur();
     if (!t || !t->teb_guest_live || t->in_sys) return EXCEPTION_CONTINUE_SEARCH;   /* host code: SEH, then the filter */
+    /* Code in a Windows-loaded module (the layer itself, the host, system DLLs) may run with the guest view
+     * live and guard a guest-memory access with __try; its frame handler runs after the VEHs, so leave it. */
+    HMODULE m = NULL;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           (LPCSTR)ep->ContextRecord->Rip, &m) && m)
+        return EXCEPTION_CONTINUE_SEARCH;
     xrl_teb_enter_host(t);
     u64 stk[2];
     xrl_teb_stack_here(stk);
