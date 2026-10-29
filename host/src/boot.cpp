@@ -82,7 +82,8 @@ int boot_layer() {
         char pa[512];
         if (GetEnvironmentVariableA("XRL_PP_ARGV", pa, sizeof pa)) {
             g_argv_s.clear();
-            for (char* t = strtok(pa, "|"); t; t = strtok(nullptr, "|")) g_argv_s.push_back(t);
+            char* ctx = nullptr;
+            for (char* t = strtok_s(pa, "|", &ctx); t; t = strtok_s(nullptr, "|", &ctx)) g_argv_s.push_back(t);
         }
     }
     if (g_argv_s.empty()) {
