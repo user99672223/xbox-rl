@@ -309,6 +309,8 @@ static slong wt_wait(waiter *w, LONG seen)
 #define CHUNK 65536u
 
 /* ------------------------------------------------------------------ recv */
+static int net_diag(void) { static int v = -1; if (v < 0) { char b[4]; v = GetEnvironmentVariableA("XRL_NETDIAG", b, sizeof b) && b[0] == '1'; } return v; }
+
 static slong net_recv(xfile *f, netsock *n, u64 ubuf, u64 len, int flags, SOCKADDR_STORAGE *from, int *fromlen, int *trunc)
 {
     int nonblock = (f->flags & LX_O_NONBLOCK) || (flags & L_MSG_DONTWAIT);
@@ -329,6 +331,12 @@ static slong net_recv(xfile *f, netsock *n, u64 ubuf, u64 len, int flags, SOCKAD
         int r, tr = 0;
         if (from) { *fromlen = (int)sizeof(SOCKADDR_STORAGE); r = recvfrom(n->s, buf, (int)ask, wflags, (SOCKADDR *)from, fromlen); }
         else r = recv(n->s, buf, (int)ask, wflags);
+        if (net_diag() && n->type == L_SOCK_STREAM) {   /* DIAG (XRL_NETDIAG=1); keeps the last error for the code below */
+            int le = WSAGetLastError();
+            if (r == 0 || (r == SOCKET_ERROR && le != WSAEWOULDBLOCK))
+                LOGW("netdiag: recv sock=%llu ask=%u -> %d err=%d", (unsigned long long)n->s, ask, r, r == SOCKET_ERROR ? le : 0);
+            WSASetLastError(le);
+        }
         if (r == SOCKET_ERROR) {
             int e = WSAGetLastError();
             if (e == WSAEMSGSIZE) { r = (int)ask; tr = 1; }     /* UDP datagram longer than the buffer: truncated copy */
@@ -451,7 +459,11 @@ static u32 net_poll(xfile *f, u32 ev)
     if (ev & (LX_POLLOUT | LX_POLLWRNORM)) p.events |= POLLWRNORM;
     if (ev & LX_POLLPRI) p.events |= POLLRDBAND;
     if (n->connecting && !(p.events & POLLWRNORM)) { /* nothing is ready until the connect completes */ }
-    if (WSAPoll(&p, 1, 0) != SOCKET_ERROR) {
+    int wpr = WSAPoll(&p, 1, 0), wpe = wpr == SOCKET_ERROR ? WSAGetLastError() : 0;
+    if (net_diag() && (wpr == SOCKET_ERROR || (p.revents & (POLLERR | POLLNVAL)) || n->soerr))   /* DIAG (XRL_NETDIAG=1) */
+        LOGW("netdiag: poll sock=%llu ev=%x -> wsapoll=%d err=%d revents=%x soerr=%d connecting=%d connected=%d",
+             (unsigned long long)n->s, ev, wpr, wpe, p.revents, n->soerr, n->connecting, n->connected);
+    if (wpr != SOCKET_ERROR) {
         if (p.revents & POLLRDNORM) r |= LX_POLLIN | LX_POLLRDNORM;
         if (p.revents & POLLWRNORM) r |= LX_POLLOUT | LX_POLLWRNORM;
         if (p.revents & POLLRDBAND) r |= LX_POLLPRI;
@@ -492,6 +504,8 @@ static slong net_ioctl(xfile *f, u64 req, u64 arg)
 static void net_close(xfile *f)
 {
     netsock *n = (netsock *)f->priv;
+    if (n && net_diag()) { xrl_thread *t = xrl_cur();   /* DIAG: who really closes a socket */
+        LOGW("netdiag: closesocket sock=%llu by tid %d task=%d connected=%d", (unsigned long long)n->s, t ? t->tid : -1, t && t->task ? 1 : 0, n->connected); }
     if (n) { closesocket(n->s); free(n); }
 }
 

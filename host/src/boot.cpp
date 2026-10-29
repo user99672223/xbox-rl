@@ -100,6 +100,51 @@ int boot_layer() {
             "WINEDEBUG=err+all",
         };
     }
+    // A process started by the layer's execve (task.c spawn_process) runs the program its parent exec'd, not
+    // launch.cfg's: the parent passes it as the test host takes it, command line `<exe> <rootfs> <program>
+    // <args...>` and the guest environment as XRL_ENV_<NAME>=value. (Reading launch.cfg here re-ran EAC's
+    // bootstrapper in the child instead of the game, without the environment EAC gave it.)
+    if (GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0) || GetEnvironmentVariableA("XRL_SPAWN_DEPTH", nullptr, 0)) {
+        auto utf8 = [](const std::wstring& w) {
+            int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+            std::string s(n, '\0');
+            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
+            return s;
+        };
+        // Windows command-line rules (the inverse of task.c quote_arg): 2n backslashes + quote -> n backslashes
+        // and a quote toggle, 2n+1 backslashes + quote -> n backslashes and a literal quote.
+        std::vector<std::wstring> av;
+        const wchar_t* p = GetCommandLineW();
+        while (*p) {
+            while (*p == L' ' || *p == L'\t') p++;
+            if (!*p) break;
+            std::wstring a; bool inq = false;
+            while (*p && (inq || (*p != L' ' && *p != L'\t'))) {
+                size_t bs = 0;
+                while (*p == L'\\') { bs++; p++; }
+                if (*p == L'"') {
+                    a.append(bs / 2, L'\\');
+                    if (bs % 2) { a.push_back(L'"'); p++; }
+                    else { inq = !inq; p++; }
+                } else a.append(bs, L'\\');
+                if (*p && *p != L'"' && *p != L'\\' && (inq || (*p != L' ' && *p != L'\t'))) a.push_back(*p++);
+            }
+            av.push_back(a);
+        }
+        if (av.size() >= 3) {
+            g_argv_s.clear();
+            for (size_t i = 2; i < av.size(); i++) g_argv_s.push_back(utf8(av[i]));
+        }
+        std::vector<std::string> env;
+        if (wchar_t* blk = GetEnvironmentStringsW()) {
+            for (const wchar_t* e = blk; *e; e += wcslen(e) + 1)
+                if (!wcsncmp(e, L"XRL_ENV_", 8)) env.push_back(utf8(e + 8));
+            FreeEnvironmentStringsW(blk);
+        }
+        if (!env.empty()) g_envp_s = env;
+        XLOGW("boot", "spawned child: program %s with %zu argument(s) and %zu environment entries from the parent",
+              g_argv_s.empty() ? "?" : g_argv_s[0].c_str(), g_argv_s.size(), g_envp_s.size());
+    }
     // mounts -> XRL_MOUNTS for the layer's VFS (layer/src/vfs.c). "pkg:" is the install folder:
     // a big read-only tree (the game) ships in the package, not in LocalState's small data area.
     if (!cfg.mounts.empty()) {

@@ -686,6 +686,17 @@ xfile *xrl_proc_open(const char *gabs, int flags, int *err)
         LOGW("proc maps check: libc=%d ld=%d stack=%d vdso=%d",
              strstr(data, "libc") != NULL, strstr(data, "ld-") != NULL,
              strstr(data, "[stack]") != NULL, strstr(data, "[vdso]") != NULL);
+        char dv[4];   /* DIAG (XRL_MAPS_DUMP=1): every line of what the reader gets */
+        if (GetEnvironmentVariableA("XRL_MAPS_DUMP", dv, sizeof dv) && dv[0] == '1') {
+            static volatile LONG seq;
+            LONG n = InterlockedIncrement(&seq);
+            for (const char *l = data, *end = data + len; l < end; ) {
+                const char *nl = memchr(l, '\n', (size_t)(end - l));
+                size_t ll = nl ? (size_t)(nl - l) : (size_t)(end - l);
+                LOGW("maps-dump[%ld] %.*s", (long)n, (int)ll, l);
+                l += ll + 1;
+            }
+        }
     }
     memfile *m = (memfile *)calloc(1, sizeof *m);
     m->data = data; m->len = len;
