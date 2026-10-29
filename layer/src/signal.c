@@ -730,6 +730,13 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         }
         LOGW("%s", line);
     }
+    /* Benign, continuable debug exceptions are NOT signals: OutputDebugString (DBG_PRINTEXCEPTION_C /
+     * its wide form) and the thread-name exception. With no debugger present the correct behaviour is to
+     * swallow them and resume (the RaiseException just returns to its caller), from ANY thread. This must
+     * come before the hardware-code filter below (it used to sit after it and never ran): one of these
+     * escaping a process crashes it, and on the console a crashing process makes the Xbox suspend the
+     * whole app (procprobe 'dbg': an unhandled 0x40010006 in a child -> APP_WILLENTERBACKGROUND). */
+    if (code == 0x40010006u || code == 0x4001000Au || code == 0x406D1388u) return EXCEPTION_CONTINUE_EXECUTION;
     /* Only hardware-ish codes concern us. */
     switch (code) {
     case EXCEPTION_ACCESS_VIOLATION: case EXCEPTION_ILLEGAL_INSTRUCTION: case EXCEPTION_PRIV_INSTRUCTION:
@@ -767,14 +774,6 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         InterlockedIncrement64(&xrl_fs_rearms);
         return EXCEPTION_CONTINUE_EXECUTION;
     }
-    /* Benign, continuable debug exceptions are NOT signals: OutputDebugString (DBG_PRINTEXCEPTION_C /
-     * its wide form) and the thread-name exception. With no debugger present the correct behaviour is to
-     * swallow them and resume (the RaiseException just returns to its caller). We must CONTINUE_EXECUTION
-     * here rather than CONTINUE_SEARCH: letting one travel onward reaches EAC's own handler, which
-     * mishandles the bogus signal and makes the process EXIT with the raised code (0x40010006) -- that is
-     * exactly what killed the game's 2nd process at ~3 s (NOT an OS reap). Swallowing it here keeps the
-     * multi-process game alive. */
-    if (code == 0x40010006u || code == 0x4001000Au || code == 0x406D1388u) return EXCEPTION_CONTINUE_EXECUTION;
     /* EAC write-watch: a WRITE to a page the GUEST itself marked read-only (committed, VMA lacks WRITE) to
      * catch its own writes (self-decryption / self-modification). Per design this must go to the GUEST, never
      * the ptrace tracer (reporting it to EAC's bootstrapper and re-delivering a Unix signal with no handler
@@ -937,6 +936,30 @@ static LONG WINAPI xrl_last_chance(PEXCEPTION_POINTERS ep)
             shown++;
         }
     }
+    /* Never let Windows crash the process: on the console a crashing process (WER) makes the Xbox suspend
+     * the whole app, every other process included (procprobe 'crash'), while a plain exit does not
+     * (procprobe 'exit'). End it here as Linux would report a SIGSEGV death (exit status 139). */
+    LOGE("=== ending the process (exit 139) instead of letting Windows crash it ===");
+    TerminateProcess(GetCurrentProcess(), 128 + LX_SIGSEGV);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+/* Last vectored handler (registered at the END of the list). An error exception that got past every other
+ * handler while guest code was running (guest TEB view live, guest stack) has no further chance: the host's
+ * frame-based dispatch cannot walk a guest stack, so the unhandled filter above is never reached and Windows
+ * crashes the process -- which on the console suspends the whole app. End the process the Linux way first. */
+static LONG CALLBACK xrl_veh_last(PEXCEPTION_POINTERS ep)
+{
+    DWORD code = ep->ExceptionRecord->ExceptionCode;
+    if (code < 0xC0000000u) return EXCEPTION_CONTINUE_SEARCH;   /* informational / warning codes continue */
+    xrl_thread *t = xrl_cur();
+    if (!t || !t->teb_guest_live || t->in_sys) return EXCEPTION_CONTINUE_SEARCH;   /* host code: SEH, then the filter */
+    xrl_teb_enter_host(t);
+    u64 stk[2];
+    xrl_teb_stack_here(stk);
+    crash_report(ep, t);
+    LOGE("veh-last: exception %08lx escaped every handler in guest code: the process ends as killed by SIGSEGV", code);
+    xrl_do_exit(128 + LX_SIGSEGV, 1);
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -945,6 +968,7 @@ void xrl_sig_install_veh(void)
     char v[8];
     g_trace_faults = GetEnvironmentVariableA("XRL_TRACE_FAULTS", v, sizeof v) && v[0] == '1';
     g_veh = AddVectoredExceptionHandler(1, xrl_veh);
+    AddVectoredExceptionHandler(0, xrl_veh_last);
     SetUnhandledExceptionFilter(xrl_last_chance);
     LOGI("signal: VEH %s", g_veh ? "installed" : "FAILED");
 }

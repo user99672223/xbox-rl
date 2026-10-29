@@ -34,11 +34,18 @@ namespace {
 // it is NOT called when the OS externally terminates us (TerminateProcess on a PLM suspend). So:
 //   UEF logs 0x40010006 -> the child died from an unhandled OutputDebugString exception (internal).
 //   UEF never fires, child just vanishes -> the OS reaped it (external; PLM/suspend).
-LONG WINAPI child_uef(PEXCEPTION_POINTERS ep) {
-    XLOGE("host", "tracee child: UNHANDLED exception code=0x%08lx addr=%p flags=0x%lx -> process will die",
-          ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress,
-          ep->ExceptionRecord->ExceptionFlags);
-    return EXCEPTION_CONTINUE_SEARCH;   // keep default behaviour (die); we only wanted the record
+// Every process of the app: an exception nothing handled must not reach Windows' crash path. On the console a
+// crashing process (WER) makes the Xbox suspend the WHOLE app, every other process included (procprobe 'crash',
+// 'dbg'), while a plain exit does not (procprobe 'exit'). So end the process here, as Linux reports a SIGSEGV
+// death (139). The layer installs its own filter with the same ending once it boots.
+std::atomic<bool> g_uef_log{false};   // false until host_early_init (bare procprobe children have no log)
+LONG WINAPI host_last_chance(PEXCEPTION_POINTERS ep) {
+    if (g_uef_log.load())
+        XLOGE("host", "UNHANDLED exception code=0x%08lx addr=%p flags=0x%lx: ending the process (exit 139)",
+              ep->ExceptionRecord->ExceptionCode, ep->ExceptionRecord->ExceptionAddress,
+              ep->ExceptionRecord->ExceptionFlags);
+    TerminateProcess(GetCurrentProcess(), 139);
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 
 std::atomic<bool> g_worker_done{false};
@@ -194,17 +201,18 @@ int xrl_sdl_entry() {
 }
 
 int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    SetUnhandledExceptionFilter(host_last_chance);
     // procprobe child: a bare 2nd process that only heartbeats (no layer, no UWP,
     // no log.txt). Detected before anything else so it stays minimal.
     { char v[64]; if (GetEnvironmentVariableA("XRL_PROCCHILD", v, sizeof v)) { xrl::procprobe_child_main(v); return 0; } }
     xrl::host_early_init("full");
+    g_uef_log = true;
     // A spawned tracee child (EAC's game process) gets no UWP activation, so SDL_WinRTRunApp would
     // return at once and the process would exit right after config. Run the layer HEADLESS instead
     // (no CoreWindow): enough for the game to start and EAC to inject. Rendering needs a surface and
     // is a later step; here the point is to keep the process alive and boot the guest.
     if (GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0)) {
         XLOGW("host", "tracee child: no UWP activation; booting the layer headless");
-        SetUnhandledExceptionFilter(child_uef);            // learn if the child dies internally vs is reaped
         xrl::request_extended_execution();                 // let the windowless child resist OS suspend too
         // Heartbeat: shows the EXACT instant the child stops making progress (external kill = abrupt stop).
         std::thread([] {

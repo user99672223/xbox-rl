@@ -28,6 +28,7 @@ $specs = [ordered]@{
     crash = @('idle,crash', @())
     dbg   = @('idle,dbgraise,ods', @())
     exit  = @('idle,exit', @())
+    lsegv = @('idle,layer', @('mem_budget_mb=256', 'host_env=XRL_PP_ARGV=/usr/bin/pp-guest|0|segv'))
     # Wine in the windowless child (the EAC game child was wine64 RocketLeague.exe): first a console program, then the game
     winecmd = @('idle,layer', @('mem_budget_mb=1024', 'host_env=XRL_PP_ARGV=/usr/lib/wine/x86_64-unix/wine64|C:\windows\system32\timeout.exe|/t|80|/nobreak') + $wineEnv)
     winerl  = @('idle,layer', @('mem_budget_mb=3584', 'host_env=XRL_PP_ARGV=/usr/lib/wine/x86_64-unix/wine64|Z:\game\Binaries\Win64\RocketLeague.exe') + $wineEnv)
@@ -43,7 +44,7 @@ Write-Host "[pp] app v$($pkg.VersionString) on $($xbox.Ip)"
 
 # the guest the "layer" child runs: /usr/bin/pp-guest in the loose install's rootfs (vfs_root=pkg:rootfs)
 $guest = Join-Path $RepoRoot 'layer\tests\guest\pp-guest'
-if ($Runs | Where-Object { $_ -in 'layer', 'late' }) {
+if ($Runs | Where-Object { $_ -in 'layer', 'late', 'lsegv' }) {
     if (-not (Test-Path $guest)) { throw "build $guest first (see pp-guest.c)" }
     $rdir = '\LooseApps\xbox-rl\rootfs\usr\bin'
     New-DpDirectory $xbox '' $rdir 'DevelopmentFiles'

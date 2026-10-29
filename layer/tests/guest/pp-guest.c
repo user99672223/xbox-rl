@@ -1,7 +1,8 @@
 /*
  * pp-guest.c - the Linux program the procprobe "layer" child runs (host/src/probe.cpp).
  * Freestanding (raw syscalls, no libc) so it needs nothing from the rootfs:
- *   pp-guest [MB]   touch MB MiB of anonymous memory, then print a heartbeat every second for 150 s.
+ *   pp-guest [MB] [segv]   touch MB MiB of anonymous memory, then print a heartbeat every second for 150 s;
+ *                          "segv": write to address 0 after 5 s (no handler, so the process must end cleanly).
  * Build (WSL): gcc -static -nostdlib -ffreestanding -fno-stack-protector -O2 -o pp-guest pp-guest.c
  */
 typedef unsigned long u64;
@@ -37,6 +38,7 @@ __attribute__((used, noinline)) void run(long argc, char **argv)
     struct { long s, ns; } ts = { 1, 0 };
     for (u64 n = 0; n < 150; n++) {
         say("pp-guest: alive "); num(n); say(" s\n");
+        if (n == 5 && argc > 2 && argv[2][0] == 's') { say("pp-guest: SIGSEGV now\n"); *(volatile int *)0 = 1; }
         sys(35, (long)&ts, 0, 0, 0, 0, 0);   /* nanosleep */
     }
     sys(231, 0, 0, 0, 0, 0, 0);   /* exit_group */
