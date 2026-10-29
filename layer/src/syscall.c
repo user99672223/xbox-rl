@@ -69,6 +69,13 @@ static slong do_write(int fd, u64 buf, u64 n, s64 off)
             LOGW("write memfd: fd=%d off=%lld n=%llu wrote=%lld first16: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
                  fd, (long long)off, n, (long long)r, d[0],d[1],d[2],d[3],d[4],d[5],d[6],d[7],d[8],d[9],d[10],d[11],d[12],d[13],d[14],d[15]);
             if (n > 1000000) { g_memfd_trace_tid = GetCurrentThreadId(); g_memfd_trace_n = 300; }
+            /* DIAG (XRL_MEMFD_DUMP=<dir>): keep a copy of a large ELF written into a memfd (a downloaded module) */
+            char dd[MAX_PATH];
+            if (n > 1000000 && d[0] == 0x7f && d[1] == 'E' && GetEnvironmentVariableA("XRL_MEMFD_DUMP", dd, sizeof dd)) {
+                char fn[MAX_PATH + 64]; snprintf(fn, sizeof fn, "%s\\memfd-%lu-%llu.elf", dd, GetCurrentProcessId(), (unsigned long long)n);
+                HANDLE h = CreateFileA(fn, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+                if (h != INVALID_HANDLE_VALUE) { DWORD w; WriteFile(h, d, (DWORD)r, &w, NULL); CloseHandle(h); LOGW("write memfd: copy saved to %s", fn); }
+            }
         }
     }
     if (xrl_spinlog_on()) { static volatile LONG c; if ((InterlockedIncrement(&c) & 0x1ff) == 1)
@@ -603,9 +610,31 @@ SYS(epoll_wait) { UNUSED6; return xrl_epoll_wait((int)a1, (u64)a2, (int)a3, (int
 SYS(epoll_pwait) { UNUSED6; return xrl_epoll_wait((int)a1, (u64)a2, (int)a3, (int)a4, NULL); }
 
 /* ============================================================== memory */
+/* DIAG: an absurd mmap length (> 1 TiB) is a garbage size computed somewhere in the guest; name the
+ * return addresses on the guest stack (translated code mapped back to its original) to find where. */
+static void huge_mmap_report(u64 len)
+{
+    xrl_thread *t = xrl_cur();
+    if (!t || !t->frame) return;
+    const u64 *sp = (const u64 *)(t->frame + 56);
+    LOGW("huge-mmap: len=%llx tid=%d rsp=%p; return addresses on the guest stack:", len, t->tid, (const void *)sp);
+    int shown = 0;
+    for (int k = 0; k < 2048 && shown < 24; k++) {
+        u64 v;
+        if (xrl_cfu(&v, (u64)(sp + k), 8)) break;
+        u64 o = xrl_dbt_reverse(v); if (!o) o = v;
+        if (xrl_mem_is_exec(o) != 1) continue;
+        char nm[200] = ""; u64 off = 0;
+        if (xrl_mem_name_of(o, nm, sizeof nm, &off) != 1) continue;
+        LOGW("huge-mmap:   [rsp+%04x] %llx%s -> %s+%llx", k * 8, v, o != v ? " (dbt)" : "", nm[0] ? nm : "anon", off);
+        shown++;
+    }
+}
+
 SYS(mmap)
 {
     UNUSED6;
+    if ((u64)a2 > (1ull << 40)) huge_mmap_report((u64)a2);
     slong r = xrl_mem_mmap((u64)a1, (u64)a2, (int)a3, (int)a4, (int)a5, a6);
     if (r > 0 && (a4 & LX_MAP_FIXED)) xrl_dbt_unmapped((u64)r, (u64)a2);   /* dbt.c: generated code replaced */
     if (!(a4 & LX_MAP_ANONYMOUS)) {
