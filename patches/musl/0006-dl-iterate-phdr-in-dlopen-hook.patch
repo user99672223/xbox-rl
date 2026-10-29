@@ -1,0 +1,43 @@
+diff --git a/ldso/dynlink.c b/ldso/dynlink.c
+index c310d44..8b5f6c9 100644
+--- a/ldso/dynlink.c
++++ b/ldso/dynlink.c
+@@ -144,6 +144,11 @@ static int noload;
+ static int shutting_down;
+ static jmp_buf *rtld_fail;
+ static pthread_rwlock_t lock;
++/* xbox-rl: the thread that holds `lock` for writing inside dlopen, so that dl_iterate_phdr called on that same
++ * thread does not wait for itself. dlopen calls _dl_debug_state (the r_debug breakpoint) with the lock held;
++ * a program that hooks it to watch loads (Epic's EAC does) and walks the objects from the hook with
++ * dl_iterate_phdr deadlocked here, while glibc, whose dl_iterate_phdr takes a different lock, lets it run. */
++static pthread_t volatile lock_writer;
+ static struct debug debug;
+ static struct tls_module *tls_tail;
+ static size_t tls_cnt, tls_offset, tls_align = MIN_TLS_ALIGN;
+@@ -2137,6 +2142,7 @@ void *dlopen(const char *file, int mode)
+ 
+ 	pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, &cs);
+ 	pthread_rwlock_wrlock(&lock);
++	lock_writer = __pthread_self();
+ 	__inhibit_ptc();
+ 
+ 	debug.state = RT_ADD;
+@@ -2241,6 +2247,7 @@ end:
+ 	_dl_debug_state();
+ 	__release_ptc();
+ 	if (p) gencnt++;
++	lock_writer = 0;
+ 	pthread_rwlock_unlock(&lock);
+ 	if (ctor_queue) {
+ 		do_init_fini(ctor_queue);
+@@ -2439,6 +2446,10 @@ int dl_iterate_phdr(int(*callback)(struct dl_phdr_info *info, size_t size, void
+ 
+ 		if (ret != 0) break;
+ 
++		if (lock_writer == __pthread_self()) {
++			current = current->next;   /* this thread holds the write lock (a hook called from dlopen) */
++			continue;
++		}
+ 		pthread_rwlock_rdlock(&lock);
+ 		current = current->next;
+ 		pthread_rwlock_unlock(&lock);

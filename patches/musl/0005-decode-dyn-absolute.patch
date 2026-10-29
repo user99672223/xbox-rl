@@ -1,0 +1,47 @@
+diff --git a/ldso/dynlink.c b/ldso/dynlink.c
+index 715948f..33f8244 100644
+--- a/ldso/dynlink.c
++++ b/ldso/dynlink.c
+@@ -971,14 +971,27 @@ static int fixup_rpath(struct dso *p, char *buf, size_t buf_size)
+ 	return 0;
+ }
+ 
++/* xbox-rl: an address in .dynamic that is already absolute (>= the load base) is taken as is. Patch 0003
++ * leaves the hash, symbol, string and version-symbol entries absolute after relocation, as glibc's ld.so
++ * does; the layer can make them absolute even earlier, before this object decodes itself (EAC reads a
++ * ptrace-stopped child's libc before its loader has run). Adding the base a second time would point
++ * these tables into nowhere. Offsets in a shared object are always below its load base. */
++static void *dyn_addr(struct dso *p, size_t v)
++{
++#if !DL_FDPIC
++	if (v >= (size_t)p->base) return (void *)v;
++#endif
++	return laddr(p, v);
++}
++
+ static void decode_dyn(struct dso *p)
+ {
+ 	size_t dyn[DYN_CNT];
+ 	decode_vec(p->dynv, dyn, DYN_CNT);
+-	p->syms = laddr(p, dyn[DT_SYMTAB]);
+-	p->strings = laddr(p, dyn[DT_STRTAB]);
++	p->syms = dyn_addr(p, dyn[DT_SYMTAB]);
++	p->strings = dyn_addr(p, dyn[DT_STRTAB]);
+ 	if (dyn[0]&(1<<DT_HASH))
+-		p->hashtab = laddr(p, dyn[DT_HASH]);
++		p->hashtab = dyn_addr(p, dyn[DT_HASH]);
+ 	if (dyn[0]&(1<<DT_RPATH))
+ 		p->rpath_orig = p->strings + dyn[DT_RPATH];
+ 	if (dyn[0]&(1<<DT_RUNPATH))
+@@ -986,9 +999,9 @@ static void decode_dyn(struct dso *p)
+ 	if (dyn[0]&(1<<DT_PLTGOT))
+ 		p->got = laddr(p, dyn[DT_PLTGOT]);
+ 	if (search_vec(p->dynv, dyn, DT_GNU_HASH))
+-		p->ghashtab = laddr(p, *dyn);
++		p->ghashtab = dyn_addr(p, *dyn);
+ 	if (search_vec(p->dynv, dyn, DT_VERSYM))
+-		p->versym = laddr(p, *dyn);
++		p->versym = dyn_addr(p, *dyn);
+ }
+ 
+ static size_t count_syms(struct dso *p)
