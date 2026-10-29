@@ -16,7 +16,7 @@ set -euo pipefail
 _here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WINE_DIR="$(cd "$_here/.." && pwd)"
 ROOT="$(cd "$WINE_DIR/.." && pwd)"
-VENDOR="$ROOT/vendor"
+VENDOR="${XRL_VENDOR:-$ROOT/vendor}"   # XRL_VENDOR: a worktree can use the main checkout's vendor/
 PATCHES="$ROOT/patches"
 WORK="${XRL_WORK:-$HOME/xrl-build}"
 SYSROOT="$WORK/sysroot"

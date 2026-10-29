@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # build-wine-glibc.sh -- the same patched Wine as build-wine.sh, built against the distro's glibc instead
 # of our musl, for Easy Anti-Cheat: EAC's bootstrapper and runtime are glibc programs and read the game's
-# libc the way glibc lays it out (docs/decisions.md). Runs in WSL; reuses build-wine.sh's patched source
-# ($WORK/src/wine, stage 'patch') and host tools ($WORK/build/wine-tools, stage 'tools').
+# libc the way glibc lays it out (docs/decisions.md). Runs in WSL; reuses build-wine.sh's host tools
+# ($WORK/build/wine-tools, stage 'tools'), but patches its OWN source tree ($WORK/gsrc/src/wine) with this
+# checkout's patches/wine, so other branches' patches in the shared $WORK/src/wine never leak in.
 #
-#   wine/scripts/build-wine-glibc.sh [stage ...]    stages: deps gateway configure build install (default: all)
+#   wine/scripts/build-wine-glibc.sh [stage ...]    stages: deps patch gateway configure build install (default: all)
 #
 #   deps       apt packages: gnutls headers (needs root in WSL: `wsl -u root`)
+#   patch      export the pin + this checkout's patches/wine into $WORK/gsrc/src/wine, ./autogen.sh
 #   gateway    libxrlgw.so: xrl_syscall() as a raw syscall (wine/glibc/xrl_gateway.c)
 #   configure  native configure (gcc, glibc) into $WORK/build/wine-glibc
 #   build      make
@@ -17,10 +19,10 @@
 # /lib/x86_64-linux-gnu as on Debian/Ubuntu.
 . "$(dirname "${BASH_SOURCE[0]}")/common.sh"
 
-stages=("$@"); [ ${#stages[@]} -eq 0 ] && stages=(deps gateway configure build install)
+stages=("$@"); [ ${#stages[@]} -eq 0 ] && stages=(deps patch gateway configure build install)
 want() { local s; for s in "${stages[@]}"; do [ "$s" = "$1" ] && return 0; done; return 1; }
 
-SRC="$WORK/src/wine"; TOOLS="$WORK/build/wine-tools"
+SRC="$WORK/gsrc/src/wine"; TOOLS="$WORK/build/wine-tools"
 BLD="$WORK/build/wine-glibc"; OUT="$WORK/out/rootfs-glibc"; GW="$WORK/glibc-gw"
 cap_jobs
 
@@ -32,6 +34,15 @@ if want deps; then
   log "deps: libgnutls28-dev present"
 fi
 
+if want patch; then
+  XRL_WORK="$WORK/gsrc" "$WINE_DIR/scripts/apply-patches.sh" wine
+  cp "$ROOT/include/xrl_abi.h" "$SRC/include/xrl_abi.h"
+  if [ ! -f "$SRC/configure" ] || [ "$SRC/.xrl-stamp" -nt "$SRC/configure" ]; then
+    log "wine-glibc: ./autogen.sh"
+    ( cd "$SRC" && ./autogen.sh >"$WORK/gsrc/autogen.log" 2>&1 ) || die "autogen failed ($WORK/gsrc/autogen.log)"
+  fi
+fi
+
 if want gateway; then
   mkdir -p "$GW"
   gcc -O2 -fPIC -shared -nostdlib -Wl,-soname,libxrlgw.so -o "$GW/libxrlgw.so" "$WINE_DIR/glibc/xrl_gateway.c"
@@ -39,7 +50,7 @@ if want gateway; then
 fi
 
 if want configure; then
-  [ -f "$SRC/configure" ] || die "no patched source at $SRC -- run build-wine.sh patch"
+  [ -f "$SRC/configure" ] || die "no patched source at $SRC -- run the 'patch' stage"
   [ -x "$TOOLS/tools/winebuild/winebuild" ] || die "no host tools at $TOOLS -- run build-wine.sh tools"
   [ -f "$GW/libxrlgw.so" ] || die "no $GW/libxrlgw.so -- run the 'gateway' stage"
   mkdir -p "$BLD"; cd "$BLD"
