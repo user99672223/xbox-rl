@@ -184,7 +184,11 @@ xrl_gfx_ops g_ops = {
 };
 
 // --- host services handed to whichever xrl_gfx_ops_get is linked ----------------
-void* svc_get_core_window() { return xrl::window_info_get().core_window; }
+// The game asks for the window when it makes its swapchain: the keepalive (below) must be gone by then. A
+// window takes one swapchain, and its second device presenting a black frame every refresh for the whole
+// game competed with the game for the GPU.
+void keepalive_stop_wait();
+void* svc_get_core_window() { keepalive_stop_wait(); return xrl::window_info_get().core_window; }
 void svc_get_window_size(uint32_t* w, uint32_t* h) {
     auto wi = xrl::window_info_get();
     if (w) *w = wi.width;
@@ -224,12 +228,12 @@ namespace {
 
 std::atomic<bool> g_keepalive_run{false};
 std::thread       g_keepalive_th;
+HANDLE            g_keepalive_ended;   // set once the loop has returned and released its swapchain and device
 
 void keepalive_loop() {
     try { winrt::init_apartment(winrt::apartment_type::multi_threaded); } catch (...) {}
 
-    void* cw = g_host ? g_host->get_core_window() : (xrl::window_info_get().core_window);
-    if (!cw) cw = xrl::window_info_get().core_window;
+    void* cw = xrl::window_info_get().core_window;
     if (!cw) { XLOGW("gfx", "keepalive: no CoreWindow; not presenting"); return; }
 
     uint32_t w = 0, h = 0;
@@ -305,7 +309,12 @@ void keepalive_loop() {
         ID3D12CommandList* lists[] = { cl.Get() };
         queue->ExecuteCommandLists(1, lists);
         HRESULT ph = sc->Present(1, 0);
-        if (FAILED(ph)) { XLOGW("gfx", "keepalive: Present 0x%08x; stopping", (unsigned)ph); break; }
+        if (FAILED(ph)) {
+            XLOGW("gfx", "keepalive: Present 0x%08x; stopping", (unsigned)ph);
+            if (ph == DXGI_ERROR_DEVICE_REMOVED || ph == DXGI_ERROR_DEVICE_RESET)
+                XLOGW("gfx", "keepalive: device removed, reason 0x%08x", (unsigned)dev->GetDeviceRemovedReason());
+            break;
+        }
         const UINT64 want = ++fenceVal;
         queue->Signal(fence.Get(), want);
         if (fence->GetCompletedValue() < want) {
@@ -315,6 +324,13 @@ void keepalive_loop() {
     }
     if (fenceEvt) CloseHandle(fenceEvt);
     XLOGI("gfx", "keepalive: present loop ended");
+}
+
+void keepalive_stop_wait() {
+    if (!g_keepalive_run.exchange(false)) return;
+    if (g_keepalive_ended && WaitForSingleObject(g_keepalive_ended, 3000) == WAIT_OBJECT_0)
+        XLOGI("gfx", "keepalive: stopped; the game's swapchain has the window");
+    else XLOGW("gfx", "keepalive: did not stop within 3 s");
 }
 
 }  // namespace
@@ -330,7 +346,9 @@ void gfx_keepalive_start() {
     bool was = g_keepalive_run.exchange(true);
     if (was) return;   // already running
     try {
-        g_keepalive_th = std::thread(keepalive_loop);
+        if (!g_keepalive_ended) g_keepalive_ended = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+        ResetEvent(g_keepalive_ended);
+        g_keepalive_th = std::thread([] { keepalive_loop(); SetEvent(g_keepalive_ended); });
         g_keepalive_th.detach();
     } catch (...) {
         g_keepalive_run.store(false);

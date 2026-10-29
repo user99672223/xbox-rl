@@ -415,6 +415,9 @@ private:
         }
         UINT hc = nd.buffer_count < 2 ? 2 : nd.buffer_count;
         hr = host_->ResizeBuffers(hc, nd.width, nd.height, hf, 0);
+        if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+            Log(LOG_ERROR, "d3d11 swapchain: device removed at ResizeBuffers(%ux%u), reason 0x%08lX", nd.width, nd.height,
+                (unsigned long)(native_ ? dev_->GetDeviceRemovedReason() : dev12_->GetDeviceRemovedReason()));
         if (FAILED(hr) && native_) {
             // Native D3D11 on the console: ResizeBuffers answers DXGI_ERROR_INVALID_CALL although we hold
             // no buffer (the laptop's HWND swapchain resizes). Say who else holds buffer 0, then make a
