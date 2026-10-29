@@ -103,6 +103,25 @@ const xrl_gfx_ops *xrl_desktop_gfx(void (*log)(int, const char *, const char *))
 const xrl_audio_ops *xrl_host_audio_ops(void);                       /* host/src/audio_ops.cpp (XAudio2) */
 void xrl_desktop_audio_set_log(xrl_log_fn log);                      /* desktop_audio.cpp */
 
+static void build_envp(const char **envp)
+{
+    /* Guest environment: defaults, plus every host variable XRL_ENV_<NAME>=v as
+     * <NAME>=v (e.g. XRL_ENV_WINEPREFIX=/prefix), so any guest can be run. */
+    int e = 0;
+    envp[e++] = "HOME=/home/xbox"; envp[e++] = "PATH=/usr/bin:/bin";
+    static char trace[16]; if (GetEnvironmentVariableA("XRL_TRACE", trace + 0, 15)) { static char t2[24]; sprintf(t2, "XRL_TRACE=%s", trace); envp[e++] = t2; }
+    for (char *s = GetEnvironmentStringsA(); s && *s && e < 63; s += strlen(s) + 1)
+        if (!strncmp(s, "XRL_ENV_", 8)) envp[e++] = s + 8;
+    /* the real display for Wine's mode list (win32u, patches/wine/0025): this desktop's mode,
+     * unless XRL_ENV_XRL_DISPLAY gave one */
+    static char disp[48]; DEVMODEA dm; memset(&dm, 0, sizeof dm); dm.dmSize = sizeof dm;
+    if (!GetEnvironmentVariableA("XRL_ENV_XRL_DISPLAY", NULL, 0) && e < 63 && EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
+        sprintf(disp, "XRL_DISPLAY=%lux%lu@%lu", (unsigned long)dm.dmPelsWidth, (unsigned long)dm.dmPelsHeight, (unsigned long)dm.dmDisplayFrequency);
+        envp[e++] = disp;
+    }
+    envp[e] = NULL;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 3) { fprintf(stderr, "usage: %s <rootfs> <guest-elf> [args]\n", argv[0]); return 2; }
@@ -117,21 +136,22 @@ int main(int argc, char **argv)
     gargv[n++] = argv[2];
     for (int i = 3; i < argc && n < 30; i++) gargv[n++] = argv[i];
     gargv[n] = NULL;
-    /* Guest environment: defaults, plus every host variable XRL_ENV_<NAME>=v as
-     * <NAME>=v (e.g. XRL_ENV_WINEPREFIX=/prefix), so any guest can be run. */
-    static const char *envp[64]; int e = 0;
-    envp[e++] = "HOME=/home/xbox"; envp[e++] = "PATH=/usr/bin:/bin";
-    static char trace[16]; if (GetEnvironmentVariableA("XRL_TRACE", trace + 0, 15)) { static char t2[24]; sprintf(t2, "XRL_TRACE=%s", trace); envp[e++] = t2; }
-    for (char *s = GetEnvironmentStringsA(); s && *s && e < 63; s += strlen(s) + 1)
-        if (!strncmp(s, "XRL_ENV_", 8)) envp[e++] = s + 8;
-    /* the real display for Wine's mode list (win32u, patches/wine/0025): this desktop's mode,
-     * unless XRL_ENV_XRL_DISPLAY gave one */
-    static char disp[48]; DEVMODEA dm; memset(&dm, 0, sizeof dm); dm.dmSize = sizeof dm;
-    if (!GetEnvironmentVariableA("XRL_ENV_XRL_DISPLAY", NULL, 0) && e < 63 && EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm)) {
-        sprintf(disp, "XRL_DISPLAY=%lux%lu@%lu", (unsigned long)dm.dmPelsWidth, (unsigned long)dm.dmPelsHeight, (unsigned long)dm.dmDisplayFrequency);
-        envp[e++] = disp;
-    }
-    envp[e] = NULL;
+    static const char *envp[64];
+    build_envp(envp);
+    /* XRL_EXEC_HOST=1: start the program as a child and become what it execs traced (layer/src/task.c),
+     * as the console's window-owning first process does */
+    { char xh[4];
+      if (!GetEnvironmentVariableA("XRL_SPAWN_DEPTH", NULL, 0) && GetEnvironmentVariableA("XRL_EXEC_HOST", xh, sizeof xh) && xh[0] == '1') {
+          char **nargv = NULL; int ec = 0;
+          int h = xrl_exec_host_run(argv[1], gargv, envp, log_cb, &nargv, &ec);
+          if (h == 0) { printf("[host] exec host: the child ended (%d) without handing over\n", ec); return ec; }
+          if (h > 0) {
+              n = 0;
+              for (char **a = nargv; a && *a && n < 31; a++) gargv[n++] = *a;
+              gargv[n] = NULL;
+              build_envp(envp);
+          }
+      } }
 
     xrl_boot_context ctx; memset(&ctx, 0, sizeof ctx);
     ctx.struct_size = sizeof ctx; ctx.abi_version = XRL_ABI_VERSION;

@@ -352,6 +352,19 @@ int xrl_layer_boot(const xrl_boot_context *ctx);
 /* Ask a running layer to begin orderly shutdown. Safe from any thread. */
 void xrl_layer_request_exit(int exit_code);
 
+/*
+ * Exec hand-over (XRL_EXEC_HOST=1), called by the first process INSTEAD of
+ * booting argv itself. Starts argv as a child host process (command line
+ * `<exe> <vfs_root> <argv...>`, envp as XRL_ENV_ lines) and waits. When the
+ * child's first traced execve arrives, this process takes it over: its
+ * environment becomes that program's (XRL_ENV_*, XRL_TRACEE_R/W, ...) and the
+ * function returns 1 with *argv_out (malloc'd, NULL-terminated UTF-8) for the
+ * host to boot as a spawned child would. Returns 0 with *exit_code when the
+ * child ended without handing over, <0 when it could not be started.
+ */
+int xrl_exec_host_run(const char *vfs_root, const char *const *argv, const char *const *envp,
+                      xrl_log_fn log, char ***argv_out, int *exit_code);
+
 #ifdef __cplusplus
 }  /* extern "C" */
 #endif

@@ -558,6 +558,165 @@ char *xrl_task_remote_proc(int pid, const char *leaf, size_t *len)
     return NULL;
 }
 
+/* ------------------------------------------------------------ exec hand-over (XRL_EXEC_HOST=1)
+ * On the console only the app's first process owns the window, gamepad and sound, and the app ends when that
+ * process ends. EAC's bootstrapper execs the game from a fork child and then exits, so with the game in a
+ * second process the app, and the game with it, ended when the bootstrapper did. The hand-over flips the
+ * roles: the first process starts the bootstrapper as a child host process and waits; the child's first
+ * traced execve is sent back to it (command line and environment, as spawn_process would start it), and the
+ * first process boots that program as the tracee. The bootstrapper traces it from the child over the same
+ * two pipes a spawned tracee uses, whose ends the child duplicates into the first process. */
+#define EXECHOST_MAGIC 0x48584558u   /* "XEXH" */
+static HANDLE g_xh_pipe, g_xh_proc;     /* the child's: write end to the first process, and its process handle */
+
+/* in the child: the hand-over channel, for the first traced execve only */
+static int exechost_take(void)
+{
+    static LONG taken;
+    char v[32], p[32];
+    if (!GetEnvironmentVariableA("XRL_EXECHOST_W", v, sizeof v) || !GetEnvironmentVariableA("XRL_EXECHOST_PROC", p, sizeof p)) return 0;
+    if (InterlockedExchange(&taken, 1)) return 0;
+    g_xh_pipe = (HANDLE)(uintptr_t)strtoull(v, NULL, 10);
+    g_xh_proc = (HANDLE)(uintptr_t)strtoull(p, NULL, 10);
+    SetEnvironmentVariableA("XRL_EXECHOST_W", NULL);
+    SetEnvironmentVariableA("XRL_EXECHOST_PROC", NULL);
+    return 1;
+}
+
+static int exechost_write(const void *p, DWORD n)
+{
+    DWORD put;
+    while (n) { if (!WriteFile(g_xh_pipe, p, n, &put, NULL) || !put) return 0; p = (const char *)p + put; n -= put; }
+    return 1;
+}
+
+static int exechost_read(HANDLE h, void *p, DWORD n)
+{
+    DWORD got;
+    while (n) { if (!ReadFile(h, p, n, &got, NULL) || !got) return 0; p = (char *)p + got; n -= got; }
+    return 1;
+}
+
+/* a command line split by Windows' rules (the inverse of quote_arg), as UTF-8, from argument `skip` on */
+static char **split_cmdline(const wchar_t *p, int skip)
+{
+    char **v = (char **)calloc(1, sizeof(char *));
+    wchar_t *a = (wchar_t *)malloc((wcslen(p) + 1) * sizeof(wchar_t));
+    int n = 0, idx = 0;
+    while (v && a && *p) {
+        while (*p == L' ' || *p == L'\t') p++;
+        if (!*p) break;
+        size_t k = 0; int inq = 0;
+        while (*p && (inq || (*p != L' ' && *p != L'\t'))) {
+            size_t bs = 0;
+            while (*p == L'\\') { bs++; p++; }
+            if (*p == L'"') {
+                for (size_t i = 0; i < bs / 2; i++) a[k++] = L'\\';
+                if (bs % 2) a[k++] = L'"'; else inq = !inq;
+                p++;
+            } else {
+                for (size_t i = 0; i < bs; i++) a[k++] = L'\\';
+                if (*p && (inq || (*p != L' ' && *p != L'\t'))) a[k++] = *p++;
+            }
+        }
+        a[k] = 0;
+        if (idx++ < skip) continue;
+        int m = WideCharToMultiByte(CP_UTF8, 0, a, -1, NULL, 0, NULL, NULL);
+        char *s = (char *)malloc((size_t)m);
+        char **nv = s ? (char **)realloc(v, ((size_t)n + 2) * sizeof(char *)) : NULL;
+        if (!nv) { free(s); break; }
+        WideCharToMultiByte(CP_UTF8, 0, a, -1, s, m, NULL, NULL);
+        v = nv; v[n++] = s; v[n] = NULL;
+    }
+    free(a);
+    return v;
+}
+
+int xrl_exec_host_run(const char *vfs_root, const char *const *argv, const char *const *envp, xrl_log_fn log, char ***argv_out, int *exit_code)
+{
+    char m[600];
+#define XH_LOG(lvl, ...) do { snprintf(m, sizeof m, __VA_ARGS__); if (log) log(lvl, "exec-host", m); } while (0)
+    wchar_t exe[MAX_PATH];
+    GetModuleFileNameW(NULL, exe, MAX_PATH);
+    static wchar_t cmd[32768];
+    size_t w = 0;
+    quote_arg(cmd, ARRAY_LEN(cmd), exe, &w);
+    { wchar_t *a = widen(vfs_root); quote_arg(cmd, ARRAY_LEN(cmd), a, &w); free(a); }
+    for (int i = 0; argv && argv[i]; i++) { wchar_t *a = widen(argv[i]); quote_arg(cmd, ARRAY_LEN(cmd), a, &w); free(a); }
+    cmd[w - 1] = 0;
+
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE pr = NULL, pw = NULL, self = NULL;
+    if (!CreatePipe(&pr, &pw, &sa, 1 << 16)) { XH_LOG(3, "CreatePipe failed: %lu", GetLastError()); return -1; }
+    SetHandleInformation(pr, 0x1 /* HANDLE_FLAG_INHERIT */, 0);
+    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &self, 0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        XH_LOG(3, "cannot make a handle to this process for the child: %lu", GetLastError());
+        CloseHandle(pr); CloseHandle(pw); return -1;
+    }
+    /* the child's environment: this one's, with the program's guest environment as XRL_ENV_ lines */
+    wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
+    wchar_t *cur = GetEnvironmentStringsW();
+    for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_EXEC_HOST=", 14) && wcsncmp(e, L"XRL_EXECHOST", 12)) {
+            size_t l = wcslen(e) + 1;
+            if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; }
+        }
+    FreeEnvironmentStringsW(cur);
+    for (int i = 0; envp && envp[i]; i++) {
+        wchar_t *a = widen(envp[i]); size_t l = wcslen(a);
+        if ((size_t)(o - blk) + l + 16 < (1u << 19)) { memcpy(o, L"XRL_ENV_", 8 * sizeof(wchar_t)); o += 8; memcpy(o, a, (l + 1) * sizeof(wchar_t)); o += l + 1; }
+        free(a);
+    }
+    o += swprintf(o, 64, L"XRL_SPAWN_DEPTH=1") + 1;
+    o += swprintf(o, 64, L"XRL_EXECHOST_W=%llu", (unsigned long long)(uintptr_t)pw) + 1;
+    o += swprintf(o, 64, L"XRL_EXECHOST_PROC=%llu", (unsigned long long)(uintptr_t)self) + 1;
+    *o++ = 0;
+    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
+    BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, blk, NULL, &si, &pi);
+    free(blk);
+    CloseHandle(pw); CloseHandle(self);   /* the child holds its own copies; EOF on pr once it exits */
+    if (!ok) { XH_LOG(3, "CreateProcess failed: %lu", GetLastError()); CloseHandle(pr); return -1; }
+    CloseHandle(pi.hThread);
+    XH_LOG(2, "started %s as host process %lu; this process becomes the program it execs (traced)", argv && argv[0] ? argv[0] : "?", pi.dwProcessId);
+
+    u32 h[3];
+    wchar_t *ncmd = NULL, *nenv = NULL;
+    if (!exechost_read(pr, h, sizeof h) || h[0] != EXECHOST_MAGIC || h[1] > (1u << 20) || h[2] > (4u << 20) ||
+        !(ncmd = (wchar_t *)calloc(1, h[1] + 2)) || !(nenv = (wchar_t *)calloc(1, h[2] + 4)) ||
+        !exechost_read(pr, ncmd, h[1]) || !exechost_read(pr, nenv, h[2])) {
+        free(ncmd); free(nenv); CloseHandle(pr);
+        DWORD ec = 0;
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, &ec);
+        CloseHandle(pi.hProcess);
+        XH_LOG(2, "the child ended without handing over an exec (exit code 0x%lx)", ec);
+        if (exit_code) *exit_code = (int)ec;
+        return 0;
+    }
+    CloseHandle(pr); CloseHandle(pi.hProcess);
+    /* become that process: its environment (the launcher's guest environment goes), then its program */
+    cur = GetEnvironmentStringsW();
+    for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
+        if (!wcsncmp(e, L"XRL_ENV_", 8)) {
+            const wchar_t *eq = wcschr(e, L'=');
+            wchar_t nm[512]; size_t l = eq ? (size_t)(eq - e) : 0;
+            if (l && l < ARRAY_LEN(nm)) { memcpy(nm, e, l * sizeof(wchar_t)); nm[l] = 0; SetEnvironmentVariableW(nm, NULL); }
+        }
+    FreeEnvironmentStringsW(cur);
+    int nset = 0;
+    for (wchar_t *e = nenv; *e; e += wcslen(e) + 1) {
+        wchar_t *eq = wcschr(e + 1, L'=');   /* "=C:=..." entries are the shell's; skip them */
+        if (e[0] == L'=' || !eq) continue;
+        *eq = 0; SetEnvironmentVariableW(e, eq + 1); *eq = L'='; nset++;
+    }
+    SetEnvironmentVariableW(L"XRL_EXEC_HOST", NULL);
+    *argv_out = split_cmdline(ncmd, 2);   /* <exe> <rootfs> <program> <args...> */
+    XH_LOG(2, "hand-over: running %s here (%d environment entries)", (*argv_out && (*argv_out)[0]) ? (*argv_out)[0] : "?", nset);
+    free(ncmd); free(nenv);
+    return 1;
+#undef XH_LOG
+}
+
 static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, int traced)
 {
     /* the program must exist and be an x86-64 ELF: the errors a caller of execve expects come before anything starts */
@@ -575,6 +734,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         if (got < 20 || hdr[0] != 0x7f || hdr[1] != 'E' || hdr[2] != 'L' || hdr[3] != 'F' || hdr[4] != 2 || *(u16 *)(hdr + 18) != 62) return -LX_ENOEXEC;
     }
     if ((r = spawn_slot_take()) < 0) return r;
+    int handover = traced && exechost_take();   /* XRL_EXEC_HOST: the first process becomes this program */
     wchar_t exe[MAX_PATH];
     GetModuleFileNameW(NULL, exe, MAX_PATH);
     const wchar_t *root = G.vfs_root_w;
@@ -596,7 +756,7 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
     wchar_t *blk = (wchar_t *)malloc(1 << 20), *o = blk;
     wchar_t *cur = GetEnvironmentStringsW();
     for (const wchar_t *e = cur; *e; e += wcslen(e) + 1)
-        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE", 10) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16) && wcsncmp(e, L"XRL_DBT_MEMFD=", 14) && wcsncmp(e, L"XRL_PID=", 8)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
+        if (wcsncmp(e, L"XRL_ENV_", 8) && wcsncmp(e, L"XRL_SPAWN_DEPTH=", 16) && wcsncmp(e, L"XRL_TRACEE", 10) && wcsncmp(e, L"XRL_ARGV0=", 10) && wcsncmp(e, L"XRL_INHERIT_FDS=", 16) && wcsncmp(e, L"XRL_DBT_MEMFD=", 14) && wcsncmp(e, L"XRL_PID=", 8) && wcsncmp(e, L"XRL_EXECHOST", 12)) { size_t l = wcslen(e) + 1; if ((size_t)(o - blk) + l + 4096 < (1u << 19)) { memcpy(o, e, l * sizeof(wchar_t)); o += l; } }
     FreeEnvironmentStringsW(cur);
     for (int i = 0; i < 256; i++) {
         u64 sp; char s[4096];
@@ -636,9 +796,15 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         SetHandleInformation(t2c_w, 0x1 /* HANDLE_FLAG_INHERIT */, 0);   /* the parent's own ends are not inherited */
         SetHandleInformation(c2t_r, 0x1 /* HANDLE_FLAG_INHERIT */, 0);
         pipe_w = t2c_w; pipe_r = c2t_r; child_r = t2c_r; child_w = c2t_w;
+        HANDLE vr = t2c_r, vw = c2t_w;   /* the handle values the tracee's process reads */
+        if (handover && (!DuplicateHandle(GetCurrentProcess(), t2c_r, g_xh_proc, &vr, 0, FALSE, DUPLICATE_SAME_ACCESS) ||
+                         !DuplicateHandle(GetCurrentProcess(), c2t_w, g_xh_proc, &vw, 0, FALSE, DUPLICATE_SAME_ACCESS))) {
+            LOGE("exec: cannot hand the tracee pipes to the first process (%lu); starting a new process instead", GetLastError());
+            handover = 0; vr = t2c_r; vw = c2t_w;
+        }
         wchar_t hv[64];
-        int hn = swprintf(hv, 64, L"XRL_TRACEE_R=%llu", (unsigned long long)(uintptr_t)t2c_r); size_t hl = (size_t)hn + 1; memcpy(o, hv, hl * sizeof(wchar_t)); o += hl;
-        hn = swprintf(hv, 64, L"XRL_TRACEE_W=%llu", (unsigned long long)(uintptr_t)c2t_w); hl = (size_t)hn + 1; memcpy(o, hv, hl * sizeof(wchar_t)); o += hl;
+        int hn = swprintf(hv, 64, L"XRL_TRACEE_R=%llu", (unsigned long long)(uintptr_t)vr); size_t hl = (size_t)hn + 1; memcpy(o, hv, hl * sizeof(wchar_t)); o += hl;
+        hn = swprintf(hv, 64, L"XRL_TRACEE_W=%llu", (unsigned long long)(uintptr_t)vw); hl = (size_t)hn + 1; memcpy(o, hv, hl * sizeof(wchar_t)); o += hl;
     }
     {   u64 a0; char s0[1024];
         if (!xrl_cfu(&a0, uargv, 8) && a0 && !xrl_strfu(s0, a0, sizeof s0)) { wchar_t *wa = widen(s0); size_t l = wcslen(wa); if ((size_t)(o - blk) + l + 16 < (1u << 19)) { memcpy(o, L"XRL_ARGV0=", 10 * sizeof(wchar_t)); o += 10; memcpy(o, wa, (l + 1) * sizeof(wchar_t)); o += l + 1; } free(wa); }
@@ -649,15 +815,24 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         if (pn > 0 && (size_t)(o - blk) + l + 4 < (1u << 19)) { memcpy(o, pv, l * sizeof(wchar_t)); o += l; }
     }
     *o++ = 0;
-    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi;
-    BOOL ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, blk, NULL, &si, &pi);
+    STARTUPINFOW si = { sizeof si }; PROCESS_INFORMATION pi = { 0 };
+    BOOL ok;
+    if (handover) {   /* no new process: the first one runs it, and is the tracee from now on */
+        u32 h[3] = { EXECHOST_MAGIC, (u32)((wcslen(cmd) + 1) * sizeof(wchar_t)), (u32)((size_t)(o - blk) * sizeof(wchar_t)) };
+        ok = exechost_write(h, sizeof h) && exechost_write(cmd, h[1]) && exechost_write(blk, h[2]);
+        if (!ok) LOGE("exec: the hand-over to the first process failed: %lu", GetLastError());
+        CloseHandle(g_xh_pipe); g_xh_pipe = NULL;
+        if (ok) { pi.hProcess = g_xh_proc; pi.dwProcessId = GetProcessId(g_xh_proc); }
+    } else {
+        ok = CreateProcessW(exe, cmd, NULL, NULL, TRUE, CREATE_UNICODE_ENVIRONMENT, blk, NULL, &si, &pi);
+        if (!ok) LOGE("exec: CreateProcess failed: %lu", GetLastError());
+        else CloseHandle(pi.hThread);
+    }
     free(blk);
     if (!ok) {
-        LOGE("exec: CreateProcess failed: %lu", GetLastError());
         if (pipe_r) CloseHandle(pipe_r); if (pipe_w) CloseHandle(pipe_w); if (child_r) CloseHandle(child_r); if (child_w) CloseHandle(child_w);
         spawn_slot_give(); return -LX_EAGAIN;
     }
-    CloseHandle(pi.hThread);
     k->proc = pi.hProcess;
     if (child_r) { CloseHandle(child_r); child_r = NULL; }   /* the child has its own inherited copies now */
     if (child_w) { CloseHandle(child_w); child_w = NULL; }
@@ -671,14 +846,15 @@ static slong spawn_process(xrl_task *k, const char *path, u64 uargv, u64 uenvp, 
         if (!ready || xrl_tr_recv(pipe_r, &op, &a, &b, &p, &len)) op = 0;
         if (op != 1 /* HELLO */) {
             LOGE("exec: the traced process did not reach its exec stop"); free(p);
-            TerminateProcess(pi.hProcess, 1); CloseHandle(pi.hProcess);
+            if (!handover) TerminateProcess(pi.hProcess, 1);   /* never the first process: that is the app */
+            CloseHandle(pi.hProcess);
             CloseHandle(pipe_r); CloseHandle(pipe_w); k->proc = NULL; spawn_slot_give(); return -LX_EAGAIN;
         }
         free(p);
         k->pipe_r = pipe_r; k->pipe_w = pipe_w; k->remote = 1; k->running = 0;
         snprintf(k->exe, sizeof k->exe, "%s", gpath);
     }
-    LOGW("exec: task %d runs \"%s\" as host process %lu", k->pid, path, pi.dwProcessId);
+    LOGW("exec: task %d runs \"%s\" as host process %lu%s", k->pid, path, pi.dwProcessId, handover ? " (the first process, handed over)" : "");
     return 0;
 }
 

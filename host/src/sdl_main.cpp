@@ -211,7 +211,9 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     // return at once and the process would exit right after config. Run the layer HEADLESS instead
     // (no CoreWindow): enough for the game to start and EAC to inject. Rendering needs a surface and
     // is a later step; here the point is to keep the process alive and boot the guest.
-    if (GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0)) {
+    // Any spawned child is windowless the same way (the launcher a hand-over first process starts, Wine's own
+    // helper processes): only the first process has the CoreWindow.
+    if (GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0) || GetEnvironmentVariableA("XRL_SPAWN_DEPTH", nullptr, 0)) {
         XLOGW("host", "tracee child: no UWP activation; booting the layer headless");
         xrl::request_extended_execution();                 // let the windowless child resist OS suspend too
         // Heartbeat: shows the EXACT instant the child stops making progress (external kill = abrupt stop).

@@ -161,6 +161,42 @@ int boot_layer() {
         }
         SetEnvironmentVariableA("XRL_MOUNTS", all.c_str());
     }
+    // XRL_EXEC_HOST=1 (host_env=): this window-owning first process starts the program as a child host process
+    // and becomes whatever that child execs traced (EAC's bootstrapper execs the game, then exits). The app
+    // lives as long as this process, so the game must run here, not in the child (layer/src/task.c).
+    {
+        char xh[4];
+        bool spawned = GetEnvironmentVariableA("XRL_TRACEE_R", nullptr, 0) || GetEnvironmentVariableA("XRL_SPAWN_DEPTH", nullptr, 0);
+        if (!spawned && GetEnvironmentVariableA("XRL_EXEC_HOST", xh, sizeof xh) && xh[0] == '1') {
+            std::vector<const char*> av, ev;
+            for (auto& s : g_argv_s) av.push_back(s.c_str());
+            for (auto& s : g_envp_s) ev.push_back(s.c_str());
+            av.push_back(nullptr); ev.push_back(nullptr);
+            char** nargv = nullptr; int ec = 0;
+            int h = xrl_exec_host_run(g_vfs_root.c_str(), av.data(), ev.data(), xrl_host_log, &nargv, &ec);
+            if (h == 0) return ec;   // the child ended without an exec to take over
+            if (h > 0) {
+                g_argv_s.clear();
+                for (char** a = nargv; a && *a; a++) { g_argv_s.push_back(*a); free(*a); }
+                free(nargv);
+                g_envp_s.clear();
+                if (wchar_t* blk = GetEnvironmentStringsW()) {
+                    for (const wchar_t* e = blk; *e; e += wcslen(e) + 1)
+                        if (!wcsncmp(e, L"XRL_ENV_", 8)) {
+                            std::wstring w(e + 8);
+                            int n = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), nullptr, 0, nullptr, nullptr);
+                            std::string s(n, '\0');
+                            WideCharToMultiByte(CP_UTF8, 0, w.c_str(), (int)w.size(), s.data(), n, nullptr, nullptr);
+                            g_envp_s.push_back(s);
+                        }
+                    FreeEnvironmentStringsW(blk);
+                }
+                AddVectoredExceptionHandler(1, host_crash_veh);   // as in a spawned tracee
+                XLOGW("boot", "exec hand-over: this process runs %s (%zu argument(s), %zu environment entries)",
+                      g_argv_s.empty() ? "?" : g_argv_s[0].c_str(), g_argv_s.size(), g_envp_s.size());
+            }
+        }
+    }
     // the output mode for Wine's display list (win32u, patches/wine/0025), unless env= set one
     {
         DisplayMode dm = display_mode();
