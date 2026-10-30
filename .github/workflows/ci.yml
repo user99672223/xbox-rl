@@ -34,7 +34,10 @@ jobs:
       - name: test guests
         run: |
           sh layer/tests/guest/build.sh
-          tar -C layer/tests/guest -cf guests.tar out
+          sh layer/tests/glibc/build.sh
+          mkdir -p bundle/guest bundle/glibc
+          cp -r layer/tests/guest/out bundle/guest/ && cp -r layer/tests/glibc/out bundle/glibc/
+          tar -cf guests.tar -C bundle .
       - uses: actions/upload-artifact@v4
         with: { name: guests, path: guests.tar, retention-days: 3 }
       - name: rootfs cache key
@@ -73,10 +76,21 @@ jobs:
         with: { name: guests }
       - name: guest suite
         run: |
-          tar -C layer/tests/guest -xf guests.tar
+          tar -C layer/tests -xf guests.tar
           set +e
           timeout 600 sh layer/tests/run.sh > ci-out/guest-suite.txt 2>&1; echo "exit $?" >> ci-out/guest-suite.txt
           tail -40 ci-out/guest-suite.txt
+      - name: glibc tests (static glibc programs, plain and translated)
+        run: |
+          set +e
+          for p in glibc_test cxx_test; do
+            for dbt in 0 1; do
+              echo "== $p XRL_DBT=$dbt" >> ci-out/glibc-tests.txt
+              XRL_DBT=$dbt timeout 300 sh layer/tests/glibc/run.sh $p >> ci-out/glibc-tests.txt 2>&1
+              echo "exit $?" >> ci-out/glibc-tests.txt
+            done
+          done
+          grep -E "^== |failure\(s\)|^exit" ci-out/glibc-tests.txt
       - uses: actions/download-artifact@v4
         id: dl
         continue-on-error: true

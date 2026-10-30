@@ -72,4 +72,8 @@ The main session (on the user's laptop, with the Xbox) cannot message you direct
 - Match the code around you: comment density, naming, C style of `layer/src`.
 - Record decisions in `docs/decisions.md` (newest first) and progress in `REPORT.md` at the repo root of your branch:
   milestone status, the current gap list, what you need from the main session.
-- No time estimates. Stop and write `REPORT.md` when blocked on something only the main session or the user can do.
+- No time estimates.
+- **Keep going.** Work through the milestones in order without stopping between them: a milestone that passes in CI
+  is the cue to start the next one, not to end your turn. Requests to the main session (an Xbox check, an RL + EAC
+  check, a merge) never block you: write them in `REPORT.md` and continue on your branch. Stop only when every
+  remaining step needs something only the main session or the user can do, and say exactly what in `REPORT.md`.
