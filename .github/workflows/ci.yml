@@ -1,0 +1,104 @@
+# ci.yml - builds the layer and runs it on Windows, where it can run (the layer is a Windows program).
+#
+#   linux    builds the freestanding test guests and, if tools/ci/rootfs.sh exists on the branch, a Linux root file
+#            system (cached by the script's hash). Artifacts go to the windows job.
+#   windows  builds the desktop flavour of the layer + its test host, runs the guest suite (layer/tests/run.sh), and,
+#            when a rootfs was built, tools/ci/desktop-run.sh against it.
+#
+# Every run's logs are committed to the `ci-results` branch under <branch>/<run number>/ (and latest/ per branch),
+# so a session without GitHub API access reads them with a plain `git fetch origin ci-results`.
+# Rocket League, EAC, the Epic login and the console never come here: those runs stay on the developer's laptop.
+name: ci
+on:
+  push:
+    branches: ['**', '!ci-results']
+    paths-ignore: ['**.md', 'docs/**', 'results/**']
+  workflow_dispatch:
+    inputs:
+      cmd:
+        description: 'Command line for tools/ci/desktop-run.sh (empty: its default)'
+        required: false
+        default: ''
+permissions:
+  contents: write
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: test guests
+        run: |
+          sh layer/tests/guest/build.sh
+          tar -C layer/tests/guest -cf guests.tar out
+      - uses: actions/upload-artifact@v4
+        with: { name: guests, path: guests.tar, retention-days: 3 }
+      - name: rootfs cache key
+        id: rk
+        run: |
+          if [ -f tools/ci/rootfs.sh ]; then
+            echo "key=rootfs-$(cat tools/ci/rootfs.sh tools/ci/rootfs-*.list 2>/dev/null | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+            echo "want=1" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/cache@v4
+        if: steps.rk.outputs.want == '1'
+        id: rc
+        with: { path: rootfs.tar.gz, key: '${{ steps.rk.outputs.key }}' }
+      - name: rootfs
+        if: steps.rk.outputs.want == '1' && steps.rc.outputs.cache-hit != 'true'
+        run: sudo bash tools/ci/rootfs.sh rootfs.tar.gz
+      - uses: actions/upload-artifact@v4
+        if: steps.rk.outputs.want == '1'
+        with: { name: rootfs, path: rootfs.tar.gz, retention-days: 3, compression-level: 0 }
+
+  windows:
+    needs: linux
+    runs-on: windows-2022
+    timeout-minutes: 90
+    defaults:
+      run: { shell: bash }
+    steps:
+      - uses: actions/checkout@v4
+      - name: build layer (desktop flavour + test host)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-out | Out-Null
+          pwsh -NoProfile -File layer/scripts/build.ps1 -Flavor desktop *>&1 | Tee-Object ci-out/build.txt | Select-Object -Last 30
+          if (-not (Test-Path layer/build/desktop/xrl_test_host.exe)) { throw 'no test host built' }
+      - uses: actions/download-artifact@v4
+        with: { name: guests }
+      - name: guest suite
+        run: |
+          tar -C layer/tests/guest -xf guests.tar
+          set +e
+          timeout 600 sh layer/tests/run.sh > ci-out/guest-suite.txt 2>&1; echo "exit $?" >> ci-out/guest-suite.txt
+          tail -40 ci-out/guest-suite.txt
+      - uses: actions/download-artifact@v4
+        id: dl
+        continue-on-error: true
+        with: { name: rootfs }
+      - name: desktop run
+        if: steps.dl.outcome == 'success' && hashFiles('tools/ci/desktop-run.sh') != ''
+        env:
+          CMD: ${{ github.event.inputs.cmd }}
+        run: |
+          set +e
+          python -I tools/xrl-rootfs-unpack.py rootfs.tar.gz "$RUNNER_TEMP/rootfs" > ci-out/unpack.txt 2>&1
+          u=$?
+          tail -5 ci-out/unpack.txt
+          if [ $u -ne 0 ]; then echo "UNPACK FAILED (exit $u): the probes below run on an incomplete tree" | tee -a ci-out/desktop-run.txt; fi
+          timeout 1500 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD >> ci-out/desktop-run.txt 2>&1
+          echo "exit $?" >> ci-out/desktop-run.txt
+          tail -60 ci-out/desktop-run.txt
+      - name: publish results to the ci-results branch
+        if: always()
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+          RUN: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: bash tools/ci/publish-results.sh ci-out
