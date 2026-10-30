@@ -486,6 +486,12 @@ static u8 dbt_snap_at(u64 p, u8 *out, u8 cap)
     return (u8)avail;
 }
 static dbt_fault_rec g_fcap[FCAP_N];
+/* XRL_FAULT_RIP=<hex>: the first real fault at exactly that rip is also kept here (with what every register points
+ * to), so a crash site among thousands of handled faults keeps its registers until the dump. */
+static dbt_fault_rec g_fwatch;
+static volatile LONG g_fwatch_set;
+static u64 g_fwatch_rip = 1;   /* 1: not read yet; 0: off */
+static u64 g_fwatch_addr;      /* its access address */
 static volatile LONG g_nfcap;    /* number of real (error-severity) faults seen */
 static volatile LONG g_nskip;    /* benign exceptions skipped (OutputDebugString etc.) */
 static void dbt_log_escape(PEXCEPTION_POINTERS ep, int why)
@@ -514,7 +520,19 @@ static void dbt_log_escape(PEXCEPTION_POINTERS ep, int why)
         for (u32 k = 0; k < avail; k++) f->b[k] = b[k];
         f->nb = (u8)avail;
     }
+    if (g_fwatch_rip == 1) {
+        char v[24];
+        g_fwatch_rip = GetEnvironmentVariableA("XRL_FAULT_RIP", v, sizeof v) ? _strtoui64(v, NULL, 16) : 0;
+    }
     CONTEXT *c = ep->ContextRecord;
+    if (c && g_fwatch_rip && f->rip == g_fwatch_rip && !InterlockedExchange(&g_fwatch_set, 1)) {
+        g_fwatch = *f;
+        g_fwatch_addr = f->addr;
+        u64 g[16] = { c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp,
+                      c->R8,c->R9,c->R10,c->R11,c->R12,c->R13,c->R14,c->R15 };
+        for (int k = 0; k < 16; k++) { g_fwatch.reg[k] = g[k]; g_fwatch.snaplen[k] = dbt_snap_at(g[k], g_fwatch.snap[k], 48); }
+        g_fwatch.addr = 0;   /* the dump prints registers and snapshots for addr < 0x10000 */
+    }
     if (c) { u64 g[16] = { c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp,
                            c->R8,c->R9,c->R10,c->R11,c->R12,c->R13,c->R14,c->R15 };
              for (int k = 0; k < 16; k++) f->reg[k] = g[k];
@@ -528,9 +546,12 @@ void xrl_dbt_dump_faults(void)
     static const char *whys[] = { "non-AV", "AV-data", "AV-exec-unwatched", "no-translation" };
     LONG total = g_nfcap;
     LONG first = total > FCAP_N ? total - FCAP_N : 0;   /* ring kept the last FCAP_N */
+    if (g_fwatch_set)
+        LOGW("dbt-fault: XRL_FAULT_RIP %llx was hit (fault #%ld, access address %llx); its record follows as the first entry",
+             g_fwatch_rip, (long)g_fwatch.seq, g_fwatch_addr);
     LOGW("dbt-fault: %ld real fault(s), %ld benign exception(s) skipped; last fault is the crash:", (long)total, (long)g_nskip);
-    for (LONG s = first; s < total; s++) {
-        dbt_fault_rec *f = &g_fcap[s & (FCAP_N - 1)];
+    for (LONG s = g_fwatch_set ? first - 1 : first; s < total; s++) {
+        dbt_fault_rec *f = s < first ? &g_fwatch : &g_fcap[s & (FCAP_N - 1)];
         char hex[64]; int o = 0;
         for (u8 k = 0; k < f->nb && o < (int)sizeof hex - 3; k++) o += snprintf(hex + o, sizeof hex - o, "%02x ", f->b[k]);
         LOGW("dbt-fault[%ld] tid=%x %s: code=%08x rip=%llx acc=%lld addr=%llx bytes: %s",
