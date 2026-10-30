@@ -105,37 +105,53 @@ void Pacer120::Watch() {
 
 void Pacer120::Present() {
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
-    uint64_t shown_seq = 0, copied_seq = 0;
+    uint64_t shown_seq = 0, copied_seq = 0, pending_seq = 0;
+    int64_t copy_t0 = 0, copy_est = qf_ / 1000;   // how long a copy takes (rises at once, falls slowly); 1 ms to start
     while (running_.load()) {
         int64_t tk = tick_.load();
         if (!tk) { Sleep(2); continue; }
         // the next flip time on the grid (tick + k * 8.333 ms - early) at least 2.5 ms away: room for the copy
         int64_t base = tk - early_, diff = Now() + qf_ * 5 / 2000 - base;
         int64_t at = base + (diff <= 0 ? 0 : (diff + f120_ - 1) / f120_) * f120_;
-        WaitUntil(at - qf_ * 3 / 2000);   // 1.5 ms before the flip: pick the frame and copy it
-        // the newest slot whose frame the GPU has finished and that is not shown yet
-        uint64_t done = fence_p_->GetCompletedValue();
-        int best = -1;
-        for (int i = 0; i < kSlots; i++) {
-            uint64_t v = slot_value_[i].load(), s = slot_seq_[i].load();
-            if (v && v <= done && s > copied_seq && (best < 0 || s > slot_seq_[best].load())) best = i;
+        // Until 0.1 ms before the flip: copy each frame as soon as the GPU has finished it (the copy queues behind
+        // whatever the GPU is doing, so it starts early), and a newer one over a copied one only while there is time for
+        // that copy. One copy at a time; the game keeps off the slot being copied.
+        const int64_t limit = at - qf_ / 10000, margin = qf_ / 2000;
+        while (Now() < limit) {
+            if (pending_seq) {
+                BOOL ok = FALSE;
+                if (pctx_->GetData(copied_.Get(), &ok, sizeof ok, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && ok) {
+                    copied_seq = pending_seq; pending_seq = 0; reading_ = -1; st_new_++;
+                    int64_t d = Now() - copy_t0;
+                    copy_est = d > copy_est ? d : copy_est - copy_est / 16 + d / 16;
+                }
+            }
+            if (!pending_seq && (copied_seq == shown_seq || limit - Now() > copy_est + margin)) {
+                // the newest slot whose frame the GPU has finished and that is newer than the copied one
+                uint64_t done = fence_p_->GetCompletedValue();
+                int best = -1;
+                for (int i = 0; i < kSlots; i++) {
+                    uint64_t v = slot_value_[i].load(), s = slot_seq_[i].load();
+                    if (v && v <= done && s > copied_seq && (best < 0 || s > slot_seq_[best].load())) best = i;
+                }
+                if (best >= 0) {
+                    reading_ = best;
+                    pending_seq = slot_seq_[best].load();
+                    copy_t0 = Now();
+                    pctx_->CopyResource(hostbuf_.Get(), ring_p_[best].Get());
+                    pctx_->End(copied_.Get());
+                    pctx_->Flush();
+                    continue;
+                }
+            }
+            if (limit - Now() > qf_ * 3 / 2000) Sleep(1);   // the timer floor is 1 ms and it can run late
+            else YieldProcessor();
         }
-        if (best >= 0) {
-            reading_ = best;
-            uint64_t s = slot_seq_[best].load();
-            pctx_->CopyResource(hostbuf_.Get(), ring_p_[best].Get());
-            pctx_->End(copied_.Get());
-            pctx_->Flush();
-            BOOL ok = FALSE;
-            int64_t limit = at - qf_ / 10000;   // the copy must be on screen-ready 0.1 ms before the flip
-            while (pctx_->GetData(copied_.Get(), &ok, sizeof ok, 0) != S_OK && Now() < limit) YieldProcessor();
-            reading_ = -1;
-            if (ok) { copied_seq = s; st_new_++; }
-            else st_late_copy_++;   // flipped at a later slot, once the copy is done
-        }
-        if (copied_seq > shown_seq) {
-            BOOL ok = FALSE;
-            if (pctx_->GetData(copied_.Get(), &ok, sizeof ok, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_OK && ok) {
+        if (pending_seq) {
+            st_late_copy_++;   // a copy still in flight: flipping now would show it half done; it goes up at a later slot
+            WaitUntil(at);
+        } else if (copied_seq > shown_seq) {
+            {
                 WaitUntil(at);
                 HRESULT hr = host_->Present(0, DXGI_PRESENT_ALLOW_TEARING);
                 if (FAILED(hr)) { Log(LOG_ERROR, "pacer: Present 0x%08lX; pacing stops", (unsigned long)hr); running_ = false; break; }
@@ -152,8 +168,9 @@ void Pacer120::Present() {
         int64_t now = Now();
         if (now - st_t0_ >= qf_ * 10) {
             double secs = (double)(now - st_t0_) / (double)qf_;
-            Log(LOG_INFO, "perf: pacer %.1f flips/s (new frames %.1f/s), %.1f slots/s with no new frame, %llu copies late", st_flips_ / secs,
-                st_new_ / secs, st_skipped_ / secs, (unsigned long long)st_late_copy_);
+            Log(LOG_INFO, "perf: pacer %.1f flips/s (new frames %.1f/s), %.1f slots/s with no new frame, %llu copies late; a copy takes %.2f ms",
+                st_flips_ / secs, st_new_ / secs, st_skipped_ / secs, (unsigned long long)st_late_copy_,
+                (double)copy_est * 1000.0 / (double)qf_);
             st_flips_ = st_new_ = st_skipped_ = st_late_copy_ = 0;
             st_t0_ = now;
         }

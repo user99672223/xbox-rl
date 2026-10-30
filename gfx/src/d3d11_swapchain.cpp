@@ -574,8 +574,14 @@ private:
         LARGE_INTEGER q0; QueryPerformanceCounter(&q0);
         GpuFrameEnd();
         if (native_ && pacer_.Running()) {
-            Blit(pacer_.Acquire());
+            const bool say = presents_ < 3;   // the first frames: each step, to place a stall
+            if (say) Log(LOG_INFO, "pacer: game frame %llu: acquire", (unsigned long long)presents_);
+            ID3D11Texture2D* slot = pacer_.Acquire();
+            if (say) Log(LOG_INFO, "pacer: game frame %llu: blit", (unsigned long long)presents_);
+            Blit(slot);
+            if (say) Log(LOG_INFO, "pacer: game frame %llu: submit", (unsigned long long)presents_);
             pacer_.Submit(ctx_.Get());
+            if (say) Log(LOG_INFO, "pacer: game frame %llu: handed over", (unsigned long long)presents_);
             presents_++;
             GpuFrameBegin();
             Pace(q0, sync);
