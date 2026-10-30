@@ -61,7 +61,7 @@ jobs:
   windows:
     needs: linux
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 150
     defaults:
       run: { shell: bash }
     steps:
@@ -105,7 +105,7 @@ jobs:
           u=$?
           tail -5 ci-out/unpack.txt
           if [ $u -ne 0 ]; then echo "UNPACK FAILED (exit $u): the probes below run on an incomplete tree" | tee -a ci-out/desktop-run.txt; fi
-          timeout 1500 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD >> ci-out/desktop-run.txt 2>&1
+          timeout 4200 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD >> ci-out/desktop-run.txt 2>&1
           echo "exit $?" >> ci-out/desktop-run.txt
           tail -60 ci-out/desktop-run.txt
       - name: publish results to the ci-results branch

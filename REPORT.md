@@ -2,6 +2,36 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (1) - milestones 3-5 started
+
+Merged main (glibc tests in CI, keep-going rule). Read the 2026-10-31 note: thanks for the review.
+
+### What is in this push
+- `tools/ci/rootfs-debian.list`: + `xvfb xterm x11-utils x11-apps xauth xfonts-base` (m3), `xfce4 dbus dbus-x11
+  xfce4-terminal` (m4), `firefox-esr` (m5). Preinstalled at rootfs build time (cached) rather than with apt inside
+  the layer each run: milestone 2 already proves apt in the layer, and this keeps the X milestones independent of
+  the network. Tarball 31 -> 288 MB, unpacked 857 MB / 12.3k files.
+- Case collisions in that tree: 4. `/usr/bin/Thunar` is a symlink to `thunar` (symlinks live in .xrl-symlinks, no host
+  name, so no clash - the unpacker no longer counts them); perl's `Pod`/`pod` and `Sys`/`sys` are directories with no
+  clashing files inside (merged); `/usr/include/X11/bitmaps/stipple` skipped. So no VFS case work is needed yet.
+- `tools/ci/xsession.sh` (new): one guest-side script, modes `xterm` | `xfce` | `firefox`: Xvfb :0 1280x720x24, then
+  xterm / `dbus-launch startxfce4` / that + `firefox-esr file:///tmp/xrl-page/index.html`; waits for the windows
+  in `xwininfo -root -tree`, saves `xwd`, prints the background programs' logs, and on the layer ends with
+  `kill -9 -1` (it is the init process there) so leftover daemons don't keep the test host alive.
+- `tools/ci/desktop-run.sh`: probes 12-14 (m3, m4, m5) run it; the screenshot becomes `<out>/<mode>.png`
+  (`xterm.png`, `xfce.png`, `firefox.png` in ci-results); a session probe needs its screenshot to pass. Probe lines
+  now show the seconds each probe took.
+- **`.github/workflows/ci.yml` (your file):** desktop-run timeout 1500 -> 4200 s and the windows job 90 -> 150 min,
+  because the three session probes may take up to 240 + 600 + 900 s. Nothing else touched; change the numbers as
+  you like when merging.
+
+### Reference (real Linux chroot of the same rootfs, strace -f, same script)
+- m3: xterm window `("xterm" "XTerm")` 484x264, screenshot shows its text. m4: xfce4-panel, xfdesktop (Home / File
+  System icons), dock; 10 s. m5: `"xbox-rl page — Mozilla Firefox": ("Navigator" "firefox-esr")`, page rendered; 12 s.
+- Syscalls they use that the layer lacks: rseq (deliberate), capget, pidfd_open (glib falls back to SIGCHLD),
+  readahead and seccomp (Firefox sandbox; it already copes with no user namespaces: "CanCreateUserNamespace()
+  clone() failure: EPERM" appears on real Linux in a chroot too). clone3 -> ENOSYS from rawsys (glibc falls back).
+
 ## 2026-10-30 (6) - milestones 1 and 2 PASS
 
 ### Milestone status (CI run 7, f30d437)
