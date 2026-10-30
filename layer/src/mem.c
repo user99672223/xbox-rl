@@ -1725,8 +1725,12 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
     slong res;
     AcquireSRWLockExclusive(&g_lock);
     size_t i = vma_lower(old_addr);
-    if (i >= g_n || g_v[i].start > old_addr || g_v[i].end < old_addr + old_len) { res = -LX_EFAULT; goto out; }
+    if (i >= g_n || g_v[i].start > old_addr) { res = -LX_EFAULT; goto out; }
+    /* the old range must lie in one mapping: one vma, or pieces of the same mmap (an mprotect split) */
+    for (size_t j = i; g_v[j].end < old_addr + old_len; j++)
+        if (j + 1 >= g_n || g_v[j + 1].start != g_v[j].end || g_v[j + 1].mid != g_v[i].mid) { res = -LX_EFAULT; goto out; }
     int prot = g_v[i].prot, shared = g_v[i].shared;
+    u64 mid = g_v[i].mid;
     char name[sizeof g_v[i].name]; memcpy(name, g_v[i].name, sizeof name);
 
     if (!(flags & LX_MREMAP_FIXED) && new_len == old_len) { res = (slong)old_addr; goto out; }
@@ -1739,7 +1743,13 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
         u64 ext_s = old_addr + old_len, ext_e = old_addr + new_len;
         if (range_free(ext_s, ext_e) && (in_arena(ext_s, ext_e) || !ensure_reserved(ext_s, ext_e))) {
             slong m = map_range(ext_s, ext_e - ext_s, prot, shared, NULL, 0, name, 1);
-            if (m >= 0) { res = (slong)old_addr; goto out; }
+            if (m >= 0) {
+                /* the extension is part of the old mapping (a later mremap of the whole range must find one) */
+                size_t k = vma_lower(ext_s);
+                if (k < g_n && g_v[k].start == ext_s) { g_v[k].mid = mid; vma_try_merge(k); }
+                res = (slong)old_addr;
+                goto out;
+            }
         }
     }
     if (!(flags & LX_MREMAP_MAYMOVE)) { res = -LX_ENOMEM; goto out; }

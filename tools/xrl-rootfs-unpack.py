@@ -12,7 +12,8 @@ cannot hold in two tables at the root of the tree:
                   0644 any other file; owner 0:0). The layer appends to this file as the guest chmods/creates.
 
 Hard links become copies. Names Windows cannot represent are stored as U+F0xx (vfs.c comp_to_host).
-Device nodes and fifos are skipped (the layer synthesises /dev).
+Device nodes and fifos are skipped (the layer synthesises /dev). The host file system is case-insensitive: of two
+names that differ only in case, the first in the tarball is kept and the second is skipped (and listed).
 
   python -I tools/xrl-rootfs-unpack.py alpine-minirootfs.tar.gz C:\\xrl-work\\alpine\\rootfs
 """
@@ -60,7 +61,9 @@ def main():
                 continue
             low = g.lower()
             if low in seen and seen[low] != g:
-                sys.exit('case collision: %s vs %s (the host file system is case-insensitive)' % (seen[low], g))
+                print('case collision: %s skipped, %s kept (the host file system is case-insensitive)' % (g, seen[low]))
+                skipped.append(g)
+                continue
             seen[low] = g
             hp = host_path(root, g)
             if m.isdir():

@@ -3,30 +3,51 @@
 # Git Bash, the desktop test host). With a command: just that one. Without: the probe list below (the current
 # milestone's checks, one per line). Each probe gets its own log in <out>/; a summary line per probe goes to stdout,
 # and <out>/enosys.txt counts every syscall the layer answered ENOSYS, across all probes (the gap list).
+# A probe passes when it exits 0 and its output matches its pattern (grep -E); the last lines are the milestones' verdicts.
 # Owned by the desktop work (docs/desktop-brief.md): change the probes as milestones advance.
 root=$(cygpath -w "$1"); out=$2; shift 2
 host=layer/build/desktop/xrl_test_host.exe
 export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1
-probes=(
-    "/bin/bash -c 'echo hello from bash; uname -a'"
-    "/usr/bin/ls -la /"
-    "/usr/bin/id"
-    "/bin/bash -c 'echo \$(( 6 * 7 )) | cat; ls /usr/bin | wc -l'"
-    "/usr/bin/ps aux"
-    "/usr/bin/dpkg -l"
-    "/usr/bin/apt-get --version"
+# One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line. A milestone
+# passes when all its probes do; earlier milestones stay in the list as regression checks.
+names=([1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install")
+list=(
+    "1|120|guest.out\] hello from bash|/bin/bash -c 'echo hello from bash; uname -a'"
+    "1|120|guest.out\] d.* usr$|/usr/bin/ls -la /"
+    "1|120|guest.out\] uid=0\(root\) gid=0\(root\)|/usr/bin/id"
+    "1|120|guest.out\] 42$|/bin/bash -c 'echo \$(( 6 * 7 )) | cat; ls /usr/bin | wc -l'"
+    "1|120|guest.out\] sub 3$|/bin/bash -c 'x=\$(echo sub); (exit 3); echo \$x \$?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'"
+    "1|120|guest.out\] USER +PID|/usr/bin/ps aux"
+    "1|120|guest.out\] ii +bash |/usr/bin/dpkg -l"
+    "1|120|guest.out\] apt [0-9]|/usr/bin/apt-get --version"
+    "2|600|guest.out\] Reading package lists|/usr/bin/apt-get update"
+    "2|600|guest.out\] Setting up hello|/usr/bin/apt-get install -y --no-install-recommends hello"
+    "2|60|guest.out\] Hello, world!|/usr/bin/hello"
 )
-[ $# -gt 0 ] && probes=("$*")
+[ $# -gt 0 ] && { list=("0|1500|.|$*"); names=([0]="command"); }
+# the guest's environment (layer/tests/test_host.c build_envp): a root login's
+export XRL_ENV_HOME=/root XRL_ENV_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+       XRL_ENV_DEBIAN_FRONTEND=noninteractive XRL_ENV_LANG=C.UTF-8 XRL_ENV_TERM=dumb
 n=0
-for p in "${probes[@]}"; do
+declare -A fails seen
+for e in "${list[@]}"; do
     n=$((n + 1))
+    m=${e%%|*}; e=${e#*|}; t=${e%%|*}; e=${e#*|}
+    pat=${e%%|*}; p=${e#*|}
+    seen[$m]=1
     log="$out/probe-$n.txt"
     echo "\$ $p" > "$log"
-    eval "timeout 120 $host \"$root\" $p" >> "$log" 2>&1
+    eval "timeout $t $host \"$root\" $p" >> "$log" 2>&1
     rc=$?
     echo "exit $rc" >> "$log"
-    printf 'probe %d: exit %3d  %s\n' "$n" "$rc" "$p"
+    v=PASS
+    [ $rc -eq 0 ] && tr -d '\r' < "$log" | grep -qE "$pat" || { v=FAIL; fails[$m]=$((${fails[$m]:-0} + 1)); }
+    printf 'probe %d (m%s): %s exit %3d  %s\n' "$n" "$m" "$v" "$rc" "$p"
 done
 grep -ho "ENOSYS [0-9]* [a-z0-9_]*" "$out"/probe-*.txt 2>/dev/null | sort | uniq -c | sort -rn > "$out/enosys.txt"
 echo "--- syscalls answered ENOSYS (count, nr, name):"
 cat "$out/enosys.txt"
+for m in $(printf '%s\n' "${!seen[@]}" | sort -n); do
+    f=${fails[$m]:-0}
+    [ "$f" -eq 0 ] && echo "milestone $m (${names[$m]}): PASS" || echo "milestone $m (${names[$m]}): FAIL ($f probe(s))"
+done

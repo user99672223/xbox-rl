@@ -11,12 +11,14 @@
 #include <gnu/libc-version.h>
 #include <pthread.h>
 #include <setjmp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/utsname.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -54,6 +56,17 @@ static void *worker(void *arg)
     pthread_mutex_unlock(&mu);
     return (void *)(long)(ok ? 0 : 1);
 }
+
+/* fork the way glibc does it: a raw clone with no new stack, r9 left with something in it (the layer once took r9
+ * for a child entry address and answered EINVAL: "bash: fork: Invalid argument") */
+static long raw_fork_clone(void)
+{
+    register long r10 __asm__("r10") = 0, r8 __asm__("r8") = 0, r9 __asm__("r9") = 0x1234567;
+    long rax = SYS_clone;
+    __asm__ volatile("syscall" : "+a"(rax) : "D"((long)SIGCHLD), "S"(0L), "d"(0L), "r"(r10), "r"(r8), "r"(r9) : "rcx", "r11", "memory");
+    return rax;
+}
+static int fork_val = 1;
 
 static int cmp_int(const void *a, const void *b) { return *(const int *)a - *(const int *)b; }
 static jmp_buf jb;
@@ -145,6 +158,29 @@ int main(int argc, char **argv)
     if (!v) longjmp(jb, 5);
     CHECK(v == 5, "setjmp/longjmp");
     CHECK(depth(200) != 12345, "deep recursion on the stack");
+
+    int pfd[2];
+    CHECK(pipe(pfd) == 0, "pipe");
+    pid_t me = getpid(), ch = fork();
+    if (ch == 0) {
+        fork_val = 2;
+        char msg[32]; int n = snprintf(msg, sizeof msg, "%d %d", (int)getppid(), (int)(getpid() != me));
+        (void)!write(pfd[1], msg, n);
+        _exit(42);
+    }
+    int ws = 0;
+    CHECK(ch > 0 && waitpid(ch, &ws, 0) == ch && WIFEXITED(ws) && WEXITSTATUS(ws) == 42, "fork + waitpid: the child's exit status");
+    char got[32] = { 0 }, want[32];
+    close(pfd[1]);
+    (void)!read(pfd[0], got, sizeof got - 1);
+    close(pfd[0]);
+    snprintf(want, sizeof want, "%d 1", (int)me);
+    CHECK(!strcmp(got, want) && fork_val == 1, "fork: own pid, getppid, private memory");
+    long rc = raw_fork_clone();
+    if (rc == 0) { fork_val = 3; syscall(SYS_exit_group, 7); }
+    ws = 0;
+    CHECK(rc > 0 && waitpid((pid_t)rc, &ws, 0) == rc && WIFEXITED(ws) && WEXITSTATUS(ws) == 7 && fork_val == 1,
+          "raw clone(SIGCHLD, stack 0) with a non-zero r9 forks");
 
     printf("glibc_test: %d failure(s)\n", fails);
     return fails;

@@ -1013,6 +1013,18 @@ static void test_fs(void)
     CHECK(sc2(21, "/tmp/xrl_dir/moved.txt", 0) == 0, "access");
     CHECK(sc1(87, "/tmp/xrl_dir/moved.txt") == 0, "unlink");
     CHECK(sc1(84, "/tmp/xrl_dir") == 0, "rmdir");
+    /* rename over a file another fd still has open (dpkg's status-new -> status while apt reads status) */
+    long ofd = sc4(257, -100, "/tmp/xrl_old.txt", 0102, 0644), nfd = sc4(257, -100, "/tmp/xrl_new.txt", 0102, 0644);
+    sc3(1, ofd, "old", 3); sc3(1, nfd, "new", 3); sc1(3, nfd);
+    CHECK(sc2(82, "/tmp/xrl_new.txt", "/tmp/xrl_old.txt") == 0, "rename over a file that is open");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc4(17, ofd, buf, 3, 0) == 3 && !memcmp(buf, "old", 3), "the open fd still reads the replaced file");
+    sc1(3, ofd);
+    ofd = sc3(2, "/tmp/xrl_old.txt", 0, 0);
+    memset(buf, 0, sizeof buf);
+    CHECK(ofd >= 3 && sc3(0, ofd, buf, 3) == 3 && !memcmp(buf, "new", 3), "the path opens the new file");
+    sc1(3, ofd);
+    sc1(87, "/tmp/xrl_old.txt");
     /* symlink table */
     CHECK(sc2(88, "/tmp", "/tmp_link") == 0, "symlink");
     char lb[64]; memset(lb, 0, sizeof lb);
@@ -1175,6 +1187,18 @@ static void test_mem(void)
     u8 *r = (u8 *)sc(25, p, 1 << 20, 2 << 20, 1, 0, 0);
     CHECK((long)r > 0x10000 && r[5] == 9, "mremap grow+move preserves data");
     CHECK(sc2(11, r, 2 << 20) == 0, "munmap");
+    /* grow in place twice, then move (APT's cache: mremap(base, n, n + 1 MiB, MAYMOVE) over and over); the
+     * second call spans the first one's extension */
+    u8 *g = mmap_anon(4 << 20, 3);
+    CHECK((long)g > 0x10000 && sc2(11, g + (1 << 20), 3 << 20) == 0, "mmap 4 MiB, keep the first 1 MiB");
+    g[0] = 11;
+    u8 *g1 = (u8 *)sc(25, g, 1 << 20, 2 << 20, 1, 0, 0);
+    if ((long)g1 > 0x10000) g1[(2 << 20) - 1] = 12;
+    u8 *g2 = (u8 *)sc(25, g1, 2 << 20, 3 << 20, 1, 0, 0);
+    CHECK(g1 == g && g2 == g, "mremap grows in place twice (the second over the first's extension)");
+    u8 *g3 = (u8 *)sc(25, g2, 3 << 20, 64 << 20, 1, 0, 0);
+    CHECK((long)g3 > 0x10000 && g3[0] == 11 && g3[(2 << 20) - 1] == 12, "then grows by moving, data kept");
+    if ((long)g3 > 0x10000) sc2(11, g3, 64 << 20);
     long b0 = sc1(12, 0);
     long b1 = sc1(12, b0 + 65536);
     CHECK(b1 == b0 + 65536, "brk grow");

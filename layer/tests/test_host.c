@@ -162,9 +162,11 @@ void xrl_desktop_audio_set_log(xrl_log_fn log);                      /* desktop_
 static void build_envp(const char **envp)
 {
     /* Guest environment: defaults, plus every host variable XRL_ENV_<NAME>=v as
-     * <NAME>=v (e.g. XRL_ENV_WINEPREFIX=/prefix), so any guest can be run. */
+     * <NAME>=v (e.g. XRL_ENV_WINEPREFIX=/prefix), so any guest can be run.
+     * XRL_ENV_HOME / XRL_ENV_PATH replace the defaults. */
     int e = 0;
-    envp[e++] = "HOME=/home/xbox"; envp[e++] = "PATH=/usr/bin:/bin";
+    if (!GetEnvironmentVariableA("XRL_ENV_HOME", NULL, 0)) envp[e++] = "HOME=/home/xbox";
+    if (!GetEnvironmentVariableA("XRL_ENV_PATH", NULL, 0)) envp[e++] = "PATH=/usr/bin:/bin";
     static char trace[16]; if (GetEnvironmentVariableA("XRL_TRACE", trace + 0, 15)) { static char t2[24]; sprintf(t2, "XRL_TRACE=%s", trace); envp[e++] = t2; }
     for (char *s = GetEnvironmentStringsA(); s && *s && e < 63; s += strlen(s) + 1)
         if (!strncmp(s, "XRL_ENV_", 8)) envp[e++] = s + 8;
