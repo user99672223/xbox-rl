@@ -149,7 +149,8 @@ xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h
 // The same swapchain made from a native D3D11 device (native D3D11 mode): the factory is the
 // device's own, the swapchain's buffer 0 is an ID3D11Texture2D on that device.
 xrl_status HostSwapchainCreate11(ID3D11Device* dev11, uint32_t w, uint32_t h, uint32_t buffer_count,
-                                 uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format) {
+                                 uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format,
+                                 UINT extra_flags) {
     ComPtr<ID3D11Device> dev = dev11;   // own a reference across the (possibly abandoned) job
 
     DXGI_SWAP_CHAIN_DESC1 desc{};
@@ -158,6 +159,7 @@ xrl_status HostSwapchainCreate11(ID3D11Device* dev11, uint32_t w, uint32_t h, ui
     DXGI_FORMAT fmt = DXGI_FORMAT_UNKNOWN;
     xrl_status pst = PrepareHostSwapchainDesc(w, h, buffer_count, dxgi_format, true, desc, core, hwnd, fmt);
     if (pst != XRL_OK) return pst;
+    desc.Flags |= extra_flags;
 
     struct Res {
         ComPtr<IDXGISwapChain1> sc;

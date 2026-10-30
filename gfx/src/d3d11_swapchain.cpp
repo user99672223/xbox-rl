@@ -12,6 +12,10 @@
 //     (done once per buffer), copies/resolves `back_` into it, releases it back to D3D12 in the
 //     PRESENT state, flushes, and presents on the host swapchain.
 //
+// XRL_PACE120=1 (native D3D11 mode): the host swapchain belongs to a Pacer120 (pacer.h), which flips the newest
+// finished frame onto the console's 120 Hz scanout; Present here only puts the frame into the pacer's ring.
+// XRL_PACE_EARLY_US=<us>: how long before each vblank the flip goes (default 300, the measured tear-free point).
+//
 // XRL_FSR=<w>x<h>: a frame smaller than that goes to a host swapchain of that size through FSR 1 (fsr.cpp)
 // instead of the copy; the game still sees its own size everywhere.
 //
@@ -25,6 +29,7 @@
 // handle the guest cannot wait on, so the latency-waitable flag is refused too.
 #include "common.h"
 #include "fsr.h"
+#include "pacer.h"
 
 #include <dxgi1_4.h>
 
@@ -44,6 +49,8 @@ public:
 
     ~D3D11SwapChain() {
         Drain();
+        host_.Reset();
+        pacer_.Stop();
         wrapped_.clear();
         bufs_.clear();
         hostbuf_.Reset();
@@ -84,7 +91,8 @@ public:
             if (!app_.height) app_.height = h ? h : 1080;
         }
         Log(LOG_TRACE, "d3d11 swapchain: dev12 %p", (void*)dev12_.Get());
-        xrl_status st = native_ ? HostSwapchainCreate11(dev_.Get(), HostW(app_), HostH(app_), app_.buffer_count,
+        xrl_status st = native_ && PaceWanted() ? StartPacer()
+                      : native_ ? HostSwapchainCreate11(dev_.Get(), HostW(app_), HostH(app_), app_.buffer_count,
                                                         app_.dxgi_format, host_, &host_format_)
                                 : HostSwapchainCreate(queue_.Get(), HostW(app_), HostH(app_), app_.buffer_count,
                                                       app_.dxgi_format, host_, &host_format_);
@@ -260,7 +268,9 @@ private:
         DXGI_SWAP_CHAIN_DESC1 hd{};
         HRESULT hr = host_->GetDesc1(&hd);
         if (FAILED(hr)) return hr;
-        if (native_) {
+        if (native_ && pacer_.Running()) {
+            // the pacer's swapchain lives on its own device; the game draws into the pacer's ring instead
+        } else if (native_) {
             // A D3D11 flip swapchain: buffer 0 is the one the runtime rotates behind; it stays the
             // copy target for the life of the swapchain (or until ResizeBuffers).
             if (FAILED(hr = host_->GetBuffer(0, IID_PPV_ARGS(&hostbuf_)))) return hr;
@@ -325,6 +335,22 @@ private:
         if (!fsr_w_ || !fsr_.Ready() || (d.width >= fsr_w_ && d.height >= fsr_h_)) return false;
         DXGI_FORMAT f = (DXGI_FORMAT)d.dxgi_format;
         return f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_R10G10B10A2_UNORM;
+    }
+    bool PaceWanted() {
+        char v[8];
+        return GetEnvironmentVariableA("XRL_PACE120", v, sizeof v) && v[0] == '1';
+    }
+    xrl_status StartPacer() {
+        char v[16];
+        double early_ms = GetEnvironmentVariableA("XRL_PACE_EARLY_US", v, sizeof v) ? atof(v) / 1000.0 : 0.30;
+        if (!pacer_.Start(dev_.Get(), HostW(app_), HostH(app_), app_.dxgi_format, early_ms)) {
+            Log(LOG_WARN, "pacer: unavailable; presenting the usual way");
+            pacer_.Stop();
+            return HostSwapchainCreate11(dev_.Get(), HostW(app_), HostH(app_), app_.buffer_count, app_.dxgi_format, host_, &host_format_);
+        }
+        host_ = pacer_.Host();
+        host_format_ = pacer_.HostFormat();
+        return XRL_OK;
     }
     UINT HostW(const xrl_swapchain_desc& d) const { return Upscaling(d) ? fsr_w_ : d.width; }
     UINT HostH(const xrl_swapchain_desc& d) const { return Upscaling(d) ? fsr_h_ : d.height; }
@@ -537,6 +563,7 @@ private:
         // Only flags valid for a flip-model swapchain on the host window (no tearing).
         UINT hf = flags & (DXGI_PRESENT_TEST | DXGI_PRESENT_DO_NOT_SEQUENCE | DXGI_PRESENT_RESTART | DXGI_PRESENT_DO_NOT_WAIT);
         if (flags & DXGI_PRESENT_TEST) {
+            if (pacer_.Running()) return S_OK;   // the presenter thread owns the host swapchain's Present
             HRESULT thr = host_->Present(sync, hf);
             if (tests_++ % 300 == 0)
                 Log(LOG_INFO, "d3d11 swapchain %p: Present(TEST) #%llu -> 0x%08lX", static_cast<void*>(this),
@@ -546,6 +573,14 @@ private:
         std::lock_guard<std::mutex> l(mu_);
         LARGE_INTEGER q0; QueryPerformanceCounter(&q0);
         GpuFrameEnd();
+        if (native_ && pacer_.Running()) {
+            Blit(pacer_.Acquire());
+            pacer_.Submit(ctx_.Get());
+            presents_++;
+            GpuFrameBegin();
+            Pace(q0, sync);
+            return S_OK;
+        }
         if (native_) {
             // buffer 0 of the host swapchain is always the next one to present; Present flushes
             Blit(hostbuf_.Get());
@@ -582,6 +617,16 @@ private:
         nd.flags = flags;
         HRESULT hr = Drain();
         if (FAILED(hr)) return hr;
+        if (native_ && pacer_.Running()) {
+            fsr_.Reset();
+            host_.Reset();
+            pacer_.Stop();
+            app_ = nd;
+            if (StartPacer() != XRL_OK) return E_FAIL;
+            hr = BuildBuffers();
+            if (SUCCEEDED(hr)) Log(LOG_INFO, "d3d11 swapchain %p resized (pacer): %ux%u", static_cast<void*>(this), app_.width, app_.height);
+            return hr;
+        }
         // The host swapchain may only be resized with no reference left to its buffers: drop our
         // wrapped views, flush D3D11On12's deferred destruction, and wait again.
         wrapped_.clear();
@@ -650,6 +695,7 @@ private:
     ComPtr<ID3D11Texture2D> back_;
     ComPtr<ID3D11Texture2D> resolved_;   // FSR's input when the frame is MSAA
     Fsr1 fsr_;
+    Pacer120 pacer_;   // XRL_PACE120: owns the host swapchain, flips onto the 120 Hz scanout
     UINT fsr_w_ = 0, fsr_h_ = 0;   // XRL_FSR output size (0: off)
     float fsr_sharp_ = 0.2f;
     xrl_swapchain_desc app_;

@@ -26,6 +26,8 @@
 #include <d3d11_4.h>
 #include <windows.ui.composition.interop.h>
 #include <winrt/Windows.UI.Composition.h>
+#include <winrt/Windows.Media.Core.h>
+#include <winrt/Windows.Media.Playback.h>
 #include <wrl/client.h>
 #include <algorithm>
 #include <cmath>
@@ -356,6 +358,7 @@ struct PtVariant {
     UINT extra_flags = 0;        // more DXGI_SWAP_CHAIN_FLAG_* (FULLSCREEN_VIDEO for a custom present duration)
     UINT present_duration = 0;   // IDXGISwapChainMedia::SetPresentDuration, in 100 ns (83333 = 120 Hz); 0: not asked
     bool composition = false;    // CreateSwapChainForComposition on a Windows.UI.Composition visual, not the CoreWindow
+    bool handle = false;         // IDXGIFactoryMedia::CreateSwapChainForCompositionSurfaceHandle on a composition surface
 };
 
 // A Windows.UI.Composition visual tree on the CoreWindow showing one swapchain: made and torn down on the UI thread
@@ -405,6 +408,40 @@ void pt_comp_detach(void* cw, PtComp& c) {
             } catch (...) {}
         }).get();
     } catch (...) {}
+}
+
+// A composition surface handle (DCompositionCreateSurfaceHandle) shown on a Windows.UI.Composition visual of the
+// CoreWindow: the swapchain is bound to the handle, the path Windows uses for direct and independent flips.
+bool pt_comp_handle(void* cw, uint32_t w, uint32_t h, PtComp& out, HANDLE& sh) {
+    bool ok = false;
+    try {
+        pt_dispatcher(cw).RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High, [&] {
+            try {
+                namespace wc = winrt::Windows::UI::Composition;
+                out.comp = wc::Compositor();
+                out.target = out.comp.CreateTargetForCurrentView();
+                auto mk = (HRESULT(WINAPI*)(DWORD, SECURITY_ATTRIBUTES*, HANDLE*))GetProcAddress(GetModuleHandleW(L"dcomp.dll"),
+                                                                                           "DCompositionCreateSurfaceHandle");
+                if (!mk) { XLOGW("ptest", "handle: DCompositionCreateSurfaceHandle not found"); return; }
+                HRESULT hr = mk(0x0003 /* COMPOSITIONOBJECT_ALL_ACCESS */, nullptr, &sh);
+                if (FAILED(hr)) { XLOGW("ptest", "handle: DCompositionCreateSurfaceHandle 0x%08x", (unsigned)hr); return; }
+                auto interop = out.comp.as<ABI::Windows::UI::Composition::ICompositorInterop>();
+                winrt::com_ptr<ABI::Windows::UI::Composition::ICompositionSurface> surf;
+                hr = interop->CreateCompositionSurfaceForHandle(sh, surf.put());
+                if (FAILED(hr)) { XLOGW("ptest", "handle: CreateCompositionSurfaceForHandle 0x%08x", (unsigned)hr); return; }
+                wc::ICompositionSurface surface{nullptr};
+                winrt::copy_from_abi(surface, surf.get());
+                auto visual = out.comp.CreateSpriteVisual();
+                visual.Size({(float)w, (float)h});
+                visual.Brush(out.comp.CreateSurfaceBrush(surface));
+                out.target.Root(visual);
+                ok = true;
+            } catch (const winrt::hresult_error& e) {
+                XLOGW("ptest", "handle: 0x%08x %s", (unsigned)e.code(), winrt::to_string(e.message()).c_str());
+            } catch (...) { XLOGW("ptest", "handle: failed"); }
+        }).get();
+    } catch (...) { XLOGW("ptest", "handle: the UI thread did not run the setup"); }
+    return ok;
 }
 
 // What custom present durations the console offers this swapchain, then ask for v.present_duration
@@ -494,10 +531,24 @@ const float* pt_color(uint64_t i) {
 void pt_run_d3d12(ID3D12Device* dev, ID3D12CommandQueue* queue, void* cw, const PtVariant& v, uint32_t w, uint32_t h, double secs) {
     DXGI_SWAP_CHAIN_DESC1 d = pt_desc(v, w, h);
     ComPtr<IDXGISwapChain1> sc1;
-    HRESULT hr = v.composition ? g_factory->CreateSwapChainForComposition(queue, &d, nullptr, &sc1)
-                               : g_factory->CreateSwapChainForCoreWindow(queue, (IUnknown*)cw, &d, nullptr, &sc1);
-    if (FAILED(hr)) { XLOGW("ptest", "%-16s %ux%u: CreateSwapChainFor%s 0x%08x", v.name, w, h, v.composition ? "Composition" : "CoreWindow", (unsigned)hr); return; }
     PtComp comp;
+    HANDLE sh = nullptr;
+    HRESULT hr;
+    if (v.handle) {
+        ComPtr<IDXGIFactoryMedia> fm;
+        if (!pt_comp_handle(cw, w, h, comp, sh) || FAILED(g_factory.As(&fm))) { XLOGW("ptest", "%-16s: no surface handle path", v.name); pt_comp_detach(cw, comp); if (sh) CloseHandle(sh); return; }
+        hr = fm->CreateSwapChainForCompositionSurfaceHandle(queue, sh, &d, nullptr, &sc1);
+    } else {
+        hr = v.composition ? g_factory->CreateSwapChainForComposition(queue, &d, nullptr, &sc1)
+                           : g_factory->CreateSwapChainForCoreWindow(queue, (IUnknown*)cw, &d, nullptr, &sc1);
+    }
+    if (FAILED(hr)) {
+        XLOGW("ptest", "%-16s %ux%u: CreateSwapChainFor%s 0x%08x", v.name, w, h,
+              v.handle ? "CompositionSurfaceHandle" : v.composition ? "Composition" : "CoreWindow", (unsigned)hr);
+        pt_comp_detach(cw, comp);
+        if (sh) CloseHandle(sh);
+        return;
+    }
     if (v.composition && !pt_comp_attach(cw, sc1.Get(), w, h, comp)) { XLOGW("ptest", "%-16s: no composition visual", v.name); return; }
     if (v.present_duration) pt_media(sc1.Get(), v);
     ComPtr<IDXGISwapChain3> sc;
@@ -555,7 +606,9 @@ void pt_run_d3d12(ID3D12Device* dev, ID3D12CommandQueue* queue, void* cw, const 
     if (fence->GetCompletedValue() < fv) { fence->SetEventOnCompletion(fv, fev); WaitForSingleObject(fev, 2000); }
     CloseHandle(fev);
     if (wt) CloseHandle(wt);
-    if (v.composition) pt_comp_detach(cw, comp);
+    sc.Reset(); sc1.Reset();
+    if (v.composition || v.handle) pt_comp_detach(cw, comp);
+    if (sh) CloseHandle(sh);
 }
 
 void pt_run_d3d11(void* cw, const PtVariant& v, uint32_t w, uint32_t h, double secs) {
@@ -650,6 +703,10 @@ void present_test() {
     v = {"no-vsync"};      v.sync = 0;                            run(v);
     v = {"window-size"};   v.w = ww; v.h = wh;                    run(v);
     v = {"d3d11"};         v.d3d11 = true;                        run(v);
+    v = {"handle"};        v.handle = true;                       run(v);
+    v = {"handle-nv"};     v.handle = true; v.sync = 0;           run(v);
+    v = {"handle-tear"};   v.handle = true; v.sync = 0; v.tearing = true; run(v);
+    v = {"handle-dur120"}; v.handle = true; v.present_duration = 83333; run(v);
     vblank();
     XLOGI("ptest", "present test done");
 }
@@ -662,7 +719,7 @@ void present_test() {
 //   3..7  tearing in vblank  ALLOW_TEARING at the window's vblank tick (WaitForVBlank, 60 Hz) + 0/2/4/6/8 ms and 8.333 ms
 //                            later: the tear line moves with the offset; where it disappears, both flips land in the
 //                            real vblanks: 120 Hz with no tear
-void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/B, 2: the early-flip sweep, 3: the fine sweep
+void present_visual_test(int kind) {   // 0: 7-phase sweep, 1: 60/120 A/B, 2: early-flip sweep, 3: fine sweep, 4: stripes
     const bool ab = kind != 0;
     try { winrt::init_apartment(winrt::apartment_type::multi_threaded); } catch (...) {}
     void* cw = xrl::window_info_get().core_window;
@@ -766,7 +823,16 @@ void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/
         double secs = (double)(at - t_start) / (double)qf.QuadPart;
         LONG x = (LONG)(fmod(secs * (double)w * 0.75, (double)w));   // 3/4 of the width per second
         D3D12_RECT bar = {x, 0, (LONG)std::min<uint32_t>(w, (uint32_t)x + 40), (LONG)h};
-        cl->ClearRenderTargetView(rtv, white, 1, &bar);
+        if (kind == 4) {   // 1-px stripes left, 2-px stripes right: sharp at a true 1:1 1440p, grey or moire if rescaled
+            static std::vector<D3D12_RECT> stripes;
+            if (stripes.empty()) {
+                for (uint32_t sx = 0; sx < w / 2; sx += 2) stripes.push_back({(LONG)sx, 0, (LONG)sx + 1, (LONG)h});
+                for (uint32_t sx = w / 2; sx < w; sx += 4) stripes.push_back({(LONG)sx, 0, (LONG)sx + 2, (LONG)h});
+            }
+            cl->ClearRenderTargetView(rtv, white, (UINT)stripes.size(), stripes.data());
+        } else {
+            cl->ClearRenderTargetView(rtv, white, 1, &bar);
+        }
         if (ab) {   // a big seven-segment "1" (today's 60 Hz path) or "2" (the 120 Hz trick) top-left
             const LONG X = 60, Y = 60, W = 110, H = 220, T = 24;
             const D3D12_RECT seg[7] = {
@@ -778,7 +844,7 @@ void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/
                 {X, Y, X + T, Y + H / 2},                   // f top left
                 {X, Y + H / 2 - T / 2, X + W, Y + H / 2 + T / 2}};   // g middle
             static const unsigned char digit_segs[10] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};   // bit k = seg k
-            const int shown = kind == 1 ? (phase == 1 ? 1 : 2) : kind == 2 ? phase - 7 : phase - 11;   // kind 2: 8..11, kind 3: 12..16
+            const int shown = kind == 1 || kind == 4 ? (phase == 1 ? 1 : 2) : kind == 2 ? phase - 7 : phase - 11;   // kind 2: 8..11, 3: 12..16
             for (int k = 0; k < 7; ++k)
                 if (digit_segs[shown % 10] & (1 << k)) cl->ClearRenderTargetView(rtv, mark, 1, &seg[k]);
         } else {
@@ -807,18 +873,20 @@ void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/
     const int64_t f120 = qf.QuadPart * 1000 / 120000;   // 8.333 ms
     // kind 2: phases 8..11 flip 0.5/1/1.5/2 ms BEFORE the 120 Hz grid (vblank tick + 8.333 and + 16.667 ms), twice
     // kind 3: phases 12..16 flip 0.05..0.25 ms before the 120 Hz grid, twice (0.30 was tear-free, 0.33+ tore at the bottom)
-    const int nsteps = kind == 0 ? 7 : kind == 1 ? 6 : kind == 2 ? 8 : 10;
+    const int nsteps = kind == 0 ? 7 : kind == 1 ? 6 : kind == 2 ? 8 : kind == 3 ? 10 : 4;
     {   // let the tick watcher settle (its phase estimate needs a few dozen ticks) before the first timed phase
         int64_t ready = qnow() + qf.QuadPart * 2;
         while (qnow() < ready) present(draw(0, qnow()), 1, 0);
     }
     for (int stepn = 1; stepn <= nsteps; ++stepn) {
-        const int phase = kind == 0 ? stepn : kind == 1 ? (stepn % 2 ? 1 : 3) : kind == 2 ? 8 + (stepn - 1) % 4 : 12 + (stepn - 1) % 5;
+        const int phase = kind == 0 ? stepn : kind == 1 ? (stepn % 2 ? 1 : 3) : kind == 2 ? 8 + (stepn - 1) % 4
+                        : kind == 3 ? 12 + (stepn - 1) % 5 : (stepn % 2 ? 1 : 17);   // 17: the tear-free 120 Hz timing
         int64_t t0 = qnow(), next = t0;
         uint64_t frames = 0;
         int64_t late_sum = 0, late_max = 0, late_n = 0;   // Present called this long after its target (QPC ticks)
         static const double kFine[5] = {0.05, 0.10, 0.15, 0.20, 0.25};   // ms before the grid, numbers 1..5
-        const int64_t off = phase >= 12 ? f120 - (int64_t)((double)qf.QuadPart * kFine[phase - 12] / 1000.0)
+        const int64_t off = phase == 17 ? f120 - (int64_t)((double)qf.QuadPart * 0.30 / 1000.0)   // 0.30 ms early: tear-free
+                          : phase >= 12 ? f120 - (int64_t)((double)qf.QuadPart * kFine[phase - 12] / 1000.0)
                           : phase >= 8 ? f120 - qf.QuadPart * (phase - 7) / 2000   // 8.333 ms minus 0.5 * (1..4) ms
                           : phase >= 3 ? qf.QuadPart * 2 * (phase - 3) / 1000 : 0;
         while (qnow() - t0 < phase_len) {
@@ -1066,9 +1134,194 @@ void gfx_keepalive_stop() { g_keepalive_run.store(false); }
 
 void gfx_discover_run(FILE* f) { gfx_discover(f); }
 
+// The corner test: a swapchain at the HDMI mode's size (1440p) shown with DXGI_SCALING_NONE, then STRETCH, an orange
+// square in each corner. With NONE a 1080p plane crops it (the right and bottom squares are gone), a 1440p plane shows
+// all four.
+void corners_test() {
+    void* cw = xrl::window_info_get().core_window;
+    if (!cw || FAILED(ensure_factory())) return;
+    auto mode = xrl::display_mode();
+    const uint32_t w = mode.width ? mode.width : 2560, h = mode.height ? mode.height : 1440;
+    for (DXGI_SCALING sc_mode : {DXGI_SCALING_NONE, DXGI_SCALING_STRETCH}) {
+        ComPtr<ID3D11Device> dev;
+        ComPtr<ID3D11DeviceContext> ctx;
+        if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, &ctx))) return;
+        DXGI_SWAP_CHAIN_DESC1 d{};
+        d.Width = w; d.Height = h; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM; d.SampleDesc.Count = 1;
+        d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; d.BufferCount = 2; d.Scaling = sc_mode;
+        d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+        ComPtr<IDXGISwapChain1> sc;
+        HRESULT hr = g_factory->CreateSwapChainForCoreWindow(dev.Get(), (IUnknown*)cw, &d, nullptr, &sc);
+        XLOGI("ptest", "corners: %ux%u scaling %s: 0x%08x", w, h, sc_mode == DXGI_SCALING_NONE ? "NONE" : "STRETCH", (unsigned)hr);
+        if (FAILED(hr)) continue;
+        ComPtr<ID3D11Texture2D> b0;
+        sc->GetBuffer(0, IID_PPV_ARGS(&b0));
+        ComPtr<ID3D11RenderTargetView> rtv;
+        dev->CreateRenderTargetView(b0.Get(), nullptr, &rtv);
+        ComPtr<ID3D11DeviceContext1> c1;
+        ctx.As(&c1);
+        const float bg[4] = {0.06f, 0.06f, 0.09f, 1.f}, orange[4] = {0.95f, 0.55f, 0.1f, 1.f}, white[4] = {1, 1, 1, 1};
+        const LONG s = 160;
+        const D3D11_RECT corners[4] = {{0, 0, s, s}, {(LONG)w - s, 0, (LONG)w, s}, {0, (LONG)h - s, s, (LONG)h}, {(LONG)w - s, (LONG)h - s, (LONG)w, (LONG)h}};
+        const D3D11_RECT cross[2] = {{(LONG)w / 2 - 4, 0, (LONG)w / 2 + 4, (LONG)h}, {0, (LONG)h / 2 - 4, (LONG)w, (LONG)h / 2 + 4}};
+        ULONGLONG t0 = GetTickCount64();
+        while (GetTickCount64() - t0 < 15000) {
+            c1->ClearView(rtv.Get(), bg, nullptr, 0);
+            c1->ClearView(rtv.Get(), white, cross, 2);
+            c1->ClearView(rtv.Get(), orange, corners, sc_mode == DXGI_SCALING_NONE ? 4 : 2);   // STRETCH: only the top two
+            if (FAILED(sc->Present(1, 0))) break;
+        }
+        rtv.Reset(); b0.Reset(); sc.Reset();
+        ctx->ClearState(); ctx->Flush();
+    }
+    XLOGI("ptest", "present test done");
+}
+
+// XRL_PRESENT_TEST=8: the video plane. A decode swapchain (IDXGIFactoryMedia::CreateDecodeSwapChainForCompositionSurfaceHandle)
+// takes NV12 frames and is meant to be shown on a hardware video plane at the output's own resolution, apart from the app's
+// 1080p window. 20 s of 1-px (left) and 2-px (right) luma stripes at the HDMI mode's size, neutral chroma; the present
+// rate and every call's result are logged. No teardown: the composition teardown crashed before, and the app exits after.
+void decode_test() {
+    void* cw = xrl::window_info_get().core_window;
+    if (!cw || FAILED(ensure_factory())) return;
+    auto mode = xrl::display_mode();
+    const uint32_t w = mode.width ? mode.width : 2560, h = mode.height ? mode.height : 1440;
+    ComPtr<ID3D11Device> dev;
+    ComPtr<ID3D11DeviceContext> ctx;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr, 0,
+                                   D3D11_SDK_VERSION, &dev, nullptr, &ctx);
+    XLOGI("ptest", "decode: video-capable D3D11 device 0x%08x", (unsigned)hr);
+    if (FAILED(hr)) return;
+    // the frame: NV12, luma stripes, chroma 128
+    const UINT n = 4;
+    std::vector<uint8_t> nv12((size_t)w * h * 3 / 2);
+    for (uint32_t y = 0; y < h; y++)
+        for (uint32_t x = 0; x < w; x++)
+            nv12[(size_t)y * w + x] = (x < w / 2 ? (x & 1) : ((x >> 1) & 1)) ? 235 : 16;
+    memset(nv12.data() + (size_t)w * h, 128, (size_t)w * h / 2);
+    D3D11_TEXTURE2D_DESC td{};
+    td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1; td.Format = DXGI_FORMAT_NV12; td.SampleDesc.Count = 1;
+    td.Usage = D3D11_USAGE_DEFAULT;
+    D3D11_SUBRESOURCE_DATA init{nv12.data(), w, 0};
+    ComPtr<ID3D11Texture2D> src;
+    hr = dev->CreateTexture2D(&td, &init, &src);
+    XLOGI("ptest", "decode: NV12 source texture 0x%08x", (unsigned)hr);
+    td.ArraySize = n; td.BindFlags = D3D11_BIND_DECODER;
+    ComPtr<ID3D11Texture2D> bufs;
+    hr = dev->CreateTexture2D(&td, nullptr, &bufs);
+    XLOGI("ptest", "decode: NV12 decoder buffer array (%u) 0x%08x", n, (unsigned)hr);
+    if (FAILED(hr) || !src) return;
+    for (UINT i = 0; i < n; i++) ctx->CopySubresourceRegion(bufs.Get(), i, 0, 0, 0, src.Get(), 0, nullptr);
+    ctx->Flush();
+    PtComp comp;
+    HANDLE sh = nullptr;
+    auto wi = xrl::window_info_get();
+    if (!pt_comp_handle(cw, wi.width ? wi.width : 1920, wi.height ? wi.height : 1080, comp, sh)) { XLOGW("ptest", "decode: no surface handle"); return; }
+    ComPtr<IDXGIFactoryMedia> fm;
+    ComPtr<IDXGIResource> res;
+    if (FAILED(g_factory.As(&fm)) || FAILED(bufs.As(&res))) { XLOGW("ptest", "decode: no media factory"); return; }
+    DXGI_DECODE_SWAP_CHAIN_DESC dd{0};
+    ComPtr<IDXGIDecodeSwapChain> dsc;
+    hr = fm->CreateDecodeSwapChainForCompositionSurfaceHandle(dev.Get(), sh, &dd, res.Get(), nullptr, &dsc);
+    XLOGI("ptest", "decode: CreateDecodeSwapChainForCompositionSurfaceHandle 0x%08x", (unsigned)hr);
+    if (FAILED(hr)) return;
+    RECT r{0, 0, (LONG)w, (LONG)h};
+    XLOGI("ptest", "decode: SetSourceRect 0x%08x, SetDestSize %ux%u 0x%08x, SetColorSpace BT709 0x%08x", (unsigned)dsc->SetSourceRect(&r), w, h,
+          (unsigned)dsc->SetDestSize(w, h), (unsigned)dsc->SetColorSpace(DXGI_MULTIPLANE_OVERLAY_YCbCr_FLAG_BT709));
+    ComPtr<IDXGISwapChain1> as1;
+    XLOGI("ptest", "decode: also an IDXGISwapChain1 (frame statistics): %s", SUCCEEDED(dsc.As(&as1)) ? "yes" : "no");
+    LARGE_INTEGER qf, a, b; QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&a);
+    uint64_t presents = 0, shown = 0;
+    UINT last_pc = 0;
+    HRESULT ph = S_OK;
+    ULONGLONG t0 = GetTickCount64();
+    while (GetTickCount64() - t0 < 20000) {
+        ph = dsc->PresentBuffer((UINT)(presents % n), 1, 0);
+        if (FAILED(ph)) break;
+        ++presents;
+        DXGI_FRAME_STATISTICS st{};
+        if (as1 && SUCCEEDED(as1->GetFrameStatistics(&st)) && st.PresentCount != last_pc) { ++shown; last_pc = st.PresentCount; }
+    }
+    QueryPerformanceCounter(&b);
+    double secs = (double)(b.QuadPart - a.QuadPart) / (double)qf.QuadPart;
+    XLOGI("ptest", "decode: %.1f presents/s (PresentBuffer sync 1), %.1f shown/s by frame statistics, last result 0x%08x",
+          presents / secs, shown / secs, (unsigned)ph);
+    XLOGI("ptest", "present test done");
+    ExitProcess(0);   // no teardown (see above)
+}
+
+// XRL_PRESENT_TEST=9: the video path. First what the output says about hardware overlay planes (CheckOverlaySupport),
+// then LocalState\stripes1440p120.mp4 (2560x1440, 120 fps, 1-px / 2-px luma stripes, a moving bar) played by the console's
+// MediaPlayer onto a composition surface on the window, 25 s, looping. The video player is the one path the system gives
+// its own "max resolution" swapchains; the user judges whether the 1-px stripes survive. Exits without teardown.
+void media_test() {
+    void* cw = xrl::window_info_get().core_window;
+    if (!cw || FAILED(ensure_factory())) return;
+    {   // overlay planes
+        ComPtr<ID3D11Device> dev;
+        D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_VIDEO_SUPPORT, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, nullptr);
+        ComPtr<IDXGIAdapter1> ad;
+        ComPtr<IDXGIOutput> out;
+        ComPtr<IDXGIOutput3> o3;
+        ComPtr<IDXGIOutput4> o4;
+        if (dev && SUCCEEDED(g_factory->EnumAdapters1(0, &ad)) && SUCCEEDED(ad->EnumOutputs(0, &out)) && SUCCEEDED(out.As(&o3))) {
+            for (DXGI_FORMAT f : {DXGI_FORMAT_NV12, DXGI_FORMAT_YUY2, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM}) {
+                UINT fl = 0;
+                HRESULT hr = o3->CheckOverlaySupport(f, dev.Get(), &fl);
+                XLOGI("ptest", "media: CheckOverlaySupport(format %d) 0x%08x flags 0x%x", (int)f, (unsigned)hr, fl);
+            }
+            if (SUCCEEDED(out.As(&o4))) {
+                UINT fl = 0;
+                HRESULT hr = o4->CheckOverlayColorSpaceSupport(DXGI_FORMAT_NV12, DXGI_COLOR_SPACE_YCBCR_STUDIO_G22_LEFT_P709, dev.Get(), &fl);
+                XLOGI("ptest", "media: CheckOverlayColorSpaceSupport(NV12, 709) 0x%08x flags 0x%x", (unsigned)hr, fl);
+            }
+        } else XLOGW("ptest", "media: no output to ask about overlays");
+    }
+    PtComp comp;
+    winrt::Windows::Media::Playback::MediaPlayer player{nullptr};
+    auto wi = xrl::window_info_get();
+    try {
+        pt_dispatcher(cw).RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High, [&] {
+            try {
+                namespace wc = winrt::Windows::UI::Composition;
+                comp.comp = wc::Compositor();
+                comp.target = comp.comp.CreateTargetForCurrentView();
+                player = winrt::Windows::Media::Playback::MediaPlayer();
+                player.IsLoopingEnabled(true);
+                player.Source(winrt::Windows::Media::Core::MediaSource::CreateFromUri(
+                    winrt::Windows::Foundation::Uri(L"ms-appdata:///local/stripes1440p120.mp4")));
+                player.SetSurfaceSize({2560.f, 1440.f});
+                auto surface = player.GetSurface(comp.comp);
+                auto visual = comp.comp.CreateSpriteVisual();
+                visual.Size({(float)(wi.width ? wi.width : 1920), (float)(wi.height ? wi.height : 1080)});
+                visual.Brush(comp.comp.CreateSurfaceBrush(surface.CompositionSurface()));
+                comp.target.Root(visual);
+                player.Play();
+                XLOGI("ptest", "media: playing");
+            } catch (const winrt::hresult_error& e) {
+                XLOGW("ptest", "media: 0x%08x %s", (unsigned)e.code(), winrt::to_string(e.message()).c_str());
+            } catch (...) { XLOGW("ptest", "media: setup failed"); }
+        }).get();
+    } catch (...) { XLOGW("ptest", "media: the UI thread did not run the setup"); return; }
+    for (int i = 0; i < 25 && player; i++) {
+        Sleep(1000);
+        try {
+            auto ps = player.PlaybackSession();
+            if (i % 5 == 0 || i == 24)
+                XLOGI("ptest", "media: t %d s, state %d, video %ux%u, position %.2f s, rate %.2f", i, (int)ps.PlaybackState(),
+                      ps.NaturalVideoWidth(), ps.NaturalVideoHeight(), ps.Position().count() / 1e7, ps.PlaybackRate());
+        } catch (...) {}
+    }
+    XLOGI("ptest", "present test done");
+    ExitProcess(0);
+}
+
 void gfx_present_test(int mode) {
     keepalive_stop_wait();   // the window takes one swapchain
-    if (mode >= 2 && mode <= 5) present_visual_test(mode - 2);
+    if (mode == 9) { media_test(); return; }
+    if (mode == 8) { decode_test(); return; }
+    if (mode == 7) { corners_test(); return; }
+    if (mode >= 2 && mode <= 6) present_visual_test(mode - 2);
     else present_test();
 }
 

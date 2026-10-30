@@ -15,6 +15,8 @@
 #include <thread>
 #include <vector>
 #include <winrt/Windows.Devices.Display.Core.h>
+#include <winrt/Windows.Storage.Streams.h>
+#include <winrt/Windows.UI.ViewManagement.h>
 #include <winrt/Windows.Xbox.Graphics.Display.h>
 #include <winrt/Windows.Xbox.Graphics.Display.Internal.h>
 #include <winrt/Windows.Xbox.System.Internal.TV.h>
@@ -332,12 +334,44 @@ void xbox_display_probe() {
                 auto dc = xd::DisplayConfiguration::GetForCurrentView();
                 auto cur = dc.CurrentDisplayMode();
                 XLOGI("xbox", "current mode %ux%u @ %.3f Hz, %u bpp", cur.RawWidth(), cur.RawHeight(), cur.RefreshRate(), cur.BitsPerPixel());
+                auto blob = [](const winrt::Windows::Storage::Streams::IBuffer& b) {
+                    std::string hex;
+                    if (!b) return std::string("(none)");
+                    const uint8_t* p = b.data();
+                    for (uint32_t i = 0; i < b.Length() && i < 96; i++) { char t[4]; snprintf(t, sizeof t, "%02x", p[i]); hex += t; }
+                    return std::to_string(b.Length()) + " bytes " + hex;
+                };
+                try { XLOGI("xbox", "current mode AdvancedData: %s", blob(cur.as<xd::IDisplayMode2>().AdvancedData()).c_str()); }
+                catch (const winrt::hresult_error& e) { XLOGI("xbox", "AdvancedData: 0x%08x", (unsigned)e.code()); }
                 for (const auto& m : dc.SupportedDisplayModes())
                     XLOGI("xbox", "  mode %ux%u @ %.3f Hz, %u bpp, stereo %d", m.RawWidth(), m.RawHeight(), m.RefreshRate(), m.BitsPerPixel(),
                           (int)m.IsStereoSupported());
             } catch (const winrt::hresult_error& e) {
                 XLOGI("xbox", "DisplayConfiguration: 0x%08x %s", (unsigned)e.code(), winrt::to_string(e.message()).c_str());
             } catch (...) { XLOGI("xbox", "DisplayConfiguration: failed"); }
+        }).get();
+    });
+    // the view our app gets: its real pixel size, and whether it may be made bigger (our own window only)
+    if (cw) step("view size (UI thread)", [cw] {
+        winrt::Windows::UI::Core::CoreWindow w{nullptr};
+        winrt::copy_from_abi(w, cw);
+        w.Dispatcher().RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High, [w] {
+            try {
+                auto di = winrt::Windows::Graphics::Display::DisplayInformation::GetForCurrentView();
+                auto b = w.Bounds();
+                XLOGI("xbox", "view: bounds %.0fx%.0f DIPs, raw pixels per view pixel %.3f, screen %ux%u raw pixels, scale %d%%, logical dpi %.1f",
+                      b.Width, b.Height, di.RawPixelsPerViewPixel(), di.ScreenWidthInRawPixels(), di.ScreenHeightInRawPixels(),
+                      (int)di.ResolutionScale(), di.LogicalDpi());
+                auto av = winrt::Windows::UI::ViewManagement::ApplicationView::GetForCurrentView();
+                XLOGI("xbox", "view: full screen %d, bounds mode %d", (int)av.IsFullScreenMode(), (int)av.DesiredBoundsMode());
+                bool core = av.SetDesiredBoundsMode(winrt::Windows::UI::ViewManagement::ApplicationViewBoundsMode::UseCoreWindow);
+                bool rs = av.TryResizeView({2560.f, 1440.f});
+                auto b2 = w.Bounds();
+                XLOGI("xbox", "view: SetDesiredBoundsMode(UseCoreWindow) %d, TryResizeView(2560x1440) %d -> bounds %.0fx%.0f, screen %ux%u",
+                      (int)core, (int)rs, b2.Width, b2.Height, di.ScreenWidthInRawPixels(), di.ScreenHeightInRawPixels());
+            } catch (const winrt::hresult_error& e) {
+                XLOGI("xbox", "view: 0x%08x %s", (unsigned)e.code(), winrt::to_string(e.message()).c_str());
+            } catch (...) { XLOGI("xbox", "view: failed"); }
         }).get();
     });
     XLOGI("xbox", "xbox display probe done");
