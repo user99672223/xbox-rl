@@ -216,8 +216,8 @@ int sdl_main(int, char**) {
             return;   // stay foreground; do not boot the guest
         } }
         // XRL_PRESENT_TEST=1 (host_env): what reaches the screen at the HDMI mode, without the game; then exit
-        { char v[4]; if (GetEnvironmentVariableA("XRL_PRESENT_TEST", v, sizeof v) && v[0] == '1') {
-            xrl::gfx_present_test();
+        { char v[4]; if (GetEnvironmentVariableA("XRL_PRESENT_TEST", v, sizeof v) && (v[0] >= '1' && v[0] <= '5')) {
+            xrl::gfx_present_test(v[0] - '0');   // 1: the measured battery, 2: the visual test, 3: the 60/120 A/B, 4: the early-flip sweep, 5: the fine sweep
             g_worker_done = true;
             return;
         } }

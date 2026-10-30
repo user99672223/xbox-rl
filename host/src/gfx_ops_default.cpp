@@ -23,8 +23,11 @@
 #include <d3d11.h>
 #include <d3d11on12.h>
 #include <dxgi1_5.h>
+#include <windows.ui.composition.interop.h>
+#include <winrt/Windows.UI.Composition.h>
 #include <wrl/client.h>
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <vector>
 #include <thread>
@@ -349,7 +352,75 @@ struct PtVariant {
     DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
     bool waitable = false, tearing = false;
     UINT sync = 1;
+    UINT extra_flags = 0;        // more DXGI_SWAP_CHAIN_FLAG_* (FULLSCREEN_VIDEO for a custom present duration)
+    UINT present_duration = 0;   // IDXGISwapChainMedia::SetPresentDuration, in 100 ns (83333 = 120 Hz); 0: not asked
+    bool composition = false;    // CreateSwapChainForComposition on a Windows.UI.Composition visual, not the CoreWindow
 };
+
+// A Windows.UI.Composition visual tree on the CoreWindow showing one swapchain: made and torn down on the UI thread
+struct PtComp {
+    winrt::Windows::UI::Composition::Compositor comp{nullptr};
+    winrt::Windows::UI::Composition::CompositionTarget target{nullptr};
+};
+winrt::Windows::UI::Core::CoreDispatcher pt_dispatcher(void* cw) {
+    winrt::Windows::UI::Core::CoreWindow w{nullptr};
+    winrt::copy_from_abi(w, cw);
+    return w.Dispatcher();
+}
+bool pt_comp_attach(void* cw, IDXGISwapChain1* sc, uint32_t w, uint32_t h, PtComp& out) {
+    bool ok = false;
+    try {
+        pt_dispatcher(cw).RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High, [&] {
+            try {
+                namespace wc = winrt::Windows::UI::Composition;
+                out.comp = wc::Compositor();
+                out.target = out.comp.CreateTargetForCurrentView();
+                auto interop = out.comp.as<ABI::Windows::UI::Composition::ICompositorInterop>();
+                winrt::com_ptr<ABI::Windows::UI::Composition::ICompositionSurface> surf;
+                if (FAILED(interop->CreateCompositionSurfaceForSwapChain(sc, surf.put()))) return;
+                wc::ICompositionSurface surface{nullptr};
+                winrt::copy_from_abi(surface, surf.get());
+                auto visual = out.comp.CreateSpriteVisual();
+                visual.Size({(float)w, (float)h});
+                visual.Brush(out.comp.CreateSurfaceBrush(surface));
+                out.target.Root(visual);
+                ok = true;
+            } catch (const winrt::hresult_error& e) {
+                XLOGW("ptest", "composition: 0x%08x %s", (unsigned)e.code(), winrt::to_string(e.message()).c_str());
+            }
+        }).get();
+    } catch (...) { XLOGW("ptest", "composition: the UI thread did not run the setup"); }
+    return ok;
+}
+void pt_comp_detach(void* cw, PtComp& c) {
+    try {
+        pt_dispatcher(cw).RunAsync(winrt::Windows::UI::Core::CoreDispatcherPriority::High, [&] {
+            try {   // nothing may escape onto the UI thread: an exception there ends the app
+                if (c.target) c.target.Root(nullptr);
+                c.target = nullptr;
+                c.comp = nullptr;
+            } catch (const winrt::hresult_error& e) {
+                XLOGW("ptest", "composition teardown: 0x%08x", (unsigned)e.code());
+            } catch (...) {}
+        }).get();
+    } catch (...) {}
+}
+
+// What custom present durations the console offers this swapchain, then ask for v.present_duration
+void pt_media(IDXGISwapChain1* sc, const PtVariant& v) {
+    ComPtr<IDXGISwapChainMedia> m;
+    HRESULT hr = sc->QueryInterface(IID_PPV_ARGS(&m));
+    if (FAILED(hr)) { XLOGI("ptest", "%-16s IDXGISwapChainMedia: 0x%08x", v.name, (unsigned)hr); return; }
+    const UINT want[] = {83333, 111111, 166667, 416667};   // 120, 90, 60, 24 Hz
+    for (UINT d : want) {
+        UINT lo = 0, hi = 0;
+        hr = m->CheckPresentDurationSupport(d, &lo, &hi);
+        XLOGI("ptest", "%-16s CheckPresentDurationSupport(%u = %.1f Hz) 0x%08x: closest smaller %u, larger %u", v.name, d, 1e7 / d,
+              (unsigned)hr, lo, hi);
+    }
+    hr = m->SetPresentDuration(v.present_duration);
+    XLOGI("ptest", "%-16s SetPresentDuration(%u) 0x%08x", v.name, v.present_duration, (unsigned)hr);
+}
 
 struct PtResult { double presents = 0, shown = 0, period = 0; uint64_t bucket[6] = {}; uint64_t stat_fail = 0; HRESULT hr = S_OK; };
 
@@ -401,7 +472,8 @@ DXGI_SWAP_CHAIN_DESC1 pt_desc(const PtVariant& v, uint32_t w, uint32_t h) {
     d.Width = w; d.Height = h; d.Format = v.fmt;
     d.SampleDesc.Count = 1; d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     d.BufferCount = v.buffers; d.Scaling = v.scaling; d.SwapEffect = v.effect; d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
-    d.Flags = (v.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | (v.waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0);
+    d.Flags = (v.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | (v.waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0) |
+              v.extra_flags;
     return d;
 }
 
@@ -421,8 +493,12 @@ const float* pt_color(uint64_t i) {
 void pt_run_d3d12(ID3D12Device* dev, ID3D12CommandQueue* queue, void* cw, const PtVariant& v, uint32_t w, uint32_t h, double secs) {
     DXGI_SWAP_CHAIN_DESC1 d = pt_desc(v, w, h);
     ComPtr<IDXGISwapChain1> sc1;
-    HRESULT hr = g_factory->CreateSwapChainForCoreWindow(queue, (IUnknown*)cw, &d, nullptr, &sc1);
-    if (FAILED(hr)) { XLOGW("ptest", "%-16s %ux%u: CreateSwapChainForCoreWindow 0x%08x", v.name, w, h, (unsigned)hr); return; }
+    HRESULT hr = v.composition ? g_factory->CreateSwapChainForComposition(queue, &d, nullptr, &sc1)
+                               : g_factory->CreateSwapChainForCoreWindow(queue, (IUnknown*)cw, &d, nullptr, &sc1);
+    if (FAILED(hr)) { XLOGW("ptest", "%-16s %ux%u: CreateSwapChainFor%s 0x%08x", v.name, w, h, v.composition ? "Composition" : "CoreWindow", (unsigned)hr); return; }
+    PtComp comp;
+    if (v.composition && !pt_comp_attach(cw, sc1.Get(), w, h, comp)) { XLOGW("ptest", "%-16s: no composition visual", v.name); return; }
+    if (v.present_duration) pt_media(sc1.Get(), v);
     ComPtr<IDXGISwapChain3> sc;
     sc1.As(&sc);
     const UINT n = v.buffers;
@@ -478,6 +554,7 @@ void pt_run_d3d12(ID3D12Device* dev, ID3D12CommandQueue* queue, void* cw, const 
     if (fence->GetCompletedValue() < fv) { fence->SetEventOnCompletion(fv, fev); WaitForSingleObject(fev, 2000); }
     CloseHandle(fev);
     if (wt) CloseHandle(wt);
+    if (v.composition) pt_comp_detach(cw, comp);
 }
 
 void pt_run_d3d11(void* cw, const PtVariant& v, uint32_t w, uint32_t h, double secs) {
@@ -568,25 +645,213 @@ void present_test() {
     };
     vblank();
     PtVariant v;
-    v = {"control"};                                              run(v);
-    v = {"window-size"};   v.w = ww; v.h = wh;                    run(v);
-    v = {"window-1:1"};    v.w = ww; v.h = wh; v.scaling = DXGI_SCALING_NONE; run(v);
-    v = {"aspect"};        v.scaling = DXGI_SCALING_ASPECT_RATIO_STRETCH; run(v);
-    v = {"2-buffers"};     v.buffers = 2;                         run(v);
-    v = {"4-buffers"};     v.buffers = 4;                         run(v);
-    v = {"sequential"};    v.effect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL; run(v);
-    v = {"10-bit"};        v.fmt = DXGI_FORMAT_R10G10B10A2_UNORM; run(v);
-    v = {"fp16"};          v.fmt = DXGI_FORMAT_R16G16B16A16_FLOAT; run(v);
-    v = {"waitable-1"};    v.waitable = true;                     run(v);
-    v = {"no-vsync"};      v.sync = 0;                            run(v);
-    v = {"tearing"};       v.sync = 0; v.tearing = true;          run(v);
-    v = {"d3d11"};         v.d3d11 = true;                        run(v);
-    v = {"d3d11-window"};  v.d3d11 = true; v.w = ww; v.h = wh;    run(v);
-    v = {"d3d11-waitable"}; v.d3d11 = true; v.waitable = true;    run(v);
-    // the HDMI mode: 60 Hz as a control, then a fresh switch back to 120 Hz
-    if (xrl::display_switch(mw, mh, 60)) { vblank(); v = {"hdmi-60"}; run(v); }
-    if (xrl::display_switch(mw, mh, 120)) { vblank(); v = {"hdmi-120-again"}; run(v); v = {"no-vsync-again"}; v.sync = 0; run(v); }
-    v = {"4k"};            v.w = 3840; v.h = 2160;                run(v);   // last: it removed the device once
+    v = {"comp-dur-120"};  v.composition = true; v.present_duration = 83333; run(v);
+    v = {"comp-dur-120-nv"}; v.composition = true; v.present_duration = 83333; v.sync = 0; run(v);
+    v = {"comp-no-vsync"}; v.composition = true; v.sync = 0;      run(v);
+    v = {"comp-tearing"};  v.composition = true; v.sync = 0; v.tearing = true; run(v);
+    v = {"comp-1080"};     v.composition = true; v.w = ww; v.h = wh; run(v);
+    XLOGI("ptest", "present test done");
+}
+
+// XRL_PRESENT_TEST=2: a test to watch on the TV (or film in slow motion). A white bar crosses the screen at a constant
+// speed (moved by the clock, not per frame), so a smoother phase shows a smoother bar; N small squares top-left
+// say which phase it is. 15 s each:
+//   1     vsync              Present(1, 0): today's path (the window's 60 Hz clock)
+//   2     tearing @120       ALLOW_TEARING, paced to 120 fps by the CPU clock: straight to the 120 Hz scanout, a tear line
+//   3..7  tearing in vblank  ALLOW_TEARING at the window's vblank tick (WaitForVBlank, 60 Hz) + 0/2/4/6/8 ms and 8.333 ms
+//                            later: the tear line moves with the offset; where it disappears, both flips land in the
+//                            real vblanks: 120 Hz with no tear
+void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/B, 2: the early-flip sweep, 3: the fine sweep
+    const bool ab = kind != 0;
+    try { winrt::init_apartment(winrt::apartment_type::multi_threaded); } catch (...) {}
+    void* cw = xrl::window_info_get().core_window;
+    if (!cw || FAILED(ensure_factory())) { XLOGE("ptest", "no CoreWindow/factory"); return; }
+    auto mode = xrl::display_mode();
+    const uint32_t w = mode.width ? mode.width : 1920, h = mode.height ? mode.height : 1080;
+    ComPtr<ID3D12Device> dev;
+    ComPtr<ID3D12CommandQueue> queue;
+    D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (FAILED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))) ||
+        FAILED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)))) { XLOGE("ptest", "no D3D12 device/queue"); return; }
+    const UINT n = 3;
+    DXGI_SWAP_CHAIN_DESC1 d{};
+    d.Width = w; d.Height = h; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    d.SampleDesc.Count = 1; d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    d.BufferCount = n; d.Scaling = DXGI_SCALING_STRETCH; d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    d.AlphaMode = DXGI_ALPHA_MODE_IGNORE; d.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+    ComPtr<IDXGISwapChain1> sc1;
+    HRESULT hr = g_factory->CreateSwapChainForCoreWindow(queue.Get(), (IUnknown*)cw, &d, nullptr, &sc1);
+    if (FAILED(hr)) { XLOGE("ptest", "visual: CreateSwapChainForCoreWindow 0x%08x", (unsigned)hr); return; }
+    ComPtr<IDXGISwapChain3> sc;
+    sc1.As(&sc);
+    ComPtr<IDXGIOutput> out;
+    sc1->GetContainingOutput(&out);
+    D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = n;
+    ComPtr<ID3D12DescriptorHeap> heap;
+    dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap));
+    UINT step = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv0 = heap->GetCPUDescriptorHandleForHeapStart();
+    ComPtr<ID3D12Resource> bufs[n];
+    ComPtr<ID3D12CommandAllocator> alloc[n];
+    UINT64 slot[n] = {};
+    for (UINT i = 0; i < n; ++i) {
+        sc->GetBuffer(i, IID_PPV_ARGS(&bufs[i]));
+        D3D12_CPU_DESCRIPTOR_HANDLE hh = rtv0; hh.ptr += (SIZE_T)i * step;
+        dev->CreateRenderTargetView(bufs[i].Get(), nullptr, hh);
+        dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc[i]));
+    }
+    ComPtr<ID3D12GraphicsCommandList> cl;
+    dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc[0].Get(), nullptr, IID_PPV_ARGS(&cl));
+    cl->Close();
+    ComPtr<ID3D12Fence> fence;
+    dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    HANDLE fev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    UINT64 fv = 0;
+    LARGE_INTEGER qf; QueryPerformanceFrequency(&qf);
+    auto qnow = [] { LARGE_INTEGER q; QueryPerformanceCounter(&q); return q.QuadPart; };
+    // The window's vblank tick, watched on its own thread so the flip loop never waits on it (waiting made it miss
+    // cycles). Each tick is stamped when WaitForVBlank returns, which is late by a varying wake-up delay: the period
+    // is the long-run average, and the phase the earliest stamp of the last 32 against that period (the delay only
+    // ever adds). tick_est = the estimated time of the latest tick.
+    std::atomic<int64_t> tick_est{0};
+    std::atomic<bool> watch{out != nullptr};
+    std::thread watcher;
+    if (out) watcher = std::thread([&] {
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+        int64_t t0 = 0, n = 0, res[32];
+        for (int64_t& r : res) r = INT64_MAX;
+        while (watch.load()) {
+            if (FAILED(out->WaitForVBlank())) break;
+            int64_t t = qnow();
+            if (!t0) { t0 = t; continue; }
+            ++n;
+            double per = (double)(t - t0) / (double)n;
+            res[n % 32] = t - t0 - (int64_t)(per * (double)n);
+            int64_t best = res[n % 32];
+            for (int i = 0; i < 32 && i < n; ++i) best = std::min(best, res[i]);
+            if (n >= 8) tick_est.store(t0 + (int64_t)(per * (double)n) + best);
+        }
+    });
+    // a high-resolution sleep to ~2 ms before, then spin: the sleep can overshoot by ~0.5 ms, the spin is exact
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    auto wait_until = [&](int64_t t) {
+        int64_t left = t - qnow();
+        int64_t slack = qf.QuadPart / 500;
+        if (left > slack && timer) {
+            LARGE_INTEGER due; due.QuadPart = -((left - slack) * 10000000 / qf.QuadPart);
+            SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE);
+            WaitForSingleObject(timer, 100);
+        }
+        while (qnow() < t) YieldProcessor();
+    };
+    const int64_t t_start = qnow();
+    // draws the frame for the clock time `at` into the current buffer and queues it (no Present yet)
+    auto draw = [&](int phase, int64_t at) {
+        UINT bi = sc->GetCurrentBackBufferIndex();
+        if (fence->GetCompletedValue() < slot[bi]) { fence->SetEventOnCompletion(slot[bi], fev); WaitForSingleObject(fev, 1000); }
+        alloc[bi]->Reset();
+        cl->Reset(alloc[bi].Get(), nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = bufs[bi].Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cl->ResourceBarrier(1, &b);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv0; rtv.ptr += (SIZE_T)bi * step;
+        const float bg[4] = {0.06f, 0.06f, 0.09f, 1.f}, white[4] = {1.f, 1.f, 1.f, 1.f}, mark[4] = {0.9f, 0.6f, 0.1f, 1.f};
+        cl->ClearRenderTargetView(rtv, bg, 0, nullptr);
+        double secs = (double)(at - t_start) / (double)qf.QuadPart;
+        LONG x = (LONG)(fmod(secs * (double)w * 0.75, (double)w));   // 3/4 of the width per second
+        D3D12_RECT bar = {x, 0, (LONG)std::min<uint32_t>(w, (uint32_t)x + 40), (LONG)h};
+        cl->ClearRenderTargetView(rtv, white, 1, &bar);
+        if (ab) {   // a big seven-segment "1" (today's 60 Hz path) or "2" (the 120 Hz trick) top-left
+            const LONG X = 60, Y = 60, W = 110, H = 220, T = 24;
+            const D3D12_RECT seg[7] = {
+                {X, Y, X + W, Y + T},                       // a top
+                {X + W - T, Y, X + W, Y + H / 2},           // b top right
+                {X + W - T, Y + H / 2, X + W, Y + H},       // c bottom right
+                {X, Y + H - T, X + W, Y + H},               // d bottom
+                {X, Y + H / 2, X + T, Y + H},               // e bottom left
+                {X, Y, X + T, Y + H / 2},                   // f top left
+                {X, Y + H / 2 - T / 2, X + W, Y + H / 2 + T / 2}};   // g middle
+            static const unsigned char digit_segs[10] = {0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f};   // bit k = seg k
+            const int shown = kind == 1 ? (phase == 1 ? 1 : 2) : kind == 2 ? phase - 7 : phase - 11;   // kind 2: 8..11, kind 3: 12..16
+            for (int k = 0; k < 7; ++k)
+                if (digit_segs[shown % 10] & (1 << k)) cl->ClearRenderTargetView(rtv, mark, 1, &seg[k]);
+        } else {
+            for (int k = 0; k < phase; ++k) {
+                D3D12_RECT sq = {40 + k * 70, 40, 40 + k * 70 + 50, 90};
+                cl->ClearRenderTargetView(rtv, mark, 1, &sq);
+            }
+        }
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        cl->ResourceBarrier(1, &b);
+        cl->Close();
+        ID3D12CommandList* lists[] = {cl.Get()};
+        queue->ExecuteCommandLists(1, lists);
+        return bi;
+    };
+    auto present = [&](UINT bi, UINT sync, UINT flags) {
+        HRESULT ph = sc->Present(sync, flags);
+        queue->Signal(fence.Get(), ++fv);
+        slot[bi] = fv;
+        return ph;
+    };
+    // phases 3..7: flips at the window's vblank tick + 0/2/4/6/8 ms and 8.333 ms after that; the tear line moves
+    // down the screen with the offset, and the offset that hides it is where the real vblanks are
+    // ab (XRL_PRESENT_TEST=3): phase 1 and phase 3 (+0 ms, the tear-free 120 candidate) in turn, 10 s each, 3 times
+    const int64_t phase_len = qf.QuadPart * (ab ? 10 : 15);
+    const int64_t f120 = qf.QuadPart * 1000 / 120000;   // 8.333 ms
+    // kind 2: phases 8..11 flip 0.5/1/1.5/2 ms BEFORE the 120 Hz grid (vblank tick + 8.333 and + 16.667 ms), twice
+    // kind 3: phases 12..16 flip 0.30/0.33/0.35/0.37/0.40 ms before the 120 Hz grid, twice
+    const int nsteps = kind == 0 ? 7 : kind == 1 ? 6 : kind == 2 ? 8 : 10;
+    for (int stepn = 1; stepn <= nsteps; ++stepn) {
+        const int phase = kind == 0 ? stepn : kind == 1 ? (stepn % 2 ? 1 : 3) : kind == 2 ? 8 + (stepn - 1) % 4 : 12 + (stepn - 1) % 5;
+        int64_t t0 = qnow(), next = t0;
+        uint64_t frames = 0;
+        int64_t late_sum = 0, late_max = 0, late_n = 0;   // Present called this long after its target (QPC ticks)
+        static const double kFine[5] = {0.30, 0.33, 0.35, 0.37, 0.40};   // ms before the grid, numbers 1..5
+        const int64_t off = phase >= 12 ? f120 - (int64_t)((double)qf.QuadPart * kFine[phase - 12] / 1000.0)
+                          : phase >= 8 ? f120 - qf.QuadPart * (phase - 7) / 2000   // 8.333 ms minus 0.5 * (1..4) ms
+                          : phase >= 3 ? qf.QuadPart * 2 * (phase - 3) / 1000 : 0;
+        while (qnow() - t0 < phase_len) {
+            HRESULT ph = S_OK;
+            if (phase == 1) {
+                ph = present(draw(phase, qnow()), 1, 0);
+            } else if (phase == 2) {
+                next += f120;
+                UINT bi = draw(phase, next);
+                wait_until(next);
+                ph = present(bi, 0, DXGI_PRESENT_ALLOW_TEARING);
+            } else {
+                if (!out) { XLOGW("ptest", "visual: no output for WaitForVBlank; phase %d skipped", phase); break; }
+                int64_t tk = tick_est.load();
+                if (!tk) { Sleep(1); continue; }
+                // the next flip on the 120 Hz grid tick + off + k * 8.333 ms that is at least 1 ms away
+                int64_t base = tk + off, diff = qnow() + qf.QuadPart / 1000 - base;
+                int64_t at = base + (diff <= 0 ? 0 : (diff + f120 - 1) / f120) * f120;
+                UINT bi = draw(phase, at);
+                wait_until(at);
+                int64_t late = qnow() - at;
+                ph = present(bi, 0, DXGI_PRESENT_ALLOW_TEARING);
+                late_sum += late; if (late > late_max) late_max = late; ++late_n;
+            }
+            if (FAILED(ph)) { XLOGE("ptest", "visual phase %d: Present 0x%08x", phase, (unsigned)ph); break; }
+            ++frames;
+        }
+        XLOGI("ptest", "visual phase %d (flip offset %.2f ms): %.1f presents/s; Present %.3f ms after target avg, %.3f max",
+              phase, (double)off * 1000.0 / (double)qf.QuadPart, frames * (double)qf.QuadPart / (double)(qnow() - t0),
+              late_n ? (double)late_sum * 1000.0 / (double)qf.QuadPart / (double)late_n : 0.0,
+              (double)late_max * 1000.0 / (double)qf.QuadPart);
+    }
+    watch.store(false);
+    if (watcher.joinable()) watcher.join();
+    queue->Signal(fence.Get(), ++fv);
+    if (fence->GetCompletedValue() < fv) { fence->SetEventOnCompletion(fv, fev); WaitForSingleObject(fev, 2000); }
+    CloseHandle(fev);
+    if (timer) CloseHandle(timer);
     XLOGI("ptest", "present test done");
 }
 
@@ -622,9 +887,10 @@ void gfx_keepalive_start() {
 
 void gfx_keepalive_stop() { g_keepalive_run.store(false); }
 
-void gfx_present_test() {
+void gfx_present_test(int mode) {
     keepalive_stop_wait();   // the window takes one swapchain
-    present_test();
+    if (mode >= 2 && mode <= 5) present_visual_test(mode - 2);
+    else present_test();
 }
 
 }  // namespace xrl
