@@ -144,6 +144,19 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-30 — A Debian 13 (glibc) userland on the layer: first fixes.** Branch `claude/desktop-debian`
+  (docs/desktop-brief.md; progress in that branch's `REPORT.md`).
+  - **Case collisions are skipped, not fatal.** `tools/xrl-rootfs-unpack.py` keeps the first of two names that differ
+    only in case and lists the second; the CI rootfs carries a dpkg `path-exclude` for man/info/doc/locale, where
+    nearly all such names live, so later `apt install`s inside the layer do not unpack them either. Names that matter
+    (terminfo, some language trees) will need a VFS answer.
+  - **glibc forks with `clone(flags, stack=0)`.** `asm/rawsys.asm` passes a6 = 0 (no resume pc) for a raw clone with
+    no new stack, so it takes the same path as `fork` (proc.c); with a stack it still passes its child entry. The
+    `XRL_FORK_TASKS` path is unchanged (it is taken before a6 is read).
+  - **mremap growth stays one mapping.** An in-place extension takes the old mapping's id and merges, and the old range
+    may span pieces of one mmap: APT grows its cache by 1 MiB at a time, and the second in-place growth used to fail
+    with EFAULT ("Dynamic MMap ran out of room").
+
 - **2026-10-26 — Keyboard, mouse and a framebuffer for a Linux desktop: ABI v3, evdev devices, `/dev/fb0`.**
   Branch `claude/linux-display`. The spec for the guest-visible parts is in `docs/syscall-abi.md` ("ABI v3").
   - **Events speak Linux.** `xrl_input_event` uses evdev's types and codes (`KEY_*`/`BTN_*`, `REL_*`, `ABS_*`) rather

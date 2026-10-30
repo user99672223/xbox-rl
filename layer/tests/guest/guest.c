@@ -1175,6 +1175,18 @@ static void test_mem(void)
     u8 *r = (u8 *)sc(25, p, 1 << 20, 2 << 20, 1, 0, 0);
     CHECK((long)r > 0x10000 && r[5] == 9, "mremap grow+move preserves data");
     CHECK(sc2(11, r, 2 << 20) == 0, "munmap");
+    /* grow in place twice, then move (APT's cache: mremap(base, n, n + 1 MiB, MAYMOVE) over and over); the
+     * second call spans the first one's extension */
+    u8 *g = mmap_anon(4 << 20, 3);
+    CHECK((long)g > 0x10000 && sc2(11, g + (1 << 20), 3 << 20) == 0, "mmap 4 MiB, keep the first 1 MiB");
+    g[0] = 11;
+    u8 *g1 = (u8 *)sc(25, g, 1 << 20, 2 << 20, 1, 0, 0);
+    if ((long)g1 > 0x10000) g1[(2 << 20) - 1] = 12;
+    u8 *g2 = (u8 *)sc(25, g1, 2 << 20, 3 << 20, 1, 0, 0);
+    CHECK(g1 == g && g2 == g, "mremap grows in place twice (the second over the first's extension)");
+    u8 *g3 = (u8 *)sc(25, g2, 3 << 20, 64 << 20, 1, 0, 0);
+    CHECK((long)g3 > 0x10000 && g3[0] == 11 && g3[(2 << 20) - 1] == 12, "then grows by moving, data kept");
+    if ((long)g3 > 0x10000) sc2(11, g3, 64 << 20);
     long b0 = sc1(12, 0);
     long b1 = sc1(12, b0 + 65536);
     CHECK(b1 == b0 + 65536, "brk grow");

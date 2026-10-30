@@ -2,6 +2,26 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-30 (4)
+
+### Milestone status
+1. PASS (CI run 5 too).
+2. **in progress.** CI run 5 (12f2d79): `apt-get update` downloads everything (http method, DNS over Winsock, sqv
+   signature check, store method: fork/exec chains of 3 levels all work), then fails building the cache:
+   `E: Dynamic MMap ran out of room ... Current value: 30408704` (28311552 in the install probe: nondeterministic).
+   Cause in the layer (mem.c): APT grows its cache with `mremap(base, n, n + 1 MiB, MREMAP_MAYMOVE)` (reference:
+   hundreds of calls). When the layer grew a mapping in place, the extension became a separate mapping that never
+   merges with the original, so the next mremap over the whole range failed the one-mapping check with EFAULT.
+   Whether a growth happens in place depends on what is mapped next to it, hence the different sizes.
+   Fix pushed: the extension joins the old mapping; a range made of pieces of one mmap passes the check.
+   Test: guest suite `mremap grows in place twice ...` / `then grows by moving, data kept` (same sequence verified
+   on real Linux).
+
+### Gap list (current)
+- ENOSYS: rseq only (deliberate).
+- AF_NETLINK -> EAFNOSUPPORT (glibc getaddrinfo copes).
+- Ahead: case-colliding names from packages; `sync_file_range` (dpkg, result ignored).
+
 ## 2026-10-30 (3)
 
 ### Milestone status
