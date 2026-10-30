@@ -2,6 +2,25 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-30 (3)
+
+### Milestone status
+1. **PASS in CI run 4 (3c96253)**: all 8 probes exit 0 with the same output as real Linux (`ls /usr/bin | wc -l` = 278
+   on both). Only ENOSYS: rseq. Guest suite TOTAL FAILS=0.
+   Xbox check for the main session when convenient (not urgent; nothing on screen yet): the same probes through the
+   app, e.g. `/bin/bash -c 'echo $(( 6 * 7 )) | cat'` - it exercises glibc fork + pipe + exec on the console.
+2. apt-get update + install: **in progress** - probes added (`apt-get update`, `apt-get install -y
+   --no-install-recommends hello`, `hello`), first CI run pending. They pass on real Linux through the same script.
+3. - 5. not started.
+
+### Changes
+- `tools/ci/desktop-run.sh`: probe list is now `milestone|timeout|pattern|command`; one verdict line per milestone at
+  the end; milestone 1 probes stay as regression checks. Guest env is a root login's (HOME=/root, PATH with sbin,
+  DEBIAN_FRONTEND=noninteractive, LANG=C.UTF-8).
+- `layer/tests/test_host.c`: `XRL_ENV_HOME` / `XRL_ENV_PATH` replace the default HOME/PATH instead of being added
+  after them (the first one won, so PATH could not be changed). Test host only.
+- Merged main (c311e7e, the UNPACK FAILED line).
+
 ## 2026-10-30 (2)
 
 ### Milestone status
