@@ -1,0 +1,12 @@
+probe 1: PASS exit   0  /bin/bash -c 'echo hello from bash; uname -a'
+probe 2: PASS exit   0  /usr/bin/ls -la /
+probe 3: PASS exit   0  /usr/bin/id
+probe 4: PASS exit   0  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
+probe 5: PASS exit   0  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
+probe 6: PASS exit   0  /usr/bin/ps aux
+probe 7: PASS exit   0  /usr/bin/dpkg -l
+probe 8: PASS exit   0  /usr/bin/apt-get --version
+--- syscalls answered ENOSYS (count, nr, name):
+     16 ENOSYS 334 rseq
+milestone 1 (bash, coreutils, ps, dpkg -l): PASS
+exit 0
