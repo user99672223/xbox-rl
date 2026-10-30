@@ -107,9 +107,12 @@ rs_clone3:
 
     ; clone(flags=rdi, stack=rsi, ptid=rdx, ctid=r10, tls=r8): leave the child's
     ; register state below its stack pointer and give xrl_syscall the resume pc.
+    ; No new stack (glibc's fork: clone(SIGCHLD|CHILD_SETTID|CHILD_CLEARTID, 0)):
+    ; a6 = 0, the child returns from this call on the parent's frames like fork()
+    ; (r9 is whatever glibc left there, not a resume pc).
 rs_clone:
     test    rsi, rsi
-    jz      rs_clone_go
+    jz      rs_clone_fork
     mov     r11, [rbp+8]                   ; stub return address
     add     r11, 8                         ; skip `lea 128(%rsp),%rsp`
     mov     [rsi-8],  r11
@@ -126,9 +129,11 @@ rs_clone:
     mov     [rsi-56], r11
     mov     r11, [rbp]                     ; the caller's rbp
     mov     [rsi-64], r11
-rs_clone_go:
     lea     r11, xrl_rawsys_clone_child
     mov     [rsp], r11                     ; a6 = resume_pc
+    jmp     rs_call
+rs_clone_fork:
+    mov     qword ptr [rsp], 0             ; a6 = 0
     jmp     rs_call
 xrl_rawsys ENDP
 

@@ -1404,6 +1404,7 @@ slong xrl_vfs_stat(int dirfd, const char *path, int atflags, lx_stat *st)
         if (t) {
             xrl_stat_synth(st, LX_S_IFLNK | 0777, hash_str(gabs), (s64)strlen(t));
             free(t);
+            if (g_meta_on) { meta_apply(gabs, st); st->st_mode = LX_S_IFLNK | 0777; }   /* owner as the tree's files */
             return 0;
         }
     }

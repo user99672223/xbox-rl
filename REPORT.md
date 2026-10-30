@@ -2,11 +2,36 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
-## 2026-10-30
+## 2026-10-30 (2)
 
 ### Milestone status
-1. bash, coreutils, ps, dpkg -l - **in progress** (first fix pushed, waiting for CI).
-2. - 5. not started.
+1. bash, coreutils, ps, dpkg -l - **7 of 8 probes pass in CI run 2 (41b17c7)**; the fork fix below is pushed,
+   waiting for CI. `desktop-run.txt` now ends with `milestone 1 (...): PASS|FAIL` (each probe checked for exit 0 and
+   an expected output line).
+2. - 5. not started (reference strace for milestone 2 taken, see below).
+
+### CI run 2 (41b17c7)
+- bash, ls -la /, id, ps aux, dpkg -l, apt-get --version: exit 0 with the same output as real Linux. Only ENOSYS:
+  rseq (expected).
+- `bash -c '... | cat'`: `bash: fork: Invalid argument`. Cause in the layer: glibc forks with a raw
+  `clone(SIGCHLD|CHILD_SETTID|CHILD_CLEARTID, stack=0)`; `asm/rawsys.asm` always passed its clone-child entry as a6
+  (resume pc), and `xrl_thread_clone_prepare` refuses a resume pc without a stack -> EINVAL. musl (Alpine) forks with
+  `NR_fork`, which is why Alpine never hit it. Fix: rawsys passes a6 = 0 when clone has no new stack, so the child
+  returns from the call on the parent's frames exactly like `fork` (proc.c). With `XRL_FORK_TASKS=1` nothing changes:
+  `xrl_do_clone` sends fork-like clones to `xrl_do_fork` before a6 is looked at.
+  Test: `layer/tests/glibc/glibc_test.c` gained fork + waitpid and a raw clone with r9 != 0 (passes on real Linux;
+  not run by CI because the linux job does not build `tests/glibc` - main session: worth adding).
+- `ls -la /`: symlinks showed owner 1000:1000 (everything else root:root). lstat of a table symlink now takes its
+  owner from `.xrl-meta` like files do (only when the tree has a `.xrl-meta`; the RL prefix has none).
+
+### Milestone 2 reference (`apt-get update && apt-get install -y hello` in the chroot, strace -f, 20k lines)
+- Not in the layer's table: `sync_file_range` (dpkg; ignores the result), `rseq`.
+- Sockets: AF_INET stream/dgram (http method + DNS), AF_NETLINK (getaddrinfo AI_ADDRCONFIG; layer answers
+  EAFNOSUPPORT, glibc then assumes v4+v6), AF_UNIX (nscd/userdb probes).
+- exec chain: apt-get -> /usr/lib/apt/methods/{http,store,sqv} -> sqv; dpkg (15x), dpkg-deb, dpkg-split, tar, rm,
+  dpkg-preconfigure (perl), apt-extracttemplates; apt drops to user `_apt` (setresuid/setgroups).
+
+## 2026-10-30
 
 ### What the first CI run on main showed (run 1, a81e799)
 - Build and guest suite: OK (TOTAL FAILS=0).
