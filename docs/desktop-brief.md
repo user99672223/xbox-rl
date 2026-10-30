@@ -49,6 +49,16 @@ GitHub API; otherwise edit the probe list.
 The Xbox runs (fb0 on the TV, controller/keyboard input) are done by the main session on the user's laptop: write in
 `REPORT.md` what to run there when a milestone passes in CI.
 
+## Staying in touch with the main session
+
+The main session (on the user's laptop, with the Xbox) cannot message you directly. It talks through the repo:
+- Each loop, `git fetch origin main` and read `docs/desktop-notes.md` there (create nothing in it; it is the main
+  session's file). New notes are at the top, dated.
+- You talk back through `REPORT.md` on your branch; the main session reads it with `git fetch`.
+- The first CI run on `main` was still in progress when you were started; if `ci-results` has no `main/latest/` yet
+  or the CI itself fails (not your code), note it in `REPORT.md` and continue with the reference work; the main
+  session fixes the CI.
+
 ## Rules
 
 - Work only on the branch `claude/desktop-debian` (from `main`). Never push to `main`; the main session merges after
