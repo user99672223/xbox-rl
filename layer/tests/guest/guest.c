@@ -1013,6 +1013,18 @@ static void test_fs(void)
     CHECK(sc2(21, "/tmp/xrl_dir/moved.txt", 0) == 0, "access");
     CHECK(sc1(87, "/tmp/xrl_dir/moved.txt") == 0, "unlink");
     CHECK(sc1(84, "/tmp/xrl_dir") == 0, "rmdir");
+    /* rename over a file another fd still has open (dpkg's status-new -> status while apt reads status) */
+    long ofd = sc4(257, -100, "/tmp/xrl_old.txt", 0102, 0644), nfd = sc4(257, -100, "/tmp/xrl_new.txt", 0102, 0644);
+    sc3(1, ofd, "old", 3); sc3(1, nfd, "new", 3); sc1(3, nfd);
+    CHECK(sc2(82, "/tmp/xrl_new.txt", "/tmp/xrl_old.txt") == 0, "rename over a file that is open");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc4(17, ofd, buf, 3, 0) == 3 && !memcmp(buf, "old", 3), "the open fd still reads the replaced file");
+    sc1(3, ofd);
+    ofd = sc3(2, "/tmp/xrl_old.txt", 0, 0);
+    memset(buf, 0, sizeof buf);
+    CHECK(ofd >= 3 && sc3(0, ofd, buf, 3) == 3 && !memcmp(buf, "new", 3), "the path opens the new file");
+    sc1(3, ofd);
+    sc1(87, "/tmp/xrl_old.txt");
     /* symlink table */
     CHECK(sc2(88, "/tmp", "/tmp_link") == 0, "symlink");
     char lb[64]; memset(lb, 0, sizeof lb);

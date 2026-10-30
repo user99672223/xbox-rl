@@ -2,6 +2,22 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-30 (5)
+
+### Milestone status
+1. PASS.
+2. CI run 6 (c15d0ca): `apt-get update` PASS (the mremap fix worked; guest suite has the new test, TOTAL FAILS=0);
+   `hello` runs after the install; but `apt-get install` exits 100: dpkg unpacked hello (dpkg-split, dpkg-deb, tar,
+   perl debconf, maintainer scripts all ran) and then `dpkg: error: error installing new file '/var/lib/dpkg/status':
+   Permission denied`. Cause: vfs.c renamed with `MoveFileExW(REPLACE_EXISTING)`, which Windows refuses while any
+   other handle has the target open (apt-get keeps `status` open). Fix pushed: rename by handle with
+   `FileRenameInfoEx` + `FILE_RENAME_FLAG_POSIX_SEMANTICS` (Windows 10 1607+, NTFS: the open handle keeps the old
+   file, the name gets the new one, as on Linux); MoveFileExW stays the fallback when that call is not supported.
+   **Main session:** this is shared VFS code (Wine's prefix renames, e.g. wineserver saving `*.reg`, go through it).
+   It only succeeds where MoveFileEx failed or does the same, but please include it in the RL + EAC check, and tell
+   me if `SetFileInformationByHandle(FileRenameInfoEx)` misbehaves under the console's AppContainer.
+   Test: guest suite `rename over a file that is open` + the two follow-up checks.
+
 ## 2026-10-30 (4)
 
 ### Milestone status
