@@ -22,7 +22,8 @@
 #include <d3d12.h>
 #include <d3d11.h>
 #include <d3d11on12.h>
-#include <dxgi1_5.h>
+#include <dxgi1_6.h>
+#include <d3d11_4.h>
 #include <windows.ui.composition.interop.h>
 #include <winrt/Windows.UI.Composition.h>
 #include <wrl/client.h>
@@ -645,11 +646,11 @@ void present_test() {
     };
     vblank();
     PtVariant v;
-    v = {"comp-dur-120"};  v.composition = true; v.present_duration = 83333; run(v);
-    v = {"comp-dur-120-nv"}; v.composition = true; v.present_duration = 83333; v.sync = 0; run(v);
-    v = {"comp-no-vsync"}; v.composition = true; v.sync = 0;      run(v);
-    v = {"comp-tearing"};  v.composition = true; v.sync = 0; v.tearing = true; run(v);
-    v = {"comp-1080"};     v.composition = true; v.w = ww; v.h = wh; run(v);
+    v = {"control"};                                              run(v);
+    v = {"no-vsync"};      v.sync = 0;                            run(v);
+    v = {"window-size"};   v.w = ww; v.h = wh;                    run(v);
+    v = {"d3d11"};         v.d3d11 = true;                        run(v);
+    vblank();
     XLOGI("ptest", "present test done");
 }
 
@@ -805,14 +806,18 @@ void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/
     const int64_t phase_len = qf.QuadPart * (ab ? 10 : 15);
     const int64_t f120 = qf.QuadPart * 1000 / 120000;   // 8.333 ms
     // kind 2: phases 8..11 flip 0.5/1/1.5/2 ms BEFORE the 120 Hz grid (vblank tick + 8.333 and + 16.667 ms), twice
-    // kind 3: phases 12..16 flip 0.30/0.33/0.35/0.37/0.40 ms before the 120 Hz grid, twice
+    // kind 3: phases 12..16 flip 0.05..0.25 ms before the 120 Hz grid, twice (0.30 was tear-free, 0.33+ tore at the bottom)
     const int nsteps = kind == 0 ? 7 : kind == 1 ? 6 : kind == 2 ? 8 : 10;
+    {   // let the tick watcher settle (its phase estimate needs a few dozen ticks) before the first timed phase
+        int64_t ready = qnow() + qf.QuadPart * 2;
+        while (qnow() < ready) present(draw(0, qnow()), 1, 0);
+    }
     for (int stepn = 1; stepn <= nsteps; ++stepn) {
         const int phase = kind == 0 ? stepn : kind == 1 ? (stepn % 2 ? 1 : 3) : kind == 2 ? 8 + (stepn - 1) % 4 : 12 + (stepn - 1) % 5;
         int64_t t0 = qnow(), next = t0;
         uint64_t frames = 0;
         int64_t late_sum = 0, late_max = 0, late_n = 0;   // Present called this long after its target (QPC ticks)
-        static const double kFine[5] = {0.30, 0.33, 0.35, 0.37, 0.40};   // ms before the grid, numbers 1..5
+        static const double kFine[5] = {0.05, 0.10, 0.15, 0.20, 0.25};   // ms before the grid, numbers 1..5
         const int64_t off = phase >= 12 ? f120 - (int64_t)((double)qf.QuadPart * kFine[phase - 12] / 1000.0)
                           : phase >= 8 ? f120 - qf.QuadPart * (phase - 7) / 2000   // 8.333 ms minus 0.5 * (1..4) ms
                           : phase >= 3 ? qf.QuadPart * 2 * (phase - 3) / 1000 : 0;
@@ -855,6 +860,178 @@ void present_visual_test(int kind) {   // 0: the 7-phase sweep, 1: the 60/120 A/
     XLOGI("ptest", "present test done");
 }
 
+// XRL_DISCOVER (discover.cpp): the interfaces our graphics objects answer, the GPU's features, the adapters and outputs
+// with their display modes. The window's swapchain is a real CoreWindow one (the keepalive is stopped first).
+namespace {
+#define XRL_IID(T) {__uuidof(T), #T}
+struct NamedIid { IID iid; const char* name; };
+const NamedIid kIids[] = {
+    XRL_IID(IDXGIFactory1), XRL_IID(IDXGIFactory2), XRL_IID(IDXGIFactory3), XRL_IID(IDXGIFactory4), XRL_IID(IDXGIFactory5),
+    XRL_IID(IDXGIFactory6), XRL_IID(IDXGIFactory7), XRL_IID(IDXGIFactoryMedia), XRL_IID(IDXGIDisplayControl),
+    XRL_IID(IDXGIAdapter1), XRL_IID(IDXGIAdapter2), XRL_IID(IDXGIAdapter3), XRL_IID(IDXGIAdapter4),
+    XRL_IID(IDXGIOutput), XRL_IID(IDXGIOutput1), XRL_IID(IDXGIOutput2), XRL_IID(IDXGIOutput3), XRL_IID(IDXGIOutput4),
+    XRL_IID(IDXGIOutput5), XRL_IID(IDXGIOutput6),
+    XRL_IID(IDXGISwapChain1), XRL_IID(IDXGISwapChain2), XRL_IID(IDXGISwapChain3), XRL_IID(IDXGISwapChain4),
+    XRL_IID(IDXGISwapChainMedia), XRL_IID(IDXGIDecodeSwapChain),
+    XRL_IID(IDXGIDevice), XRL_IID(IDXGIDevice1), XRL_IID(IDXGIDevice2), XRL_IID(IDXGIDevice3), XRL_IID(IDXGIDevice4),
+    XRL_IID(ID3D12Device), XRL_IID(ID3D12Device1), XRL_IID(ID3D12Device2), XRL_IID(ID3D12Device3), XRL_IID(ID3D12Device4),
+    XRL_IID(ID3D12Device5), XRL_IID(ID3D12Device6), XRL_IID(ID3D12Device7), XRL_IID(ID3D12Device8), XRL_IID(ID3D12Device9),
+    XRL_IID(ID3D12Device10), XRL_IID(ID3D12Device11), XRL_IID(ID3D12Device12), XRL_IID(ID3D12Device13), XRL_IID(ID3D12Device14),
+    XRL_IID(ID3D12CommandQueue),
+    XRL_IID(ID3D11Device), XRL_IID(ID3D11Device1), XRL_IID(ID3D11Device2), XRL_IID(ID3D11Device3), XRL_IID(ID3D11Device4),
+    XRL_IID(ID3D11Device5), XRL_IID(ID3D11DeviceContext1), XRL_IID(ID3D11DeviceContext2), XRL_IID(ID3D11DeviceContext3),
+    XRL_IID(ID3D11DeviceContext4), XRL_IID(ID3D11Multithread), XRL_IID(ID3D11On12Device), XRL_IID(ID3D11On12Device1),
+    XRL_IID(ID3D11On12Device2),
+};
+#undef XRL_IID
+
+void gd_ifaces(FILE* f, const char* what, IUnknown* o) {
+    if (!o) { fprintf(f, "%s: (none)\n", what); return; }
+    std::string yes, no;
+    for (const auto& i : kIids) {
+        ComPtr<IUnknown> q;
+        (SUCCEEDED(o->QueryInterface(i.iid, (void**)&q)) ? yes : no) += std::string(i.name) + " ";
+    }
+    fprintf(f, "%s answers: %s\n", what, yes.c_str());
+}
+
+void gd_outputs(FILE* f, IDXGIOutput* o, const char* what) {
+    if (!o) return;
+    DXGI_OUTPUT_DESC d{};
+    o->GetDesc(&d);
+    fprintf(f, "%s: %ls, desktop %ldx%ld, attached %d\n", what, d.DeviceName, d.DesktopCoordinates.right - d.DesktopCoordinates.left,
+            d.DesktopCoordinates.bottom - d.DesktopCoordinates.top, (int)d.AttachedToDesktop);
+    ComPtr<IDXGIOutput6> o6;
+    if (SUCCEEDED(o->QueryInterface(IID_PPV_ARGS(&o6)))) {
+        DXGI_OUTPUT_DESC1 d1{};
+        if (SUCCEEDED(o6->GetDesc1(&d1)))
+            fprintf(f, "  bits %u, color space %d, luminance %.0f..%.0f nits\n", d1.BitsPerColor, (int)d1.ColorSpace, d1.MinLuminance, d1.MaxLuminance);
+        UINT flags = 0;
+        if (SUCCEEDED(o6->CheckHardwareCompositionSupport(&flags))) fprintf(f, "  hardware composition support flags 0x%x\n", flags);
+    }
+    for (DXGI_FORMAT fmt : {DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_R10G10B10A2_UNORM}) {
+        UINT n = 0;
+        HRESULT hr = o->GetDisplayModeList(fmt, DXGI_ENUM_MODES_INTERLACED | DXGI_ENUM_MODES_SCALING, &n, nullptr);
+        std::vector<DXGI_MODE_DESC> m(n);
+        if (SUCCEEDED(hr) && n) o->GetDisplayModeList(fmt, DXGI_ENUM_MODES_INTERLACED | DXGI_ENUM_MODES_SCALING, &n, m.data());
+        fprintf(f, "  modes fmt %d: 0x%08x, %u\n", (int)fmt, (unsigned)hr, n);
+        for (UINT i = 0; i < n && i < 40; i++)
+            fprintf(f, "    %ux%u @ %u/%u scaling %d\n", m[i].Width, m[i].Height, m[i].RefreshRate.Numerator, m[i].RefreshRate.Denominator,
+                    (int)m[i].Scaling);
+    }
+}
+
+void gd_features12(FILE* f, ID3D12Device* d) {
+    D3D12_FEATURE_DATA_SHADER_MODEL sm{};
+    for (int v = D3D_SHADER_MODEL_6_9; v >= D3D_SHADER_MODEL_5_1; v--) {
+        sm.HighestShaderModel = (D3D_SHADER_MODEL)v;
+        if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof sm))) break;
+    }
+    fprintf(f, "d3d12 highest shader model 0x%x\n", (unsigned)sm.HighestShaderModel);
+    D3D12_FEATURE_DATA_D3D12_OPTIONS o{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &o, sizeof o)))
+        fprintf(f, "d3d12 binding tier %d, tiled tier %d, conservative raster %d, ROVs %d, typed UAV load additional formats %d\n",
+                (int)o.ResourceBindingTier, (int)o.TiledResourcesTier, (int)o.ConservativeRasterizationTier, (int)o.ROVsSupported,
+                (int)o.TypedUAVLoadAdditionalFormats);
+    D3D12_FEATURE_DATA_D3D12_OPTIONS1 o1{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &o1, sizeof o1)))
+        fprintf(f, "d3d12 wave ops %d, lanes %u..%u\n", (int)o1.WaveOps, o1.WaveLaneCountMin, o1.WaveLaneCountMax);
+    D3D12_FEATURE_DATA_D3D12_OPTIONS5 o5{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &o5, sizeof o5)))
+        fprintf(f, "d3d12 raytracing tier %d, render passes tier %d\n", (int)o5.RaytracingTier, (int)o5.RenderPassesTier);
+    D3D12_FEATURE_DATA_D3D12_OPTIONS6 o6{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS6, &o6, sizeof o6)))
+        fprintf(f, "d3d12 variable rate shading tier %d\n", (int)o6.VariableShadingRateTier);
+    D3D12_FEATURE_DATA_D3D12_OPTIONS7 o7{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &o7, sizeof o7)))
+        fprintf(f, "d3d12 mesh shader tier %d, sampler feedback tier %d\n", (int)o7.MeshShaderTier, (int)o7.SamplerFeedbackTier);
+    D3D12_FEATURE_DATA_D3D12_OPTIONS12 o12{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS12, &o12, sizeof o12)))
+        fprintf(f, "d3d12 enhanced barriers %d, relaxed format casting %d\n", (int)o12.EnhancedBarriersSupported, (int)o12.RelaxedFormatCastingSupported);
+    for (int k = (int)D3D12_FEATURE_D3D12_OPTIONS13; k <= (int)D3D12_FEATURE_D3D12_OPTIONS21; k++) {
+        BYTE buf[256] = {};
+        fprintf(f, "d3d12 feature %d: %s\n", k, SUCCEEDED(d->CheckFeatureSupport((D3D12_FEATURE)k, buf, sizeof buf)) ? "answered" : "not answered");
+    }
+    D3D12_FEATURE_DATA_ARCHITECTURE1 a{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_ARCHITECTURE1, &a, sizeof a)))
+        fprintf(f, "d3d12 UMA %d, cache-coherent UMA %d, isolated MMU %d, tile-based %d\n", (int)a.UMA, (int)a.CacheCoherentUMA,
+                (int)a.IsolatedMMU, (int)a.TileBasedRenderer);
+    D3D12_FEATURE_DATA_GPU_VIRTUAL_ADDRESS_SUPPORT va{};
+    if (SUCCEEDED(d->CheckFeatureSupport(D3D12_FEATURE_GPU_VIRTUAL_ADDRESS_SUPPORT, &va, sizeof va)))
+        fprintf(f, "d3d12 GPU VA bits per resource %u, per process %u\n", va.MaxGPUVirtualAddressBitsPerResource, va.MaxGPUVirtualAddressBitsPerProcess);
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE rs{D3D_ROOT_SIGNATURE_VERSION_1_2};
+    if (FAILED(d->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &rs, sizeof rs))) { rs.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1; d->CheckFeatureSupport(D3D12_FEATURE_ROOT_SIGNATURE, &rs, sizeof rs); }
+    fprintf(f, "d3d12 root signature 0x%x\n", (unsigned)rs.HighestVersion);
+}
+}  // namespace
+
+void gfx_discover(FILE* f) {
+    keepalive_stop_wait();   // the window takes one swapchain
+    try { winrt::init_apartment(winrt::apartment_type::multi_threaded); } catch (...) {}
+    if (FAILED(ensure_factory())) { fprintf(f, "no DXGI factory\n"); return; }
+    gd_ifaces(f, "DXGI factory", g_factory.Get());
+    BOOL tear = FALSE;
+    { ComPtr<IDXGIFactory5> f5; if (SUCCEEDED(g_factory.As(&f5))) f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tear, sizeof tear); }
+    fprintf(f, "ALLOW_TEARING %d\n", (int)tear);
+    for (UINT a = 0;; a++) {
+        ComPtr<IDXGIAdapter1> ad;
+        if (g_factory->EnumAdapters1(a, &ad) == DXGI_ERROR_NOT_FOUND) break;
+        DXGI_ADAPTER_DESC1 d{};
+        ad->GetDesc1(&d);
+        fprintf(f, "adapter %u: %ls, vendor %04x device %04x, dedicated %llu MiB, shared %llu MiB, flags 0x%x\n", a, d.Description, d.VendorId,
+                d.DeviceId, (unsigned long long)(d.DedicatedVideoMemory >> 20), (unsigned long long)(d.SharedSystemMemory >> 20), d.Flags);
+        char what[32]; snprintf(what, sizeof what, "adapter %u", a);
+        gd_ifaces(f, what, ad.Get());
+        for (UINT o = 0;; o++) {
+            ComPtr<IDXGIOutput> out;
+            if (ad->EnumOutputs(o, &out) == DXGI_ERROR_NOT_FOUND) break;
+            snprintf(what, sizeof what, "adapter %u output %u", a, o);
+            gd_outputs(f, out.Get(), what);
+            gd_ifaces(f, what, out.Get());
+        }
+    }
+    ComPtr<ID3D12Device> dev;
+    ComPtr<ID3D12CommandQueue> queue;
+    D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+    if (SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))) && SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)))) {
+        gd_ifaces(f, "D3D12 device", dev.Get());
+        gd_ifaces(f, "D3D12 queue", queue.Get());
+        gd_features12(f, dev.Get());
+        void* cw = xrl::window_info_get().core_window;
+        auto mode = xrl::display_mode();
+        DXGI_SWAP_CHAIN_DESC1 d{};
+        d.Width = mode.width ? mode.width : 1920; d.Height = mode.height ? mode.height : 1080; d.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+        d.SampleDesc.Count = 1; d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT; d.BufferCount = 2;
+        d.Scaling = DXGI_SCALING_STRETCH; d.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD; d.Flags = tear ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+        ComPtr<IDXGISwapChain1> sc;
+        if (cw && SUCCEEDED(g_factory->CreateSwapChainForCoreWindow(queue.Get(), (IUnknown*)cw, &d, nullptr, &sc))) {
+            gd_ifaces(f, "CoreWindow swapchain", sc.Get());
+            ComPtr<IDXGIOutput> out;
+            HRESULT hr = sc->GetContainingOutput(&out);
+            fprintf(f, "swapchain GetContainingOutput 0x%08x\n", (unsigned)hr);
+            if (out) { gd_outputs(f, out.Get(), "swapchain output"); gd_ifaces(f, "swapchain output", out.Get()); }
+            ComPtr<IDXGISwapChain3> s3;
+            if (SUCCEEDED(sc.As(&s3))) {
+                UINT cs = 0;
+                s3->CheckColorSpaceSupport(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, &cs);
+                fprintf(f, "swapchain HDR10 color space support 0x%x\n", cs);
+            }
+        } else fprintf(f, "CoreWindow swapchain: not created\n");
+    } else fprintf(f, "no D3D12 device\n");
+    ComPtr<ID3D11Device> d11;
+    ComPtr<ID3D11DeviceContext> c11;
+    D3D_FEATURE_LEVEL fl{};
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &d11, &fl, &c11);
+    fprintf(f, "D3D11CreateDevice 0x%08x, feature level 0x%x\n", (unsigned)hr, (unsigned)fl);
+    if (d11) {
+        gd_ifaces(f, "D3D11 device", d11.Get());
+        gd_ifaces(f, "D3D11 context", c11.Get());
+        D3D11_FEATURE_DATA_THREADING th{};
+        d11->CheckFeatureSupport(D3D11_FEATURE_THREADING, &th, sizeof th);
+        fprintf(f, "d3d11 concurrent creates %d, command lists %d\n", (int)th.DriverConcurrentCreates, (int)th.DriverCommandLists);
+    }
+}
+
 void keepalive_stop_wait() {
     if (!g_keepalive_run.exchange(false)) return;
     if (g_keepalive_ended && WaitForSingleObject(g_keepalive_ended, 3000) == WAIT_OBJECT_0)
@@ -886,6 +1063,8 @@ void gfx_keepalive_start() {
 }
 
 void gfx_keepalive_stop() { g_keepalive_run.store(false); }
+
+void gfx_discover_run(FILE* f) { gfx_discover(f); }
 
 void gfx_present_test(int mode) {
     keepalive_stop_wait();   // the window takes one swapchain

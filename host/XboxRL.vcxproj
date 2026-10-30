@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <!--
   XboxRL.vcxproj - the host UWP app (Workstream A). A *real* C++/WinRT UWP project:
   the VS UWP workload's AppXPackage targets + the Microsoft.Windows.CppWinRT build
@@ -95,7 +95,7 @@
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <WarningLevel>Level3</WarningLevel>
-      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)src;$(XrlRoot)include;$(GeneratedFilesDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir);$(ProjectDir)src;$(ProjectDir)gen_xbox;$(XrlRoot)include;$(GeneratedFilesDir);%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_UNICODE;UNICODE;_WIN32_WINNT=0x0A00;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <!-- /EHa: SEH (access violations, privileged-instruction #GP) must be catchable
            in the probe steps. -->
@@ -153,6 +153,7 @@
     <ClCompile Include="src\boot.cpp" />
     <ClCompile Include="src\config.cpp" />
     <ClCompile Include="src\display.cpp" />
+    <ClCompile Include="src\discover.cpp" />
     <ClCompile Include="src\gfx_ops_default.cpp" />
     <ClCompile Include="src\gfx_thread.cpp" />
     <ClCompile Include="src\input_ops.cpp" />

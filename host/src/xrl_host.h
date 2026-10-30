@@ -204,7 +204,7 @@ namespace xrl { void procprobe_child_main(const char* spec); void procprobe_pare
 // Keep-alive present loop (gfx_ops_default.cpp): clears+presents the CoreWindow from a dedicated
 // MTA thread so the Xbox PLM keeps the app foreground/active while the EAC bootstrapper (which
 // renders nothing) runs and injects. No-op if there is no CoreWindow (e.g. the headless tracee).
-namespace xrl { void gfx_keepalive_start(); void gfx_keepalive_stop(); void gfx_present_test(int mode); }
+namespace xrl { void gfx_keepalive_start(); void gfx_keepalive_stop(); void gfx_present_test(int mode); void gfx_discover_run(FILE* f); void discover_run(); }
 
 // ---------------------------------------------------------------------------
 // Full-build only: SDL front-end  (sdl_main.cpp, compiled WINAPI_FAMILY_APP)
