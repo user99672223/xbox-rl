@@ -2,6 +2,7 @@
 #include "pacer.h"
 
 #include <algorithm>
+#include <cstring>
 
 namespace xrl {
 
@@ -53,8 +54,16 @@ bool Pacer120::Start(ID3D11Device* game_dev, uint32_t w, uint32_t h, uint32_t dx
     seq_ = 0; writing_ = -1; reading_ = -1; prev_[0] = prev_[1] = -1; tick_ = 0;
     st_flips_ = st_new_ = st_skipped_ = st_late_copy_ = 0; st_t0_ = Now();
     running_ = true;
-    watcher_ = std::thread([this] { Watch(); });
-    presenter_ = std::thread([this] { Present(); });
+    // XRL_PACE_DEBUG (bisecting): nothreads = no watcher/presenter (nothing reaches the screen); normalprio = both
+    // threads at normal priority
+    char dbg[32] = "";
+    GetEnvironmentVariableA("XRL_PACE_DEBUG", dbg, sizeof dbg);
+    normal_prio_ = strcmp(dbg, "normalprio") == 0;
+    if (dbg[0]) Log(LOG_WARN, "pacer: XRL_PACE_DEBUG=%s", dbg);
+    if (strcmp(dbg, "nothreads") != 0) {
+        watcher_ = std::thread([this] { Watch(); });
+        presenter_ = std::thread([this] { Present(); });
+    }
     Log(LOG_INFO, "pacer: 120 Hz pacing on, %ux%u fmt %u, flips %.2f ms before each vblank", w, h, (unsigned)host_format_, early_ms);
     return true;
 }
@@ -83,7 +92,7 @@ void Pacer120::WaitUntil(int64_t t) {
 // The window's 60 Hz vblank tick: stamped when WaitForVBlank returns (late by a varying wake-up delay). The period is
 // the long-run average; the phase the earliest stamp of the last 32 against it (the delay only ever adds).
 void Pacer120::Watch() {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    if (!normal_prio_) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     int64_t t0 = 0, n = 0, res[32];
     for (int64_t& r : res) r = INT64_MAX;
     while (running_.load()) {
@@ -100,7 +109,7 @@ void Pacer120::Watch() {
 }
 
 void Pacer120::Present() {
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
+    if (!normal_prio_) SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL);
     uint64_t shown_seq = 0, copied_seq = 0, pending_seq = 0;
     int64_t copy_t0 = 0, copy_est = qf_ / 1000;   // how long a copy takes (rises at once, falls slowly); 1 ms to start
     while (running_.load()) {

@@ -57,6 +57,7 @@ private:
     int writing_ = -1;
     uint64_t seq_ = 0;
     std::atomic<bool> running_{false};
+    bool normal_prio_ = false;
     std::atomic<int64_t> tick_{0};                    // QPC time of the latest 60 Hz window tick (estimated)
     std::thread presenter_, watcher_;
     int64_t qf_ = 0, f120_ = 0, early_ = 0;
