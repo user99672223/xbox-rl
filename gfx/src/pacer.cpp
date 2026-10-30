@@ -21,19 +21,15 @@ bool Pacer120::Start(ID3D11Device* game_dev, uint32_t w, uint32_t h, uint32_t dx
         FAILED(host_->GetBuffer(0, IID_PPV_ARGS(&hostbuf_)))) { Log(LOG_WARN, "pacer: host swapchain"); return false; }
     host_->GetContainingOutput(&out_);
     if (!out_) { Log(LOG_WARN, "pacer: no output to time the vblank on"); return false; }
-    // the shared fence: made on the game's device, opened on the presenter's
-    ComPtr<ID3D11Device5> g5, p5;
+    // When a frame is done: the game's context signals an event once the GPU has finished what it flushed
+    // (Flush1). A shared ID3D11Fence would do it too, but creating one on the game's device makes Rocket League's
+    // render thread crash on the console (bisected 2026-10-30), so no fence.
+    ComPtr<ID3D11DeviceContext> gctx;
     ComPtr<ID3D11Device1> p1;
-    HANDLE fh = nullptr;
-    if (FAILED(game_dev->QueryInterface(IID_PPV_ARGS(&g5))) || FAILED(pdev_.As(&p5)) || FAILED(pdev_.As(&p1)) ||
-        FAILED(g5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&fence_g_))) ||
-        FAILED(fence_g_->CreateSharedHandle(nullptr, GENERIC_ALL, nullptr, &fh)) ||
-        FAILED(p5->OpenSharedFence(fh, IID_PPV_ARGS(&fence_p_)))) {
-        if (fh) CloseHandle(fh);
-        Log(LOG_WARN, "pacer: shared fence unavailable");
-        return false;
-    }
-    CloseHandle(fh);
+    game_dev->GetImmediateContext(&gctx);
+    if (FAILED(gctx.As(&gctx3_)) || FAILED(pdev_.As(&p1))) { Log(LOG_WARN, "pacer: no ID3D11DeviceContext3 (Flush1)"); return false; }
+    for (HANDLE& e : slot_ev_)
+        if (!(e = CreateEventW(nullptr, TRUE, FALSE, nullptr))) return false;
     // the ring: shared textures at the output size, drawn into by the game's Blit (copy or FSR), copied by the presenter
     D3D11_TEXTURE2D_DESC td{};
     td.Width = w; td.Height = h; td.MipLevels = 1; td.ArraySize = 1; td.Format = host_format_; td.SampleDesc.Count = 1;
@@ -54,8 +50,7 @@ bool Pacer120::Start(ID3D11Device* game_dev, uint32_t w, uint32_t h, uint32_t dx
     }
     D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
     if (FAILED(pdev_->CreateQuery(&qd, &copied_))) return false;
-    fence_event_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    fence_value_ = seq_ = 0; writing_ = -1; reading_ = -1; tick_ = 0;
+    seq_ = 0; writing_ = -1; reading_ = -1; prev_[0] = prev_[1] = -1; tick_ = 0;
     st_flips_ = st_new_ = st_skipped_ = st_late_copy_ = 0; st_t0_ = Now();
     running_ = true;
     watcher_ = std::thread([this] { Watch(); });
@@ -72,10 +67,11 @@ void Pacer120::Stop() {
     if (pctx_) { pctx_->ClearState(); pctx_->Flush(); }
     copied_.Reset();
     for (int i = 0; i < kSlots; i++) { ring_g_[i].Reset(); ring_p_[i].Reset(); }
-    fence_g_.Reset(); fence_p_.Reset();
+    gctx3_.Reset();
     hostbuf_.Reset(); host_.Reset(); out_.Reset();
     pctx4_.Reset(); pctx_.Reset(); pdev_.Reset();
-    if (fence_event_) { CloseHandle(fence_event_); fence_event_ = nullptr; }
+    for (HANDLE& e : slot_ev_)
+        if (e) { CloseHandle(e); e = nullptr; }
 }
 
 void Pacer120::WaitUntil(int64_t t) {
@@ -128,11 +124,10 @@ void Pacer120::Present() {
             }
             if (!pending_seq && (copied_seq == shown_seq || limit - Now() > copy_est + margin)) {
                 // the newest slot whose frame the GPU has finished and that is newer than the copied one
-                uint64_t done = fence_p_->GetCompletedValue();
                 int best = -1;
                 for (int i = 0; i < kSlots; i++) {
                     uint64_t v = slot_value_[i].load(), s = slot_seq_[i].load();
-                    if (v && v <= done && s > copied_seq && (best < 0 || s > slot_seq_[best].load())) best = i;
+                    if (v && s > copied_seq && WaitForSingleObject(slot_ev_[i], 0) == WAIT_OBJECT_0 && (best < 0 || s > slot_seq_[best].load())) best = i;
                 }
                 if (best >= 0) {
                     reading_ = best;
@@ -179,10 +174,7 @@ void Pacer120::Present() {
 
 ID3D11Texture2D* Pacer120::Acquire() {
     // at most two frames on the GPU: wait for the one before the last
-    if (fence_value_ >= 2 && fence_g_->GetCompletedValue() < fence_value_ - 1) {
-        fence_g_->SetEventOnCompletion(fence_value_ - 1, fence_event_);
-        WaitForSingleObject(fence_event_, 100);
-    }
+    if (prev_[1] >= 0) WaitForSingleObject(slot_ev_[prev_[1]], 100);
     // a slot that is neither being copied by the presenter nor the newest finished one it may still take
     uint64_t newest = 0;
     int newest_i = -1;
@@ -195,13 +187,13 @@ ID3D11Texture2D* Pacer120::Acquire() {
     return ring_g_[writing_].Get();
 }
 
-void Pacer120::Submit(ID3D11DeviceContext* game_ctx) {
-    ComPtr<ID3D11DeviceContext4> c4;
-    if (FAILED(game_ctx->QueryInterface(IID_PPV_ARGS(&c4)))) return;
-    c4->Signal(fence_g_.Get(), ++fence_value_);
-    game_ctx->Flush();
+void Pacer120::Submit(ID3D11DeviceContext*) {
+    ResetEvent(slot_ev_[writing_]);
     slot_seq_[writing_] = ++seq_;
-    slot_value_[writing_] = fence_value_;
+    slot_value_[writing_] = 1;
+    gctx3_->Flush1(D3D11_CONTEXT_TYPE_ALL, slot_ev_[writing_]);   // the event is set once the GPU is past this frame
+    prev_[1] = prev_[0];
+    prev_[0] = writing_;
 }
 
 }  // namespace xrl

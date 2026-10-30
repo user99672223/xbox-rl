@@ -13,8 +13,8 @@ namespace xrl {
 // tear-free when each lands just before a real vblank (measured: 0.30 ms early). The window's 60 Hz vblank tick is
 // phase-locked to the real 120 Hz one, so a watcher thread stamps it and the flips go on a 120 Hz grid derived from it.
 //
-// The game never waits for the grid: at its Present the frame is copied into one of three shared textures and a shared
-// fence is signalled. A presenter thread with its own D3D11 device (its own GPU queue, so its copy is never queued
+// The game never waits for the grid: at its Present the frame is copied into one of three shared textures and the
+// game's context is flushed with an event the GPU sets when it is done (Flush1). A presenter thread with its own D3D11 device (its own GPU queue, so its copy is never queued
 // behind the game's next frame) takes, for each 120 Hz slot, the newest frame the GPU has finished, copies it to the
 // host swapchain and flips it at the slot's time. A slot with no new frame is skipped: the last image stays up. The
 // game is held to two frames in flight on the GPU, as a normal swapchain would.
@@ -47,14 +47,15 @@ private:
     DXGI_FORMAT host_format_ = DXGI_FORMAT_UNKNOWN;
     ComPtr<IDXGIOutput> out_;
     ComPtr<ID3D11Texture2D> ring_g_[kSlots], ring_p_[kSlots];   // the same textures on the game's / presenter's device
-    ComPtr<ID3D11Fence> fence_g_, fence_p_;                      // the same fence on both
+    ComPtr<ID3D11DeviceContext3> gctx3_;   // the game's context: Flush1 with an event marks a frame done
+    HANDLE slot_ev_[kSlots] = {};          // set once the GPU has finished the slot's frame
+    int prev_[2] = {-1, -1};               // the slots of the last two frames (the game is held to two on the GPU)
     ComPtr<ID3D11Query> copied_;           // presenter: its copy reached the GPU's end
-    HANDLE fence_event_ = nullptr;
-    std::atomic<uint64_t> slot_value_[kSlots] = {};   // fence value that marks the slot's frame done (0: none)
+    std::atomic<uint64_t> slot_value_[kSlots] = {};   // 1: a submitted frame is in the slot (done once slot_ev_ is set)
     std::atomic<uint64_t> slot_seq_[kSlots] = {};     // frame number in the slot
     std::atomic<int> reading_{-1};                    // the slot the presenter copies from
     int writing_ = -1;
-    uint64_t fence_value_ = 0, seq_ = 0;
+    uint64_t seq_ = 0;
     std::atomic<bool> running_{false};
     std::atomic<int64_t> tick_{0};                    // QPC time of the latest 60 Hz window tick (estimated)
     std::thread presenter_, watcher_;

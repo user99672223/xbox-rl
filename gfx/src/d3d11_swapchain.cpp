@@ -201,7 +201,11 @@ public:
         if (output) *output = nullptr;
         return DXGI_ERROR_UNSUPPORTED;
     }
-    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override { return host_->GetFrameStatistics(s); }
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS* s) override {
+        // while pacing, the host swapchain's numbers are the presenter's, not the game's Presents
+        if (pacer_.Running()) return DXGI_ERROR_FRAME_STATISTICS_DISJOINT;
+        return host_->GetFrameStatistics(s);
+    }
     HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT* n) override {
         if (!n) return DXGI_ERROR_INVALID_CALL;
         *n = (UINT)presents_;
