@@ -1,0 +1,165 @@
+$ /usr/bin/dpkg -l
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/dpkg, 2 args, 6 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4f9c50000,7ff4f9c50000) 1048576 MiB VA, brk <= 7ef539c50000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 186 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 767 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (190 symlinks)
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4f1979000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4f197c000 span=[7ff4f197c000,7ff4f1c50000) entry=7ff4f1983d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4f193f000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4f1941000 span=[7ff4f1941000,7ff4f1979000) entry=7ff4f195e2c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000016F28EBE630)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4f193ed40
+[I layer    ] boot: guest main thread tid=5756 entry=7ff4f195e2c0 sp=7ff4f193ed40
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4f112a000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4f10f3000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4f0ec7000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4f0e16000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4f0e14ba0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] exec: pid 3124 tid 5756 -> /usr/bin/dpkg-query (3 args, 9 env)
+[I layer    ] exec: guest memory committed 13 MiB -> 0 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg-query: 0 syscall + 203 %fs sites (0 in place, 203 jumps, 0 traps, 0 neighbours moved), pool 8128 bytes at 7ff4f19a0000
+[I layer    ] elf: loaded /usr/bin/dpkg-query type=DYN bias=7ff4f19a2000 span=[7ff4f19a2000,7ff4f1c50000) entry=7ff4f19a6880
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4f1966000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4f1968000 span=[7ff4f1968000,7ff4f19a0000) entry=7ff4f19852c0
+[I layer    ] exec: /usr/bin/dpkg-query running, main thread tid 7100 entry 7ff4f19852c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4f1151000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4f0f25000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4f0f22680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I guest.out] Desired=Unknown/Install/Remove/Purge/Hold
+[I guest.out] | Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend
+[I guest.out] |/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)
+[I guest.out] ||/ Name                    Version                           Architecture Description
+[I guest.out] +++-=======================-=================================-============-===================================================================
+[I guest.out] ii  apt                     3.0.3                             amd64        commandline package manager
+[I guest.out] ii  base-files              13.8+deb13u7                      amd64        Debian base system miscellaneous files
+[I guest.out] ii  base-passwd             3.6.7                             amd64        Debian base system master password and group files
+[I guest.out] ii  bash                    5.2.37-2+b10                      amd64        GNU Bourne Again SHell
+[I guest.out] ii  bsdutils                1:2.41.5-0+deb13u1                amd64        basic utilities from 4.4BSD-Lite
+[I guest.out] ii  coreutils               9.7-3                             amd64        GNU core utilities
+[I guest.out] ii  dash                    0.5.12-12                         amd64        POSIX-compliant shell
+[I guest.out] ii  debconf                 1.5.91                            all          Debian configuration management system
+[I guest.out] ii  debian-archive-keyring  2025.1                            all          OpenPGP archive certificates of the Debian archive
+[I guest.out] ii  debianutils             5.23.2                            amd64        Miscellaneous utilities specific to Debian
+[I guest.out] ii  diffutils               1:3.10-4                          amd64        File comparison utilities
+[I guest.out] ii  dpkg                    1.22.22                           amd64        Debian package management system
+[I guest.out] ii  findutils               4.10.0-3                          amd64        utilities for finding files--find, xargs
+[I guest.out] ii  gcc-14-base:amd64       14.2.0-19                         amd64        GCC, the GNU Compiler Collection (base package)
+[I guest.out] ii  grep                    3.11-4                            amd64        GNU grep, egrep and fgrep
+[I guest.out] ii  gzip                    1.13-1+deb13u1                    amd64        GNU compression utilities
+[I guest.out] ii  hostname                3.25                              amd64        utility to set/show the host name or domain name
+[I guest.out] ii  init-system-helpers     1.69~deb13u1                      all          helper tools for all init systems
+[I guest.out] ii  libacl1:amd64           2.3.2-2+b1                        amd64        access control list - shared library
+[I guest.out] ii  libapt-pkg7.0:amd64     3.0.3                             amd64        package management runtime library
+[I guest.out] ii  libattr1:amd64          1:2.5.2-3                         amd64        extended attribute handling - shared library
+[I guest.out] ii  libaudit-common         1:4.0.2-2+deb13u1                 all          Dynamic library for security auditing - common files
+[I guest.out] ii  libaudit1:amd64         1:4.0.2-2+deb13u1                 amd64        Dynamic library for security auditing
+[I guest.out] ii  libblkid1:amd64         2.41.5-0+deb13u1                  amd64        block device ID library
+[I guest.out] ii  libbsd0:amd64           0.12.2-2                          amd64        utility functions from BSD systems - shared library
+[I guest.out] ii  libbz2-1.0:amd64        1.0.8-6                           amd64        high-quality block-sorting file compressor library - runtime
+[I guest.out] ii  libc-bin                2.41-12+deb13u4                   amd64        GNU C Library: Binaries
+[I guest.out] ii  libc6:amd64             2.41-12+deb13u4                   amd64        GNU C Library: Shared libraries
+[I guest.out] ii  libcap-ng0:amd64        0.8.5-4+b1                        amd64        alternate POSIX capabilities library
+[I guest.out] ii  libcap2:amd64           1:2.75-10+deb13u1+b3              amd64        POSIX 1003.1e capabilities (library)
+[I guest.out] ii  libcrypt1:amd64         1:4.4.38-1                        amd64        libcrypt shared library
+[I guest.out] ii  libdb5.3t64:amd64       5.3.28+dfsg2-9                    amd64        Berkeley v5.3 Database Libraries [runtime]
+[I guest.out] ii  libdebconfclient0:amd64 0.280                             amd64        Debian Configuration Management System (C-implementation library)
+[I guest.out] ii  libgcc-s1:amd64         14.2.0-19                         amd64        GCC support library
+[I guest.out] ii  libgmp10:amd64          2:6.3.0+dfsg-3                    amd64        Multiprecision arithmetic library
+[I guest.out] ii  libhogweed6t64:amd64    3.10.1-1                          amd64        low level cryptographic library (public-key cryptos)
+[I guest.out] ii  liblastlog2-2:amd64     2.41.5-0+deb13u1                  amd64        lastlog2 database shared library
+[I guest.out] ii  liblz4-1:amd64          1.10.0-4                          amd64        Fast LZ compression algorithm library - runtime
+[I guest.out] ii  liblzma5:amd64          5.8.1-1+deb13u1                   amd64        XZ-format compression library
+[I guest.out] ii  libmd0:amd64            1.1.0-2+b1                        amd64        message digest functions from BSD systems - shared library
+[I guest.out] ii  libmount1:amd64         2.41.5-0+deb13u1                  amd64        device mounting library
+[I guest.out] ii  libncursesw6:amd64      6.5+20250216-2                    amd64        shared libraries for terminal handling (wide character support)
+[I guest.out] ii  libnettle8t64:amd64     3.10.1-1                          amd64        low level cryptographic library (symmetric and one-way cryptos)
+[I guest.out] ii  libpam-modules:amd64    1.7.0-5                           amd64        Pluggable Authentication Modules for PAM
+[I guest.out] ii  libpam-modules-bin      1.7.0-5                           amd64        Pluggable Authentication Modules for PAM - helper binaries
+[I guest.out] ii  libpam-runtime          1.7.0-5                           all          Runtime support for the PAM library
+[I guest.out] ii  libpam0g:amd64          1.7.0-5                           amd64        Pluggable Authentication Modules library
+[I guest.out] ii  libpcre2-8-0:amd64      10.46-1~deb13u2                   amd64        New Perl Compatible Regular Expression Library- 8 bit runtime files
+[I guest.out] ii  libproc2-0:amd64        2:4.0.4-9                         amd64        library for accessing process information from /proc
+[I guest.out] ii  libseccomp2:amd64       2.6.0-2                           amd64        high level interface to Linux seccomp filter
+[I guest.out] ii  libselinux1:amd64       3.8.1-1                           amd64        SELinux runtime shared libraries
+[I guest.out] ii  libsemanage-common      3.8.1-1                           all          Common files for SELinux policy management libraries
+[I guest.out] ii  libsemanage2:amd64      3.8.1-1                           amd64        SELinux policy management library
+[I guest.out] ii  libsepol2:amd64         3.8.1-1                           amd64        SELinux library for manipulating binary security policies
+[I guest.out] ii  libsmartcols1:amd64     2.41.5-0+deb13u1                  amd64        smart column output alignment library
+[I guest.out] ii  libsqlite3-0:amd64      3.46.1-7+deb13u2                  amd64        SQLite 3 shared library
+[I guest.out] ii  libssl3t64:amd64        3.5.7-1~deb13u2                   amd64        Secure Sockets Layer toolkit - shared libraries
+[I guest.out] ii  libstdc++6:amd64        14.2.0-19                         amd64        GNU Standard C++ Library v3
+[I guest.out] ii  libsystemd0:amd64       257.13-1~deb13u1                  amd64        systemd utility library
+[I guest.out] ii  libtinfo6:amd64         6.5+20250216-2                    amd64        shared low-level terminfo library for terminal handling
+[I guest.out] ii  libudev1:amd64          257.13-1~deb13u1                  amd64        libudev shared library
+[I guest.out] ii  libunwind8:amd64        1.8.1-0.1                         amd64        library to determine the call-chain of a program - runtime
+[I guest.out] ii  libuuid1:amd64          2.41.5-0+deb13u1                  amd64        Universally Unique ID library
+[I guest.out] ii  libxxhash0:amd64        0.8.3-2                           amd64        shared library for xxhash
+[I guest.out] ii  libzstd1:amd64          1.5.7+dfsg-1                      amd64        fast lossless compression algorithm
+[I guest.out] ii  login                   1:4.16.0-2+really2.41.5-0+deb13u1 amd64        system login tools
+[I guest.out] ii  login.defs              1:4.17.4-2                        all          system user management configuration
+[I guest.out] ii  mawk                    1.3.4.20250131-1                  amd64        Pattern scanning and text processing language
+[I guest.out] ii  mount                   2.41.5-0+deb13u1                  amd64        tools for mounting and manipulating filesystems
+[I guest.out] ii  ncurses-base            6.5+20250216-2                    all          basic terminal type definitions
+[I guest.out] ii  ncurses-bin             6.5+20250216-2                    amd64        terminal-related programs and man pages
+[I guest.out] ii  openssl-provider-legacy 3.5.7-1~deb13u2                   amd64        Secure Sockets Layer toolkit - cryptographic utility
+[I guest.out] ii  passwd                  1:4.17.4-2                        amd64        change and administer password and group data
+[I guest.out] ii  perl-base               5.40.1-6+deb13u1                  amd64        minimal Perl system
+[I guest.out] ii  procps                  2:4.0.4-9                         amd64        /proc file system utilities
+[I guest.out] ii  sed                     4.9-2+deb13u1                     amd64        GNU stream editor for filtering/transforming text
+[I guest.out] ii  sqv                     1.3.0-3+b2                        amd64        OpenPGP signature verification program from Sequoia
+[I guest.out] ii  strace                  6.13+ds-1                         amd64        System call tracer
+[I guest.out] ii  sysvinit-utils          3.14-4                            amd64        System-V-like utilities
+[I guest.out] ii  tar                     1.35+dfsg-3.1                     amd64        GNU version of the tar archiving utility
+[I guest.out] ii  tzdata                  2026c-0+deb13u1                   all          time zone and daylight-saving time data
+[I guest.out] ii  usr-is-merged           39+nmu2                           all          Transitional package to assert a merged-/usr system
+[I guest.out] ii  util-linux              2.41.5-0+deb13u1                  amd64        miscellaneous system utilities
+[I guest.out] ii  zlib1g:amd64            1:1.3.dfsg+really1.3.1-1+b1       amd64        compression library - runtime
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (4959 bytes) follows:
+[W layer    ] MAP 7ef4f9c50000-7ef4f9c71000 rw-p 00000000 00:00 0                        [heap]
+7ef4f9c71000-7ef4f9c93000 rw-p 00000000 00:00 0                        [heap]
+7ef4f9c93000-7ef4f9ca3000 rw-p 00000000 00:00 0                        [heap]
+7ff4f0eb8000-7ff4f0f12000 r--p 00000000 00:00 281474976713043                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff4f0f12000-7ff4f0f13000 r--p 00000000 00:00 281474976713045                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff4f0f13000-7ff4f0f14000 r--p 00000000 00:00 281474976713049                        /usr/lib/locale/C.utf8/LC_TIME
+7ff4f0f14000-7ff4f0f15000 r--p 00000000 00:00 281474976713042                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff4f0f15000-7ff4f0f16000 r--p 00000000 00:00 281474976713053                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff4f0f16000-7ff4f0f17000 r--p 00000000 00:00 281474976713052                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+7ff4f0f17000-7ff4f0f18000 r--p 00000000 00:00 281474976713041                        /usr/lib/locale/C.utf8/LC_PAPER
+7ff4f0f18000-7ff4
+[W layer    ] MAP 00-7ff4f10e8000 r-xp 00028000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4f10e8000-7ff4f113e000 r--p 0018b000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4f113e000-7ff4f1142000 r--p 001e0000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4f1142000-7ff4f1144000 rw-p 001e4000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4f1144000-7ff4f1151000 rw-p 00000000 00:00 0 
+7ff4f1151000-7ff4f1152000 rwxp 00000000 00:00 0 
+7ff4f1152000-7ff4f1154000 r--p 00000000 00:00 281474976711963                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4f1154000-7ff4f115d000 r-xp 00002000 00:00 281474976711963                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4f115d000-7ff4f115f000 r--p 0000b000 00:00 281474976711963                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4f115f000-7ff4f1160000 r--p 0000d000 00:00 281474976711963                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4f1160000-7ff4f1
+[W layer    ] MAP /x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4f1969000-7ff4f1991000 r-xp 00001000 00:00 281474976711938                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4f1991000-7ff4f199c000 r--p 00029000 00:00 281474976711938                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4f199c000-7ff4f199f000 rw-p 00034000 00:00 281474976711938                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4f199f000-7ff4f19a0000 rw-p 00000000 00:00 0 
+7ff4f19a0000-7ff4f19a2000 rwxp 00000000 00:00 0 
+7ff4f19a2000-7ff4f19a6000 r--p 00000000 00:00 281474976711821                        /usr/bin/dpkg-query
+7ff4f19a6000-7ff4f19be000 r-xp 00004000 00:00 281474976711821                        /usr/bin/dpkg-query
+7ff4f19be000-7ff4f19ca000 r--p 0001c000 00:00 281474976711821                        /usr/bin/dpkg-query
+7ff4f19ca000-7ff4f19cc000 r--p 00028000 00:00 281474976711821                        /usr/bin/dpkg-query
+7ff4f19cc000-7ff4f19cd000 rw-p 0002a000 00:00 281474976711821                        /usr/bin/dpkg-query
+7ff4f19cd000-7ff4f1c50000 rw-p 000000
+xrl_layer_boot returned 0
+exit 0

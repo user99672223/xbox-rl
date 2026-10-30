@@ -7,11 +7,11 @@ probe 6 (m1): PASS exit   0  /usr/bin/ps aux
 probe 7 (m1): PASS exit   0  /usr/bin/dpkg -l
 probe 8 (m1): PASS exit   0  /usr/bin/apt-get --version
 probe 9 (m2): PASS exit   0  /usr/bin/apt-get update
-probe 10 (m2): FAIL exit 100  /usr/bin/apt-get install -y --no-install-recommends hello
+probe 10 (m2): PASS exit   0  /usr/bin/apt-get install -y --no-install-recommends hello
 probe 11 (m2): PASS exit   0  /usr/bin/hello
 --- syscalls answered ENOSYS (count, nr, name):
      28 ENOSYS 334 rseq
       4 ENOSYS 277 sync_file_range
 milestone 1 (bash, coreutils, ps, dpkg -l): PASS
-milestone 2 (apt-get update + install): FAIL (1 probe(s))
+milestone 2 (apt-get update + install): PASS
 exit 0
