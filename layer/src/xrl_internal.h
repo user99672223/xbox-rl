@@ -639,6 +639,9 @@ slong xrl_sig_kill_process(int sig);
 int   xrl_mem_guest_ctx(u64 rip, u64 rsp);
 void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
 int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
+int  xrl_mem_vma_of(u64 a, char *name, size_t n, u64 *off);   /* mem.c: the mapping containing a (sample.c) */
+void xrl_sample_start(void);   /* sample.c: XRL_SAMPLE=<hz> sampling profiler */
+void xrl_mem_breakdown(void);  /* mem.c: committed memory by guest mapping vs the partition, to the log */
 int   xrl_mem_is_exec(u64 a);
 int   xrl_mem_lock_held(void);
 void  xrl_mem_clock_stats(char *b, size_t n);

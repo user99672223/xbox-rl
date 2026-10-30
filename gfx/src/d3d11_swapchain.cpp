@@ -22,7 +22,7 @@
 // handle the guest cannot wait on, so the latency-waitable flag is refused too.
 #include "common.h"
 
-#include <dxgi1_2.h>
+#include <dxgi1_4.h>
 
 #include <atomic>
 
@@ -314,7 +314,83 @@ private:
             "%llu frames so far", (double)win_frames_ / secs, (unsigned long long)win_frames_, secs,
             (double)win_max_gap_ * 1000.0 / (double)qf_, (double)win_present_ * 1000.0 / (double)qf_ / (double)win_frames_,
             app_.width, app_.height, sync, (unsigned long long)presents_);
+        if (gpu_n_)
+            Log(LOG_INFO, "perf: gpu frame %.2f ms avg, %.2f ms worst (%llu frames timed, %llu disjoint): the GPU's own time from "
+                "the start of a frame's commands to the end of them", gpu_sum_ / (double)gpu_n_, gpu_max_,
+                (unsigned long long)gpu_n_, (unsigned long long)gpu_disjoint_);
+        if (GpuTimingOn()) {   // the GPU's memory: what the OS budgets for this process and what it uses now
+            ComPtr<IDXGIDevice> dd; ComPtr<IDXGIAdapter> ad; ComPtr<IDXGIAdapter3> ad3;
+            DXGI_QUERY_VIDEO_MEMORY_INFO li{}, ni{};
+            if (SUCCEEDED(dev_.As(&dd)) && SUCCEEDED(dd->GetAdapter(&ad)) && SUCCEEDED(ad.As(&ad3)) &&
+                SUCCEEDED(ad3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &li)))
+            {
+                ad3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, &ni);
+                Log(LOG_INFO, "perf: gpu memory local %llu of %llu MiB budget, non-local %llu of %llu MiB",
+                    (unsigned long long)(li.CurrentUsage >> 20), (unsigned long long)(li.Budget >> 20),
+                    (unsigned long long)(ni.CurrentUsage >> 20), (unsigned long long)(ni.Budget >> 20));
+            }
+        }
         win_start_ = q1.QuadPart; win_frames_ = 0; win_max_gap_ = 0; win_present_ = 0;
+        gpu_sum_ = 0; gpu_max_ = 0; gpu_n_ = 0; gpu_disjoint_ = 0;
+    }
+
+    // XRL_GPU_TIMING=1: each frame's GPU time from timestamp queries. A frame is bracketed from just after the
+    // previous Present to just before this one (the game's commands for it); results are read a few frames later,
+    // never waited for. On a GPU-bound frame this is the GPU's work; on a CPU-bound one it also holds the gaps
+    // where the GPU waited for commands (then "present" above stays short).
+    struct GpuQ { ComPtr<ID3D11Query> dj, t0, t1; bool pending = false; };
+    static constexpr int kGpuQ = 8;
+    GpuQ gq_[kGpuQ];
+    int gq_i_ = 0;
+    bool gq_open_ = false;
+    int gpu_on_ = -1;
+    double gpu_sum_ = 0, gpu_max_ = 0;
+    uint64_t gpu_n_ = 0, gpu_disjoint_ = 0;
+
+    bool GpuTimingOn() {
+        if (gpu_on_ < 0) { char v[4]; gpu_on_ = GetEnvironmentVariableA("XRL_GPU_TIMING", v, sizeof v) && v[0] == '1'; }
+        return gpu_on_ == 1 && ctx_ && dev_;
+    }
+    void GpuFrameEnd() {   // before this frame's copy and Present
+        if (!GpuTimingOn() || !gq_open_) return;
+        GpuQ& q = gq_[gq_i_];
+        ctx_->End(q.t1.Get());
+        ctx_->End(q.dj.Get());
+        q.pending = true;
+        gq_open_ = false;
+        gq_i_ = (gq_i_ + 1) % kGpuQ;
+    }
+    void GpuCollect() {
+        for (GpuQ& q : gq_) {
+            if (!q.pending) continue;
+            D3D11_QUERY_DATA_TIMESTAMP_DISJOINT dj{};
+            if (ctx_->GetData(q.dj.Get(), &dj, sizeof dj, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
+            UINT64 a = 0, b = 0;
+            if (ctx_->GetData(q.t0.Get(), &a, sizeof a, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK ||
+                ctx_->GetData(q.t1.Get(), &b, sizeof b, D3D11_ASYNC_GETDATA_DONOTFLUSH) != S_OK) continue;
+            q.pending = false;
+            if (dj.Disjoint || !dj.Frequency || b < a) { gpu_disjoint_++; continue; }
+            double ms = (double)(b - a) * 1000.0 / (double)dj.Frequency;
+            gpu_sum_ += ms; gpu_n_++;
+            if (ms > gpu_max_) gpu_max_ = ms;
+        }
+    }
+    void GpuFrameBegin() {   // after Present: the next frame's commands start here
+        if (!GpuTimingOn()) return;
+        GpuCollect();
+        GpuQ& q = gq_[gq_i_];
+        if (q.pending) return;   // ring full (results late): this frame goes untimed
+        if (!q.dj) {
+            D3D11_QUERY_DESC dd{D3D11_QUERY_TIMESTAMP_DISJOINT, 0}, td{D3D11_QUERY_TIMESTAMP, 0};
+            if (FAILED(dev_->CreateQuery(&dd, &q.dj)) || FAILED(dev_->CreateQuery(&td, &q.t0)) || FAILED(dev_->CreateQuery(&td, &q.t1))) {
+                Log(LOG_WARN, "d3d11 swapchain: timestamp queries unavailable; XRL_GPU_TIMING off");
+                gpu_on_ = 0;
+                return;
+            }
+        }
+        ctx_->Begin(q.dj.Get());
+        ctx_->End(q.t0.Get());
+        gq_open_ = true;
     }
 
     // Wait until the GPU is done with everything submitted so far (buffers are about to go away).
@@ -357,6 +433,7 @@ private:
         }
         std::lock_guard<std::mutex> l(mu_);
         LARGE_INTEGER q0; QueryPerformanceCounter(&q0);
+        GpuFrameEnd();
         if (native_) {
             // buffer 0 of the host swapchain is always the next one to present; Present flushes
             ID3D11Resource* dst = hostbuf_.Get();
@@ -384,6 +461,7 @@ private:
             return hr;
         }
         presents_++;
+        GpuFrameBegin();
         Pace(q0, sync);
         return hr;
     }
