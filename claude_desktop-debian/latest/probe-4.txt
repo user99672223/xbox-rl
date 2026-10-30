@@ -1,0 +1,55 @@
+$ /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/bash, 3 args, 3 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4da920000,7ff4da920000) 1048576 MiB VA, brk <= 7ef51a920000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 186 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 767 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (190 symlinks)
+[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff4d27cf000
+[I layer    ] elf: loaded /bin/bash type=DYN bias=7ff4d27d8000 span=[7ff4d27d8000,7ff4d2920000) entry=7ff4d2809760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d2795000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d2797000 span=[7ff4d2797000,7ff4d27cf000) entry=7ff4d27b42c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000001A695AD3C60)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4d2794d90
+[I layer    ] boot: guest main thread tid=5956 entry=7ff4d27b42c0 sp=7ff4d2794d90
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff4d1f59000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d1d2d000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d1d2a680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W guest.err] /bin/bash: fork: Invalid argument
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 254; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (3192 bytes) follows:
+[W layer    ] MAP 7ef4da920000-7ef4da941000 rw-p 00000000 00:00 0                        [heap]
+7ff4d1d2a000-7ff4d1d2d000 rw-p 00000000 00:00 0 
+7ff4d1d2d000-7ff4d1d65000 rwxp 00000000 00:00 0 
+7ff4d1d65000-7ff4d1d8d000 r--p 00000000 00:00 281474976711959                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d1d8d000-7ff4d1ef0000 r-xp 00028000 00:00 281474976711959                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d1ef0000-7ff4d1f46000 r--p 0018b000 00:00 281474976711959                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d1f46000-7ff4d1f4a000 r--p 001e0000 00:00 281474976711959                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d1f4a000-7ff4d1f4c000 rw-p 001e4000 00:00 281474976711959                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d1f4c000-7ff4d1f59000 rw-p 00000000 00:00 0 
+7ff4d1f59000-7ff4d1f5a000 rwxp 00000000 00:00 0 
+7ff4d1f5a000-7ff4d1f69000 r--p 00000000 00:00 281474976711941                        /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5
+7ff4d1f69000-7ff4d1f7d000 r-xp 0000f000 00:00 281474976711941                        /usr
+[W layer    ] MAP  00000000 00:00 281474976711928                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d2798000-7ff4d27c0000 r-xp 00001000 00:00 281474976711928                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d27c0000-7ff4d27cb000 r--p 00029000 00:00 281474976711928                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d27cb000-7ff4d27ce000 rw-p 00034000 00:00 281474976711928                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d27ce000-7ff4d27cf000 rw-p 00000000 00:00 0 
+7ff4d27cf000-7ff4d27d8000 rwxp 00000000 00:00 0 
+7ff4d27d8000-7ff4d2807000 r--p 00000000 00:00 281474976711651                        /usr/bin/bash
+7ff4d2807000-7ff4d28d0000 r-xp 0002f000 00:00 281474976711651                        /usr/bin/bash
+7ff4d28d0000-7ff4d2908000 r--p 000f8000 00:00 281474976711651                        /usr/bin/bash
+7ff4d2908000-7ff4d290c000 r--p 00130000 00:00 281474976711651                        /usr/bin/bash
+7ff4d290c000-7ff4d2915000 rw-p 00134000 00:00 281474976711651                        /usr/bin/bash
+7ff4
+xrl_layer_boot returned 254
+exit 254
