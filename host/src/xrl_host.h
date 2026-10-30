@@ -99,6 +99,8 @@ struct DisplayMode { uint32_t width = 0, height = 0, refresh_hz = 0; };
 // per launch.cfg display=; the guest is told about it as XRL_DISPLAY (boot.cpp).
 void display_select();
 DisplayMode display_mode();   // zero until display_select() ran
+// Switches the HDMI output to w x h @ hz if the console lists it; waits for the switch (not on the UI thread)
+bool display_switch(uint32_t w, uint32_t h, uint32_t hz);
 
 }  // namespace xrl
 
@@ -202,7 +204,7 @@ namespace xrl { void procprobe_child_main(const char* spec); void procprobe_pare
 // Keep-alive present loop (gfx_ops_default.cpp): clears+presents the CoreWindow from a dedicated
 // MTA thread so the Xbox PLM keeps the app foreground/active while the EAC bootstrapper (which
 // renders nothing) runs and injects. No-op if there is no CoreWindow (e.g. the headless tracee).
-namespace xrl { void gfx_keepalive_start(); void gfx_keepalive_stop(); }
+namespace xrl { void gfx_keepalive_start(); void gfx_keepalive_stop(); void gfx_present_test(); }
 
 // ---------------------------------------------------------------------------
 // Full-build only: SDL front-end  (sdl_main.cpp, compiled WINAPI_FAMILY_APP)

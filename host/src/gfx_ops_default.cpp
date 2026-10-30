@@ -22,9 +22,11 @@
 #include <d3d12.h>
 #include <d3d11.h>
 #include <d3d11on12.h>
-#include <dxgi1_4.h>
+#include <dxgi1_5.h>
 #include <wrl/client.h>
+#include <algorithm>
 #include <memory>
+#include <vector>
 #include <thread>
 #include <atomic>
 
@@ -326,6 +328,268 @@ void keepalive_loop() {
     XLOGI("gfx", "keepalive: present loop ended");
 }
 
+// XRL_PRESENT_TEST=1: what reaches the screen, without the game. A battery of swapchain variants on the CoreWindow,
+// a few seconds each (a fresh swapchain per variant, released before the next: a window takes one). Each logs:
+//   presents/s       how often Present returned
+//   shown/s          distinct frames the console reports on screen (GetFrameStatistics: PresentCount moved)
+//   refresh          the period between the refreshes frames were shown on (SyncQPCTime / SyncRefreshCount)
+//   spacing          a histogram of the time between shown frames: ~8.3 ms = 120 Hz, ~16.7 ms = 60 Hz
+// Variants: size (window / HDMI mode / 4K), scaling, buffer count, flip mode, format, waitable latency 1, tearing,
+// a D3D11 device instead of D3D12, and an HDMI switch to 60 Hz and back to 120 (a control and a fresh 120 Hz set).
+// IDXGIOutput::WaitForVBlank, where the console gives an output, times the display's own vblank.
+namespace {
+
+struct PtVariant {
+    const char* name;
+    bool d3d11 = false;
+    uint32_t w = 0, h = 0;   // 0: the HDMI mode's size
+    DXGI_SCALING scaling = DXGI_SCALING_STRETCH;
+    UINT buffers = 3;
+    DXGI_SWAP_EFFECT effect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+    DXGI_FORMAT fmt = DXGI_FORMAT_B8G8R8A8_UNORM;
+    bool waitable = false, tearing = false;
+    UINT sync = 1;
+};
+
+struct PtResult { double presents = 0, shown = 0, period = 0; uint64_t bucket[6] = {}; uint64_t stat_fail = 0; HRESULT hr = S_OK; };
+
+// The measurement loop around one swapchain: `frame(i)` draws and presents frame i.
+template <class F>
+PtResult pt_measure(IDXGISwapChain1* sc, double secs, HANDLE waitable, F&& frame) {
+    PtResult r;
+    LARGE_INTEGER qf; QueryPerformanceFrequency(&qf);
+    auto qnow = [] { LARGE_INTEGER q; QueryPerformanceCounter(&q); return q.QuadPart; };
+    int64_t t0 = qnow();
+    uint64_t presents = 0, shown = 0, per_n = 0;
+    double per_sum = 0;
+    UINT last_pc = 0, last_rc = 0;
+    int64_t last_q = 0;
+    while (qnow() - t0 < (int64_t)(secs * qf.QuadPart)) {
+        if (waitable) WaitForSingleObjectEx(waitable, 1000, TRUE);
+        r.hr = frame(presents);
+        if (FAILED(r.hr)) break;
+        ++presents;
+        DXGI_FRAME_STATISTICS st{};
+        if (FAILED(sc->GetFrameStatistics(&st))) { ++r.stat_fail; continue; }
+        if (st.PresentCount != last_pc) {
+            if (last_q) {
+                double ms = (double)(st.SyncQPCTime.QuadPart - last_q) * 1000.0 / (double)qf.QuadPart;
+                r.bucket[ms < 7 ? 0 : ms < 9.5 ? 1 : ms < 12.5 ? 2 : ms < 14.5 ? 3 : ms < 18 ? 4 : 5]++;
+                if (st.SyncRefreshCount > last_rc) { per_sum += ms / (double)(st.SyncRefreshCount - last_rc); per_n++; }
+                ++shown;
+            }
+            last_pc = st.PresentCount; last_q = st.SyncQPCTime.QuadPart; last_rc = st.SyncRefreshCount;
+        }
+    }
+    double el = (double)(qnow() - t0) / (double)qf.QuadPart;
+    r.presents = presents / el;
+    r.shown = shown / el;
+    r.period = per_n ? per_sum / (double)per_n : 0;
+    return r;
+}
+
+void pt_log(const PtVariant& v, uint32_t w, uint32_t h, const PtResult& r) {
+    XLOGI("ptest", "%-16s %4ux%-4u %s: %6.1f presents/s, %6.1f shown/s, refresh %5.2f ms (%5.1f Hz); spacing <7 %llu, ~8.3 %llu, "
+          "~11 %llu, 13 %llu, ~16.7 %llu, >18 %llu%s", v.name, w, h, v.d3d11 ? "d3d11" : "d3d12", r.presents, r.shown, r.period,
+          r.period > 0 ? 1000.0 / r.period : 0.0, (unsigned long long)r.bucket[0], (unsigned long long)r.bucket[1],
+          (unsigned long long)r.bucket[2], (unsigned long long)r.bucket[3], (unsigned long long)r.bucket[4], (unsigned long long)r.bucket[5],
+          FAILED(r.hr) ? " (Present failed)" : "");
+}
+
+DXGI_SWAP_CHAIN_DESC1 pt_desc(const PtVariant& v, uint32_t w, uint32_t h) {
+    DXGI_SWAP_CHAIN_DESC1 d{};
+    d.Width = w; d.Height = h; d.Format = v.fmt;
+    d.SampleDesc.Count = 1; d.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    d.BufferCount = v.buffers; d.Scaling = v.scaling; d.SwapEffect = v.effect; d.AlphaMode = DXGI_ALPHA_MODE_IGNORE;
+    d.Flags = (v.tearing ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0) | (v.waitable ? DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT : 0);
+    return d;
+}
+
+HANDLE pt_waitable(IDXGISwapChain1* sc, bool on) {
+    if (!on) return nullptr;
+    ComPtr<IDXGISwapChain2> s2;
+    if (FAILED(sc->QueryInterface(IID_PPV_ARGS(&s2)))) return nullptr;
+    s2->SetMaximumFrameLatency(1);
+    return s2->GetFrameLatencyWaitableObject();
+}
+
+const float* pt_color(uint64_t i) {
+    static const float c[2][4] = {{0.08f, 0.08f, 0.10f, 1.f}, {0.11f, 0.11f, 0.14f, 1.f}};
+    return c[(i / 4) & 1];   // two close dark greys: every frame differs from the one 4 back, gently
+}
+
+void pt_run_d3d12(ID3D12Device* dev, ID3D12CommandQueue* queue, void* cw, const PtVariant& v, uint32_t w, uint32_t h, double secs) {
+    DXGI_SWAP_CHAIN_DESC1 d = pt_desc(v, w, h);
+    ComPtr<IDXGISwapChain1> sc1;
+    HRESULT hr = g_factory->CreateSwapChainForCoreWindow(queue, (IUnknown*)cw, &d, nullptr, &sc1);
+    if (FAILED(hr)) { XLOGW("ptest", "%-16s %ux%u: CreateSwapChainForCoreWindow 0x%08x", v.name, w, h, (unsigned)hr); return; }
+    ComPtr<IDXGISwapChain3> sc;
+    sc1.As(&sc);
+    const UINT n = v.buffers;
+    D3D12_DESCRIPTOR_HEAP_DESC hd{}; hd.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV; hd.NumDescriptors = n;
+    ComPtr<ID3D12DescriptorHeap> heap;
+    dev->CreateDescriptorHeap(&hd, IID_PPV_ARGS(&heap));
+    UINT step = dev->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv0 = heap->GetCPUDescriptorHandleForHeapStart();
+    std::vector<ComPtr<ID3D12Resource>> bufs(n);
+    std::vector<ComPtr<ID3D12CommandAllocator>> alloc(n);
+    std::vector<UINT64> slot(n, 0);
+    for (UINT i = 0; i < n; ++i) {
+        sc->GetBuffer(i, IID_PPV_ARGS(&bufs[i]));
+        D3D12_CPU_DESCRIPTOR_HANDLE hh = rtv0; hh.ptr += (SIZE_T)i * step;
+        dev->CreateRenderTargetView(bufs[i].Get(), nullptr, hh);
+        dev->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&alloc[i]));
+    }
+    ComPtr<ID3D12GraphicsCommandList> cl;
+    dev->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, alloc[0].Get(), nullptr, IID_PPV_ARGS(&cl));
+    cl->Close();
+    ComPtr<ID3D12Fence> fence;
+    dev->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence));
+    HANDLE fev = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    UINT64 fv = 0;
+    HANDLE wt = pt_waitable(sc1.Get(), v.waitable);
+    UINT pflags = v.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    PtResult r = pt_measure(sc1.Get(), secs, wt, [&](uint64_t i) -> HRESULT {
+        UINT bi = sc->GetCurrentBackBufferIndex();
+        if (fence->GetCompletedValue() < slot[bi]) { fence->SetEventOnCompletion(slot[bi], fev); WaitForSingleObject(fev, 1000); }
+        alloc[bi]->Reset();
+        cl->Reset(alloc[bi].Get(), nullptr);
+        D3D12_RESOURCE_BARRIER b{};
+        b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+        b.Transition.pResource = bufs[bi].Get();
+        b.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+        b.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
+        b.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
+        cl->ResourceBarrier(1, &b);
+        D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtv0; rtv.ptr += (SIZE_T)bi * step;
+        cl->ClearRenderTargetView(rtv, pt_color(i), 0, nullptr);
+        std::swap(b.Transition.StateBefore, b.Transition.StateAfter);
+        cl->ResourceBarrier(1, &b);
+        cl->Close();
+        ID3D12CommandList* lists[] = {cl.Get()};
+        queue->ExecuteCommandLists(1, lists);
+        HRESULT ph = sc->Present(v.sync, pflags);
+        queue->Signal(fence.Get(), ++fv);
+        slot[bi] = fv;
+        return ph;
+    });
+    pt_log(v, w, h, r);
+    queue->Signal(fence.Get(), ++fv);
+    if (fence->GetCompletedValue() < fv) { fence->SetEventOnCompletion(fv, fev); WaitForSingleObject(fev, 2000); }
+    CloseHandle(fev);
+    if (wt) CloseHandle(wt);
+}
+
+void pt_run_d3d11(void* cw, const PtVariant& v, uint32_t w, uint32_t h, double secs) {
+    ComPtr<ID3D11Device> dev;
+    ComPtr<ID3D11DeviceContext> ctx;
+    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &dev, nullptr, &ctx);
+    if (FAILED(hr)) { XLOGW("ptest", "%-16s: D3D11CreateDevice 0x%08x", v.name, (unsigned)hr); return; }
+    DXGI_SWAP_CHAIN_DESC1 d = pt_desc(v, w, h);
+    ComPtr<IDXGISwapChain1> sc;
+    hr = g_factory->CreateSwapChainForCoreWindow(dev.Get(), (IUnknown*)cw, &d, nullptr, &sc);
+    if (FAILED(hr)) { XLOGW("ptest", "%-16s %ux%u: CreateSwapChainForCoreWindow (d3d11) 0x%08x", v.name, w, h, (unsigned)hr); return; }
+    ComPtr<ID3D11Texture2D> b0;
+    sc->GetBuffer(0, IID_PPV_ARGS(&b0));
+    ComPtr<ID3D11RenderTargetView> rtv;
+    dev->CreateRenderTargetView(b0.Get(), nullptr, &rtv);
+    HANDLE wt = pt_waitable(sc.Get(), v.waitable);
+    UINT pflags = v.tearing ? DXGI_PRESENT_ALLOW_TEARING : 0;
+    PtResult r = pt_measure(sc.Get(), secs, wt, [&](uint64_t i) -> HRESULT {
+        ctx->ClearRenderTargetView(rtv.Get(), pt_color(i));
+        return sc->Present(v.sync, pflags);
+    });
+    pt_log(v, w, h, r);
+    ctx->ClearState();
+    ctx->Flush();
+    if (wt) CloseHandle(wt);
+}
+
+// The display's own vblank, where the console gives the swapchain an output
+void pt_vblank(IDXGISwapChain1* sc) {
+    ComPtr<IDXGIOutput> out;
+    HRESULT hr = sc->GetContainingOutput(&out);
+    if (FAILED(hr)) { XLOGI("ptest", "vblank: GetContainingOutput 0x%08x (no output object for a UWP window)", (unsigned)hr); return; }
+    LARGE_INTEGER qf, a, b; QueryPerformanceFrequency(&qf);
+    out->WaitForVBlank();
+    QueryPerformanceCounter(&a);
+    int n = 0;
+    for (; n < 240; ++n) if (FAILED(out->WaitForVBlank())) break;
+    QueryPerformanceCounter(&b);
+    double ms = n ? (double)(b.QuadPart - a.QuadPart) * 1000.0 / (double)qf.QuadPart / n : 0;
+    XLOGI("ptest", "vblank: IDXGIOutput::WaitForVBlank every %.3f ms (%.1f Hz) over %d vblanks", ms, ms > 0 ? 1000.0 / ms : 0.0, n);
+}
+
+}  // namespace
+
+void present_test() {
+    try { winrt::init_apartment(winrt::apartment_type::multi_threaded); } catch (...) {}
+    void* cw = xrl::window_info_get().core_window;
+    if (!cw) { XLOGE("ptest", "no CoreWindow"); return; }
+    if (FAILED(ensure_factory())) { XLOGE("ptest", "no DXGI factory"); return; }
+    auto mode = xrl::display_mode();
+    auto wi = xrl::window_info_get();
+    BOOL tearing = FALSE;
+    {
+        ComPtr<IDXGIFactory5> f5;
+        if (SUCCEEDED(g_factory.As(&f5)) &&
+            FAILED(f5->CheckFeatureSupport(DXGI_FEATURE_PRESENT_ALLOW_TEARING, &tearing, sizeof tearing)))
+            tearing = FALSE;
+    }
+    XLOGI("ptest", "HDMI mode %ux%u @ %u Hz; window %ux%u px; ALLOW_TEARING %d", mode.width, mode.height, mode.refresh_hz,
+          wi.width, wi.height, (int)tearing);
+    // a fresh D3D12 device per variant: one that fails (device removed) must not take the rest down with it
+    auto make12 = [](ComPtr<ID3D12Device>& dev, ComPtr<ID3D12CommandQueue>& queue) {
+        dev.Reset(); queue.Reset();
+        D3D12_COMMAND_QUEUE_DESC qd{}; qd.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        return SUCCEEDED(D3D12CreateDevice(nullptr, D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev))) &&
+               SUCCEEDED(dev->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)));
+    };
+    ComPtr<ID3D12Device> dev;
+    ComPtr<ID3D12CommandQueue> queue;
+    if (!make12(dev, queue)) { XLOGE("ptest", "no D3D12 device/queue"); return; }
+
+    const uint32_t mw = mode.width ? mode.width : 1920, mh = mode.height ? mode.height : 1080;
+    const uint32_t ww = wi.width ? wi.width : 1920, wh = wi.height ? wi.height : 1080;
+    const double secs = 3.0;
+    auto run = [&](PtVariant v) {
+        uint32_t w = v.w ? v.w : mw, h = v.h ? v.h : mh;
+        if (v.tearing && !tearing) return;
+        if (v.d3d11) { pt_run_d3d11(cw, v, w, h, secs); return; }
+        if (!make12(dev, queue)) { XLOGW("ptest", "%-16s: no D3D12 device", v.name); return; }
+        pt_run_d3d12(dev.Get(), queue.Get(), cw, v, w, h, secs);
+    };
+    auto vblank = [&] {   // the display's vblank, through a throwaway swapchain's output
+        PtVariant v{"vblank"};
+        DXGI_SWAP_CHAIN_DESC1 d = pt_desc(v, mw, mh);
+        ComPtr<IDXGISwapChain1> sc;
+        if (make12(dev, queue) && SUCCEEDED(g_factory->CreateSwapChainForCoreWindow(queue.Get(), (IUnknown*)cw, &d, nullptr, &sc)))
+            pt_vblank(sc.Get());
+    };
+    vblank();
+    PtVariant v;
+    v = {"control"};                                              run(v);
+    v = {"window-size"};   v.w = ww; v.h = wh;                    run(v);
+    v = {"window-1:1"};    v.w = ww; v.h = wh; v.scaling = DXGI_SCALING_NONE; run(v);
+    v = {"aspect"};        v.scaling = DXGI_SCALING_ASPECT_RATIO_STRETCH; run(v);
+    v = {"2-buffers"};     v.buffers = 2;                         run(v);
+    v = {"4-buffers"};     v.buffers = 4;                         run(v);
+    v = {"sequential"};    v.effect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL; run(v);
+    v = {"10-bit"};        v.fmt = DXGI_FORMAT_R10G10B10A2_UNORM; run(v);
+    v = {"fp16"};          v.fmt = DXGI_FORMAT_R16G16B16A16_FLOAT; run(v);
+    v = {"waitable-1"};    v.waitable = true;                     run(v);
+    v = {"no-vsync"};      v.sync = 0;                            run(v);
+    v = {"tearing"};       v.sync = 0; v.tearing = true;          run(v);
+    v = {"d3d11"};         v.d3d11 = true;                        run(v);
+    v = {"d3d11-window"};  v.d3d11 = true; v.w = ww; v.h = wh;    run(v);
+    v = {"d3d11-waitable"}; v.d3d11 = true; v.waitable = true;    run(v);
+    // the HDMI mode: 60 Hz as a control, then a fresh switch back to 120 Hz
+    if (xrl::display_switch(mw, mh, 60)) { vblank(); v = {"hdmi-60"}; run(v); }
+    if (xrl::display_switch(mw, mh, 120)) { vblank(); v = {"hdmi-120-again"}; run(v); v = {"no-vsync-again"}; v.sync = 0; run(v); }
+    v = {"4k"};            v.w = 3840; v.h = 2160;                run(v);   // last: it removed the device once
+    XLOGI("ptest", "present test done");
+}
+
 void keepalive_stop_wait() {
     if (!g_keepalive_run.exchange(false)) return;
     if (g_keepalive_ended && WaitForSingleObject(g_keepalive_ended, 3000) == WAIT_OBJECT_0)
@@ -357,6 +621,11 @@ void gfx_keepalive_start() {
 }
 
 void gfx_keepalive_stop() { g_keepalive_run.store(false); }
+
+void gfx_present_test() {
+    keepalive_stop_wait();   // the window takes one swapchain
+    present_test();
+}
 
 }  // namespace xrl
 

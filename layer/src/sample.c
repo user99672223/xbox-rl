@@ -30,11 +30,11 @@
 
 #define S_BITS 16
 #define S_SIZE (1u << S_BITS)
-#define S_THR 64
+#define S_THR 128
 
 typedef struct s_ent { u64 rip, w; u32 n; u16 thr; } s_ent;   /* w: the cycles the samples stand for */
-static s_ent *g_tab;                    /* open addressing on (rip, thread name) */
-static char g_thr_name[S_THR][16];
+static s_ent *g_tab;                    /* open addressing on (rip, thread) */
+static char g_thr_name[S_THR][24];      /* "name/tid": Wine's unnamed threads are all "xrl-guest" */
 static int g_nthr_name;
 static u64 g_total, g_lost, g_lost_w;
 
@@ -42,12 +42,13 @@ typedef struct s_prev { int tid; u64 cycles; } s_prev;
 static s_prev g_prev[512];
 static int g_nprev;
 
-static int thr_index(const char *name)
+static int thr_index(const char *name, int tid)
 {
-    for (int i = 0; i < g_nthr_name; i++) if (!strncmp(g_thr_name[i], name, 16)) return i;
+    char key[24];
+    snprintf(key, sizeof key, "%.15s/%d", name[0] ? name : "?", tid);
+    for (int i = 0; i < g_nthr_name; i++) if (!strcmp(g_thr_name[i], key)) return i;
     if (g_nthr_name == S_THR) return S_THR - 1;   /* the last slot takes the rest */
-    memcpy(g_thr_name[g_nthr_name], name, 16);
-    g_thr_name[g_nthr_name][15] = 0;
+    memcpy(g_thr_name[g_nthr_name], key, sizeof key);
     return g_nthr_name++;
 }
 
@@ -164,16 +165,44 @@ static void dump(double secs, u64 tick_cyc, u64 own_cyc)
          100.0 * (double)work / (double)(work + blocked + g_lost_w + 1), 100.0 * (double)blocked / (double)(work + blocked + g_lost_w + 1),
          100.0 * (double)g_lost_w / (double)(work + blocked + g_lost_w + 1), tick_cyc ? 100.0 * (double)own_cyc / (double)tick_cyc : 0.0);
     if (!work) goto reset;
-    {   /* per thread name, as a share of the located CPU time */
-        char line[700]; int len = snprintf(line, sizeof line, "sample: threads");
+    int top_thr[4], ntop = 0;
+    {   /* per thread, as a share of the located CPU time */
+        char line[900]; int len = snprintf(line, sizeof line, "sample: threads");
         for (int k = 0; k < 12; k++) {
             int b = -1;
             for (int i = 0; i < g_nthr_name; i++) if (thr_w[i] && (b < 0 || thr_w[i] > thr_w[b])) b = i;
             if (b < 0) break;
-            len += snprintf(line + len, sizeof line - len, " %s %.1f%%;", g_thr_name[b][0] ? g_thr_name[b] : "?", 100.0 * (double)thr_w[b] / (double)work);
+            if (ntop < 4) top_thr[ntop++] = b;
+            len += snprintf(line + len, sizeof line - len, " %s %.1f%%;", g_thr_name[b], 100.0 * (double)thr_w[b] / (double)work);
             thr_w[b] = 0;
         }
         LOGI("%s", line);
+    }
+    for (int t = 0; t < ntop; t++) {   /* the busiest threads' own hottest addresses */
+        int best[8], nb = 0;
+        u64 tw = 0;
+        for (int i = 0; i < no; i++) if (g_tab[order[i]].thr == top_thr[t]) tw += g_tab[order[i]].w;
+        for (int k = 0; k < 8; k++) {
+            int b = -1;
+            for (int i = 0; i < no; i++) {
+                s_ent *e = &g_tab[order[i]];
+                if (e->thr != top_thr[t]) continue;
+                int taken = 0;
+                for (int j = 0; j < nb; j++) if (best[j] == i) taken = 1;
+                if (!taken && (b < 0 || e->w > g_tab[order[b]].w)) b = i;
+            }
+            if (b < 0) break;
+            best[nb++] = b;
+        }
+        for (int k = 0; k < nb; k++) {
+            s_ent *e = &g_tab[order[best[k]]];
+            s_where w; where_of(e->rip, &w);
+            const char *b = strrchr(w.mod, '/');
+            char sym[96] = "", x[72]; u32 d = 0;
+            if (w.kind == 2 && host_export(e->rip, x, sizeof x, &d)) snprintf(sym, sizeof sym, " (%s+0x%x)", x, d);
+            LOGI("sample: thread %s: %5.2f%% of it at %s+0x%llx%s%s", g_thr_name[top_thr[t]], 100.0 * (double)e->w / (double)(tw + 1),
+                 b ? b + 1 : w.mod, w.off, sym, w.kind == 1 ? " (translated)" : "");
+        }
     }
     /* the hottest addresses: sort a top 40 out of the entries */
     for (int k = 0; k < 40 && k < no; k++) {
@@ -239,7 +268,7 @@ static DWORD WINAPI sample_thread(LPVOID p)
             if (!t->handle || !QueryThreadCycleTime(t->handle, &cyc)) continue;
             if (nn < 512) { next[nn].tid = t->tid; next[nn].cycles = cyc; nn++; }
             if (!cycles_prev(t->tid, &before) || cyc - before < span / 20) continue;   /* under 5% of the tick: idle or only woken by us */
-            cand[nc].h = t->handle; cand[nc].thr = thr_index(t->name); cand[nc].w = cyc - before;
+            cand[nc].h = t->handle; cand[nc].thr = thr_index(t->name, t->tid); cand[nc].w = cyc - before;
             nc++;
         }
         for (int i = 0; i < nc; i++) {   /* suspended only between these three calls: no allocation, no lock */

@@ -12,6 +12,9 @@
 //     (done once per buffer), copies/resolves `back_` into it, releases it back to D3D12 in the
 //     PRESENT state, flushes, and presents on the host swapchain.
 //
+// XRL_FSR=<w>x<h>: a frame smaller than that goes to a host swapchain of that size through FSR 1 (fsr.cpp)
+// instead of the copy; the game still sees its own size everywhere.
+//
 // Native D3D11 mode (XRL_D3D11=native, the device has no ID3D11On12Device): the same object, but the
 // host swapchain is a D3D11 flip swapchain made from the game's own device, and Present copies/resolves
 // `back_` into its buffer 0 on that device (no wrapped resources, no D3D12 queue).
@@ -21,6 +24,7 @@
 // It is deliberately not IDXGISwapChain2+: GetFrameLatencyWaitableObject would return a native
 // handle the guest cannot wait on, so the latency-waitable flag is refused too.
 #include "common.h"
+#include "fsr.h"
 
 #include <dxgi1_4.h>
 
@@ -43,6 +47,7 @@ public:
         wrapped_.clear();
         bufs_.clear();
         hostbuf_.Reset();
+        fsr_.Reset();
         back_.Reset();
         host_.Reset();
         Log(LOG_INFO, "d3d11 swapchain %p destroyed (%llu frames presented)", static_cast<void*>(this),
@@ -60,6 +65,7 @@ public:
         dev_->GetImmediateContext(&ctx_);
         Log(LOG_TRACE, "d3d11 swapchain: ctx %p", (void*)ctx_.Get());
         if (!native_ && FAILED(queue_->GetDevice(IID_PPV_ARGS(&dev12_)))) return E_FAIL;
+        FsrConfig();
         if (app_.flags & ~kAcceptedFlags) {
             Log(LOG_ERROR, "d3d11 swapchain: unsupported swapchain flags 0x%X", app_.flags & ~kAcceptedFlags);
             return DXGI_ERROR_UNSUPPORTED;
@@ -78,9 +84,9 @@ public:
             if (!app_.height) app_.height = h ? h : 1080;
         }
         Log(LOG_TRACE, "d3d11 swapchain: dev12 %p", (void*)dev12_.Get());
-        xrl_status st = native_ ? HostSwapchainCreate11(dev_.Get(), app_.width, app_.height, app_.buffer_count,
+        xrl_status st = native_ ? HostSwapchainCreate11(dev_.Get(), HostW(app_), HostH(app_), app_.buffer_count,
                                                         app_.dxgi_format, host_, &host_format_)
-                                : HostSwapchainCreate(queue_.Get(), app_.width, app_.height, app_.buffer_count,
+                                : HostSwapchainCreate(queue_.Get(), HostW(app_), HostH(app_), app_.buffer_count,
                                                       app_.dxgi_format, host_, &host_format_);
         if (st != XRL_OK) return st == XRL_ERR_NOTAVAIL ? DXGI_ERROR_UNSUPPORTED : E_FAIL;
         Log(LOG_TRACE, "d3d11 swapchain: host swapchain %p", (void*)host_.Get());
@@ -281,7 +287,8 @@ private:
         td.SampleDesc.Quality = app_.sample_quality;
         td.Usage = D3D11_USAGE_DEFAULT;
         td.BindFlags = D3D11_BIND_RENDER_TARGET;
-        if ((app_.buffer_usage & DXGI_USAGE_SHADER_INPUT) && app_.sample_count == 1) td.BindFlags |= D3D11_BIND_SHADER_RESOURCE;
+        if (((app_.buffer_usage & DXGI_USAGE_SHADER_INPUT) || Upscaling(app_)) && app_.sample_count == 1)
+            td.BindFlags |= D3D11_BIND_SHADER_RESOURCE;   // FSR samples the frame
         if ((app_.buffer_usage & DXGI_USAGE_UNORDERED_ACCESS) && app_.sample_count == 1)
             td.BindFlags |= D3D11_BIND_UNORDERED_ACCESS;
         ComPtr<ID3D11Texture2D> t;
@@ -292,14 +299,57 @@ private:
             return hr;
         }
         back_ = t;
+        resolved_.Reset();
+        if (Upscaling(app_) && app_.sample_count > 1) {   // FSR samples a resolved copy of an MSAA frame
+            td.SampleDesc = {1, 0};
+            td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+            if (FAILED(hr = dev_->CreateTexture2D(&td, nullptr, &resolved_))) return hr;
+        }
+        if (Upscaling(app_))
+            Log(LOG_INFO, "fsr: upscaling the game's %ux%u to %ux%u with FSR 1 (RCAS sharpness %.2f stops)", app_.width, app_.height,
+                HostW(app_), HostH(app_), fsr_sharp_);
         return S_OK;
+    }
+
+    // XRL_FSR=<w>x<h>: frames smaller than that are upscaled to it with FSR 1 (the host swapchain is that big; the
+    // game keeps its own size). XRL_FSR_SHARP=<stops>: RCAS sharpness, 0 sharpest, default 0.2.
+    void FsrConfig() {
+        char v[32];
+        unsigned w = 0, h = 0;
+        if (!GetEnvironmentVariableA("XRL_FSR", v, sizeof v) || sscanf_s(v, "%ux%u", &w, &h) != 2 || !w || !h) return;
+        if (GetEnvironmentVariableA("XRL_FSR_SHARP", v, sizeof v)) fsr_sharp_ = (float)atof(v);
+        if (fsr_.Init(dev_.Get(), fsr_sharp_)) { fsr_w_ = w; fsr_h_ = h; }
+    }
+    // Upscale only a smaller UNORM frame (an sRGB view would make FSR work on linear values)
+    bool Upscaling(const xrl_swapchain_desc& d) const {
+        if (!fsr_w_ || !fsr_.Ready() || (d.width >= fsr_w_ && d.height >= fsr_h_)) return false;
+        DXGI_FORMAT f = (DXGI_FORMAT)d.dxgi_format;
+        return f == DXGI_FORMAT_R8G8B8A8_UNORM || f == DXGI_FORMAT_B8G8R8A8_UNORM || f == DXGI_FORMAT_R10G10B10A2_UNORM;
+    }
+    UINT HostW(const xrl_swapchain_desc& d) const { return Upscaling(d) ? fsr_w_ : d.width; }
+    UINT HostH(const xrl_swapchain_desc& d) const { return Upscaling(d) ? fsr_h_ : d.height; }
+    // The frame onto the host buffer: FSR when upscaling, else a copy (or MSAA resolve)
+    void Blit(ID3D11Resource* dst) {
+        if (Upscaling(app_)) {
+            ID3D11Texture2D* src = back_.Get();
+            if (resolved_) { ctx_->ResolveSubresource(resolved_.Get(), 0, back_.Get(), 0, (DXGI_FORMAT)app_.dxgi_format); src = resolved_.Get(); }
+            if (SUCCEEDED(fsr_.Run(ctx_.Get(), src, app_.width, app_.height, dst, host_format_, HostW(app_), HostH(app_)))) return;
+            static bool said;
+            if (!said) { said = true; Log(LOG_WARN, "fsr: a pass failed; this frame is not upscaled"); }
+            return;
+        }
+        if (app_.sample_count > 1)
+            ctx_->ResolveSubresource(dst, 0, back_.Get(), 0, host_format_);
+        else
+            ctx_->CopyResource(dst, back_.Get());
     }
 
     // Frame pacing numbers, logged every 10 s: frames per second, the average and the worst time
     // between two Presents, and the time this Present (copy + host Present) took.
     void Pace(LARGE_INTEGER q0, UINT sync) {
         LARGE_INTEGER q1; QueryPerformanceCounter(&q1);
-        if (!qf_) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); qf_ = f.QuadPart; win_start_ = q1.QuadPart; }
+        if (!qf_) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); qf_ = f.QuadPart; }
+        if (!win_start_) win_start_ = q1.QuadPart;
         if (last_present_) {
             int64_t gap = q0.QuadPart - last_present_;
             if (gap > win_max_gap_) win_max_gap_ = gap;
@@ -318,6 +368,12 @@ private:
             Log(LOG_INFO, "perf: gpu frame %.2f ms avg, %.2f ms worst (%llu frames timed, %llu disjoint): the GPU's own time from "
                 "the start of a frame's commands to the end of them", gpu_sum_ / (double)gpu_n_, gpu_max_,
                 (unsigned long long)gpu_n_, (unsigned long long)gpu_disjoint_);
+        if (lag_n_)
+            Log(LOG_INFO, "perf: gpu backlog %.2f ms avg, %.2f ms worst at a frame's start; frame end reached %.2f ms after the CPU "
+                "presented (avg); clocks lined up %.3f ms apart (%s): a backlog near 0 = the GPU waits for the CPU threads, "
+                "near a frame or more = the GPU is the limit", lag0_sum_ / (double)lag_n_, lag0_max_, lag1_sum_ / (double)lag_n_,
+                cal_spread_ms_, native_ ? "native D3D11" : "D3D11On12");
+        cal_due_ = true;
         if (GpuTimingOn()) {   // the GPU's memory: what the OS budgets for this process and what it uses now
             ComPtr<IDXGIDevice> dd; ComPtr<IDXGIAdapter> ad; ComPtr<IDXGIAdapter3> ad3;
             DXGI_QUERY_VIDEO_MEMORY_INFO li{}, ni{};
@@ -332,13 +388,20 @@ private:
         }
         win_start_ = q1.QuadPart; win_frames_ = 0; win_max_gap_ = 0; win_present_ = 0;
         gpu_sum_ = 0; gpu_max_ = 0; gpu_n_ = 0; gpu_disjoint_ = 0;
+        lag0_sum_ = 0; lag0_max_ = 0; lag1_sum_ = 0; lag_n_ = 0;
     }
 
     // XRL_GPU_TIMING=1: each frame's GPU time from timestamp queries. A frame is bracketed from just after the
     // previous Present to just before this one (the game's commands for it); results are read a few frames later,
     // never waited for. On a GPU-bound frame this is the GPU's work; on a CPU-bound one it also holds the gaps
     // where the GPU waited for commands (then "present" above stays short).
-    struct GpuQ { ComPtr<ID3D11Query> dj, t0, t1; bool pending = false; };
+    //
+    // The backlog: the frame's start timestamp is flushed to the GPU right away, so the GPU reaches it as soon as
+    // it has finished what was queued before. Once per log window, with the GPU idle, a flushed timestamp lines
+    // the GPU clock up with QueryPerformanceCounter; after that each start timestamp minus the CPU time it was
+    // issued at is the work the GPU still had queued. A GPU-bound game always has a backlog (the CPU runs ahead
+    // until Present throttles it); a game held back by its CPU threads has none.
+    struct GpuQ { ComPtr<ID3D11Query> dj, t0, t1; bool pending = false; int64_t cpu0 = 0, cpu1 = 0; };
     static constexpr int kGpuQ = 8;
     GpuQ gq_[kGpuQ];
     int gq_i_ = 0;
@@ -346,6 +409,43 @@ private:
     int gpu_on_ = -1;
     double gpu_sum_ = 0, gpu_max_ = 0;
     uint64_t gpu_n_ = 0, gpu_disjoint_ = 0;
+    bool cal_due_ = true, cal_ok_ = false;
+    double cal_off_ = 0, cal_spread_ms_ = 0;   // GPU seconds minus QPC seconds; how wide the QPC bracket was
+    double lag0_sum_ = 0, lag0_max_ = 0, lag1_sum_ = 0;
+    uint64_t lag_n_ = 0;
+
+    double QpcSec(int64_t q) {
+        if (!qf_) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); qf_ = f.QuadPart; }
+        return (double)q / (double)qf_;
+    }
+    // Waits for the GPU to go idle, then times one flushed timestamp against QPC. Costs one GPU drain per window.
+    void Calibrate() {
+        cal_due_ = false;
+        D3D11_QUERY_DESC ed{D3D11_QUERY_EVENT, 0}, dd{D3D11_QUERY_TIMESTAMP_DISJOINT, 0}, td{D3D11_QUERY_TIMESTAMP, 0};
+        ComPtr<ID3D11Query> ev, dj, ts;
+        if (FAILED(dev_->CreateQuery(&ed, &ev)) || FAILED(dev_->CreateQuery(&dd, &dj)) || FAILED(dev_->CreateQuery(&td, &ts))) return;
+        ctx_->End(ev.Get());
+        ctx_->Flush();
+        const ULONGLONG t_end = GetTickCount64() + 200;
+        BOOL done = FALSE;
+        while (ctx_->GetData(ev.Get(), &done, sizeof done, 0) == S_FALSE || !done)
+            if (GetTickCount64() > t_end) return;
+        LARGE_INTEGER a, b;
+        ctx_->Begin(dj.Get());
+        QueryPerformanceCounter(&a);
+        ctx_->End(ts.Get());
+        ctx_->End(dj.Get());
+        ctx_->Flush();
+        QueryPerformanceCounter(&b);
+        D3D11_QUERY_DATA_TIMESTAMP_DISJOINT d{};
+        while (ctx_->GetData(dj.Get(), &d, sizeof d, 0) != S_OK)
+            if (GetTickCount64() > t_end) return;
+        UINT64 g = 0;
+        if (ctx_->GetData(ts.Get(), &g, sizeof g, 0) != S_OK || d.Disjoint || !d.Frequency) return;
+        cal_off_ = (double)g / (double)d.Frequency - (QpcSec(a.QuadPart) + QpcSec(b.QuadPart)) / 2.0;
+        cal_spread_ms_ = (QpcSec(b.QuadPart) - QpcSec(a.QuadPart)) * 1000.0;
+        cal_ok_ = true;
+    }
 
     bool GpuTimingOn() {
         if (gpu_on_ < 0) { char v[4]; gpu_on_ = GetEnvironmentVariableA("XRL_GPU_TIMING", v, sizeof v) && v[0] == '1'; }
@@ -356,6 +456,8 @@ private:
         GpuQ& q = gq_[gq_i_];
         ctx_->End(q.t1.Get());
         ctx_->End(q.dj.Get());
+        LARGE_INTEGER c; QueryPerformanceCounter(&c);
+        q.cpu1 = c.QuadPart;
         q.pending = true;
         gq_open_ = false;
         gq_i_ = (gq_i_ + 1) % kGpuQ;
@@ -373,6 +475,12 @@ private:
             double ms = (double)(b - a) * 1000.0 / (double)dj.Frequency;
             gpu_sum_ += ms; gpu_n_++;
             if (ms > gpu_max_) gpu_max_ = ms;
+            if (cal_ok_ && q.cpu0 && q.cpu1) {
+                double l0 = ((double)a / (double)dj.Frequency - cal_off_ - QpcSec(q.cpu0)) * 1000.0;
+                double l1 = ((double)b / (double)dj.Frequency - cal_off_ - QpcSec(q.cpu1)) * 1000.0;
+                lag0_sum_ += l0; lag1_sum_ += l1; lag_n_++;
+                if (l0 > lag0_max_) lag0_max_ = l0;
+            }
         }
     }
     void GpuFrameBegin() {   // after Present: the next frame's commands start here
@@ -388,8 +496,12 @@ private:
                 return;
             }
         }
+        if (cal_due_) Calibrate();
         ctx_->Begin(q.dj.Get());
         ctx_->End(q.t0.Get());
+        ctx_->Flush();   // the start timestamp goes to the GPU now, not with the game's first batch
+        LARGE_INTEGER c; QueryPerformanceCounter(&c);
+        q.cpu0 = c.QuadPart;
         gq_open_ = true;
     }
 
@@ -436,19 +548,12 @@ private:
         GpuFrameEnd();
         if (native_) {
             // buffer 0 of the host swapchain is always the next one to present; Present flushes
-            ID3D11Resource* dst = hostbuf_.Get();
-            if (app_.sample_count > 1)
-                ctx_->ResolveSubresource(dst, 0, back_.Get(), 0, host_format_);
-            else
-                ctx_->CopyResource(dst, back_.Get());
+            Blit(hostbuf_.Get());
         } else {
             UINT idx = host_->GetCurrentBackBufferIndex();
             ID3D11Resource* dst = wrapped_[idx].Get();
             on12_->AcquireWrappedResources(&dst, 1);
-            if (app_.sample_count > 1)
-                ctx_->ResolveSubresource(dst, 0, back_.Get(), 0, host_format_);
-            else
-                ctx_->CopyResource(dst, back_.Get());
+            Blit(dst);
             on12_->ReleaseWrappedResources(&dst, 1);
             ctx_->Flush();   // submits the copy to the queue the host Present below is ordered after
         }
@@ -482,6 +587,7 @@ private:
         wrapped_.clear();
         bufs_.clear();
         hostbuf_.Reset();
+        fsr_.Reset();
         ctx_->Flush();
         Drain();
         DXGI_FORMAT hf = host_format_;
@@ -492,7 +598,7 @@ private:
             if (hf == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) hf = DXGI_FORMAT_R8G8B8A8_UNORM;
         }
         UINT hc = nd.buffer_count < 2 ? 2 : nd.buffer_count;
-        hr = host_->ResizeBuffers(hc, nd.width, nd.height, hf, 0);
+        hr = host_->ResizeBuffers(hc, HostW(nd), HostH(nd), hf, 0);
         if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
             Log(LOG_ERROR, "d3d11 swapchain: device removed at ResizeBuffers(%ux%u), reason 0x%08lX", nd.width, nd.height,
                 (unsigned long)(native_ ? dev_->GetDeviceRemovedReason() : dev12_->GetDeviceRemovedReason()));
@@ -509,7 +615,7 @@ private:
                 (unsigned long)refs);
             host_.Reset();
             ctx_->Flush();   // D3D11 destroys lazily: the old swapchain goes on the flush
-            xrl_status st = HostSwapchainCreate11(dev_.Get(), nd.width, nd.height, nd.buffer_count, nd.dxgi_format,
+            xrl_status st = HostSwapchainCreate11(dev_.Get(), HostW(nd), HostH(nd), nd.buffer_count, nd.dxgi_format,
                                                   host_, &hf);
             hr = st == XRL_OK ? S_OK : E_FAIL;
         }
@@ -542,6 +648,10 @@ private:
     std::vector<ComPtr<ID3D11Resource>> wrapped_;
     ComPtr<ID3D11Texture2D> hostbuf_;   // native D3D11 mode: buffer 0 of host_
     ComPtr<ID3D11Texture2D> back_;
+    ComPtr<ID3D11Texture2D> resolved_;   // FSR's input when the frame is MSAA
+    Fsr1 fsr_;
+    UINT fsr_w_ = 0, fsr_h_ = 0;   // XRL_FSR output size (0: off)
+    float fsr_sharp_ = 0.2f;
     xrl_swapchain_desc app_;
     bool native_ = false;   // the device is a native D3D11 one (no ID3D11On12Device, no D3D12 queue)
     bool fullscreen_ = false;

@@ -215,6 +215,12 @@ int sdl_main(int, char**) {
             xrl::procprobe_parent(v);
             return;   // stay foreground; do not boot the guest
         } }
+        // XRL_PRESENT_TEST=1 (host_env): what reaches the screen at the HDMI mode, without the game; then exit
+        { char v[4]; if (GetEnvironmentVariableA("XRL_PRESENT_TEST", v, sizeof v) && v[0] == '1') {
+            xrl::gfx_present_test();
+            g_worker_done = true;
+            return;
+        } }
         const auto& cfg = xrl::config();
         if (cfg.probe_mode != "none") {
             xrl::ProbeOptions opt = cfg.probe_mode == "all" ? xrl::ProbeOptions::all() : xrl::ProbeOptions::quick();

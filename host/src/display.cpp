@@ -24,6 +24,7 @@ namespace {
 
 std::mutex  g_mu;
 DisplayMode g_mode;
+winrt::HdmiDisplayInformation g_hdmi{nullptr};   // from the UI thread (GetForCurrentView), for display_switch
 
 const char* space_name(winrt::HdmiDisplayColorSpace c) {
     switch (c) {
@@ -63,6 +64,7 @@ void display_select() {
             if (!hdmi) {
                 XLOGI("display", "no HDMI display information (not a console): keeping the window's size");
             } else {
+                { std::lock_guard<std::mutex> l(g_mu); g_hdmi = hdmi; }
                 auto cur = hdmi.GetCurrentDisplayMode();
                 describe("current", cur);
                 winrt::HdmiDisplayMode best{nullptr};
@@ -121,6 +123,27 @@ void display_select() {
     XLOGI("display", "guest display %ux%u @ %u Hz", chosen.width, chosen.height, chosen.refresh_hz);
     std::lock_guard<std::mutex> l(g_mu);
     g_mode = chosen;
+}
+
+bool display_switch(uint32_t w, uint32_t h, uint32_t hz) {
+    winrt::HdmiDisplayInformation hdmi{nullptr};
+    { std::lock_guard<std::mutex> l(g_mu); hdmi = g_hdmi; }
+    if (!hdmi) return false;
+    try {
+        for (const auto& m : hdmi.GetSupportedDisplayModes()) {
+            if (m.ResolutionWidthInRawPixels() != w || m.ResolutionHeightInRawPixels() != h) continue;
+            if (std::lround(m.RefreshRate()) != (long)hz || m.StereoEnabled() || m.ColorSpace() == winrt::HdmiDisplayColorSpace::BT2020) continue;
+            bool ok = hdmi.RequestSetCurrentDisplayModeAsync(m, winrt::HdmiDisplayHdrOption::None).get();
+            describe(ok ? "switched to" : "switch FAILED to", m);
+            if (ok) { std::lock_guard<std::mutex> l(g_mu); g_mode.refresh_hz = hz; }
+            Sleep(1500);   // the TV re-syncs
+            return ok;
+        }
+        XLOGW("display", "no %ux%u @ %u Hz mode to switch to", w, h, hz);
+    } catch (const winrt::hresult_error& e) {
+        XLOGW("display", "switch to %ux%u @ %u Hz failed: 0x%08X %s", w, h, hz, (unsigned)e.code(), winrt::to_string(e.message()).c_str());
+    }
+    return false;
 }
 
 DisplayMode display_mode() {
