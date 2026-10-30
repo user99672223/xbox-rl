@@ -2,6 +2,34 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-30 (6) - milestones 1 and 2 PASS
+
+### Milestone status (CI run 7, f30d437)
+1. bash, coreutils, ps, dpkg -l: **PASS**.
+2. `apt-get update` + `apt-get install -y --no-install-recommends hello` + `hello`: **PASS**. Output matches the
+   real-Linux reference line for line (Get/Fetched, Unpacking, Setting up hello, "Hello, world!"). Guest suite
+   TOTAL FAILS=0.
+3. - 5. not started. Next: Xvfb + xterm (needs `xvfb xterm x11-utils x11-apps` in `tools/ci/rootfs-debian.list`).
+
+### Layer changes on this branch (all in REPORT entries below; decisions in docs/decisions.md)
+- `asm/rawsys.asm`: raw `clone` with no new stack = fork (glibc). XRL_FORK_TASKS path unchanged.
+- `src/mem.c`: an in-place mremap extension stays part of the old mapping.
+- `src/vfs.c`: rename with POSIX semantics (replaces an open target); lstat of a table symlink takes its owner from
+  `.xrl-meta`.
+- `include/xrl_abi.h`: not touched.
+
+### For the main session (laptop / Xbox)
+- Please run the RL + EAC check on this branch: the rename change (vfs.c) and the mremap change (mem.c) are shared
+  code. rawsys.asm only changes clone with stack=0, which XRL_FORK_TASKS sends to xrl_do_fork before looking at it.
+- On the Xbox, with the Debian rootfs (`tools/ci/rootfs.sh` output unpacked with `tools/xrl-rootfs-unpack.py`) as
+  the vfs root, uid 0, and the guest env from `tools/ci/desktop-run.sh` (HOME=/root, PATH with sbin,
+  DEBIAN_FRONTEND=noninteractive):
+  1. `/bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'` -> `42`, `278`
+  2. `/usr/bin/apt-get update` then `/usr/bin/apt-get install -y --no-install-recommends hello` then
+     `/usr/bin/hello` -> `Hello, world!` (needs the console's network; nothing on screen yet).
+  Things that could differ on the console: `SetFileInformationByHandle(FileRenameInfoEx)` under AppContainer (if it
+  is refused, dpkg fails with "error installing new file '/var/lib/dpkg/status'"), and outbound HTTP from the app.
+
 ## 2026-10-30 (5)
 
 ### Milestone status
