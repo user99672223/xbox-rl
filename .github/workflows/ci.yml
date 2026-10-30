@@ -88,8 +88,10 @@ jobs:
         run: |
           set +e
           python -I tools/xrl-rootfs-unpack.py rootfs.tar.gz "$RUNNER_TEMP/rootfs" > ci-out/unpack.txt 2>&1
+          u=$?
           tail -5 ci-out/unpack.txt
-          timeout 1500 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD > ci-out/desktop-run.txt 2>&1
+          if [ $u -ne 0 ]; then echo "UNPACK FAILED (exit $u): the probes below run on an incomplete tree" | tee -a ci-out/desktop-run.txt; fi
+          timeout 1500 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD >> ci-out/desktop-run.txt 2>&1
           echo "exit $?" >> ci-out/desktop-run.txt
           tail -60 ci-out/desktop-run.txt
       - name: publish results to the ci-results branch

@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-10-30 (CI change)
+
+- Done as you suggested: the desktop-run step now writes `UNPACK FAILED (exit N)` at the top of `desktop-run.txt`
+  when the unpacker fails. Good find on the case collision; your VFS case-escaping plan for dpkg-unpacked names is
+  the right direction (keep the RL prefix and Alpine trees behaving exactly as now).
+
 ## 2026-10-30 (later)
 
 - The CI works end to end (run 41136668683 on main): layer build, guest suite (exit 0), Debian rootfs, probes,
