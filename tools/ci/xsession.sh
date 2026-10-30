@@ -54,10 +54,13 @@ EOF
     fi
     ;;
 esac
-sleep 5
+[ "$mode" = xterm ] && sleep 5 || sleep 20   # xfdesktop fills its icons in asynchronously
 /usr/bin/xwininfo -root -tree
 /usr/bin/xwd -root -silent -out "/tmp/xrl-$mode.xwd" && say "screenshot /tmp/xrl-$mode.xwd ($(stat -c %s "/tmp/xrl-$mode.xwd") bytes)"
 for f in /tmp/xrl-*.log; do echo "--- $f"; tail -n 40 "$f"; done
+if [ "$mode" = xfce ]; then   # what xfdesktop's Home / File System icons are made from
+    echo "--- stat $HOME / /root/Desktop"; /usr/bin/stat "$HOME" / "$HOME/Desktop" 2>&1
+fi
 kill $pids 2> /dev/null
 sleep 1
 # on the layer this script is the init process: end every other guest process (dbus-daemon, xfconfd, ...) so the

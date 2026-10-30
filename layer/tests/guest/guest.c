@@ -1024,6 +1024,14 @@ static void test_fs(void)
     memset(buf, 0, sizeof buf);
     CHECK(ofd >= 3 && sc3(0, ofd, buf, 3) == 3 && !memcmp(buf, "new", 3), "the path opens the new file");
     sc1(3, ofd);
+    /* statx's device numbers are stat's st_dev / st_rdev split the way glibc's major()/minor() do (GLib uses statx,
+     * other code stat: mount and same-file-system checks compare the two) */
+    u32 sx[64]; memset(sx, 0, sizeof sx); memset(st, 0, sizeof st);
+    #define MKDEV(ma, mi) ((((u64)(ma) & 0xfff) << 8) | (((u64)(ma) & ~0xfffull) << 32) | ((u64)(mi) & 0xff) | (((u64)(mi) & ~0xffull) << 12))
+    CHECK(sc2(4, "/tmp/xrl_old.txt", st) == 0 && sc(332, -100, "/tmp/xrl_old.txt", 0, 0xfff, sx, 0) == 0 &&
+          MKDEV(sx[34], sx[35]) == st[0] && *(u64 *)&sx[8] == st[1], "statx dev/ino == stat's");
+    CHECK(sc2(4, "/dev/null", st) == 0 && sc(332, -100, "/dev/null", 0, 0xfff, sx, 0) == 0 && MKDEV(sx[32], sx[33]) == st[5] &&
+          st[5] == ((1 << 8) | 3), "statx rdev == stat's (/dev/null 1:3)");
     sc1(87, "/tmp/xrl_old.txt");
     /* symlink table */
     CHECK(sc2(88, "/tmp", "/tmp_link") == 0, "symlink");
