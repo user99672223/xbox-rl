@@ -3,64 +3,64 @@ $ /bin/bash -c 'echo hello from bash; uname -a'
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef494fd0000,7ff494fd0000) 1048576 MiB VA, brk <= 7ef4d4fd0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef41d010000,7ff41d010000) 1048576 MiB VA, brk <= 7ef45d010000, commit budget 1024 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
 [I layer    ] vfs: loaded 186 symlinks from .xrl-symlinks
 [I layer    ] vfs: modes and owners on: 767 entries from .xrl-meta (default owner 0:0)
 [I layer    ] vfs: root=D:\a\_temp\rootfs (190 symlinks)
-[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff48ce7f000
-[I layer    ] elf: loaded /bin/bash type=DYN bias=7ff48ce88000 span=[7ff48ce88000,7ff48cfd0000) entry=7ff48ceb9760
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff48ce45000
-[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff48ce47000 span=[7ff48ce47000,7ff48ce7f000) entry=7ff48ce642c0
+[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff414ebf000
+[I layer    ] elf: loaded /bin/bash type=DYN bias=7ff414ec8000 span=[7ff414ec8000,7ff415010000) entry=7ff414ef9760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff414e85000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff414e87000 span=[7ff414e87000,7ff414ebf000) entry=7ff414ea42c0
 [I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
-[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000015945DB2480)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000002976D6C3A40)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff48ce44d30
-[I layer    ] boot: guest main thread tid=4620 entry=7ff48ce642c0 sp=7ff48ce44d30
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff48c609000
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff48c3dd000
-[W layer    ] ENOSYS 334 rseq (a1=7ff48c3da680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] boot: stack sp=7ff414e84d30
+[I layer    ] boot: guest main thread tid=5464 entry=7ff414ea42c0 sp=7ff414e84d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff414649000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff41441d000
+[W layer    ] ENOSYS 334 rseq (a1=7ff41441a680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
 [I guest.out] hello from bash
-[I layer    ] exec: pid 2024 tid 4620 -> /usr/bin/uname (2 args, 9 env)
+[I layer    ] exec: pid 3024 tid 5464 -> /usr/bin/uname (2 args, 9 env)
 [I layer    ] exec: guest memory committed 12 MiB -> 0 MiB after releasing the old image
-[I layer    ] rewrite: /usr/bin/uname: 0 syscall + 45 %fs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1808 bytes at 7ff48cfc3000
-[I layer    ] elf: loaded /usr/bin/uname type=DYN bias=7ff48cfc4000 span=[7ff48cfc4000,7ff48cfd0000) entry=7ff48cfc6b20
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff48cf89000
-[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff48cf8b000 span=[7ff48cf8b000,7ff48cfc3000) entry=7ff48cfa82c0
-[I layer    ] exec: /usr/bin/uname running, main thread tid 7768 entry 7ff48cfa82c0
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff48c558000
-[W layer    ] ENOSYS 334 rseq (a1=7ff48c555680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/bin/uname: 0 syscall + 45 %fs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1808 bytes at 7ff415003000
+[I layer    ] elf: loaded /usr/bin/uname type=DYN bias=7ff415004000 span=[7ff415004000,7ff415010000) entry=7ff415006b20
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff414fc9000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff414fcb000 span=[7ff414fcb000,7ff415003000) entry=7ff414fe82c0
+[I layer    ] exec: /usr/bin/uname running, main thread tid 4496 entry 7ff414fe82c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff414598000
+[W layer    ] ENOSYS 334 rseq (a1=7ff414595680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
 [I guest.out] Linux runnervmnjgfq 6.1.0-21-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.90-1 (2024-05-03) x86_64 GNU/Linux
 [I layer    ] boot: FS-base re-arm faults handled: 0
 [I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (4050 bytes) follows:
-[W layer    ] MAP 7ef494fd0000-7ef494ff1000 rw-p 00000000 00:00 0                        [heap]
-7ff48c4eb000-7ff48c545000 r--p 00000000 00:00 281474976713043                        /usr/lib/locale/C.utf8/LC_CTYPE
-7ff48c545000-7ff48c546000 r--p 00000000 00:00 281474976713045                        /usr/lib/locale/C.utf8/LC_NUMERIC
-7ff48c546000-7ff48c547000 r--p 00000000 00:00 281474976713049                        /usr/lib/locale/C.utf8/LC_TIME
-7ff48c547000-7ff48c548000 r--p 00000000 00:00 281474976713042                        /usr/lib/locale/C.utf8/LC_COLLATE
-7ff48c548000-7ff48c549000 r--p 00000000 00:00 281474976713053                        /usr/lib/locale/C.utf8/LC_MONETARY
-7ff48c549000-7ff48c54a000 r--p 00000000 00:00 281474976713052                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
-7ff48c54a000-7ff48c54b000 r--p 00000000 00:00 281474976713041                        /usr/lib/locale/C.utf8/LC_PAPER
-7ff48c54b000-7ff48c54c000 r--p 00000000 00:00 281474976713044                        /usr/lib/locale/C.utf8/LC_NAME
-7ff48c54c000-7ff48c54d000 r--p 00000000 00:00 28147497671
+[W layer    ] MAP 7ef41d010000-7ef41d031000 rw-p 00000000 00:00 0                        [heap]
+7ff41452b000-7ff414585000 r--p 00000000 00:00 281474976713043                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff414585000-7ff414586000 r--p 00000000 00:00 281474976713045                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff414586000-7ff414587000 r--p 00000000 00:00 281474976713049                        /usr/lib/locale/C.utf8/LC_TIME
+7ff414587000-7ff414588000 r--p 00000000 00:00 281474976713042                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff414588000-7ff414589000 r--p 00000000 00:00 281474976713053                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff414589000-7ff41458a000 r--p 00000000 00:00 281474976713052                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+7ff41458a000-7ff41458b000 r--p 00000000 00:00 281474976713041                        /usr/lib/locale/C.utf8/LC_PAPER
+7ff41458b000-7ff41458c000 r--p 00000000 00:00 281474976713044                        /usr/lib/locale/C.utf8/LC_NAME
+7ff41458c000-7ff41458d000 r--p 00000000 00:00 28147497671
 [W layer    ] MAP  281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff48c771000-7ff48c775000 r--p 001e0000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff48c775000-7ff48c777000 rw-p 001e4000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff48c777000-7ff48c784000 rw-p 00000000 00:00 0 
-7ff48c784000-7ff48c786000 rw-p 00000000 00:00 0 
-7ff48c786000-7ff48c787000 r--p 00000000 00:00 281474976713046                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
-7ff48c787000-7ff48c788000 r--p 00000000 00:00 281474976713047                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
-7ff48c788000-7ff48c789000 ---p 00000000 00:00 0                        [stack]
-7ff48c789000-7ff48cf89000 rw-p 00000000 00:00 0                        [stack]
-7ff48cf89000-7ff48cf8b000 rwxp 00000000 00:00 0 
-7ff48cf8b000-7ff48cf8c000 r--p 00000000 00:00 281474976711938                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-7ff48cf8c000-7ff48cfb4000 r-xp 00001000 00:00 281474976711938                        /usr/l
-[W layer    ] MAP f48cfce000-7ff48cfcf000 r--p 00009000 00:00 281474976711689                        /usr/bin/uname
-7ff48cfcf000-7ff48cfd0000 rw-p 0000a000 00:00 281474976711689                        /usr/bin/uname
+7ff4147b1000-7ff4147b5000 r--p 001e0000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4147b5000-7ff4147b7000 rw-p 001e4000 00:00 281474976711969                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4147b7000-7ff4147c4000 rw-p 00000000 00:00 0 
+7ff4147c4000-7ff4147c6000 rw-p 00000000 00:00 0 
+7ff4147c6000-7ff4147c7000 r--p 00000000 00:00 281474976713046                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff4147c7000-7ff4147c8000 r--p 00000000 00:00 281474976713047                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff4147c8000-7ff4147c9000 ---p 00000000 00:00 0                        [stack]
+7ff4147c9000-7ff414fc9000 rw-p 00000000 00:00 0                        [stack]
+7ff414fc9000-7ff414fcb000 rwxp 00000000 00:00 0 
+7ff414fcb000-7ff414fcc000 r--p 00000000 00:00 281474976711938                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff414fcc000-7ff414ff4000 r-xp 00001000 00:00 281474976711938                        /usr/l
+[W layer    ] MAP f41500e000-7ff41500f000 r--p 00009000 00:00 281474976711689                        /usr/bin/uname
+7ff41500f000-7ff415010000 rw-p 0000a000 00:00 281474976711689                        /usr/bin/uname
 7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
 7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
 ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
