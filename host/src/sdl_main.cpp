@@ -30,6 +30,9 @@
 #include "input_queue.h"
 #include "input_keymap.h"
 
+void xrl_input_probe_install();                     // input_probe.cpp
+void xrl_input_probe_tick(long sdl_mouse, long sdl_keys);
+
 namespace {
 
 // Spawned-tracee diagnostics: the child (EAC's game process) dies with exit 0x40010006.
@@ -55,6 +58,7 @@ std::atomic<bool> g_worker_done{false};
 std::atomic<int>  g_exit_code{0};
 std::bitset<512>  g_keys;   // indexed by SDL_Scancode; written/read on the UI thread + any reader (benign race, bool-ish)
 SDL_GameController* g_pads[4] = {};
+long g_sdl_mouse_n, g_sdl_key_n;                     // SDL's keyboard/mouse events, for the probe
 bool g_relative = false;   // SDL relative mouse mode currently on (the guest asked for XRL_MOUSE_RELATIVE)
 bool g_released = false;   // Left Ctrl + Left Alt: capture suspended until the next click, so the user can leave the window
 
@@ -197,6 +201,7 @@ int sdl_main(int, char**) {
     wi.width = (uint32_t)w; wi.height = (uint32_t)h; wi.valid = wi.core_window != nullptr;
     XLOGI("sdl", "window created: CoreWindow=%p size %dx%d px, driver '%s'", wi.core_window, w, h, SDL_GetCurrentVideoDriver());
     xrl::window_info_set(wi);
+    xrl_input_probe_install();   // which input sources the console delivers (input_probe.cpp)
     xrl::display_select();   // the console's output mode (before the boot thread reads it)
 
     SDL_AddEventWatch(WatchAppEvents, nullptr);
@@ -261,7 +266,10 @@ int sdl_main(int, char**) {
     while (!quit && !g_worker_done.load()) {
         SDL_Event e;
         apply_mouse_mode();   // the guest may have switched between the absolute pointer and a captured mouse
+        xrl_input_probe_tick(g_sdl_mouse_n, g_sdl_key_n);
         while (SDL_WaitEventTimeout(&e, 10)) {
+            if (e.type == SDL_MOUSEMOTION || e.type == SDL_MOUSEBUTTONDOWN || e.type == SDL_MOUSEBUTTONUP || e.type == SDL_MOUSEWHEEL) g_sdl_mouse_n++;
+            if (e.type == SDL_KEYDOWN || e.type == SDL_TEXTINPUT) g_sdl_key_n++;
             switch (e.type) {
                 case SDL_QUIT:
                     XLOGI("sdl", "SDL_QUIT -> requesting layer exit");
