@@ -2,6 +2,20 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (17) - run 54: the rewrite cache works; all PASS
+
+| run 54 (ac87750), Firefox session | before (run 52) | run 54 |
+|---|---|---|
+| library rewrites | 1476, 23.5 s CPU | 365 rewritten (9.1 s) + 1097 from the cache (0.4 s) |
+| probe wall time | 60 s | 55 s (69 s with XRL_SHARED_TEXT=0 in the same run) |
+| apt-get update | 5-6 s | 3 s |
+| peak committed | 1362 MiB | 1374 MiB |
+
+Every library is now rewritten once per session. What is left: libxul 3.4 s (its first load), Mesa (libLLVM + gallium
++ z3: 3.4 s, loaded only by Firefox's glxtest; this batch sets MOZ_AVOID_OPENGL_ALTOGETHER=1 for the session), and
+ld.so 78 x 6 ms (the layer's ELF loader maps it outside the image region). Next for speed: keep the cache across
+runs (on disk), and the interpreter/main program in the image region.
+
 ## 2026-10-31 (16) - run 53: apt bisect all PASS; item 3: a rewrite cache on top of the shared sections
 
 - Run 53 (c826616): all PASS, including five fresh `apt-get update`s (shared pages off, code only, data only, both,

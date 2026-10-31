@@ -90,7 +90,9 @@ EOF
         done > /tmp/xrl-ffprofile/user.js
         # MOZ_LOG: process start-up and IPC, to see where it waits when no window comes (/tmp/xrl-firefox.log);
         # no crash reporter: a crashing process ends (and the layer logs where) instead of waiting for crashhelper
-        env -u MOZ_HEADLESS MOZ_ENABLE_WAYLAND=0 MOZ_CRASHREPORTER_DISABLE=1 MOZ_LOG=IPC:4,ipc:4,ContentParent:4,ProcessChild:4,Widget:3 \
+        # MOZ_AVOID_OPENGL_ALTOGETHER: no glxtest process (it loads Mesa: libLLVM + gallium, 3.4 s of rewriting, for
+        # a renderer that is software anyway)
+        env -u MOZ_HEADLESS MOZ_ENABLE_WAYLAND=0 MOZ_CRASHREPORTER_DISABLE=1 MOZ_AVOID_OPENGL_ALTOGETHER=1 MOZ_LOG=IPC:4,ipc:4,ContentParent:4,ProcessChild:4,Widget:3 \
             /usr/bin/firefox-esr --no-remote --new-instance --profile /tmp/xrl-ffprofile \
             file:///tmp/xrl-page/index.html > /tmp/xrl-firefox.log 2>&1 &
         pids="$pids $!"
