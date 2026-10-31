@@ -1,0 +1,382 @@
+$ XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/apt-get, 5 args, 7 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4e7840000,7ff4e7840000) 1048576 MiB VA, brk <= 7ef527840000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 1450 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
+[I layer    ] rewrite: /usr/bin/apt-get: 0 syscall + 28 %fs sites (0 in place, 28 jumps, 0 traps, 0 neighbours moved), pool 1248 bytes at 7ff4df830000
+[I layer    ] elf: loaded /usr/bin/apt-get type=DYN bias=7ff4df831000 span=[7ff4df831000,7ff4df840000) entry=7ff4df835cb0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4df7f6000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4df7f8000 span=[7ff4df7f8000,7ff4df830000) entry=7ff4df8152c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=00000110E3469250)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4df7f5ce0
+[I layer    ] boot: guest main thread tid=7896 entry=7ff4df8152c0 sp=7ff4df7f5ce0
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.062 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libapt-private.so.0.0.0: 0 syscall + 1079 %fs sites (0 in place, 1079 jumps, 0 traps, 0 neighbours moved), pool 48752 bytes at 7ff4def24000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0: 0 syscall + 4866 %fs sites (0 in place, 4866 jumps, 0 traps, 0 neighbours moved), pool 217584 bytes at 7ff4dec77000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4de7b8000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff4de797000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff4de781000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblzma.so.5.8.1: 0 syscall + 129 %fs sites (0 in place, 129 jumps, 0 traps, 0 neighbours moved), pool 5184 bytes at 7ff4de74e000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblz4.so.1.10.0: 0 syscall + 51 %fs sites (0 in place, 51 jumps, 0 traps, 0 neighbours moved), pool 2096 bytes at 7ff4de726000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libzstd.so.1.5.7: 0 syscall + 508 %fs sites (0 in place, 508 jumps, 0 traps, 0 neighbours moved), pool 20400 bytes at 7ff4de657000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libudev.so.1.7.10: 0 syscall + 282 %fs sites (0 in place, 282 jumps, 0 traps, 0 neighbours moved), pool 11408 bytes at 7ff4de60f000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff4de4eb000
+[W layer    ] rewrite: cannot decode at 7ff4de023e17 (47 46 28 32): rest of [7ff4de023cc0,7ff4de023e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de024da6 (4f 47 41 4d): rest of [7ff4de024860,7ff4de024e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de0294d2 (43 61 6d 65): rest of [7ff4de029200,7ff4de029500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de0bd046 (4f 47 41 4d): rest of [7ff4de0bcfc0,7ff4de0bd070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de21a797 (4f 47 41 4d): rest of [7ff4de21a720,7ff4de21a7c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de2243fb (4f 47 41 4d): rest of [7ff4de224370,7ff4de224440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de246616 (48 41 31 20): rest of [7ff4de244cf0,7ff4de246680) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de023e17 (47 46 28 32): rest of [7ff4de023cc0,7ff4de023e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de024da6 (4f 47 41 4d): rest of [7ff4de024860,7ff4de024e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de0294d2 (43 61 6d 65): rest of [7ff4de029200,7ff4de029500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de0bd046 (4f 47 41 4d): rest of [7ff4de0bcfc0,7ff4de0bd070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de21a797 (4f 47 41 4d): rest of [7ff4de21a720,7ff4de21a7c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de2243fb (4f 47 41 4d): rest of [7ff4de224370,7ff4de224440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4de246616 (48 41 31 20): rest of [7ff4de244cf0,7ff4de246680) left untouched
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 syscall + 3386 %fs sites (0 in place, 3386 jumps, 0 traps, 0 neighbours moved), pool 136512 bytes at 7ff4dde8d000
+[W layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 unsupported site(s), 7 undecodable region(s), 0 sysenter/int80 left alone
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.3: 0 syscall + 66 %fs sites (0 in place, 66 jumps, 0 traps, 0 neighbours moved), pool 2688 bytes at 7ff4dde79000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff4ddd80000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff4ddd73000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4ddd6c6a0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] fork: pid 5708 -> child 3612, snapshot of the parent's writable memory taken in 4.60 ms
+[I layer    ] fork: pid 5708 -> new process 3612 (flags 0x1200011)
+[I layer    ] exec: pid 3612 tid 3612 -> /usr/bin/dpkg (2 args, 7 env)
+[I layer    ] exec: guest memory committed 27 MiB -> 27 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4dda2b000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4dda2e000 span=[7ff4dda2e000,7ff4ddd02000) entry=7ff4dda35d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4dd9f1000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4dd9f3000 span=[7ff4dd9f3000,7ff4dda2b000) entry=7ff4dda102c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 5948 entry 7ff4dda102c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4dd1da000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4dd1a3000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4dcf77000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4dcec6000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4dcec4ba0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I layer    ] proc 3612 ended (wait status 0x0)
+[I layer    ] fork: pid 5708 -> child 4956, snapshot of the parent's writable memory taken in 9.77 ms
+[I layer    ] fork: pid 5708 -> new process 4956 (flags 0x1200011)
+[I layer    ] exec: pid 4956 tid 4956 -> /usr/bin/dpkg (2 args, 8 env)
+[I layer    ] exec: guest memory committed 72 MiB -> 72 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4dad72000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4dad75000 span=[7ff4dad75000,7ff4db049000) entry=7ff4dad7cd30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4dad38000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4dad3a000 span=[7ff4dad3a000,7ff4dad72000) entry=7ff4dad572c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 7372 entry 7ff4dad572c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4da521000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4da4ea000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4da2be000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4da20d000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4da20bba0 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[I layer    ] proc 4956 ended (wait status 0x0)
+[I guest.out] Reading package lists...
+[I guest.out] Building dependency tree...
+[I layer    ] fork: pid 5708 -> child 8148, snapshot of the parent's writable memory taken in 12.14 ms
+[I layer    ] fork: pid 5708 -> new process 8148 (flags 0x1200011)
+[I layer    ] exec: pid 8148 tid 8148 -> /usr/lib/apt/methods/http (1 args, 7 env)
+[I layer    ] exec: guest memory committed 89 MiB -> 89 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/apt/methods/http: 0 syscall + 492 %fs sites (0 in place, 492 jumps, 0 traps, 0 neighbours moved), pool 22768 bytes at 7ff4da5e1000
+[I layer    ] elf: loaded /usr/lib/apt/methods/http type=DYN bias=7ff4da5e7000 span=[7ff4da5e7000,7ff4da61f000) entry=7ff4da5f1dd0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da5a7000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da5a9000 span=[7ff4da5a9000,7ff4da5e1000) entry=7ff4da5c62c0
+[I layer    ] exec: /usr/lib/apt/methods/http running, main thread tid 1248 entry 7ff4da5c62c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0: 0 syscall + 4866 %fs sites (0 in place, 4866 jumps, 0 traps, 0 neighbours moved), pool 217584 bytes at 7ff4d9af3000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libseccomp.so.2.6.0: 0 syscall + 34 %fs sites (0 in place, 34 jumps, 0 traps, 0 neighbours moved), pool 1376 bytes at 7ff4d9ac4000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libssl.so.3: 0 syscall + 1057 %fs sites (0 in place, 1057 jumps, 0 traps, 0 neighbours moved), pool 42784 bytes at 7ff4d99ab000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff4d9887000
+[W layer    ] rewrite: cannot decode at 7ff4d93c1e17 (47 46 28 32): rest of [7ff4d93c1cc0,7ff4d93c1e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c2da6 (4f 47 41 4d): rest of [7ff4d93c2860,7ff4d93c2e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c74d2 (43 61 6d 65): rest of [7ff4d93c7200,7ff4d93c7500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d945b046 (4f 47 41 4d): rest of [7ff4d945afc0,7ff4d945b070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95b8797 (4f 47 41 4d): rest of [7ff4d95b8720,7ff4d95b87c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95c23fb (4f 47 41 4d): rest of [7ff4d95c2370,7ff4d95c2440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95e4616 (48 41 31 20): rest of [7ff4d95e2cf0,7ff4d95e4680) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c1e17 (47 46 28 32): rest of [7ff4d93c1cc0,7ff4d93c1e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c2da6 (4f 47 41 4d): rest of [7ff4d93c2860,7ff4d93c2e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c74d2 (43 61 6d 65): rest of [7ff4d93c7200,7ff4d93c7500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d945b046 (4f 47 41 4d): rest of [7ff4d945afc0,7ff4d945b070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95b8797 (4f 47 41 4d): rest of [7ff4d95b8720,7ff4d95b87c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95c23fb (4f 47 41 4d): rest of [7ff4d95c2370,7ff4d95c2440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95e4616 (48 41 31 20): rest of [7ff4d95e2cf0,7ff4d95e4680) left untouched
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 syscall + 3386 %fs sites (0 in place, 3386 jumps, 0 traps, 0 neighbours moved), pool 136512 bytes at 7ff4d922b000
+[W layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 unsupported site(s), 7 undecodable region(s), 0 sysenter/int80 left alone
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d8d6a000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff4d8d49000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff4d8d35000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblzma.so.5.8.1: 0 syscall + 129 %fs sites (0 in place, 129 jumps, 0 traps, 0 neighbours moved), pool 5184 bytes at 7ff4d8d02000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblz4.so.1.10.0: 0 syscall + 51 %fs sites (0 in place, 51 jumps, 0 traps, 0 neighbours moved), pool 2096 bytes at 7ff4d8cda000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libzstd.so.1.5.7: 0 syscall + 508 %fs sites (0 in place, 508 jumps, 0 traps, 0 neighbours moved), pool 20400 bytes at 7ff4d8c09000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libudev.so.1.7.10: 0 syscall + 282 %fs sites (0 in place, 282 jumps, 0 traps, 0 neighbours moved), pool 11408 bytes at 7ff4d8bc1000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.3: 0 syscall + 66 %fs sites (0 in place, 66 jumps, 0 traps, 0 neighbours moved), pool 2688 bytes at 7ff4d8bad000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff4d8ab4000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff4d8aa7000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d8aa06a0 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[I layer    ] signal 2 to tid 1248 with the default action: terminating process 8148
+[I layer    ] proc 8148 ended (wait status 0x2)
+[I guest.out] The following NEW packages will be installed:
+[I guest.out]   hello
+[I guest.out] 0 upgraded, 1 newly installed, 0 to remove and 0 not upgraded.
+[I layer    ] fork: pid 5708 -> child 852, snapshot of the parent's writable memory taken in 11.08 ms
+[I layer    ] fork: pid 5708 -> new process 852 (flags 0x1200011)
+[I layer    ] exec: pid 852 tid 852 -> /usr/bin/ischroot (2 args, 7 env)
+[I layer    ] exec: guest memory committed 89 MiB -> 89 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/ischroot: 0 syscall + 4 %fs sites (0 in place, 4 jumps, 0 traps, 0 neighbours moved), pool 176 bytes at 7ff4da619000
+[I layer    ] elf: loaded /usr/bin/ischroot type=DYN bias=7ff4da61a000 span=[7ff4da61a000,7ff4da61f000) entry=7ff4da61b2a0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da5df000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da5e1000 span=[7ff4da5e1000,7ff4da619000) entry=7ff4da5fe2c0
+[I layer    ] exec: /usr/bin/ischroot running, main thread tid 7192 entry 7ff4da5fe2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d9bac000
+[I layer    ] proc 852 ended (wait status 0x0)
+[I guest.out] Need to get 53.2 kB of archives.
+[I guest.out] After this operation, 287 kB of additional disk space will be used.
+[I layer    ] fork: pid 5708 -> child 696, snapshot of the parent's writable memory taken in 16.67 ms
+[I layer    ] fork: pid 5708 -> new process 696 (flags 0x1200011)
+[I layer    ] exec: pid 696 tid 696 -> /usr/lib/apt/methods/http (1 args, 7 env)
+[I layer    ] exec: guest memory committed 90 MiB -> 90 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/apt/methods/http: 0 syscall + 492 %fs sites (0 in place, 492 jumps, 0 traps, 0 neighbours moved), pool 22768 bytes at 7ff4da5e1000
+[I layer    ] elf: loaded /usr/lib/apt/methods/http type=DYN bias=7ff4da5e7000 span=[7ff4da5e7000,7ff4da61f000) entry=7ff4da5f1dd0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da5a7000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da5a9000 span=[7ff4da5a9000,7ff4da5e1000) entry=7ff4da5c62c0
+[I layer    ] exec: /usr/lib/apt/methods/http running, main thread tid 3672 entry 7ff4da5c62c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0: 0 syscall + 4866 %fs sites (0 in place, 4866 jumps, 0 traps, 0 neighbours moved), pool 217584 bytes at 7ff4d9af3000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libseccomp.so.2.6.0: 0 syscall + 34 %fs sites (0 in place, 34 jumps, 0 traps, 0 neighbours moved), pool 1376 bytes at 7ff4d9ac4000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libssl.so.3: 0 syscall + 1057 %fs sites (0 in place, 1057 jumps, 0 traps, 0 neighbours moved), pool 42784 bytes at 7ff4d99ab000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff4d9887000
+[W layer    ] rewrite: cannot decode at 7ff4d93c1e17 (47 46 28 32): rest of [7ff4d93c1cc0,7ff4d93c1e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c2da6 (4f 47 41 4d): rest of [7ff4d93c2860,7ff4d93c2e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c74d2 (43 61 6d 65): rest of [7ff4d93c7200,7ff4d93c7500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d945b046 (4f 47 41 4d): rest of [7ff4d945afc0,7ff4d945b070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95b8797 (4f 47 41 4d): rest of [7ff4d95b8720,7ff4d95b87c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95c23fb (4f 47 41 4d): rest of [7ff4d95c2370,7ff4d95c2440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95e4616 (48 41 31 20): rest of [7ff4d95e2cf0,7ff4d95e4680) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c1e17 (47 46 28 32): rest of [7ff4d93c1cc0,7ff4d93c1e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c2da6 (4f 47 41 4d): rest of [7ff4d93c2860,7ff4d93c2e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d93c74d2 (43 61 6d 65): rest of [7ff4d93c7200,7ff4d93c7500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d945b046 (4f 47 41 4d): rest of [7ff4d945afc0,7ff4d945b070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95b8797 (4f 47 41 4d): rest of [7ff4d95b8720,7ff4d95b87c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95c23fb (4f 47 41 4d): rest of [7ff4d95c2370,7ff4d95c2440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d95e4616 (48 41 31 20): rest of [7ff4d95e2cf0,7ff4d95e4680) left untouched
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 syscall + 3386 %fs sites (0 in place, 3386 jumps, 0 traps, 0 neighbours moved), pool 136512 bytes at 7ff4d922b000
+[W layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 unsupported site(s), 7 undecodable region(s), 0 sysenter/int80 left alone
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d8d6a000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff4d8d49000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff4d8d35000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblzma.so.5.8.1: 0 syscall + 129 %fs sites (0 in place, 129 jumps, 0 traps, 0 neighbours moved), pool 5184 bytes at 7ff4d8d02000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblz4.so.1.10.0: 0 syscall + 51 %fs sites (0 in place, 51 jumps, 0 traps, 0 neighbours moved), pool 2096 bytes at 7ff4d8cda000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libzstd.so.1.5.7: 0 syscall + 508 %fs sites (0 in place, 508 jumps, 0 traps, 0 neighbours moved), pool 20400 bytes at 7ff4d8c09000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libudev.so.1.7.10: 0 syscall + 282 %fs sites (0 in place, 282 jumps, 0 traps, 0 neighbours moved), pool 11408 bytes at 7ff4d8bc1000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.3: 0 syscall + 66 %fs sites (0 in place, 66 jumps, 0 traps, 0 neighbours moved), pool 2688 bytes at 7ff4d8bad000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff4d8ab4000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff4d8aa7000
+[I layer    ] net: Winsock 2.2 up (TCP/UDP over IPv4/IPv6)
+[W layer    ] socket(domain=16 type=524291): only AF_UNIX and AF_INET/AF_INET6 TCP/UDP exist (-EAFNOSUPPORT)
+[I guest.out] Get:1 http://deb.debian.org/debian trixie/main amd64 hello amd64 2.10-5 [53.2 kB]
+[I guest.out] Fetched 53.2 kB in 0s (124 kB/s)
+[I layer    ] proc 696 ended (wait status 0x6400)
+[I layer    ] fork: pid 5708 -> child 7536, snapshot of the parent's writable memory taken in 13.74 ms
+[I layer    ] fork: pid 5708 -> new process 7536 (flags 0x1200011)
+[I layer    ] exec: pid 7536 tid 7536 -> /usr/bin/dash (3 args, 9 env)
+[I layer    ] exec: guest memory committed 92 MiB -> 92 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dash: 0 syscall + 130 %fs sites (0 in place, 130 jumps, 0 traps, 0 neighbours moved), pool 5200 bytes at 7ff4da5fa000
+[I layer    ] elf: loaded /usr/bin/dash type=DYN bias=7ff4da5fc000 span=[7ff4da5fc000,7ff4da61f000) entry=7ff4da600760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da5c0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da5c2000 span=[7ff4da5c2000,7ff4da5fa000) entry=7ff4da5df2c0
+[I layer    ] exec: /usr/bin/dash running, main thread tid 3212 entry 7ff4da5df2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d9b8d000
+[I layer    ] vfork: pid 7536 -> new process 5256 (flags 0x4111, shared mm)
+[I layer    ] exec: pid 5256 tid 5256 -> /usr/bin/perl (3 args, 10 env)
+[I layer    ] exec: guest memory committed 102 MiB -> 102 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/perl: 0 syscall + 1150 %fs sites (0 in place, 1150 jumps, 0 traps, 100 neighbours moved), pool 48544 bytes at 7ff4d97b7000
+[I layer    ] elf: loaded /usr/bin/perl type=DYN bias=7ff4d97c3000 span=[7ff4d97c3000,7ff4d9b8a000) entry=7ff4d98085d0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d9dbd000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d977f000 span=[7ff4d977f000,7ff4d97b7000) entry=7ff4d979c2c0
+[I layer    ] exec: /usr/bin/perl running, main thread tid 5764 entry 7ff4d979c2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff4d8e81000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d8c55000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypt.so.1.1.0: 0 syscall + 82 %fs sites (0 in place, 82 jumps, 0 traps, 0 neighbours moved), pool 3296 bytes at 7ff4d8c18000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d8c15680 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/perl-base/auto/Cwd/Cwd.so: 0 syscall + 6 %fs sites (0 in place, 6 jumps, 0 traps, 0 neighbours moved), pool 256 bytes at 7ff4d8ba6000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/perl-base/auto/IO/IO.so: 0 syscall + 4 %fs sites (0 in place, 4 jumps, 0 traps, 0 neighbours moved), pool 176 bytes at 7ff4d8b9e000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/perl-base/auto/POSIX/POSIX.so: 0 syscall + 38 %fs sites (0 in place, 38 jumps, 0 traps, 0 neighbours moved), pool 1536 bytes at 7ff4d8b7d000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/perl-base/auto/re/re.so: 0 syscall + 99 %fs sites (0 in place, 99 jumps, 0 traps, 0 neighbours moved), pool 4048 bytes at 7ff4d8ad6000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/perl-base/auto/Hash/Util/Util.so: 0 syscall + 6 %fs sites (0 in place, 6 jumps, 0 traps, 0 neighbours moved), pool 256 bytes at 7ff4d8ace000
+[I layer    ] fork: pid 5256 -> child 2820, snapshot of the parent's writable memory taken in 6.82 ms
+[I layer    ] fork: pid 5256 -> new process 2820 (flags 0x1200011)
+[I layer    ] fork: pid 2820 -> child 3120, snapshot of the parent's writable memory taken in 3.72 ms
+[I layer    ] fork: pid 2820 -> new process 3120 (flags 0x1200011)
+[I layer    ] exec: pid 3120 tid 3120 -> /usr/lib/apt/apt-extracttemplates (4 args, 10 env)
+[I layer    ] exec: guest memory committed 128 MiB -> 128 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/apt/apt-extracttemplates: 0 syscall + 24 %fs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 1072 bytes at 7ff4d8ac5000
+[I layer    ] elf: loaded /usr/lib/apt/apt-extracttemplates type=DYN bias=7ff4d8ac6000 span=[7ff4d8ac6000,7ff4d8ace000) entry=7ff4d8ac8d20
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d8a8b000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d8a8d000 span=[7ff4d8a8d000,7ff4d8ac5000) entry=7ff4d8aaa2c0
+[I layer    ] exec: /usr/lib/apt/apt-extracttemplates running, main thread tid 6724 entry 7ff4d8aaa2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libapt-private.so.0.0.0: 0 syscall + 1079 %fs sites (0 in place, 1079 jumps, 0 traps, 0 neighbours moved), pool 48752 bytes at 7ff4d41b9000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libapt-pkg.so.7.0.0: 0 syscall + 4866 %fs sites (0 in place, 4866 jumps, 0 traps, 0 neighbours moved), pool 217584 bytes at 7ff4d3f0c000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d3a4d000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff4d3a2c000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff4d3a16000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblzma.so.5.8.1: 0 syscall + 129 %fs sites (0 in place, 129 jumps, 0 traps, 0 neighbours moved), pool 5184 bytes at 7ff4d39e3000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblz4.so.1.10.0: 0 syscall + 51 %fs sites (0 in place, 51 jumps, 0 traps, 0 neighbours moved), pool 2096 bytes at 7ff4d39bb000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libzstd.so.1.5.7: 0 syscall + 508 %fs sites (0 in place, 508 jumps, 0 traps, 0 neighbours moved), pool 20400 bytes at 7ff4d38ec000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libudev.so.1.7.10: 0 syscall + 282 %fs sites (0 in place, 282 jumps, 0 traps, 0 neighbours moved), pool 11408 bytes at 7ff4d38a4000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff4d3780000
+[W layer    ] rewrite: cannot decode at 7ff4d32b8e17 (47 46 28 32): rest of [7ff4d32b8cc0,7ff4d32b8e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d32b9da6 (4f 47 41 4d): rest of [7ff4d32b9860,7ff4d32b9e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d32be4d2 (43 61 6d 65): rest of [7ff4d32be200,7ff4d32be500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d3352046 (4f 47 41 4d): rest of [7ff4d3351fc0,7ff4d3352070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d34af797 (4f 47 41 4d): rest of [7ff4d34af720,7ff4d34af7c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d34b93fb (4f 47 41 4d): rest of [7ff4d34b9370,7ff4d34b9440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d34db616 (48 41 31 20): rest of [7ff4d34d9cf0,7ff4d34db680) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d32b8e17 (47 46 28 32): rest of [7ff4d32b8cc0,7ff4d32b8e60) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d32b9da6 (4f 47 41 4d): rest of [7ff4d32b9860,7ff4d32b9e00) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d32be4d2 (43 61 6d 65): rest of [7ff4d32be200,7ff4d32be500) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d3352046 (4f 47 41 4d): rest of [7ff4d3351fc0,7ff4d3352070) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d34af797 (4f 47 41 4d): rest of [7ff4d34af720,7ff4d34af7c0) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d34b93fb (4f 47 41 4d): rest of [7ff4d34b9370,7ff4d34b9440) left untouched
+[W layer    ] rewrite: cannot decode at 7ff4d34db616 (48 41 31 20): rest of [7ff4d34d9cf0,7ff4d34db680) left untouched
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 syscall + 3386 %fs sites (0 in place, 3386 jumps, 0 traps, 0 neighbours moved), pool 136512 bytes at 7ff4d3122000
+[W layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcrypto.so.3: 0 unsupported site(s), 7 undecodable region(s), 0 sysenter/int80 left alone
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxxhash.so.0.8.3: 0 syscall + 66 %fs sites (0 in place, 66 jumps, 0 traps, 0 neighbours moved), pool 2688 bytes at 7ff4d310e000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff4d3015000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff4d3008000
+[I layer    ] fork: pid 3120 -> child 2144, snapshot of the parent's writable memory taken in 3.32 ms
+[I layer    ] fork: pid 3120 -> new process 2144 (flags 0x1200011)
+[I layer    ] exec: pid 2144 tid 2144 -> /usr/bin/dpkg (2 args, 10 env)
+[I layer    ] exec: guest memory committed 155 MiB -> 155 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4d2cc0000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4d2cc3000 span=[7ff4d2cc3000,7ff4d2f97000) entry=7ff4d2ccad30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d2c86000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d2c88000 span=[7ff4d2c88000,7ff4d2cc0000) entry=7ff4d2ca52c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 5660 entry 7ff4d2ca52c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4ce46f000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4ce438000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4ce20c000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4ce15b000
+[I layer    ] proc 2144 ended (wait status 0x0)
+[I layer    ] fork: pid 3120 -> child 1252, snapshot of the parent's writable memory taken in 10.88 ms
+[I layer    ] fork: pid 3120 -> new process 1252 (flags 0x1200011)
+[I layer    ] exec: pid 1252 tid 1252 -> /usr/bin/dpkg (2 args, 10 env)
+[I layer    ] exec: guest memory committed 200 MiB -> 200 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4d0007000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4d000a000 span=[7ff4d000a000,7ff4d02de000) entry=7ff4d0011d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4cffcd000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4cffcf000 span=[7ff4cffcf000,7ff4d0007000) entry=7ff4cffec2c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 3840 entry 7ff4cffec2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4cb7b6000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4cb77f000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4cb553000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4cb4a2000
+[I layer    ] proc 1252 ended (wait status 0x0)
+[I layer    ] fork: pid 3120 -> child 3436, snapshot of the parent's writable memory taken in 10.54 ms
+[I layer    ] fork: pid 3120 -> new process 3436 (flags 0x1200011)
+[I layer    ] exec: pid 3436 tid 3436 -> /usr/bin/dpkg (2 args, 10 env)
+[I layer    ] exec: guest memory committed 200 MiB -> 200 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4d0007000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4d000a000 span=[7ff4d000a000,7ff4d02de000) entry=7ff4d0011d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4cffcd000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4cffcf000 span=[7ff4cffcf000,7ff4d0007000) entry=7ff4cffec2c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 7884 entry 7ff4cffec2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4cb7b6000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4cb77f000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4cb553000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4cb4a2000
+[I layer    ] proc 3436 ended (wait status 0x0)
+[I layer    ] proc 3120 ended (wait status 0x0)
+[I layer    ] proc 2820 ended (wait status 0x0)
+[I layer    ] proc 5256 ended (wait status 0x0)
+[I layer    ] proc 7536 ended (wait status 0x0)
+[I layer    ] fork: pid 5708 -> child 7128, snapshot of the parent's writable memory taken in 14.81 ms
+[I layer    ] fork: pid 5708 -> new process 7128 (flags 0x1200011)
+[I layer    ] exec: pid 7128 tid 7128 -> /usr/bin/dpkg (2 args, 8 env)
+[I layer    ] exec: guest memory committed 92 MiB -> 92 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4da348000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4da34b000 span=[7ff4da34b000,7ff4da61f000) entry=7ff4da352d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da30e000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da310000 span=[7ff4da310000,7ff4da348000) entry=7ff4da32d2c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 6568 entry 7ff4da32d2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4d9af7000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4d9ac0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d9894000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4d97e3000
+[I layer    ] proc 7128 ended (wait status 0x0)
+[I layer    ] fork: pid 5708 -> child 7248, snapshot of the parent's writable memory taken in 16.29 ms
+[I layer    ] fork: pid 5708 -> new process 7248 (flags 0x1200011)
+[I layer    ] exec: pid 7248 tid 7248 -> /usr/bin/dpkg (2 args, 8 env)
+[I layer    ] exec: guest memory committed 92 MiB -> 92 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4da348000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4da34b000 span=[7ff4da34b000,7ff4da61f000) entry=7ff4da352d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da30e000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da310000 span=[7ff4da310000,7ff4da348000) entry=7ff4da32d2c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 7440 entry 7ff4da32d2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4d9af7000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4d9ac0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d9894000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4d97e3000
+[I layer    ] proc 7248 ended (wait status 0x0)
+[I layer    ] fork: pid 5708 -> child 1444, snapshot of the parent's writable memory taken in 12.76 ms
+[I layer    ] fork: pid 5708 -> new process 1444 (flags 0x1200011)
+[I layer    ] exec: pid 1444 tid 1444 -> /usr/bin/dpkg (7 args, 9 env)
+[I layer    ] exec: guest memory committed 92 MiB -> 92 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4da348000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4da34b000 span=[7ff4da34b000,7ff4da61f000) entry=7ff4da352d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4da30e000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4da310000 span=[7ff4da310000,7ff4da348000) entry=7ff4da32d2c0
+[I layer    ] exec: /usr/bin/dpkg running, main thread tid 1748 entry 7ff4da32d2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4d9af7000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4d9ac0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d9894000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4d97e3000
+[I layer    ] fork: pid 1444 -> child 4024, snapshot of the parent's writable memory taken in 4.56 ms
+[I layer    ] fork: pid 1444 -> new process 4024 (flags 0x1200011)
+[I layer    ] exec: pid 4024 tid 4024 -> /usr/bin/dpkg-split (4 args, 12 env)
+[I layer    ] exec: guest memory committed 107 MiB -> 107 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg-split: 0 syscall + 165 %fs sites (0 in place, 165 jumps, 0 traps, 0 neighbours moved), pool 6608 bytes at 7ff4d96d0000
+[I layer    ] elf: loaded /usr/bin/dpkg-split type=DYN bias=7ff4d96d2000 span=[7ff4d96d2000,7ff4d9779000) entry=7ff4d96d6800
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d9696000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d9698000 span=[7ff4d9698000,7ff4d96d0000) entry=7ff4d96b52c0
+[I layer    ] exec: /usr/bin/dpkg-split running, main thread tid 1016 entry 7ff4d96b52c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4d8e7f000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d8c53000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d8c50680 a2=20 a3=0) hit #16 - probe by newer libcs; harmless
+[I layer    ] proc 4024 ended (wait status 0x100)
+[I layer    ] fork: pid 1444 -> child 1592, snapshot of the parent's writable memory taken in 2.87 ms
+[I layer    ] fork: pid 1444 -> new process 1592 (flags 0x1200011)
+[I layer    ] exec: pid 1592 tid 1592 -> /usr/bin/dpkg-deb (4 args, 12 env)
+[I layer    ] exec: guest memory committed 107 MiB -> 107 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg-deb: 0 syscall + 233 %fs sites (0 in place, 233 jumps, 0 traps, 0 neighbours moved), pool 9328 bytes at 7ff4d96c6000
+[I layer    ] elf: loaded /usr/bin/dpkg-deb type=DYN bias=7ff4d96c9000 span=[7ff4d96c9000,7ff4d9779000) entry=7ff4d96cebd0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d968c000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d968e000 span=[7ff4d968e000,7ff4d96c6000) entry=7ff4d96ab2c0
+[I layer    ] exec: /usr/bin/dpkg-deb running, main thread tid 2592 entry 7ff4d96ab2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff4d8e64000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblzma.so.5.8.1: 0 syscall + 129 %fs sites (0 in place, 129 jumps, 0 traps, 0 neighbours moved), pool 5184 bytes at 7ff4d8e31000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libzstd.so.1.5.7: 0 syscall + 508 %fs sites (0 in place, 508 jumps, 0 traps, 0 neighbours moved), pool 20400 bytes at 7ff4d8d62000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff4d8d4e000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4d8d3e000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d8b12000
+[I layer    ] fork: pid 1592 -> child 2124, snapshot of the parent's writable memory taken in 3.42 ms
+[I layer    ] fork: pid 1592 -> new process 2124 (flags 0x1200011)
+[I layer    ] proc 2124 ended (wait status 0x0)
+[I layer    ] fork: pid 1592 -> child 2692, snapshot of the parent's writable memory taken in 1.27 ms
+[I layer    ] fork: pid 1592 -> new process 2692 (flags 0x1200011)
+[I layer    ] fork: pid 1592 -> child 2156, snapshot of the parent's writable memory taken in 1.22 ms
+[I layer    ] fork: pid 1592 -> new process 2156 (flags 0x1200011)
+[I layer    ] exec: pid 2156 tid 2156 -> /usr/bin/tar (5 args, 12 env)
+[I layer    ] exec: guest memory committed 120 MiB -> 120 MiB after releasing the old image
+[W layer    ] fork: the child unmapped 1 range(s) of the parent that could not be put back (file mappings)
+[W layer    ] fork: 462848 bytes of process memory not restored: that address range belongs to another process now
+[W layer    ] mem-fail[0] addr=7ff4d8aa4990 access=1 vma=COVERS [7ff4d8a88000,7ff4d8aa5000) prot=0 lazy=0 committed=0 host(state=2000 prot=0)
+[W layer    ] writewatch: addr=7ff4d8aa4990 rip=7ff8055adc1c in_sys=1 guest_live=0 hdlr=0 -> allowed
+tools/ci/desktop-run.sh: line 57:   522 Segmentation fault         XRL_TEST_BUDGET_MB=1024 timeout 600 layer/build/desktop/xrl_test_host.exe "D:\a\_temp\rootfs" /usr/bin/apt-get install -y --no-install-recommends hello
+exit 139
