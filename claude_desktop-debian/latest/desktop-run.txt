@@ -1,26 +1,30 @@
-procs-test: exit 139 ()
+procs-test: exit 0 (TOTAL FAILS=0)
 probe 1 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
 probe 2 (m1): PASS exit   0    1s     - MiB  /usr/bin/ls -la /
 probe 3 (m1): PASS exit   0    0s     - MiB  /usr/bin/id
 probe 4 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
 probe 5 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
 probe 6 (m1): PASS exit   0    0s     - MiB  /usr/bin/ps aux
-probe 7 (m1): PASS exit   0    0s    13 MiB  /usr/bin/dpkg -l
-probe 8 (m1): PASS exit   0    1s     - MiB  /usr/bin/apt-get --version
-probe 9 (m2): PASS exit   0    4s    83 MiB  /usr/bin/apt-get update
-probe 10 (m2): PASS exit   0    6s   200 MiB  /usr/bin/apt-get install -y --no-install-recommends hello
+probe 7 (m1): PASS exit   0    1s    13 MiB  /usr/bin/dpkg -l
+probe 8 (m1): PASS exit   0    0s     - MiB  /usr/bin/apt-get --version
+probe 9 (m2): PASS exit   0    5s    83 MiB  /usr/bin/apt-get update
+probe 10 (m2): PASS exit   0    5s   200 MiB  /usr/bin/apt-get install -y --no-install-recommends hello
 probe 11 (m2): PASS exit   0    0s     - MiB  /usr/bin/hello
-probe 12 (m3): PASS exit   0   12s    92 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
-probe 13 (m4): FAIL exit 139    8s   430 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
-probe 14 (m5): FAIL exit 139    8s   429 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 12 (m3): PASS exit   0   11s    92 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
+probe 13 (m4): PASS exit   0   41s  1106 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
+probe 14 (m5): PASS exit   0  136s  4084 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 15 (m6): PASS exit   0  127s  1377 MiB  /bin/bash /tmp/xrl-xsession.sh tv
 --- syscalls answered ENOSYS (count, nr, name):
-     96 ENOSYS 334 rseq
+    112 ENOSYS 334 rseq
+     30 ENOSYS 434 pidfd_open
+     10 ENOSYS 187 readahead
       8 ENOSYS 277 sync_file_range
-      4 ENOSYS 434 pidfd_open
-      4 ENOSYS 125 capget
+      6 ENOSYS 303 name_to_handle_at
+      6 ENOSYS 125 capget
 milestone 1 (bash, coreutils, ps, dpkg -l): PASS
 milestone 2 (apt-get update + install): PASS
 milestone 3 (Xvfb + xterm): PASS
-milestone 4 (XFCE session): FAIL (1 probe(s))
-milestone 5 (Firefox opens a local page): FAIL (1 probe(s))
+milestone 4 (XFCE session): PASS
+milestone 5 (Firefox opens a local page): PASS
+milestone 6 (TV: the session on /dev/fb0): PASS
 exit 0
