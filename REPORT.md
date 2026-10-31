@@ -136,6 +136,23 @@ stand-in device).
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (12) - 1b shared library pages: first version in CI (XRL_SHARED_TEXT=1, probe 5t)
+
+- Run 46: m6 with the controller PASS (`pad events=10`: the 5 scripted presses), Firefox session 1967 MiB.
+- New, off by default, never with XRL_FORK_TASKS (mem.c "shared library pages"): ELF shared objects that ld.so
+  maps with mmap(NULL) go to an image region (a 64 GiB placeholder reservation below the arena) kept as exact
+  pieces (placeholder / private / view), pre-split at the image's PT_LOAD bounds. Each read-only segment that ld.so
+  then maps (MAP_FIXED) is, after the %fs/syscall rewrite, swapped for a read-only view of a pagefile section: the
+  first process creates it from its bytes, later ones reuse it when their bytes are identical (compared). The
+  trampoline pool goes at a fixed offset below the image (rewrite.c), so rewritten code is the same everywhere.
+  A view costs no per-process commit; mprotect adding PROT_WRITE or mremap turns it back into private memory.
+  Probe 5t runs the Firefox session with it; the breakdown logs "shared library pages: N views of X MiB".
+- Run 47 (351d512): all PASS, UWP flavour builds. But 5t did not exercise the new code: the call that switches it on
+  (img_init in xrl_mem_init) was missing from that commit; fixed in the next one. (5t 1856 MiB vs 5 2048 MiB in
+  that run is run-to-run spread, not sharing.)
+- CI build job: the UWP flavour (`build.ps1 -Flavor uwp`, the console's xrl_layer.lib) is now compiled too
+  (`build-uwp.txt`), so a shared-code change that breaks the console build shows up here first.
+
 ## 2026-10-31 (11) - TV: the controller as mouse + keyboard (this batch)
 
 - `/dev/input/event3` (evdev.c, new; not with XRL_FORK_TASKS, where Wine has its own gamepad path): gamepad 0 as

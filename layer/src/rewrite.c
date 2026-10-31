@@ -223,6 +223,16 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
      * The default placement is the highest free gap, which in a long session (holes left by ended processes) can be
      * far above the image: try the space just below the image first, stepping down. */
     slong pm = -LX_ENOMEM;
+    {   /* XRL_SHARED_TEXT: at the same offset below the image in every process, so the rewritten code (which reaches
+         * the pool by rel32) is the same bytes everywhere and can be one shared section (mem.c) */
+        u64 slot = xrl_fork_tasks_enabled() ? 0 : xrl_mem_pool_slot(rg[0].mem, cap);
+        if (slot) {
+            slong r = xrl_mem_mmap(slot, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
+                                   LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE | LX_MAP_FIXED_NOREPLACE, -1, 0);
+            if (r == (slong)slot) pm = r;
+            else if (r >= 0) xrl_mem_munmap((u64)r, cap);
+        }
+    }
     for (int tries = 0; tries < 4 && pm < 0 && !xrl_fork_tasks_enabled(); tries++) {   /* the EAC path keeps its placement */
         u64 hint = xrl_mem_find_near(cap, rg[0].mem, 0x70000000ull - (u64)cap - (u64)rg[nrg - 1].size);
         if (!hint) break;

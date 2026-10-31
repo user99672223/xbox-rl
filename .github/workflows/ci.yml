@@ -6,7 +6,7 @@
 #   probes   Windows shards in parallel, each on the same layer + guests + rootfs:
 #              core     the guest suite, the glibc tests, the process tests, milestones 1-2
 #              x        milestones 3, 4, 6 (Xvfb + xterm, XFCE, the TV bridge)
-#              firefox  milestone 5 (lazy thread stacks, the default here) and 5s (XRL_LAZY_STACKS=0)
+#              firefox  milestone 5 (lazy thread stacks, the default here), 5s (XRL_LAZY_STACKS=0), 5t (XRL_SHARED_TEXT=1)
 #              gpu      tools/ci/probes-gpu.list (the GPU/Plasma session's probes), when the branch has it
 #            (tools/ci/desktop-run.sh with XRL_MILESTONES); a workflow_dispatch command runs in the core shard only.
 #   publish  merges every shard's ci-out/ (desktop-run.txt = the shards' summaries in order) and commits it.
@@ -76,6 +76,12 @@ jobs:
           pwsh -NoProfile -File layer/scripts/build.ps1 -Flavor desktop *>&1 | Tee-Object ci-out/build.txt | Select-Object -Last 30
           if (-not (Test-Path layer/build/desktop/xrl_test_host.exe)) { throw 'no test host built' }
           Compress-Archive -Path layer/build/desktop -DestinationPath layer.zip
+      - name: UWP flavour compiles (the console's xrl_layer.lib; nothing runs it here)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          pwsh -NoProfile -File layer/scripts/build.ps1 -Flavor uwp *>&1 | Tee-Object ci-out/build-uwp.txt | Select-Object -Last 15
+          if (Select-String -Path ci-out/build-uwp.txt -Pattern ' error |FAILED:' -Quiet) { "UWP BUILD FAILED" | Tee-Object -Append ci-out/build-uwp.txt; exit 1 } else { "UWP build ok" | Tee-Object -Append ci-out/build-uwp.txt }
       - uses: actions/upload-artifact@v4
         with: { name: layer, path: layer.zip, retention-days: 3, compression-level: 0 }
       - uses: actions/upload-artifact@v4
@@ -92,7 +98,7 @@ jobs:
         include:
           - { shard: core, milestones: '1 2', procs: '1' }
           - { shard: x, milestones: '3 4 6', procs: '0' }
-          - { shard: firefox, milestones: '5 5s', procs: '0' }
+          - { shard: firefox, milestones: '5 5s 5t', procs: '0' }
           - { shard: gpu, milestones: 'gpu', procs: '0' }
     defaults:
       run: { shell: bash }

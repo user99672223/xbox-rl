@@ -56,6 +56,7 @@ typedef struct vma {
                              * "the mapping containing X" (a new thread's stack) stays its own */
     u32 owner;              /* the mm (guest process address space) that mapped it (proc.c) */
     int cpid;               /* the process that mapped it (a fork child shares its parent's mm until it execs) */
+    int view;               /* a read-only view of a shared section (XRL_SHARED_TEXT): never charged, never written */
     char name[160];         /* guest path of a file map, or "[stack]" */
 } vma;
 
@@ -231,11 +232,16 @@ static void gr_del(u64 g)
 }
 
 static int in_arena(u64 s, u64 e) { return s >= g_arena_base && e <= g_arena_end; }
+/* the image region (XRL_SHARED_TEXT, below): placeholders, private pieces and section views */
+static int img_contains(u64 s, u64 e);
+static int img_make_priv(u64 s, u64 e);
+static void img_to_ph(u64 s, u64 e);
 
 /* Make sure Windows has [s,e) reserved by us. 0 ok, -1 fail. */
 static int ensure_reserved(u64 s, u64 e)
 {
     if (in_arena(s, e)) return 0;
+    if (img_contains(s, e)) return img_make_priv(s, e);
     if (s >= g_arena_base && s < g_arena_end) return -1;   /* straddles arena edge */
     u64 gs = ALIGN_DOWN(s, GRAN), ge = ALIGN_UP(e, GRAN);
     u64 g;
@@ -284,7 +290,7 @@ static int vma_insert_at(size_t i, const vma *v)
 
 static int vma_mergeable(const vma *a, const vma *b)
 {
-    return a->end == b->start && a->prot == b->prot && a->committed == b->committed && a->lazy == b->lazy &&
+    return a->end == b->start && a->prot == b->prot && a->committed == b->committed && a->lazy == b->lazy && a->view == b->view &&
            a->shared == b->shared && a->mid == b->mid && a->owner == b->owner && !a->file && !b->file && !strcmp(a->name, b->name) &&
            (!a->name[0] || a->moff + (s64)(a->end - a->start) == b->moff);
 }
@@ -413,7 +419,9 @@ static slong vma_unmap_range(u64 s, u64 e, int release_granules)
     size_t j = i;
     while (j < g_n && g_v[j].start < e) {
         vma *v = &g_v[j];
-        if (v->committed) {
+        if (v->view) {
+            /* a shared section view: nothing charged to this process; img_to_ph below unmaps it */
+        } else if (v->committed) {
             vma_flush_shared(v, v->start, v->end);
             if (v->file && v->file->ops->unmapped) v->file->ops->unmapped(v->file, v->start, v->end - v->start);
             win_decommit(v->start, v->end);
@@ -432,7 +440,8 @@ static slong vma_unmap_range(u64 s, u64 e, int release_granules)
         memmove(&g_v[i], &g_v[j], (g_n - j) * sizeof(vma));
         g_n -= (j - i);
     }
-    if (release_granules && !in_arena(s, e)) {
+    if (img_contains(s, e)) img_to_ph(s, e);   /* views unmapped, private pieces released (map_range reserves again) */
+    else if (release_granules && !in_arena(s, e)) {
         u64 gs = ALIGN_DOWN(s, GRAN), ge = ALIGN_UP(e, GRAN);
         for (u64 g = gs; g < ge; g += GRAN) {
             size_t k = vma_lower(g);
@@ -553,6 +562,8 @@ static void swap_knobs(void);
 typedef PVOID (WINAPI *va2_fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void *, ULONG);
 typedef PVOID (WINAPI *mv3_fn)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
 typedef BOOL (WINAPI *uv2_fn)(HANDLE, PVOID, ULONG);
+typedef HANDLE (WINAPI *cfm_fn)(HANDLE, PSECURITY_ATTRIBUTES, ULONG, ULONG64, PCWSTR);
+typedef PVOID (WINAPI *mvf_fn)(HANDLE, ULONG, ULONG64, SIZE_T);
 typedef struct { DWORD cb, PageFaultCount; SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
                  QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage; } pmc_ex;
 typedef BOOL (WINAPI *gpmi_fn)(HANDLE, void *, DWORD);
@@ -563,7 +574,10 @@ static u64 probe_private(gpmi_fn g)
 }
 static void probe_placeholders(void)
 {
-    HMODULE kb = GetModuleHandleW(L"kernelbase.dll"), k32 = GetModuleHandleW(L"kernel32.dll");
+    HMODULE kb = NULL, k32 = NULL;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, L"kernelbase.dll", &kb);
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, L"kernel32.dll", &k32);
+    cfm_fn cfm = kb ? (cfm_fn)(void *)GetProcAddress(kb, "CreateFileMappingFromApp") : NULL;
     va2_fn va2 = kb ? (va2_fn)(void *)GetProcAddress(kb, "VirtualAlloc2FromApp") : NULL;
     if (!va2 && kb) va2 = (va2_fn)(void *)GetProcAddress(kb, "VirtualAlloc2");
     mv3_fn mv3 = kb ? (mv3_fn)(void *)GetProcAddress(kb, "MapViewOfFile3FromApp") : NULL;
@@ -571,7 +585,7 @@ static void probe_placeholders(void)
     uv2_fn uv2 = kb ? (uv2_fn)(void *)GetProcAddress(kb, "UnmapViewOfFile2") : NULL;
     gpmi_fn gp = k32 ? (gpmi_fn)(void *)GetProcAddress(k32, "K32GetProcessMemoryInfo") : NULL;
     LOGI("placeholder probe: VirtualAlloc2 %s, MapViewOfFile3 %s, UnmapViewOfFile2 %s", va2 ? "yes" : "no", mv3 ? "yes" : "no", uv2 ? "yes" : "no");
-    if (!va2 || !mv3 || !uv2) return;
+    if (!va2 || !mv3 || !uv2 || !cfm) return;
     const u64 MB = 1ull << 20, SZ = 64 * MB;
     u8 *r = (u8 *)va2(NULL, NULL, (SIZE_T)(4 * MB), MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
     LOGI("placeholder probe: reserve 4 MiB placeholder: %s (%lu)", r ? "ok" : "refused", r ? 0ul : GetLastError());
@@ -582,7 +596,7 @@ static void probe_placeholders(void)
     DWORD e2 = GetLastError();
     LOGI("placeholder probe: split at 4 KiB: %s (%lu); a 64 KiB piece at +4 KiB: %s (%lu)", s1 ? "ok" : "refused", s1 ? 0ul : e1,
          s2 ? "ok" : "refused", s2 ? 0ul : e2);
-    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT, (DWORD)(SZ >> 32), (DWORD)SZ, NULL);
+    HANDLE sec = cfm(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT, SZ, NULL);
     LOGI("placeholder probe: 64 MiB pagefile section (SEC_COMMIT, execute): %s (%lu)", sec ? "ok" : "refused", sec ? 0ul : GetLastError());
     if (sec) {
         void *v = s2 ? mv3(sec, GetCurrentProcess(), r + 0x1000, 0x1000, 0x10000, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READ, NULL, 0) : NULL;
@@ -617,6 +631,406 @@ static void probe_placeholders(void)
         CloseHandle(sec);
     }
     VirtualFree(r, 0, MEM_RELEASE);
+}
+
+/* ================================================================ shared library pages (XRL_SHARED_TEXT=1)
+ * Every guest process lives in this one Windows process, so N processes that load libxul.so held N private copies
+ * of its code. With XRL_SHARED_TEXT=1 (never with XRL_FORK_TASKS) an ELF shared object mapped with mmap(NULL, ...)
+ * is placed in the image region, a placeholder reservation outside the arena that this code keeps as exact pieces:
+ * PH (placeholder), PRIV (a private reservation; mem.c commits and protects inside it as anywhere) and VIEW (a
+ * read-only view of a section). After a non-writable segment is mapped (and its code rewritten, rewrite.c, with the
+ * trampoline pool at a fixed offset below the image so the bytes come out the same in every process),
+ * xrl_mem_share_range turns the private copy into a view of the section holding those bytes, created by the first
+ * process and found by the next ones (same file, offset, length and the very same bytes, compared). A view is never
+ * charged per process (the section is charged once) and never written: an mprotect that adds PROT_WRITE, or an
+ * mremap, copies it back into private memory first. All of it runs under g_lock. */
+static slong commit_account(u64 len);
+typedef struct isec {
+    char path[160]; u64 ino, size, mtime; s64 off; u64 len; int exec;
+    HANDLE h; u8 *host;   /* the section, and a host view of it (to fill and to compare) */
+    int refs;
+    struct isec *next;
+} isec;
+enum { IP_PH, IP_PRIV, IP_VIEW };
+typedef struct ipiece { u64 s, e; int kind; isec *sec; u64 secoff; } ipiece;
+static int g_shtx = -1;                 /* -1 not decided; 0 off; 1 on */
+static cfm_fn g_cfm; static mvf_fn g_mvf;   /* CreateFileMappingFromApp, MapViewOfFileFromApp: both flavours */
+static u64 g_img_base, g_img_end;
+static ipiece *g_ip; static size_t g_nip, g_capip;
+static isec *g_isec;
+static va2_fn g_va2; static mv3_fn g_mv3; static uv2_fn g_uv2;
+static u64 g_img_shared, g_img_views, g_img_viewbytes;   /* sections' bytes, live views and their bytes (the log) */
+typedef struct imgrec { u64 start, end, room; } imgrec;   /* an image placed here, the pool room below it */
+static imgrec g_imgs[4096]; static int g_nimgs;
+
+static int img_contains(u64 s, u64 e) { return g_shtx == 1 && s >= g_img_base && e <= g_img_end && s < e; }
+static size_t ip_find(u64 a)   /* the piece holding a */
+{
+    size_t lo = 0, hi = g_nip;
+    while (lo < hi) { size_t m = (lo + hi) / 2; if (g_ip[m].e <= a) lo = m + 1; else hi = m; }
+    return lo;
+}
+static int ip_insert(size_t at, const ipiece *p)
+{
+    if (g_nip == g_capip) {
+        size_t nc = g_capip ? g_capip * 2 : 1024;
+        ipiece *n = (ipiece *)realloc(g_ip, nc * sizeof *n);
+        if (!n) return -1;
+        g_ip = n; g_capip = nc;
+    }
+    memmove(&g_ip[at + 1], &g_ip[at], (g_nip - at) * sizeof *g_ip);
+    g_ip[at] = *p; g_nip++;
+    return 0;
+}
+static void isec_put(isec *sc)
+{
+    if (--sc->refs > 0) return;
+    for (isec **pp = &g_isec; *pp; pp = &(*pp)->next) if (*pp == sc) { *pp = sc->next; break; }
+    if (sc->host) UnmapViewOfFile(sc->host);
+    CloseHandle(sc->h);
+    InterlockedAdd64(&g_committed, -(LONG64)sc->len);
+    g_img_shared -= sc->len;
+    free(sc);
+}
+static void *ip_map_view(isec *sc, u64 at, u64 secoff, u64 len, DWORD wprot)
+{
+    void *v = g_mv3(sc->h, GetCurrentProcess(), (void *)at, secoff, (SIZE_T)len, MEM_REPLACE_PLACEHOLDER, wprot, NULL, 0);
+    if (v) { sc->refs++; g_img_views++; g_img_viewbytes += len; }
+    return v;
+}
+static BOOL priv_to_ph(u64 s, u64 n)   /* a private allocation back to a placeholder */
+{
+    return VirtualFree((void *)s, 0, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) || VirtualFree((void *)s, (SIZE_T)n, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);
+}
+static void ip_unmap_view(ipiece *p)
+{
+    g_uv2(GetCurrentProcess(), (void *)p->s, MEM_PRESERVE_PLACEHOLDER);
+    g_img_views--; g_img_viewbytes -= p->e - p->s;
+    isec_put(p->sec);
+    p->kind = IP_PH; p->sec = NULL;
+}
+/* a private piece's bytes and protections, to rebuild it in two (rare: a partial munmap/mprotect never needs it,
+ * only a mapping whose bounds cut an earlier one inside the image region) */
+typedef struct ipsave { u64 s, e; DWORD prot; size_t off; } ipsave;
+static int ip_split(u64 a)   /* a becomes a piece boundary */
+{
+    size_t i = ip_find(a);
+    if (i >= g_nip || g_ip[i].s >= a) return 0;
+    ipiece p = g_ip[i];
+    if (p.kind == IP_PH) {
+        if (!VirtualFree((void *)p.s, (SIZE_T)(a - p.s), MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) return -1;
+    } else if (p.kind == IP_VIEW) {
+        MEMORY_BASIC_INFORMATION m1, m2;
+        VirtualQuery((void *)p.s, &m1, sizeof m1); VirtualQuery((void *)a, &m2, sizeof m2);
+        isec *sc = p.sec; sc->refs++;   /* across the unmap */
+        ip_unmap_view(&g_ip[i]);
+        if (!VirtualFree((void *)p.s, (SIZE_T)(a - p.s), MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) { isec_put(sc); return -1; }
+        void *v1 = ip_map_view(sc, p.s, p.secoff, a - p.s, m1.Protect), *v2 = ip_map_view(sc, a, p.secoff + (a - p.s), p.e - a, m2.Protect);
+        isec_put(sc);
+        if (!v1 || !v2) { LOGE("img: cannot split a view at %llx", a); return -1; }
+        g_ip[i].kind = IP_VIEW; g_ip[i].sec = sc; g_ip[i].e = a;
+        ipiece r = { a, p.e, IP_VIEW, sc, p.secoff + (a - p.s) };
+        return ip_insert(i + 1, &r);
+    } else {   /* IP_PRIV: copy out, back to a placeholder, split, two reservations, copy back */
+        ipsave sv[256]; int n = 0; size_t bytes = 0;
+        for (u64 x = p.s; x < p.e && n < 256; ) {
+            MEMORY_BASIC_INFORMATION m;
+            if (!VirtualQuery((void *)x, &m, sizeof m)) return -1;
+            u64 re = (u64)m.BaseAddress + m.RegionSize; if (re > p.e) re = p.e;
+            if (m.State == MEM_COMMIT) { sv[n].s = x; sv[n].e = re; sv[n].prot = m.Protect; sv[n].off = bytes; bytes += (size_t)(re - x); n++; }
+            x = re;
+        }
+        u8 *buf = bytes ? (u8 *)malloc(bytes) : NULL;
+        if (bytes && !buf) return -1;
+        for (int k = 0; k < n; k++) {
+            DWORD op; if (!(sv[k].prot & (PAGE_READONLY | PAGE_READWRITE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE))) w_protect((void *)sv[k].s, (SIZE_T)(sv[k].e - sv[k].s), PAGE_READONLY, &op);
+            memcpy(buf + sv[k].off, (void *)sv[k].s, (size_t)(sv[k].e - sv[k].s));
+        }
+        if (!priv_to_ph(p.s, p.e - p.s) ||
+            !VirtualFree((void *)p.s, (SIZE_T)(a - p.s), MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER) ||
+            !g_va2(GetCurrentProcess(), (void *)p.s, (SIZE_T)(a - p.s), MEM_RESERVE | MEM_REPLACE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0) ||
+            !g_va2(GetCurrentProcess(), (void *)a, (SIZE_T)(p.e - a), MEM_RESERVE | MEM_REPLACE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0)) {
+            LOGE("img: cannot split a private piece [%llx,%llx) at %llx (%lu)", p.s, p.e, a, GetLastError()); free(buf); return -1;
+        }
+        for (int k = 0; k < n; k++) {
+            for (u64 x = sv[k].s; x < sv[k].e; ) {   /* the commit may cross the new boundary: one call per piece */
+                u64 xe = x < a && sv[k].e > a ? a : sv[k].e;
+                w_alloc((void *)x, xe - x, MEM_COMMIT, PAGE_READWRITE);
+                memcpy((void *)x, buf + sv[k].off + (x - sv[k].s), (size_t)(xe - x));
+                DWORD op; w_protect((void *)x, (SIZE_T)(xe - x), sv[k].prot, &op);
+                x = xe;
+            }
+        }
+        free(buf);
+        static volatile LONG once; if (!InterlockedExchange(&once, 1)) LOGW("img: a private piece was split by copying ([%llx,%llx) at %llx)", p.s, p.e, a);
+    }
+    g_ip[i].e = a;
+    ipiece r = p; r.s = a; if (r.kind == IP_VIEW) r.secoff += a - p.s;
+    return ip_insert(i + 1, &r);
+}
+/* [s, e) back to placeholders: views unmapped, private pieces released (their accounting is the caller's) */
+static void img_to_ph(u64 s, u64 e)
+{
+    s = ALIGN_DOWN(s, LX_PAGE); e = ALIGN_UP(e, LX_PAGE);
+    if (ip_split(s) || ip_split(e)) { LOGE("img: cannot free [%llx,%llx)", s, e); return; }
+    size_t i = ip_find(s), j = i;
+    for (; j < g_nip && g_ip[j].s < e; j++) {
+        if (g_ip[j].kind == IP_VIEW) ip_unmap_view(&g_ip[j]);
+        else if (g_ip[j].kind == IP_PRIV) {
+            if (priv_to_ph(g_ip[j].s, g_ip[j].e - g_ip[j].s)) g_ip[j].kind = IP_PH;
+            else LOGE("img: cannot release [%llx,%llx) (%lu)", g_ip[j].s, g_ip[j].e, GetLastError());
+        }
+    }
+    int allph = 1;
+    for (size_t k = i; k < j; k++) if (g_ip[k].kind != IP_PH) allph = 0;
+    if (j - i > 1 && allph) {   /* one placeholder again */
+        if (VirtualFree((void *)s, (SIZE_T)(e - s), MEM_RELEASE | MEM_COALESCE_PLACEHOLDERS)) {
+            g_ip[i].e = e;
+            memmove(&g_ip[i + 1], &g_ip[j], (g_nip - j) * sizeof *g_ip);
+            g_nip -= j - i - 1;
+        }
+    }
+}
+/* [s, e) as private reservations (mem.c commits in them); a view in it becomes private memory with its bytes */
+static int img_make_priv(u64 s, u64 e)
+{
+    s = ALIGN_DOWN(s, LX_PAGE); e = ALIGN_UP(e, LX_PAGE);
+    if (ip_split(s) || ip_split(e)) return -1;
+    for (size_t i = ip_find(s); i < g_nip && g_ip[i].s < e; i++) {
+        ipiece *p = &g_ip[i];
+        if (p->kind == IP_PRIV) continue;
+        if (p->kind == IP_VIEW) {   /* materialize: the caller (mprotect/mremap) charges it and marks the vma */
+            u64 n = p->e - p->s;
+            u8 *buf = (u8 *)malloc((size_t)n);
+            if (!buf) return -1;
+            memcpy(buf, (void *)p->s, (size_t)n);
+            ip_unmap_view(p);
+            if (!g_va2(GetCurrentProcess(), (void *)p->s, (SIZE_T)n, MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0)) { free(buf); return -1; }
+            memcpy((void *)p->s, buf, (size_t)n);
+            free(buf);
+            p->kind = IP_PRIV;
+            continue;
+        }
+        if (!g_va2(GetCurrentProcess(), (void *)p->s, (SIZE_T)(p->e - p->s), MEM_RESERVE | MEM_REPLACE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0)) {
+            LOGE("img: cannot reserve [%llx,%llx) (%lu)", p->s, p->e, GetLastError()); return -1;
+        }
+        p->kind = IP_PRIV;
+    }
+    return 0;
+}
+static void img_init(void)
+{
+    if (g_shtx >= 0) return;
+    g_shtx = 0;
+    char v[4];
+    if (!GetEnvironmentVariableA("XRL_SHARED_TEXT", v, sizeof v) || v[0] != '1' || xrl_fork_tasks_enabled()) return;
+    HMODULE kb = NULL;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, L"kernelbase.dll", &kb) || !kb) return;
+    g_cfm = (cfm_fn)(void *)GetProcAddress(kb, "CreateFileMappingFromApp");
+    g_mvf = (mvf_fn)(void *)GetProcAddress(kb, "MapViewOfFileFromApp");
+    g_va2 = (va2_fn)(void *)GetProcAddress(kb, "VirtualAlloc2FromApp"); if (!g_va2) g_va2 = (va2_fn)(void *)GetProcAddress(kb, "VirtualAlloc2");
+    g_mv3 = (mv3_fn)(void *)GetProcAddress(kb, "MapViewOfFile3FromApp"); if (!g_mv3) g_mv3 = (mv3_fn)(void *)GetProcAddress(kb, "MapViewOfFile3");
+    g_uv2 = (uv2_fn)(void *)GetProcAddress(kb, "UnmapViewOfFile2");
+    if (!g_va2 || !g_mv3 || !g_uv2 || !g_cfm || !g_mvf) { LOGW("img: no VirtualAlloc2/MapViewOfFile3/...FromApp: shared library pages off"); return; }
+    const u64 SZ = 64ull << 30;   /* below the arena, as close as it goes (VA only) */
+    for (u64 gap = 1ull << 30; gap <= (64ull << 30) && !g_img_base; gap <<= 1) {
+        u64 want = ALIGN_DOWN(g_arena_base - SZ - gap, GRAN);
+        void *r = g_va2(GetCurrentProcess(), (void *)want, (SIZE_T)SZ, MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
+        if (r) { g_img_base = (u64)r; g_img_end = g_img_base + SZ; }
+    }
+    if (!g_img_base) { LOGW("img: no room for the image region: shared library pages off"); return; }
+    ipiece p = { g_img_base, g_img_end, IP_PH, NULL, 0 };
+    if (ip_insert(0, &p)) return;
+    g_shtx = 1;
+    LOGI("img: shared library pages on (XRL_SHARED_TEXT): image region [%llx,%llx)", g_img_base, g_img_end);
+}
+/* where an ELF image of len bytes goes (g_lock held): the highest free range, 64 KiB-aligned, with room below for
+ * its trampoline pool; 0 = not here */
+static u64 img_place(u64 len)
+{
+    u64 room = ALIGN_UP(len / 4 + GRAN, GRAN), need = ALIGN_UP(len, GRAN) + room;
+    u64 cand = ALIGN_DOWN(g_img_end - need, GRAN);
+    for (;;) {
+        if (cand < g_img_base) return 0;
+        size_t i = vma_lower(cand);
+        if (i < g_n && g_v[i].start < cand + need) {
+            if (g_v[i].start < g_img_base + need) return 0;
+            cand = ALIGN_DOWN(g_v[i].start - need, GRAN);
+            continue;
+        }
+        break;
+    }
+    if (g_nimgs == (int)ARRAY_LEN(g_imgs)) {   /* drop records of images no longer mapped */
+        int k = 0;
+        for (int j = 0; j < g_nimgs; j++) { size_t vi = vma_lower(g_imgs[j].start); if (vi < g_n && g_v[vi].start == g_imgs[j].start) g_imgs[k++] = g_imgs[j]; }
+        g_nimgs = k;
+        if (g_nimgs == (int)ARRAY_LEN(g_imgs)) return 0;
+    }
+    g_imgs[g_nimgs].start = cand + room; g_imgs[g_nimgs].end = cand + need; g_imgs[g_nimgs].room = room; g_nimgs++;
+    return cand + room;
+}
+/* rewrite.c: where the trampoline pool of code at `code` goes (cap bytes), the same offset below its image in
+ * every process; 0 = anywhere */
+static int img_in_room(u64 a, u64 e)   /* [a, e) overlaps the pool room of an image that is still mapped */
+{
+    for (int j = 0; j < g_nimgs; j++) {
+        if (a >= g_imgs[j].start || e <= g_imgs[j].start - g_imgs[j].room) continue;
+        size_t vi = vma_lower(g_imgs[j].start);
+        if (vi < g_n && g_v[vi].start == g_imgs[j].start) return 1;
+    }
+    return 0;
+}
+u64 xrl_mem_pool_slot(u64 code, u64 cap)
+{
+    u64 r = 0, c = ALIGN_UP(cap, GRAN);
+    AcquireSRWLockShared(&g_lock);
+    if (g_shtx == 1 && code >= g_img_base && code < g_img_end) {
+        for (int j = g_nimgs - 1; j >= 0; j--)
+            if (code >= g_imgs[j].start && code < g_imgs[j].end) {
+                u64 a = g_imgs[j].start - c;
+                if (c <= g_imgs[j].room && range_free(a, g_imgs[j].start)) r = a;
+                else {
+                    static volatile LONG warned;
+                    size_t vi = vma_lower(a);
+                    if (InterlockedIncrement(&warned) <= 8)
+                        LOGW("img: pool slot [%llx,%llx) for code %llx (room %llu KiB, pool %llu KiB) is taken by [%llx,%llx) %s (pid %d)", a,
+                             g_imgs[j].start, code, g_imgs[j].room >> 10, c >> 10, vi < g_n ? g_v[vi].start : 0, vi < g_n ? g_v[vi].end : 0,
+                             vi < g_n ? g_v[vi].name : "", vi < g_n ? g_v[vi].cpid : 0);
+                }
+                break;
+            }
+        /* else any gap of the image region within reach of the code, outside the other images' pool rooms (this
+         * copy's code then differs from the shared one and stays private, but no site becomes a trap) */
+        u64 lo = code > (3ull << 29) ? code - (3ull << 29) : 0, hi = code + (3ull << 29), bestd = ~0ull;
+        if (lo < g_img_base) lo = g_img_base;
+        if (hi > g_img_end) hi = g_img_end;
+        u64 gap = lo;
+        for (size_t i = vma_lower(lo); !r && gap < hi; i++) {
+            u64 end = i < g_n && g_v[i].start < hi ? g_v[i].start : hi;
+            for (u64 a = ALIGN_UP(gap, GRAN); a + c <= ALIGN_DOWN(end, GRAN); a += GRAN * 16) {
+                u64 d = a > code ? a - code : code - a;
+                if (d < bestd && !img_in_room(a, a + c)) { bestd = d; r = a; break; }
+            }
+            if (i >= g_n || g_v[i].start >= hi) break;
+            gap = g_v[i].end;
+        }
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return r;
+}
+/* An ELF shared object (ELFCLASS64, ET_DYN): its PT_LOAD page boundaries relative to the image start, where ld.so's
+ * segment mappings will cut its first mapping (pre-split, so no private piece is ever split by copying). 0 = not one. */
+static int elf_bounds(xfile *f, u64 *b, int max)
+{
+    u8 h[64];
+    if (!f->ops->read || f->ops->read(f, h, sizeof h, 0) != (slong)sizeof h) return 0;
+    if (memcmp(h, "\177ELF", 4) || h[4] != 2 || h[16] != 3 || h[17] != 0) return 0;
+    u64 phoff; u16 phentsize, phnum;
+    memcpy(&phoff, h + 32, 8); memcpy(&phentsize, h + 54, 2); memcpy(&phnum, h + 56, 2);
+    if (phentsize != 56 || !phnum || phnum > 64) return 0;
+    u8 ph[56 * 64];
+    if (f->ops->read(f, ph, (u64)phnum * 56, (s64)phoff) != (slong)phnum * 56) return 0;
+    int n = 0; u64 first = ~0ull;
+    for (int i = 0; i < phnum; i++) {
+        u32 type; u64 vaddr; memcpy(&type, ph + i * 56, 4); memcpy(&vaddr, ph + i * 56 + 16, 8);
+        if (type == 1 && ALIGN_DOWN(vaddr, LX_PAGE) < first) first = ALIGN_DOWN(vaddr, LX_PAGE);
+    }
+    if (first == ~0ull) return 0;
+    for (int i = 0; i < phnum && n + 3 <= max; i++) {
+        u32 type; u64 vaddr, filesz, memsz;
+        memcpy(&type, ph + i * 56, 4); memcpy(&vaddr, ph + i * 56 + 16, 8); memcpy(&filesz, ph + i * 56 + 32, 8); memcpy(&memsz, ph + i * 56 + 40, 8);
+        if (type != 1) continue;
+        b[n++] = ALIGN_DOWN(vaddr, LX_PAGE) - first;
+        b[n++] = ALIGN_UP(vaddr + filesz, LX_PAGE) - first;
+        b[n++] = ALIGN_UP(vaddr + memsz, LX_PAGE) - first;
+    }
+    return n ? n : -1;
+}
+
+/* After a non-writable file mapping of [addr, addr+len) in the image region was made (and rewritten): share it */
+void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
+{
+    if (g_shtx != 1 || (prot & LX_PROT_WRITE) || !len || !img_contains(addr, addr + len)) return;
+    xfile *f = xrl_fd_get(fd);
+    if (!f) return;
+    lx_stat st;
+    if (!f->gpath || !f->ops->fstat || f->ops->fstat(f, &st) || xrl_dbt_wanted_file(f->gpath)) { xfile_unref(f); return; }
+    len = ALIGN_UP(len, LX_PAGE);
+    AcquireSRWLockExclusive(&g_lock);
+    size_t i = vma_lower(addr);
+    int ok = i < g_n && g_v[i].start <= addr && g_v[i].committed && !g_v[i].view && !g_v[i].shared && g_v[i].prot == prot;
+    for (size_t j = i; ok && j < g_n && g_v[j].start < addr + len; j++)
+        if (!g_v[j].committed || g_v[j].view || g_v[j].mid != g_v[i].mid || (j + 1 < g_n && g_v[j].end < addr + len && g_v[j + 1].start != g_v[j].end)) ok = 0;
+    if (ok) { size_t k = vma_lower(addr + len - 1); if (k >= g_n || g_v[k].start > addr + len - 1 || g_v[k].end < addr + len) ok = 0; }
+    isec *sc = NULL;
+    int exec = (prot & LX_PROT_EXEC) != 0, made = 0;
+    if (ok) {
+        for (sc = g_isec; sc; sc = sc->next)
+            if (sc->ino == st.st_ino && sc->size == (u64)st.st_size && sc->mtime == (u64)st.st_mtim.tv_sec && sc->off == off && sc->len == len &&
+                sc->exec == exec && !strcmp(sc->path, f->gpath)) break;
+        if (sc && memcmp(sc->host, (void *)addr, (size_t)len)) {
+            static volatile LONG warned;
+            if (InterlockedIncrement(&warned) <= 8) LOGW("img: %s +%llx: this copy differs from the shared one: kept private", f->gpath, (u64)off);
+            ok = 0;
+        }
+        if (ok && !sc) {
+            HANDLE h = g_cfm(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT, len, NULL);
+            u8 *host = h ? (u8 *)g_mvf(h, FILE_MAP_READ | FILE_MAP_WRITE, 0, (SIZE_T)len) : NULL;
+            if (!host || commit_account(len)) { if (host) UnmapViewOfFile(host); if (h) CloseHandle(h); ok = 0; }
+            else {
+                memcpy(host, (void *)addr, (size_t)len);
+                sc = (isec *)calloc(1, sizeof *sc);
+                if (!sc) { UnmapViewOfFile(host); CloseHandle(h); InterlockedAdd64(&g_committed, -(LONG64)len); ok = 0; }
+                else {
+                    strncpy_s(sc->path, sizeof sc->path, f->gpath, _TRUNCATE);
+                    sc->ino = st.st_ino; sc->size = (u64)st.st_size; sc->mtime = (u64)st.st_mtim.tv_sec; sc->off = off; sc->len = len; sc->exec = exec;
+                    sc->h = h; sc->host = host; sc->refs = 1;   /* held until the first view takes its reference */
+                    sc->next = g_isec; g_isec = sc;
+                    g_img_shared += len;
+                    made = 1;
+                }
+            }
+        }
+    }
+    if (ok && sc && !vma_split(addr) && !vma_split(addr + len)) {
+        DWORD wp = winprot(prot, NULL);
+        img_to_ph(addr, addr + len);   /* the private copy goes ... */
+        size_t k = ip_find(addr);
+        void *v = (k < g_nip && g_ip[k].s == addr && g_ip[k].e == addr + len) ? ip_map_view(sc, addr, 0, len, wp) : NULL;
+        if (v) {
+            g_ip[k].kind = IP_VIEW; g_ip[k].sec = sc; g_ip[k].secoff = 0;
+            InterlockedAdd64(&g_committed, -(LONG64)len);   /* ... and is no longer charged */
+            for (size_t j = vma_lower(addr); j < g_n && g_v[j].start < addr + len; j++) { g_v[j].view = 1; g_v[j].committed = 0; g_v[j].lazy = 0; }
+        } else {   /* cannot happen with a placeholder in hand; if it does, a private copy again from the section */
+            LOGE("img: cannot map a view at %llx (%lu): private copy", addr, GetLastError());
+            img_make_priv(addr, addr + len);
+            w_alloc((void *)addr, len, MEM_COMMIT, PAGE_READWRITE);
+            memcpy((void *)addr, sc->host, (size_t)len);
+            DWORD op; w_protect((void *)addr, (SIZE_T)len, wp, &op);
+        }
+    }
+    if (made) isec_put(sc);   /* the creator's hold: the views keep it now */
+    static u64 last_log;
+    if (g_img_viewbytes > last_log + (256ull << 20)) {
+        last_log = g_img_viewbytes;
+        LOGI("img: %llu views share %llu MiB of library pages held once in %llu MiB of sections", g_img_views, g_img_viewbytes >> 20, g_img_shared >> 20);
+    }
+    ReleaseSRWLockExclusive(&g_lock);
+    xfile_unref(f);
+}
+/* a view in [s, e) becomes private memory (g_lock held): mprotect adding PROT_WRITE, mremap */
+static slong img_unshare_locked(u64 s, u64 e)
+{
+    for (size_t i = vma_lower(s); i < g_n && g_v[i].start < e; i++) {
+        vma *v = &g_v[i];
+        if (!v->view) continue;
+        slong r = commit_account(v->end - v->start);
+        if (r) return r;
+        if (img_make_priv(v->start, v->end)) { InterlockedAdd64(&g_committed, -(LONG64)(v->end - v->start)); return -LX_ENOMEM; }
+        DWORD op; w_protect((void *)v->start, (SIZE_T)(v->end - v->start), winprot(v->prot, NULL), &op);
+        v->view = 0; v->committed = 1;
+    }
+    return 0;
 }
 
 int xrl_mem_init(u64 budget)
@@ -658,6 +1072,7 @@ int xrl_mem_init(u64 budget)
     g_mmap_floor = g_brk_limit + (16ull << 20);
     LOGI("mem: arena [%llx,%llx) %llu MiB VA, brk <= %llx, commit budget %llu MiB, granularity %lu",
          g_arena_base, g_arena_end, g_arena_size >> 20, g_brk_limit, g_budget >> 20, si.dwAllocationGranularity);
+    img_init();
     return 0;
 }
 
@@ -1701,7 +2116,8 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
 fail_commit:
     if (committed) { win_decommit(addr, end); InterlockedAdd64(&g_committed, -(LONG64)len); }
 fail_rel:
-    if (!in_arena(addr, end)) {
+    if (img_contains(addr, end)) img_to_ph(addr, end);
+    else if (!in_arena(addr, end)) {
         for (u64 g = ALIGN_DOWN(addr, GRAN); g < ALIGN_UP(end, GRAN); g += GRAN) {
             size_t k = vma_lower(g);
             if (k < g_n && g_v[k].start < g + GRAN) continue;
@@ -1743,6 +2159,11 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
         if (sr != XRL_NOT_NET) { xfile_unref(f); return sr; }
     }
 
+    /* an ELF shared object's first mapping (ld.so maps the whole image from offset 0, then its segments over it):
+     * the image region, where its read-only segments can be shared (XRL_SHARED_TEXT). Read before g_lock. */
+    u64 bnd[48]; int nb = 0;
+    int img_cand = g_shtx == 1 && f && !fixed && !addr && off == 0 && !(flags & LX_MAP_SHARED) && !(prot & LX_PROT_WRITE) &&
+                   (nb = elf_bounds(f, bnd, 48)) != 0;
     slong res;
     AcquireSRWLockExclusive(&g_lock);
     int shared = (flags & LX_MAP_SHARED) != 0;
@@ -1773,6 +2194,8 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
                 if (in_arena(addr, addr + len) && addr >= g_mmap_floor) target = addr;
             } else if (!ensure_reserved(addr, addr + len)) target = addr;
         }
+        if (!target && img_cand && (target = img_place(len)) != 0)
+            for (int k = 0; k < nb; k++) if (bnd[k] && bnd[k] < len) ip_split(target + bnd[k]);   /* placeholders: cheap */
         if (!target) {
             target = find_gap(len, g_mmap_top);
             if (!target) { res = -LX_ENOMEM; goto out; }
@@ -1869,6 +2292,12 @@ static slong mprotect_impl(u64 addr, u64 len, int prot)
     for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < end; i++) {
         vma *v = &g_v[i];
         if (v->prot == prot) continue;
+        if (v->view && (prot & LX_PROT_WRITE)) { r = img_unshare_locked(v->start, v->end); if (r) goto out; }   /* never written in place */
+        if (v->view) {   /* a protection the view can take (else it becomes private memory too) */
+            if (win_protect(v->start, v->end, prot)) { r = img_unshare_locked(v->start, v->end); if (!r) r = win_protect(v->start, v->end, prot); if (r) goto out; }
+            v->prot = prot;
+            continue;
+        }
         if (prot == LX_PROT_NONE) {
             if (v->committed || v->lazy) { r = win_protect(v->start, v->end, LX_PROT_NONE); if (r) goto out; }
         } else if (!v->committed && !v->lazy && g_lazy && g_lazy != 2) {
@@ -1925,6 +2354,8 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
     /* the old range must lie in one mapping: one vma, or pieces of the same mmap (an mprotect split) */
     for (size_t j = i; g_v[j].end < old_addr + old_len; j++)
         if (j + 1 >= g_n || g_v[j + 1].start != g_v[j].end || g_v[j + 1].mid != g_v[i].mid) { res = -LX_EFAULT; goto out; }
+    if ((res = img_unshare_locked(old_addr, old_addr + old_len)) != 0) goto out;   /* a shared view moves as private memory */
+    i = vma_lower(old_addr);
     int prot = g_v[i].prot, shared = g_v[i].shared;
     u64 mid = g_v[i].mid;
     char name[sizeof g_v[i].name]; memcpy(name, g_v[i].name, sizeof name);
@@ -2184,7 +2615,7 @@ void xrl_mem_breakdown(void)
             if (!VirtualQuery((void *)a, &mbi, sizeof mbi)) break;
             u64 re = (u64)mbi.BaseAddress + mbi.RegionSize;
             if (re > cp[i].e) re = cp[i].e;
-            if (mbi.State == MEM_COMMIT) c += re - a;
+            if (mbi.State == MEM_COMMIT && mbi.Type == MEM_PRIVATE) c += re - a;   /* section views are not this process's */
             a = re;
         }
         total += c;
@@ -2217,6 +2648,7 @@ void xrl_mem_breakdown(void)
              (double)src[k].vsize / 1048576.0, src[k].n, src[k].n == 1 ? "" : "s", src[k].name);
     }
     LOGI("mem: %llu MiB of it in private file mappings (libraries, data files: one copy per process)", ftotal >> 20);
+    if (g_shtx == 1) LOGI("mem: shared library pages: %llu views of %llu MiB, held once in %llu MiB of sections", g_img_views, g_img_viewbytes >> 20, g_img_shared >> 20);
     for (int k = 0; k < np && k < 16; k++) {
         int b = k;
         for (int j = k + 1; j < np; j++) if (pp[j].bytes > pp[b].bytes) b = j;
@@ -2300,12 +2732,12 @@ static void stk_arm(stkent *k)   /* g_stk_lock held */
 {
     k->guard = k->low + STK_HEAD < k->e - LX_PAGE ? k->low + STK_HEAD : 0;
     DWORD op;
-    if (k->guard && !VirtualProtect((void *)k->guard, LX_PAGE, PAGE_READWRITE | PAGE_GUARD, &op)) k->guard = 0;
+    if (k->guard && !w_protect((void *)k->guard, LX_PAGE, PAGE_READWRITE | PAGE_GUARD, &op)) k->guard = 0;
 }
 /* commit [ns, k->low) (the uncommitted parts) and charge them; then the guard goes lower */
 static void stk_grow(stkent *k)   /* g_stk_lock held */
 {
-    if (k->guard) { DWORD op; VirtualProtect((void *)k->guard, LX_PAGE, PAGE_READWRITE, &op); }
+    if (k->guard) { DWORD op; w_protect((void *)k->guard, LX_PAGE, PAGE_READWRITE, &op); }
     u64 ns = k->low > k->s + STK_GROW ? k->low - STK_GROW : k->s;
     for (u64 a = ns; a < k->low; ) {
         MEMORY_BASIC_INFORMATION mbi;
@@ -2371,7 +2803,7 @@ static void stk_forget(u64 s, u64 e)
     for (LONG i = 0; i < g_nstk; i++)
         if (g_stk[i].e && g_stk[i].s < e && g_stk[i].e > s) {
             DWORD op;
-            if (g_stk[i].guard) VirtualProtect((void *)g_stk[i].guard, LX_PAGE, PAGE_READWRITE, &op);   /* kept memory: no guard */
+            if (g_stk[i].guard) w_protect((void *)g_stk[i].guard, LX_PAGE, PAGE_READWRITE, &op);   /* kept memory: no guard */
             g_stk[i].e = 0; g_stk[i].guard = 0;
         }
     ReleaseSRWLockExclusive(&g_stk_lock);
