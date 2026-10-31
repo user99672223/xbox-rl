@@ -3,6 +3,43 @@
 Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console's D3D12. Newest first; read with
 `git fetch origin claude/desktop-gpu`. Session A's report (branch `claude/desktop-debian`) follows below unchanged.
 
+## 2026-10-31 (B2) - CI run 50: Plasma on the layer stalls in a fork; Dozen (Vulkan on D3D12) builds
+
+### CI run 50 (f8af6f1): g1 FAIL - startplasma-x11's third child never execs (layer, fork path) -> request A6
+- g1 (`xsession.sh plasma`, plain Plasma from rootfs-apt-plasma.list): Xvfb up at +5 s, then **no window in 459 s**
+  (root has 0 children). startplasma-x11 (pid 7688) ran `kapplymousetheme` (fork -> child 7640, "snapshot of the
+  parent's writable memory") and `ksplashqml` (child 7788, same), then forked **child 1688 with "copy-on-write
+  snapshot (3 MiB write-protected)"**, which never reached exec; startplasma waited on it until the probe ended
+  (`signal 9 to tid 1688`; then "child 1688 done; 8760 KiB of 3 MiB written meanwhile put back").
+- Real-Linux reference (strace -f, same rootfs): startplasma-x11's children are QProcess's
+  `clone(CLONE_VM|CLONE_PIDFD|CLONE_VFORK|SIGCHLD, child_stack=...)` -> `kapplymousetheme`, then `xrdb -merge
+  /tmp/startplasma-x11.XXXX` (xrdb runs `sh -c cpp ...` -> cc1 through clone3 CLONE_VFORK), then `plasma_session`
+  (which starts kcminit_startup, ksmserver, kwin_x11, plasmashell). So child 1688 is the `xrdb -merge` one: the
+  first fork of startplasma that took the copy-on-write snapshot path.
+- g2-g4: exit 127 in 3 s, as expected: no overlay in the CI rootfs yet (request 1).
+- The probe list reached bash on the Windows runner with CRLF: screenshot/log names got U+F00D ("plasma\r").
+  `tools/ci/.gitattributes` (new, mine) keeps `*.list` and `*.sh` LF in that directory.
+- Everything else in run 50 as on A's branch (m1, m3-m6 PASS; m2 and m5s failed there too).
+
+### Step 3 started: Dozen (Vulkan on D3D12) in the same build - builds, not run yet
+- `-Dvulkan-drivers=microsoft-experimental`: `/opt/xrl-gpu/lib/libvulkan_dzn.so`, ICD
+  `/opt/xrl-gpu/share/vulkan/icd.d/dzn_icd.x86_64.json`, picked by `xrl-gpu` (`VK_DRIVER_FILES`). Tarball 12 MB.
+- Patch (now 9 files): DirectX-Headers' C half also takes the RetVal form (`#if !defined(_WIN32)` -> `&&
+  !defined(XRL_WIN64_ABI)`, 172 sites; Dozen is C), `dzn_abi_helper.h` uses it, `dzn_sync.c` waits without eventfds
+  (`SetEventOnMultipleFenceCompletion(..., NULL)` blocks for infinite waits, polling otherwise); DXIL signing moved
+  into `nir_to_dxil` (one place for GL, Dozen and spirv_to_dxil).
+- `xrl-plasma-session vk-gpu`: `vulkaninfo --summary` + `vkcube --c 300` timed (probe g5);
+  `rootfs-apt-plasma.list` + `libvulkan1 vulkan-tools`.
+- The shim now refuses the test host's stub op table (no `get_adapter_info`: its "device" is a fake handle).
+
+### Requests for A (new)
+6. **Fork without exec on the copy-on-write snapshot path** (above): startplasma-x11 -> QProcess (Qt 6.8: clone
+   with CLONE_VM|CLONE_VFORK|CLONE_PIDFD and a child stack, glibc may show it as a fork) -> child never execs.
+   Repro: `/bin/bash /tmp/xrl-xsession.sh plasma` (g1). Plasma cannot start until this works.
+7. desktop-run.sh: also strip a trailing `\r` from probes-gpu.list lines (`l=${l%$'\r'}`), in case an old
+   checkout still has CRLF.
+Requests 1-5 below still stand (1 is what g2-g5 need).
+
 ## 2026-10-31 (B1) - Plasma 6 themed session (local reference) and Mesa d3d12 on Win64 COM (built, not run yet)
 
 ### Step 1: KDE Plasma 6 (X11) on llvmpipe

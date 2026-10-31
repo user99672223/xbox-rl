@@ -1,4 +1,4 @@
-# OpenGL (and later Vulkan) on the console's D3D12
+# OpenGL and Vulkan on the console's D3D12
 
 Linux programs on the layer get OpenGL from Mesa's **d3d12** gallium driver, the driver WSLg uses: it translates
 OpenGL into D3D12 command lists and DXIL shaders. On WSL it talks to Microsoft's Linux build of the D3D12 runtime;
@@ -20,7 +20,7 @@ glxgears / kwin_x11 / Firefox (Linux, glibc)
 | File | What |
 |---|---|
 | `build-mesa.sh <out.tar.gz>` | Builds everything for Debian 13 into `/opt/xrl-gpu` (in docker `debian:trixie` or a debootstrap chroot); the tarball unpacks at the rootfs root. Inputs pinned: Mesa 25.0.7 (sha256), DirectX-Headers v1.614.1 (commit). |
-| `patches/mesa-25.0.7-xrl-win64-abi.patch` | Mesa: MSVC struct returns (`d3d12_common.h`), fences without eventfds (`d3d12_fence.*`), DXIL signed after `nir_to_dxil` (`d3d12_compiler.cpp`), `xrl_dxil_hash.c` in the build, llvmpipe fallback when `GALLIUM_DRIVER=d3d12` cannot start (`sw_helper.h`). |
+| `patches/mesa-25.0.7-xrl-win64-abi.patch` | Mesa: MSVC struct returns (`d3d12_common.h`, Dozen's `dzn_abi_helper.h`), waits without eventfds (`d3d12_fence.*`, `dzn_sync.c`), every DXIL container signed in `nir_to_dxil` (`xrl_dxil_hash.c` in the compiler library), llvmpipe fallback when `GALLIUM_DRIVER=d3d12` cannot start (`sw_helper.h`). |
 | `xrl-d3d12/xrl_d3d12.cpp` | The shim library (exports: `D3D12CreateDevice`, `D3D12SerializeVersionedRootSignature`, `D3D12SerializeRootSignature`, `D3D12EnableExperimentalFeatures` (no-op), `D3D12GetDebugInterface` (E_NOINTERFACE), `DXCoreCreateAdapterFactory`). |
 | `xrl-d3d12/xrl_dxil_hash.c` | The container digest D3D12 checks (DXC's "retail" MD5 variant). |
 | `tests/rootsig-test.sh` | Serializer + digest against Microsoft-compiled blobs (vkd3d's test data, pinned): 24 root signatures byte-identical, 66 shader digests equal. Runs in `build-mesa.sh`. |
@@ -32,10 +32,15 @@ glxgears / kwin_x11 / Firefox (Linux, glibc)
   (SysV, for Microsoft's SysV-built Linux runtime). With `-DXRL_WIN64_ABI` they are `__attribute__((ms_abi))`, so
   GCC emits Win64 calls (this in rcx, 32-byte shadow space, xmm6-15 preserved by the callee) for every COM method and
   function pointer. The vtable layout of single-inheritance, non-overloaded MIDL interfaces is the same in GCC and MSVC.
+- **Vulkan: Dozen** (`libvulkan_dzn.so`, ICD `/opt/xrl-gpu/share/vulkan/icd.d/dzn_icd.x86_64.json`, selected by
+  xrl-gpu through `VK_DRIVER_FILES`): same device, same shim, same signing; X11 presentation through Mesa's WSI
+  software path (`sw_device`: CPU copy and XPutImage), like GL. Its multi-fence waits use
+  `SetEventOnMultipleFenceCompletion(..., NULL)` (blocks) or polling.
 - **Methods that return a struct** (`GetDesc`, `GetCPUDescriptorHandleForHeapStart`, `GetAdapterLuid`, ...): MSVC
   returns them through a hidden pointer passed after `this`, even when small. DirectX-Headers already spells that
-  out for MinGW (`T *GetDesc(T *RetVal)`); `XRL_WIN64_ABI` selects those declarations, and Mesa's own wrappers in
-  `d3d12_common.h` follow.
+  out for MinGW (`T *GetDesc(T *RetVal)`, C++ half: `#if defined(_MSC_VER) || !defined(_WIN32)`) and for every
+  Windows C compiler (C half: `#if !defined(_WIN32)`); `XRL_WIN64_ABI` selects those declarations in both, and Mesa's
+  own wrappers in `d3d12_common.h` / `dzn_abi_helper.h` follow.
 - **Types.** WSL's headers use Windows sizes for `LONG`/`ULONG`/`HRESULT`/`BOOL` (32-bit), so the structs match.
   `WCHAR` stays `wchar_t` (4 bytes): only `SetName`/`OpenSharedHandleByName` take wide strings, and the GL driver
   calls neither on this path.
@@ -43,8 +48,8 @@ glxgears / kwin_x11 / Firefox (Linux, glibc)
   event: a finite wait polls `GetCompletedValue` (20 us doubling to 1 ms), an infinite one calls
   `SetEventOnCompletion(value, NULL)`, which blocks inside the runtime until the fence is reached.
 - **Shader signing.** Mesa on Linux turns on experimental shader models so unsigned DXIL is accepted; on Windows
-  that needs developer mode, and the console's runtime may refuse it. Instead the patch writes the container digest
-  that `dxil.dll` would (`xrl_dxil_hash.c`, verified against fxc), and the shim's `D3D12EnableExperimentalFeatures`
+  that needs developer mode, and the console's runtime may refuse it. Instead `nir_to_dxil` writes the container
+  digest that `dxil.dll` would (`xrl_dxil_hash.c`, verified against fxc), and the shim's `D3D12EnableExperimentalFeatures`
   succeeds without doing anything. Same digest on the shim's root signature containers.
 - **No DXCore, no DXGI.** The device is the host's (`xrl_gfx_ops.d3d12_create_device`, created once per process
   and shared by every GL screen); the "adapter" Mesa enumerates is a guest object describing it from

@@ -8,6 +8,7 @@
 #   plasma-gpu    Plasma with /opt/xrl-gpu (Mesa d3d12: OpenGL on the console's D3D12; llvmpipe when there is none)
 #   plasma-tv     plasma-gpu shown on /dev/fb0 (the TV) through xbridge, controller/keyboard/mouse in
 #   glx | glx-gpu glxinfo -B and glxgears for 10 s, Debian's Mesa or /opt/xrl-gpu
+#   vk-gpu        vulkaninfo --summary and vkcube for 300 frames on Dozen (Vulkan on D3D12, /opt/xrl-gpu)
 # What it prints, for the probe logs: when the desktop and the dock appear, glxgears frames per second inside the
 # session (compositor on), the memory of every process (RSS, sorted) and the total, the window tree.
 #
@@ -80,6 +81,13 @@ until /usr/bin/xdpyinfo > /dev/null 2>&1; do n=$((n + 1)); [ $n -gt 90 ] && brea
 say "display $size up after $n tries"
 
 case $mode in
+vk-gpu)
+    gl /usr/bin/vulkaninfo --summary 2>&1 | grep -aE "deviceName|driverName|driverInfo|apiVersion|deviceType|ERROR" | head -n 12
+    s0=$(date +%s%N)
+    gl /usr/bin/vkcube --c 300 > /tmp/xrl-plasma-vkcube.log 2>&1; rc=$?
+    ms=$((($(date +%s%N) - s0) / 1000000))
+    say "vkcube: exit $rc, 300 frames in $ms ms$([ $ms -gt 0 ] && echo " = $((300000 / ms)) fps")"
+    ;;
 glx|glx-gpu)
     gl /usr/bin/glxinfo -B 2>&1 | grep -aE "direct rendering|OpenGL (vendor|renderer|core profile version|version) string|Video memory|Accelerated|Device:"
     fps 12

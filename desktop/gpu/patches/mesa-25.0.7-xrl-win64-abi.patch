@@ -1,6 +1,6 @@
 diff -ruN a/src/gallium/auxiliary/target-helpers/sw_helper.h b/src/gallium/auxiliary/target-helpers/sw_helper.h
 --- a/src/gallium/auxiliary/target-helpers/sw_helper.h	2026-10-31 07:14:29.364355151 +0000
-+++ b/src/gallium/auxiliary/target-helpers/sw_helper.h	2026-10-31 07:48:45.285803350 +0000
++++ b/src/gallium/auxiliary/target-helpers/sw_helper.h	2026-10-31 08:01:37.830152374 +0000
 @@ -91,7 +91,13 @@
        if (screen)
           return screen;
@@ -17,7 +17,7 @@ diff -ruN a/src/gallium/auxiliary/target-helpers/sw_helper.h b/src/gallium/auxil
     return NULL;
 diff -ruN a/src/gallium/drivers/d3d12/d3d12_common.h b/src/gallium/drivers/d3d12/d3d12_common.h
 --- a/src/gallium/drivers/d3d12/d3d12_common.h	2026-10-31 07:14:29.436643237 +0000
-+++ b/src/gallium/drivers/d3d12/d3d12_common.h	2026-10-31 07:14:55.144718865 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_common.h	2026-10-31 08:01:37.830895050 +0000
 @@ -52,7 +52,7 @@
  #endif /* D3D12_TEXTURE_DATA_PITCH_ALIGNMENT */
  
@@ -27,34 +27,9 @@ diff -ruN a/src/gallium/drivers/d3d12/d3d12_common.h b/src/gallium/drivers/d3d12
  inline D3D12_CPU_DESCRIPTOR_HANDLE
  GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
  {
-diff -ruN a/src/gallium/drivers/d3d12/d3d12_compiler.cpp b/src/gallium/drivers/d3d12/d3d12_compiler.cpp
---- a/src/gallium/drivers/d3d12/d3d12_compiler.cpp	2026-10-31 07:14:29.436827250 +0000
-+++ b/src/gallium/drivers/d3d12/d3d12_compiler.cpp	2026-10-31 07:36:30.016875501 +0000
-@@ -48,6 +48,9 @@
- #ifdef _WIN32
- #include "dxil_validator.h"
- #endif
-+#ifdef XRL_WIN64_ABI
-+#include "xrl_dxil_hash.h"
-+#endif
- 
- const void *
- d3d12_get_compiler_options(struct pipe_screen *screen,
-@@ -208,6 +211,11 @@
-    }
- #endif
- 
-+#ifdef XRL_WIN64_ABI
-+   /* xbox-rl: sign the container (the digest dxil.dll would write), so a stock runtime accepts it without
-+    * experimental shader models */
-+   xrl_dxil_container_sign(tmp.data, (uint32_t)tmp.size);
-+#endif
-    blob_finish_get_buffer(&tmp, &shader->bytecode, &shader->bytecode_length);
- 
-    if (d3d12_debug & D3D12_DEBUG_DXIL) {
 diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.cpp b/src/gallium/drivers/d3d12/d3d12_fence.cpp
 --- a/src/gallium/drivers/d3d12/d3d12_fence.cpp	2026-10-31 07:14:29.440846946 +0000
-+++ b/src/gallium/drivers/d3d12/d3d12_fence.cpp	2026-10-31 07:14:55.146655980 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_fence.cpp	2026-10-31 08:01:37.831269715 +0000
 @@ -27,9 +27,30 @@
  #include "d3d12_screen.h"
  
@@ -112,7 +87,7 @@ diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.cpp b/src/gallium/drivers/d3d1
     return complete;
 diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/d3d12_fence.h
 --- a/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 07:14:29.441049629 +0000
-+++ b/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 07:14:55.145018823 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 08:01:37.831155437 +0000
 @@ -53,6 +53,30 @@
     DWORD timeout_ms = (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > MaxTimeoutInNs) ? INFINITE : (DWORD)(timeout_ns / NsPerMs);
     return WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0;
@@ -146,7 +121,7 @@ diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/
  #include <poll.h>
 diff -ruN a/src/gallium/drivers/d3d12/d3d12_video_types.h b/src/gallium/drivers/d3d12/d3d12_video_types.h
 --- a/src/gallium/drivers/d3d12/d3d12_video_types.h	2026-10-31 07:14:29.476865330 +0000
-+++ b/src/gallium/drivers/d3d12/d3d12_video_types.h	2026-10-31 07:14:55.144892255 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_video_types.h	2026-10-31 08:01:37.831044248 +0000
 @@ -42,7 +42,7 @@
  
  #define D3D12_VIDEO_ANY_DECODER_ENABLED (VIDEO_CODEC_H264DEC || VIDEO_CODEC_H265DEC || VIDEO_CODEC_AV1DEC || VIDEO_CODEC_VP9DEC)
@@ -156,17 +131,162 @@ diff -ruN a/src/gallium/drivers/d3d12/d3d12_video_types.h b/src/gallium/drivers/
  inline D3D12_VIDEO_DECODER_HEAP_DESC
  GetDesc(ID3D12VideoDecoderHeap *heap)
  {
-diff -ruN a/src/gallium/drivers/d3d12/meson.build b/src/gallium/drivers/d3d12/meson.build
---- a/src/gallium/drivers/d3d12/meson.build	2026-10-31 07:14:29.477231418 +0000
-+++ b/src/gallium/drivers/d3d12/meson.build	2026-10-31 07:15:09.774599039 +0000
-@@ -135,6 +135,10 @@
- if is_xbox == false
-   files_libd3d12 += files('d3d12_dxcore_screen.cpp')
+diff -ruN a/src/microsoft/compiler/meson.build b/src/microsoft/compiler/meson.build
+--- a/src/microsoft/compiler/meson.build	2026-10-31 07:14:31.822631083 +0000
++++ b/src/microsoft/compiler/meson.build	2026-10-31 08:01:49.630584803 +0000
+@@ -20,6 +20,10 @@
+ if host_machine.system() == 'windows'
+   files_libdxil_compiler += files('dxil_validator.cpp')
  endif
 +if get_option('cpp_args').contains('-DXRL_WIN64_ABI')
-+  # xbox-rl: DXIL and root signatures are signed in-process (desktop/gpu/xrl-d3d12/dxil_hash.c)
-+  files_libd3d12 += files('xrl_dxil_hash.c')
++  # xbox-rl: DXIL containers are signed in-process (desktop/gpu/xrl-d3d12/xrl_dxil_hash.c, copied in by build-mesa.sh)
++  files_libdxil_compiler += files('xrl_dxil_hash.c')
 +endif
  
- libd3d12 = static_library(
-   'd3d12',
+ dxil_nir_algebraic_c = custom_target(
+   'dxil_nir_algebraic.c',
+diff -ruN a/src/microsoft/compiler/nir_to_dxil.c b/src/microsoft/compiler/nir_to_dxil.c
+--- a/src/microsoft/compiler/nir_to_dxil.c	2026-10-31 07:14:31.822778366 +0000
++++ b/src/microsoft/compiler/nir_to_dxil.c	2026-10-31 08:01:37.834831522 +0000
+@@ -22,6 +22,9 @@
+  */
+ 
+ #include "nir_to_dxil.h"
++#ifdef XRL_WIN64_ABI
++#include "xrl_dxil_hash.h"
++#endif
+ 
+ #include "dxil_container.h"
+ #include "dxil_dump.h"
+@@ -6763,6 +6766,11 @@
+       goto out;
+    }
+    dxil_container_finish(&container);
++#ifdef XRL_WIN64_ABI
++   /* xbox-rl: the digest dxil.dll's validator would write, so the console's (Windows) D3D12 runtime accepts the
++    * shader without experimental shader models (desktop/gpu/xrl-d3d12/xrl_dxil_hash.c) */
++   xrl_dxil_container_sign(blob->data, (uint32_t)blob->size);
++#endif
+ 
+    if (debug_dxil & DXIL_DEBUG_DUMP_BLOB) {
+       static int shader_id = 0;
+diff -ruN a/src/microsoft/vulkan/dzn_abi_helper.h b/src/microsoft/vulkan/dzn_abi_helper.h
+--- a/src/microsoft/vulkan/dzn_abi_helper.h	2026-10-31 07:14:31.826984776 +0000
++++ b/src/microsoft/vulkan/dzn_abi_helper.h	2026-10-31 08:01:49.630849435 +0000
+@@ -38,7 +38,7 @@
+ dzn_ID3D12Device4_GetCustomHeapProperties(ID3D12Device4 *dev, UINT node_mask, D3D12_HEAP_TYPE type)
+ {
+     D3D12_HEAP_PROPERTIES ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+     ID3D12Device4_GetCustomHeapProperties(dev, &ret, node_mask, type);
+ #else
+     ret = ID3D12Device4_GetCustomHeapProperties(dev, node_mask, type);
+@@ -50,7 +50,7 @@
+ dzn_ID3D12Device4_GetResourceAllocationInfo(ID3D12Device4 *dev, UINT visible_mask, UINT num_resource_descs, const D3D12_RESOURCE_DESC *resource_descs)
+ {
+     D3D12_RESOURCE_ALLOCATION_INFO ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+     ID3D12Device4_GetResourceAllocationInfo(dev, &ret, visible_mask, num_resource_descs, resource_descs);
+ #else
+     ret = ID3D12Device4_GetResourceAllocationInfo(dev, visible_mask, num_resource_descs, resource_descs);
+@@ -64,7 +64,7 @@
+                                               D3D12_RESOURCE_ALLOCATION_INFO1 *allocation_info1)
+ {
+    D3D12_RESOURCE_ALLOCATION_INFO ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+    ID3D12Device12_GetResourceAllocationInfo3(dev, &ret, visible_mask, num_resource_descs, resource_descs, num_castable_formats, castable_formats, allocation_info1);
+ #else
+    ret = ID3D12Device12_GetResourceAllocationInfo3(dev, visible_mask, num_resource_descs, resource_descs, num_castable_formats, castable_formats, allocation_info1);
+@@ -76,7 +76,7 @@
+ dzn_ID3D12Resource_GetDesc(ID3D12Resource *res)
+ {
+     D3D12_RESOURCE_DESC ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+     ID3D12Resource_GetDesc(res, &ret);
+ #else
+     ret = ID3D12Resource_GetDesc(res);
+@@ -88,7 +88,7 @@
+ dzn_ID3D12Heap_GetDesc(ID3D12Heap *heap)
+ {
+    D3D12_HEAP_DESC ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+     ID3D12Heap_GetDesc(heap, &ret);
+ #else
+     ret = ID3D12Heap_GetDesc(heap);
+@@ -100,7 +100,7 @@
+ dzn_ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+ {
+     D3D12_CPU_DESCRIPTOR_HANDLE ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+     ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(heap, &ret);
+ #else
+     ret = ID3D12DescriptorHeap_GetCPUDescriptorHandleForHeapStart(heap);
+@@ -112,7 +112,7 @@
+ dzn_ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+ {
+     D3D12_GPU_DESCRIPTOR_HANDLE ret;
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(XRL_WIN64_ABI)   /* xbox-rl: MSVC struct returns */
+     ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(heap, &ret);
+ #else
+     ret = ID3D12DescriptorHeap_GetGPUDescriptorHandleForHeapStart(heap);
+diff -ruN a/src/microsoft/vulkan/dzn_sync.c b/src/microsoft/vulkan/dzn_sync.c
+--- a/src/microsoft/vulkan/dzn_sync.c	2026-10-31 07:14:31.835782034 +0000
++++ b/src/microsoft/vulkan/dzn_sync.c	2026-10-31 08:01:58.518055004 +0000
+@@ -139,7 +139,11 @@
+ {
+    struct dzn_device *ddev = container_of(device, struct dzn_device, vk);
+ 
+-#ifdef _WIN32
++#if defined(XRL_WIN64_ABI)
++   /* xbox-rl: the console's (Windows) D3D12 takes Win32 events, not eventfds: no event (below) */
++   int event_fd = -1;
++   HANDLE event = NULL;
++#elif defined(_WIN32)
+    HANDLE event = CreateEventA(NULL, false, false, NULL);
+    if (event == NULL)
+       return vk_error(device, VK_ERROR_OUT_OF_HOST_MEMORY);
+@@ -166,6 +170,37 @@
+       D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY :
+       D3D12_MULTIPLE_FENCE_WAIT_FLAG_ALL;
+ 
++#ifdef XRL_WIN64_ABI
++   {
++      /* infinite: SetEventOnMultipleFenceCompletion with no event blocks in the runtime until the fences are
++       * reached; finite: poll the fences (20 us doubling to 1 ms) */
++      VkResult xret = VK_SUCCESS;
++      if (abs_timeout_ns == OS_TIMEOUT_INFINITE) {
++         if (FAILED(ID3D12Device1_SetEventOnMultipleFenceCompletion(ddev->dev, fences, values, wait_count, flags, NULL)))
++            xret = vk_error(device, VK_ERROR_DEVICE_LOST);
++      } else {
++         int64_t us = 20;
++         for (;;) {
++            uint32_t done = 0;
++            for (uint32_t i = 0; i < wait_count; i++)
++               done += ID3D12Fence_GetCompletedValue(fences[i]) >= values[i];
++            if (flags == D3D12_MULTIPLE_FENCE_WAIT_FLAG_ANY ? done > 0 : done == wait_count)
++               break;
++            if ((uint64_t)os_time_get_nano() >= abs_timeout_ns) {
++               xret = VK_TIMEOUT;
++               break;
++            }
++            os_time_sleep(us);
++            if (us < 1000)
++               us *= 2;
++         }
++      }
++      STACK_ARRAY_FINISH(fences);
++      STACK_ARRAY_FINISH(values);
++      return xret;
++   }
++#endif
++
+    if (FAILED(ID3D12Device1_SetEventOnMultipleFenceCompletion(ddev->dev,
+                                                               fences,
+                                                               values,

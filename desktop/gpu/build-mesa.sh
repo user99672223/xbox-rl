@@ -4,9 +4,10 @@
 # Builds, for Debian 13 (the CI rootfs's release: same glibc, libX11, LLVM), into the prefix /opt/xrl-gpu:
 #   - Mesa $MESA_VERSION with the gallium drivers d3d12 (GL on D3D12, the WSLg approach) and llvmpipe (fallback),
 #     GLX through glvnd (libGLX_mesa) on the DRI software winsys (XPutImage / MIT-SHM), EGL on X11; compiled with
+#     Dozen (Vulkan on D3D12, -Dvulkan-drivers=microsoft-experimental), all compiled with
 #     -DXRL_WIN64_ABI: DirectX-Headers' STDMETHODCALLTYPE/WINAPI become __attribute__((ms_abi)) and struct-returning
 #     methods take MSVC's hidden return pointer, so Mesa calls the console's Win64 D3D12 objects directly
-#     (patches/mesa-*.patch: fences without eventfds, DXIL signed in-process)
+#     (patches/mesa-*.patch: fences without eventfds, DXIL signed in nir_to_dxil, llvmpipe fallback)
 #   - libxrl-d3d12.so (xrl-d3d12/), installed as libd3d12.so and libdxcore.so: the device from the layer's host
 #     op table, a root signature serializer, one DXCore adapter
 #   - bin/xrl-gpu: runs a program with this Mesa (LD_LIBRARY_PATH, the glvnd EGL vendor file, GALLIUM_DRIVER=d3d12)
@@ -116,20 +117,23 @@ PY
 grep -rlE '^#if defined\(_MSC_VER\) \|\| !defined\(_WIN32\)' dxh/include | xargs sed -i -E \
     's/^#if defined\(_MSC_VER\) \|\| !defined\(_WIN32\)(\r?)$/#if (defined(_MSC_VER) || !defined(_WIN32)) \&\& !defined(XRL_WIN64_ABI)\1/'
 ! grep -rqE '^#if defined\(_MSC_VER\) \|\| !defined\(_WIN32\)' dxh/include
+# the C interfaces (Dozen is C): MIDL writes the RetVal form for every Windows compiler there, guarded by !_WIN32
+grep -rlE '^#if !defined\(_WIN32\)' dxh/include | xargs sed -i -E \
+    's/^#if !defined\(_WIN32\)(\r?)$/#if !defined(_WIN32) \&\& !defined(XRL_WIN64_ABI)\1/'
 
 # Mesa: its DirectX-Headers subproject is ours; the xbox-rl patch and the digest code
 mkdir -p "mesa-$MESA_VERSION/subprojects"
 rm -rf "mesa-$MESA_VERSION/subprojects/DirectX-Headers-1.0" "mesa-$MESA_VERSION/subprojects/DirectX-Headers.wrap"
 cp -r dxh "mesa-$MESA_VERSION/subprojects/DirectX-Headers"
 patch -d "mesa-$MESA_VERSION" -p1 < "$here/patches/mesa-$MESA_VERSION-xrl-win64-abi.patch"
-cp "$here/xrl-d3d12/xrl_dxil_hash.c" "$here/xrl-d3d12/xrl_dxil_hash.h" "mesa-$MESA_VERSION/src/gallium/drivers/d3d12/"
+cp "$here/xrl-d3d12/xrl_dxil_hash.c" "$here/xrl-d3d12/xrl_dxil_hash.h" "mesa-$MESA_VERSION/src/microsoft/compiler/"
 
 rm -rf build dest
 meson setup build "mesa-$MESA_VERSION" --wrap-mode=nodownload --force-fallback-for=DirectX-Headers \
     --prefix="$PREFIX" --libdir=lib --buildtype=release -Db_ndebug=true \
     -Dc_args=-DXRL_WIN64_ABI -Dcpp_args=-DXRL_WIN64_ABI \
     -Dplatforms=x11 -Dglx=dri -Dglvnd=enabled -Degl=enabled -Dgbm=disabled -Dgles1=disabled -Dgles2=enabled \
-    -Dgallium-drivers=d3d12,llvmpipe -Dvulkan-drivers= -Dllvm=enabled -Dshared-llvm=enabled \
+    -Dgallium-drivers=d3d12,llvmpipe -Dvulkan-drivers=microsoft-experimental -Dllvm=enabled -Dshared-llvm=enabled \
     -Dgallium-d3d12-video=disabled -Dgallium-d3d12-graphics=enabled -Dvideo-codecs= -Dgallium-va=disabled \
     -Dgallium-vdpau=disabled -Dgallium-xa=disabled -Dmicrosoft-clc=disabled -Dspirv-to-dxil=false \
     -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false > meson-setup.log 2>&1 \
@@ -159,6 +163,8 @@ cat > "$d/bin/xrl-gpu" <<'SH'
 p=/opt/xrl-gpu/lib
 export LD_LIBRARY_PATH="$p${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export __EGL_VENDOR_LIBRARY_FILENAMES=/opt/xrl-gpu/share/glvnd/egl_vendor.d/50_mesa.json
+# Vulkan: Dozen (Mesa's Vulkan on D3D12) as the only driver
+export VK_DRIVER_FILES=/opt/xrl-gpu/share/vulkan/icd.d/dzn_icd.x86_64.json VK_ICD_FILENAMES=/opt/xrl-gpu/share/vulkan/icd.d/dzn_icd.x86_64.json
 unset LIBGL_ALWAYS_SOFTWARE
 export GALLIUM_DRIVER="${XRL_GPU_DRIVER:-d3d12}"
 exec "$@"
