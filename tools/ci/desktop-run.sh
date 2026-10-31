@@ -59,7 +59,10 @@ for e in "${list[@]}"; do
     echo "exit $rc" >> "$log"
     v=PASS
     [ $rc -eq 0 ] && tr -d '\r' < "$log" | grep -qE "$pat" || v=FAIL
+    # what the guest printed, and the layer's errors and warnings: small enough never to hit the publisher's 2 MB cap
+    grep -aE "^\[(I guest|W guest|E )|UNHANDLED|not restored|mem-fail\[|ENOSYS|exit [0-9]+$" "$log" | grep -av "MAP " > "$out/probe-$n-short.txt"
     if [ -n "$shot" ]; then
+        for f in "$rootu"/tmp/xrl-*.log; do [ -f "$f" ] && cp "$f" "$out/$shot-$(basename "$f")"; done
         if [ -s "$rootu/tmp/xrl-$shot.xwd" ]; then
             cp "$rootu/tmp/xrl-$shot.xwd" "$out/$shot.xwd"
             python -I tools/xwd2png.py "$out/$shot.xwd" "$out/$shot.png" >> "$log" 2>&1 || v=FAIL

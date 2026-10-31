@@ -8,6 +8,7 @@
 # Prints the window tree (xwininfo -root -tree) and saves the screen to /tmp/xrl-<mode>.xwd. Logs of the background
 # programs go to /tmp/xrl-*.log and are printed at the end.
 mode=${1:-xterm}
+poll=1; [ "$mode" = xterm ] || poll=3   # each look at the window tree is two processes: fewer of them in the logs
 export DISPLAY=:0 HOME=${HOME:-/root} XDG_RUNTIME_DIR=/tmp/xrl-runtime NO_AT_BRIDGE=1
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /tmp/xrl-*.log "/tmp/xrl-$mode.xwd"
@@ -18,8 +19,8 @@ say() { echo "[xsession +$((SECONDS - t0))s] $*"; }
 wait_for() {
     local n=0
     until /usr/bin/xwininfo -root -tree 2> /dev/null | grep -qE "$2"; do
-        n=$((n + 1)); [ $n -ge "$1" ] && { say "timed out waiting for /$2/"; return 1; }
-        sleep 1
+        n=$((n + poll)); [ $n -ge "$1" ] && { say "timed out waiting for /$2/"; return 1; }
+        sleep "$poll"
     done
     say "found /$2/"
 }
@@ -47,7 +48,9 @@ xfce|firefox)
 <body style="background:#1d6b33;color:#fff;font:32px sans-serif"><h1>Hello from Firefox on xbox-rl</h1></body></html>
 EOF
         mkdir -p /tmp/xrl-ffprofile
-        env -u MOZ_HEADLESS MOZ_ENABLE_WAYLAND=0 /usr/bin/firefox-esr --no-remote --new-instance --profile /tmp/xrl-ffprofile \
+        # MOZ_LOG: process start-up and IPC, to see where it waits when no window comes (/tmp/xrl-firefox.log)
+        env -u MOZ_HEADLESS MOZ_ENABLE_WAYLAND=0 MOZ_LOG=IPC:4,ipc:4,ContentParent:4,ProcessChild:4,Widget:3 \
+            /usr/bin/firefox-esr --no-remote --new-instance --profile /tmp/xrl-ffprofile \
             file:///tmp/xrl-page/index.html > /tmp/xrl-firefox.log 2>&1 &
         pids="$pids $!"
         wait_for 300 '"xbox-rl page'
