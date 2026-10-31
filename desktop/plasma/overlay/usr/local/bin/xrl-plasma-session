@@ -1,0 +1,139 @@
+#!/bin/bash
+# xrl-plasma-session <mode> - a KDE Plasma 6 (X11) session, or an OpenGL check, on Xvfb inside the Debian guest.
+# Part of the xbox-rl desktop overlay (desktop/plasma, REPORT.md on claude/desktop-gpu). The same script runs on the
+# layer (the CI test host, the Xbox app) and in a chroot on real Linux for the reference numbers.
+#
+# Modes (the last word of the command line names the screenshot: /tmp/xrl-<mode>.xwd):
+#   plasma        Plasma on Mesa llvmpipe (the CPU)
+#   plasma-gpu    Plasma with /opt/xrl-gpu (Mesa d3d12: OpenGL on the console's D3D12; llvmpipe when there is none)
+#   plasma-tv     plasma-gpu shown on /dev/fb0 (the TV) through xbridge, controller/keyboard/mouse in
+#   glx | glx-gpu glxinfo -B and glxgears for 10 s, Debian's Mesa or /opt/xrl-gpu
+# What it prints, for the probe logs: when the desktop and the dock appear, glxgears frames per second inside the
+# session (compositor on), the memory of every process (RSS, sorted) and the total, the window tree.
+#
+# Environment: XRL_SCREEN=WxH (default 1920x1080), XRL_APPS (programs opened in the session, default konsole),
+# XRL_SESSION_SECONDS (how long the session stays up once the dock
+# is there; default 20, 0 = until killed: the Xbox), XRL_FPS=0 (no glxgears run), XRL_GPU_DRIVER (see xrl-gpu).
+mode=${1:-plasma}
+size=${XRL_SCREEN:-1920x1080}
+stay=${XRL_SESSION_SECONDS:-20}
+gpu=0; case $mode in *-gpu|plasma-tv) gpu=1 ;; esac
+export DISPLAY=:0 HOME=${HOME:-/root} XDG_RUNTIME_DIR=/tmp/xrl-runtime NO_AT_BRIDGE=1
+export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=KDE XDG_SESSION_DESKTOP=KDE KDE_FULL_SESSION=true DESKTOP_SESSION=plasma
+export QT_QPA_PLATFORM=xcb KDE_SESSION_VERSION=6 LANG=${LANG:-C.UTF-8}
+# KWin on a GLX software-winsys driver (llvmpipe, or d3d12 through xrl-gpu) under Xvfb: Xvfb's RandR reports no
+# refresh rate ("Bogus refresh rate -1000"), and with it KWin's frame scheduling left window decorations unpainted
+# (title bars missing until compositing was restarted); give it 60 Hz, pace frames with a timer (no vblank), and
+# paint every frame whole (no trustworthy buffer age on a software winsys)
+export KWIN_X11_REFRESH_RATE=60000 KWIN_X11_FORCE_SOFTWARE_VSYNC=1 KWIN_USE_BUFFER_AGE=0
+# Compositing (shadows, the translucent dock, animations) only with a GPU: on llvmpipe every composited frame is CPU
+# work, and KWin's compositor on Xvfb leaves the title bars of Qt windows unpainted (xterm's are fine; REPORT.md,
+# known issues). XRL_COMPOSITE=0|1 overrides.
+comp=${XRL_COMPOSITE:-$gpu}
+[ "$comp" = 1 ] || export KWIN_COMPOSE=N
+# no crash dialogs (drkonqi): a crashing process ends and the log says where
+export KDE_DEBUG=1 QT_LOGGING_RULES=${QT_LOGGING_RULES:-"*.debug=false;kwin_*.warning=true"}
+mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
+rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /tmp/xrl-plasma-*.log "/tmp/xrl-$mode.xwd"
+t0=$SECONDS
+say() { echo "[plasma +$((SECONDS - t0))s] $*"; }
+gl() { if [ $gpu = 1 ]; then /opt/xrl-gpu/bin/xrl-gpu "$@"; else "$@"; fi; }
+if [ $gpu = 1 ] && [ ! -x /opt/xrl-gpu/bin/xrl-gpu ]; then say "no /opt/xrl-gpu in this rootfs"; exit 2; fi
+
+# wait_for <seconds> <grep -E pattern> [count]: until the window tree shows the pattern (count times)
+wait_for() {
+    local n=0 c
+    while :; do
+        c=$(/usr/bin/xwininfo -root -tree 2> /dev/null | grep -cE "$2")
+        [ "$c" -ge "${3:-1}" ] && break
+        n=$((n + 2)); [ $n -ge "$1" ] && { say "timed out waiting for /$2/ x${3:-1} (have $c)"; return 1; }
+        sleep 2
+    done
+    say "found /$2/ x${3:-1}"
+}
+
+# fps <seconds>: glxgears in a window, mean of its 5-second reports
+fps() {
+    local log=/tmp/xrl-plasma-glxgears.log
+    # not through gl(): a function in the background is a subshell, and its pid is not glxgears' (xrl-gpu execs)
+    if [ $gpu = 1 ]; then /opt/xrl-gpu/bin/xrl-gpu /usr/bin/glxgears -geometry 480x480+720+240 > "$log" 2>&1 &
+    else /usr/bin/glxgears -geometry 480x480+720+240 > "$log" 2>&1 & fi
+    local p=$!
+    sleep "$1"
+    kill $p 2> /dev/null; wait $p 2> /dev/null
+    grep -a "FPS" "$log" | tail -n 4
+    awk '/FPS/ {s += $(NF-1); n++} END {if (n) printf "glxgears: %.1f fps (mean of %d reports)\n", s / n, n; else print "glxgears: no fps report"}' "$log"
+}
+
+memory() {
+    echo "--- memory (RSS MiB per process, then the total)"
+    /usr/bin/ps -eo rss=,comm= | sort -rn | awk '{printf "%7.1f  %s\n", $1 / 1024, $2; t += $1} END {printf "%7.1f  TOTAL (%d processes)\n", t / 1024, NR}' | head -n 40
+    # PSS: shared pages (Qt, KF6, the fonts) counted once, split between their users - the real footprint
+    cat /proc/[0-9]*/smaps_rollup 2> /dev/null | awk '/^Pss:/ {t += $2; n++} END {if (n) printf "%7.1f  PSS TOTAL (%d processes)\n", t / 1024, n}'
+    grep -E "^(MemTotal|MemAvailable|Committed_AS):" /proc/meminfo 2> /dev/null
+}
+
+/usr/bin/Xvfb :0 -screen 0 "${size}x24" -nolisten tcp +extension GLX +extension RANDR > /tmp/xrl-plasma-xvfb.log 2>&1 &
+pids=$!
+n=0
+until /usr/bin/xdpyinfo > /dev/null 2>&1; do n=$((n + 1)); [ $n -gt 90 ] && break; sleep 1; done
+say "display $size up after $n tries"
+
+case $mode in
+glx|glx-gpu)
+    gl /usr/bin/glxinfo -B 2>&1 | grep -aE "direct rendering|OpenGL (vendor|renderer|core profile version|version) string|Video memory|Accelerated|Device:"
+    fps 12
+    ;;
+plasma|plasma-gpu|plasma-tv)
+    # the TV: for good (the Xbox: XRL_SESSION_SECONDS=0) from the start; for a timed run once the dock is there, for
+    # $stay seconds, after which the bridge writes what it put on /dev/fb0 to /tmp/xrl-fb0.raw (BGRX, screen size)
+    tv() { rm -f /tmp/xrl-fb0.raw; /usr/local/bin/xbridge --x --unix /tmp/.X11-unix/X0 --seconds "$1" --dump /tmp/xrl-fb0.raw \
+               > /tmp/xrl-plasma-bridge.log 2>&1 & bridge=$!; }
+    [ "$mode" = plasma-tv ] && [ "$stay" = 0 ] && tv 2000000000
+    # the session bus first (this script talks to KWin on it), then startplasma-x11 (ksmserver, kwin_x11, plasmashell,
+    # kded6, ...); the GL wrapper is inherited by every process it starts
+    eval "$(/usr/bin/dbus-launch --sh-syntax)"
+    pids="$pids $DBUS_SESSION_BUS_PID"
+    gl /usr/bin/startplasma-x11 > /tmp/xrl-plasma-session.log 2>&1 &
+    pids="$pids $!"
+    # the desktop (one per screen) and the dock: plasmashell's windows, named "Desktop @ ..." and "Panel"
+    wait_for 300 '"Desktop @' && wait_for 120 '"(Panel|plasmashell)": \("plasmashell"' 2
+    wait_for 60 '"kwin_x11"|_KDE_NET_WM|"KWin' > /dev/null 2>&1 || true
+    sleep 8   # the dock's icons and the wallpaper load asynchronously
+    say "session up (compositing: $(/usr/bin/qdbus6 org.kde.KWin /Compositor org.freedesktop.DBus.Properties.Get \
+        org.kde.kwin.Compositing active 2>&1))"
+    gl /usr/bin/glxinfo -B 2>&1 | grep -aE "OpenGL renderer string" | sed 's/^/glxinfo in session: /'
+    # an application window (XRL_APPS, default konsole; "" for none): the screenshot shows the theme on a real window
+    apps=${XRL_APPS-konsole}
+    for app in $apps; do gl "/usr/bin/$app" > "/tmp/xrl-plasma-$app.log" 2>&1 & pids="$pids $!"; done
+    [ -n "$apps" ] && { re=$(echo $apps | tr ' ' '|'); wait_for 120 "\(\"($re)\"" "$(echo $apps | wc -w)"; }
+    [ "${XRL_FPS:-1}" = 1 ] && fps 12
+    memory
+    if [ "$stay" = 0 ]; then say "running until killed"; wait; fi
+    if [ "$mode" = plasma-tv ]; then
+        tv "$stay"; wait "$bridge"; say "bridge done: $(tail -n 3 /tmp/xrl-plasma-bridge.log | tr '\n' ' ')"; bridge=
+    else
+        sleep "$stay"
+    fi
+    ;;
+*) say "unknown mode $mode"; exit 2 ;;
+esac
+
+/usr/bin/xwininfo -root -tree | grep -avE '^ +[0-9]+ children:$|has no name' | head -n 60
+# the picture: KWin's composite overlay window when a compositor runs (the root window would show the windows without
+# their decorations), else the root window
+cow=; [ "$comp" = 1 ] && cow=$(/usr/local/bin/xrl-cow-id 2> /dev/null)
+if [ -n "$cow" ] && /usr/bin/xwd -id "$cow" -silent -out "/tmp/xrl-$mode.xwd" && [ -s "/tmp/xrl-$mode.xwd" ]; then
+    what="compositor output $cow"
+else
+    /usr/bin/xwd -root -silent -out "/tmp/xrl-$mode.xwd"; what="root window"
+fi
+[ -s "/tmp/xrl-$mode.xwd" ] && say "screenshot /tmp/xrl-$mode.xwd ($what, $(stat -c %s "/tmp/xrl-$mode.xwd") bytes)"
+for f in /tmp/xrl-plasma-*.log; do echo "--- $f"; tail -n 40 "$f"; done
+if [ -n "$bridge" ]; then kill "$bridge" 2> /dev/null; wait "$bridge" 2> /dev/null; say "bridge: $(tail -n 2 /tmp/xrl-plasma-bridge.log | tr '\n' ' ')"; fi
+kill $pids 2> /dev/null
+sleep 1
+# on the layer this script is the init process: end every other guest process (dbus, kded6, ...) so the test host
+# exits. Never on real Linux (it would be everything on the machine).
+[ "$XRL_SESSION_KILLALL" = 1 ] && kill -9 -1 2> /dev/null
+exit 0

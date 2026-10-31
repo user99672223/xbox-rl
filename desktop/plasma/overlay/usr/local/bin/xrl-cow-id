@@ -1,0 +1,70 @@
+#!/usr/bin/python3 -I
+# xrl-cow-id - print the X window id of the Composite overlay window (COW) of screen 0, where a compositing window
+# manager (KWin) draws the finished picture: decorations, shadows, effects. GetImage on the root window does not
+# include it (the X server then paints the redirected windows' own pixmaps: no decorations), so screenshots of a
+# composited session read the COW instead: xwd -id "$(xrl-cow-id)". Prints nothing and exits 1 without a compositor
+# (then the root window is the picture). python3 + ctypes over libxcb/libxcb-composite: no build step.
+import ctypes as C
+import sys
+
+xcb = C.CDLL("libxcb.so.1")
+comp = C.CDLL("libxcb-composite.so.0")
+
+
+class Iter(C.Structure):
+    _fields_ = [("data", C.c_void_p), ("rem", C.c_int), ("index", C.c_int)]
+
+
+class Cookie(C.Structure):
+    _fields_ = [("sequence", C.c_uint)]
+
+
+class OverlayReply(C.Structure):
+    _fields_ = [("response_type", C.c_uint8), ("pad0", C.c_uint8), ("sequence", C.c_uint16), ("length", C.c_uint32),
+                ("overlay_win", C.c_uint32)]
+
+
+class SelReply(C.Structure):
+    _fields_ = [("response_type", C.c_uint8), ("pad0", C.c_uint8), ("sequence", C.c_uint16), ("length", C.c_uint32),
+                ("owner", C.c_uint32)]
+
+
+class AtomReply(C.Structure):
+    _fields_ = [("response_type", C.c_uint8), ("pad0", C.c_uint8), ("sequence", C.c_uint16), ("length", C.c_uint32),
+                ("atom", C.c_uint32)]
+
+
+xcb.xcb_connect.restype = C.c_void_p
+xcb.xcb_connect.argtypes = [C.c_char_p, C.c_void_p]
+xcb.xcb_connection_has_error.argtypes = [C.c_void_p]
+xcb.xcb_get_setup.restype = C.c_void_p
+xcb.xcb_get_setup.argtypes = [C.c_void_p]
+xcb.xcb_setup_roots_iterator.restype = Iter
+xcb.xcb_setup_roots_iterator.argtypes = [C.c_void_p]
+xcb.xcb_intern_atom.restype = Cookie
+xcb.xcb_intern_atom.argtypes = [C.c_void_p, C.c_uint8, C.c_uint16, C.c_char_p]
+xcb.xcb_intern_atom_reply.restype = C.POINTER(AtomReply)
+xcb.xcb_intern_atom_reply.argtypes = [C.c_void_p, Cookie, C.c_void_p]
+xcb.xcb_get_selection_owner.restype = Cookie
+xcb.xcb_get_selection_owner.argtypes = [C.c_void_p, C.c_uint32]
+xcb.xcb_get_selection_owner_reply.restype = C.POINTER(SelReply)
+xcb.xcb_get_selection_owner_reply.argtypes = [C.c_void_p, Cookie, C.c_void_p]
+comp.xcb_composite_get_overlay_window.restype = Cookie
+comp.xcb_composite_get_overlay_window.argtypes = [C.c_void_p, C.c_uint32]
+comp.xcb_composite_get_overlay_window_reply.restype = C.POINTER(OverlayReply)
+comp.xcb_composite_get_overlay_window_reply.argtypes = [C.c_void_p, Cookie, C.c_void_p]
+
+conn = xcb.xcb_connect(None, None)
+if not conn or xcb.xcb_connection_has_error(conn):
+    sys.exit("xrl-cow-id: cannot open the display")
+root = C.c_uint32.from_address(xcb.xcb_setup_roots_iterator(xcb.xcb_get_setup(conn)).data).value  # xcb_screen_t.root
+# a compositor owns the _NET_WM_CM_S0 selection; without one the COW would be an empty window we just mapped
+name = b"_NET_WM_CM_S0"
+a = xcb.xcb_intern_atom_reply(conn, xcb.xcb_intern_atom(conn, 0, len(name), name), None)
+owner = xcb.xcb_get_selection_owner_reply(conn, xcb.xcb_get_selection_owner(conn, a.contents.atom), None)
+if not owner or not owner.contents.owner:
+    sys.exit(1)
+r = comp.xcb_composite_get_overlay_window_reply(conn, comp.xcb_composite_get_overlay_window(conn, root), None)
+if not r:
+    sys.exit(1)
+print("0x%x" % r.contents.overlay_win)
