@@ -2528,6 +2528,17 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
                     slong r = xrl_mem_mmap(gs, ge - gs, LX_PROT_READ | LX_PROT_WRITE, LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_FIXED_NOREPLACE, -1, 0);
                     if (r < 0 || (u64)r != gs) { LOGW("fork: cannot recreate [%llx,%llx) the child unmapped (%lld)", gs, ge, r); lost++; }
                     else if (sv->prot != (LX_PROT_READ | LX_PROT_WRITE)) xrl_mem_mprotect(gs, ge - gs, sv->prot);
+                } else if (!sv->shared && sv->name[0] == '/' && strncmp(sv->name, "/memfd:", 7)) {
+                    /* a private file mapping (the child mapped over it): map the same file part again */
+                    slong r = -LX_ENOENT;
+                    s64 off = sv->moff + (s64)(gs - sv->start);
+                    slong fd = xrl_vfs_open(LX_AT_FDCWD, sv->name, LX_O_RDONLY | LX_O_CLOEXEC, 0);
+                    if (fd >= 0) {
+                        r = xrl_mem_mmap(gs, ge - gs, sv->prot, LX_MAP_PRIVATE | LX_MAP_FIXED_NOREPLACE, (int)fd, off);
+                        if (r == (slong)gs && (sv->prot & LX_PROT_EXEC)) xrl_rewrite_fd_mapped((int)fd, gs, ge - gs, off, sv->prot);
+                        xrl_fd_close((int)fd);
+                    }
+                    if (r != (slong)gs) { LOGW("fork: cannot map %s back at [%llx,%llx) (%lld)", sv->name, gs, ge, r); lost++; }
                 } else lost++;
             } else if (cur_owner == mm && cur_prot != sv->prot) xrl_mem_mprotect(gs, ge - gs, sv->prot);
             a = ge;
