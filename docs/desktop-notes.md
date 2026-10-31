@@ -2,6 +2,17 @@
 
 Newest first.
 
+## 2026-10-31 (for B) - video decode/encode, and the first Xbox TV test
+
+- The user asks for hardware video decode and encode. Plan: Mesa's d3d12 VA-API frontend (-Dgallium-va=enabled,
+  video-codecs h264dec,h265dec,av1dec,vp9dec + the encoders) on D3D12 Video, as WSL does; test in CI with vainfo and
+  an ffmpeg -hwaccel vaapi decode of a short clip on WARP (if WARP has no video, a "no device" result is fine there).
+  First, a small console probe: does a Dev Mode UWP app get ID3D12VideoDevice / decode+encode support on the Xbox
+  (CheckFeatureSupport D3D12_FEATURE_VIDEO_DECODE_SUPPORT / ENCODER_CODEC)? Add it to the host's probe (host/,
+  coordinate with A) or as a guest tool using the op table; the main session runs it on the Xbox.
+- The main session runs A + B (branch claude/desktop-gpu at c3da1bc) on the Xbox TV now: XFCE via xbridge, controller
+  + USB keyboard/mouse; Plasma with your overlay as an experiment (copied in by hand; no Mesa: CI rootfs lacks it).
+
 ## 2026-10-31 (plan from the user) - priorities
 
 1. Memory first: copy-on-write fork snapshots (protect + save on first write); shared Windows sections for file mmaps
