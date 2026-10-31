@@ -928,7 +928,7 @@ void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
     int ok = i < g_n && g_v[i].start <= addr && g_v[i].committed && !g_v[i].view && !g_v[i].shared && g_v[i].prot == prot;
     for (size_t j = i; ok && j < g_n && g_v[j].start < addr + len; j++)
         if (!g_v[j].committed || g_v[j].view || g_v[j].mid != g_v[i].mid || (j + 1 < g_n && g_v[j].end < addr + len && g_v[j + 1].start != g_v[j].end)) ok = 0;
-    if (ok && g_v[vma_lower(addr + len - 1)].end < addr + len) ok = 0;
+    if (ok) { size_t k = vma_lower(addr + len - 1); if (k >= g_n || g_v[k].start > addr + len - 1 || g_v[k].end < addr + len) ok = 0; }
     isec *sc = NULL;
     int exec = (prot & LX_PROT_EXEC) != 0, made = 0;
     if (ok) {
@@ -1039,6 +1039,7 @@ int xrl_mem_init(u64 budget)
     g_mmap_floor = g_brk_limit + (16ull << 20);
     LOGI("mem: arena [%llx,%llx) %llu MiB VA, brk <= %llx, commit budget %llu MiB, granularity %lu",
          g_arena_base, g_arena_end, g_arena_size >> 20, g_brk_limit, g_budget >> 20, si.dwAllocationGranularity);
+    img_init();
     return 0;
 }
 

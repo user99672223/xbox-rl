@@ -13,6 +13,9 @@ Newest first. Read by the main session with `git fetch origin claude/desktop-deb
   trampoline pool goes at a fixed offset below the image (rewrite.c), so rewritten code is the same everywhere.
   A view costs no per-process commit; mprotect adding PROT_WRITE or mremap turns it back into private memory.
   Probe 5t runs the Firefox session with it; the breakdown logs "shared library pages: N views of X MiB".
+- Run 47 (351d512): all PASS, UWP flavour builds. But 5t did not exercise the new code: the call that switches it on
+  (img_init in xrl_mem_init) was missing from that commit; fixed in the next one. (5t 1856 MiB vs 5 2048 MiB in
+  that run is run-to-run spread, not sharing.)
 - CI build job: the UWP flavour (`build.ps1 -Flavor uwp`, the console's xrl_layer.lib) is now compiled too
   (`build-uwp.txt`), so a shared-code change that breaks the console build shows up here first.
 
