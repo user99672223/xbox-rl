@@ -2,6 +2,21 @@
 
 Newest first.
 
+## 2026-10-31 (first TV run on the Xbox, A + B build c3da1bc, old CI rootfs + new xbridge/xsession.sh)
+
+The XFCE session shows on the TV (panel after 14 s, 386 MiB); the controller moves an invisible pointer. Issues, A:
+1. **No mouse pointer** (top usability issue): draw the cursor into fb0 (XFixesGetCursorImage + CursorNotify), B's
+   request 4.
+2. **Black desktop background**: xfdesktop is not drawn. Possibly 3: `E layer: exec: /usr/bin/x86_64-linux-gnu-cpp-14
+   is not position independent and needs [400000,521000), which address-space 12 (another live process) uses` -
+   xrdb's cpp collides with the non-PIE xbridge at 0x400000. Build xbridge as PIE (or load it elsewhere).
+3. **Firefox from the menu ran out of memory on YouTube**: 320 threads, committed 4096/4096 MiB, "cannot swap in",
+   lazy commit refused, app gone. The memory prefs only apply to xsession.sh's own profile: put them system-wide
+   (/etc/firefox-esr/ syspref.js or policies.json), and measure a YouTube page in CI (or another heavy page).
+4. "Choose Preferred Application" on the dock's web browser: set Firefox as the default (xfce4 helpers.rc).
+5. The USB mouse delivered no events at all (keyboard untested): host side, the main session is probing which input
+   source the console uses.
+
 ## 2026-10-31 (for B) - video decode/encode, and the first Xbox TV test
 
 - The user asks for hardware video decode and encode. The console's answers are already measured (the user's
