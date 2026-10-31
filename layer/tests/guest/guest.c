@@ -1234,7 +1234,12 @@ static void test_misc(void)
     long ts[2]; CHECK(sc2(228, 0, ts) == 0 && ts[0] > 1700000000, "clock_gettime(REALTIME)");
     CHECK(sc1(186, 0) > 0, "gettid");
     u64 fsv = 0; CHECK(sc2(158, 0x1003, &fsv) == 0, "arch_prctl(GET_FS)");
-    CHECK(sc2(158, 0x1001, 0x1234000) == -1, "arch_prctl(SET_GS) refused (-EPERM) for non-TEB value");
+    if (fork_tasks()) CHECK(sc2(158, 0x1001, 0x1234000) == -1, "arch_prctl(SET_GS) refused (-EPERM) for non-TEB value (XRL_FORK_TASKS)");
+    else {   /* a guest GS base of its own lives in a TEB slot; rewritten %gs operands use it (wasm2c sandboxes) */
+        u64 gsv = 0;
+        CHECK(sc2(158, 0x1001, 0x1234000) == 0 && sc2(158, 0x1004, &gsv) == 0 && gsv == 0x1234000, "arch_prctl(SET_GS) then GET_GS");
+        sc2(158, 0x1001, 0);
+    }
     u64 teb = 0; CHECK(sc2(158, 0x5801, &teb) == 0 && teb > 0x10000, "arch_prctl(XRL_GET_HOST_TEB)");
     CHECK(sc(202, 0, 999, 0, 0, 0, 0) == -38, "unknown futex op -> -ENOSYS");
     CHECK(sc1(999, 0) == -38, "unknown syscall 999 -> -ENOSYS");

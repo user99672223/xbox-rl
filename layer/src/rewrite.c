@@ -210,10 +210,10 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
 
     /* dry run: how big a trampoline pool? */
     xrw dry; memset(&dry, 0, sizeof dry);
-    dry.tp_gs_off = XRL_TP_GS_OFFSET; dry.log = rw_log;
+    dry.tp_gs_off = XRL_TP_GS_OFFSET; dry.gs_slot_off = xrl_gs_slot_off(); dry.log = rw_log;
     dry.pool_vaddr = rg[0].mem;
     for (int i = 0; i < nrg; i++) xrw_rewrite_range(&dry, (u8 *)rg[i].mem, rg[i].mem, (size_t)rg[i].size, starts, nst);
-    if (!dry.st.syscalls && !dry.st.fs_sites) {
+    if (!dry.st.syscalls && !dry.st.fs_sites && !dry.st.gs_sites) {
         if (dry.st.decode_fail) LOGW("rewrite: %s: %u undecodable region(s), nothing to rewrite elsewhere", name, dry.st.decode_fail);
         goto out;
     }
@@ -228,7 +228,7 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
     if (dlo > 0x70000000ull) LOGW("rewrite: %s: trampoline pool %llx is far from the code (%llx): every site becomes a trap", name, (u64)pool, rg[0].mem);
 
     xrw w; memset(&w, 0, sizeof w);
-    w.tp_gs_off = XRL_TP_GS_OFFSET; w.log = rw_log; w.verbose = g_rw_trace;
+    w.tp_gs_off = XRL_TP_GS_OFFSET; w.gs_slot_off = dry.gs_slot_off; w.log = rw_log; w.verbose = g_rw_trace;
     w.pool = pool; w.pool_vaddr = (u64)pool; w.pool_cap = cap;
     DWORD olds[256]; int ok = 1;
     for (int i = 0; i < nrg; i++) {
@@ -255,8 +255,8 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
         for (size_t i = 0; i < w.ntraps; i++) trap_add(w.traps[i].site, w.traps[i].stub);
         if (!g_rw_veh) g_rw_veh = AddVectoredExceptionHandler(1, rw_veh);
     }
-    LOGI("rewrite: %s: %u syscall + %u %%fs sites (%u in place, %u jumps, %u traps, %u neighbours moved), pool %zu bytes at %llx%s",
-         name, w.st.syscalls, w.st.fs_sites, w.st.inplace, w.st.jumps, w.st.traps, w.st.moved, w.pool_used, (u64)pool, ok ? "" : " [INCOMPLETE]");
+    LOGI("rewrite: %s: %u syscall + %u %%fs + %u %%gs sites (%u in place, %u jumps, %u traps, %u neighbours moved), pool %zu bytes at %llx%s",
+         name, w.st.syscalls, w.st.fs_sites, w.st.gs_sites, w.st.inplace, w.st.jumps, w.st.traps, w.st.moved, w.pool_used, (u64)pool, ok ? "" : " [INCOMPLETE]");
     if (w.st.unsupported || w.st.decode_fail || w.st.legacy_sys)
         LOGW("rewrite: %s: %u unsupported site(s), %u undecodable region(s), %u sysenter/int80 left alone", name, w.st.unsupported, w.st.decode_fail, w.st.legacy_sys);
     free(w.traps);

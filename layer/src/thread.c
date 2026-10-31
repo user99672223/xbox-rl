@@ -180,6 +180,32 @@ static int claim_tp_slot(void)
     return layout;
 }
 
+/* -------------------------------------------------- guest GS base slot */
+/* Linux code may give GS a base of its own (arch_prctl(ARCH_SET_GS): Firefox's wasm2c sandboxes keep their heap base
+ * there). GS is the host TEB here, so the base lives in a TEB TLS slot of its own and the rewriter turns the image's
+ * %gs operands into operands relative to it (rewrite_core.c). Claimed on first use; never with XRL_FORK_TASKS (the
+ * Rocket League / EAC path stays as it was) or XRL_NO_GS_REWRITE=1. 0: no slot. */
+static INIT_ONCE g_gs_once = INIT_ONCE_STATIC_INIT;
+static u32 g_gs_off;
+static BOOL CALLBACK gs_claim(PINIT_ONCE o, PVOID a, PVOID *c)
+{
+    (void)o; (void)a; (void)c;
+    char v[4];
+    if (xrl_fork_tasks_enabled() || (GetEnvironmentVariableA("XRL_NO_GS_REWRITE", v, sizeof v) && v[0] == '1')) return TRUE;
+    DWORD i = TlsAlloc();
+    if (i == TLS_OUT_OF_INDEXES) return TRUE;
+    u32 off = 0x1480 + i * 8;   /* TEB.TlsSlots[i] */
+    if (i >= 64) { TlsFree(i); LOGW("threads: no TEB TLS slot below 64 for the guest GS base: %%gs code will not work"); return TRUE; }
+    TlsSetValue(i, (LPVOID)(uintptr_t)0x5352474cull);
+    int ok = __readgsqword(off) == 0x5352474cull;
+    TlsSetValue(i, NULL);
+    if (!ok) { TlsFree(i); return TRUE; }
+    g_gs_off = off;
+    LOGI("threads: guest GS base in TlsSlots[%lu] (gs:[0x%x])", (unsigned long)i, off);
+    return TRUE;
+}
+u32 xrl_gs_slot_off(void) { InitOnceExecuteOnce(&g_gs_once, gs_claim, NULL, NULL); return g_gs_off; }
+
 /* ----------------------------------------------------------- thread start */
 static DWORD WINAPI thread_main(LPVOID p)
 {
@@ -188,6 +214,7 @@ static DWORD WINAPI thread_main(LPVOID p)
     t->host_teb = __readgsqword(0x30);
     xrl_thread_bind(t);
     tp_slot_set(t->guest_tp);           /* slot 63 is outside the TEB swap set */
+    if (g_gs_off && t->guest_gs) __writegsqword(g_gs_off, t->guest_gs);   /* a new thread keeps its parent's GS base */
     xrl_teb_thread_init(t);             /* pristine TEB: capture the host view  */
     xrl_teb_enter_guest(t);
     if (t->is_main) xrl_enter_guest(t->resume[6], t->child_rsp, t);
@@ -285,6 +312,7 @@ int xrl_thread_clone_prepare(xrl_thread *p, xrl_proc *np, u64 flags, u64 child_s
      * a lazy page cannot take, so commit the whole mapping now (mem.c). */
     if (child_stack) xrl_mem_populate_containing(child_stack - 1);
     t->guest_tp = (flags & LX_CLONE_SETTLS) ? tls : p->guest_tp;
+    t->guest_gs = p->guest_gs;
     t->sigmask = p->sigmask;
     t->proc_pid = p->proc_pid;     /* a thread of the same process shares getpid() */
     t->proc_ppid = p->proc_ppid;
@@ -462,7 +490,10 @@ slong xrl_sys_arch_prctl(int code, u64 addr)
          * notes-C.md section "GS / TEB". Anything else is refused loudly.
          */
         u64 teb = __readgsqword(0x30);
-        if (addr == teb || addr == 0) { t->guest_gs = addr; return 0; }
+        if (addr == teb) { t->guest_gs = addr; return 0; }
+        u32 gso = xrl_gs_slot_off();
+        if (gso) { t->guest_gs = addr; __writegsqword(gso, addr); return 0; }   /* rewritten %gs operands use it */
+        if (addr == 0) { t->guest_gs = addr; return 0; }
         static volatile LONG warned;
         if (!InterlockedExchange(&warned, 1))
             LOGE("arch_prctl(ARCH_SET_GS, %llx): refused. Host GS base is the Windows TEB (%llx) and cannot be "
@@ -471,6 +502,7 @@ slong xrl_sys_arch_prctl(int code, u64 addr)
     }
     case LX_ARCH_GET_GS: {
         u64 teb = __readgsqword(0x30);
+        if (g_gs_off && t->guest_gs != teb) return xrl_ctu(addr, &t->guest_gs, 8);
         return xrl_ctu(addr, &teb, 8);
     }
     case ARCH_XRL_GET_HOST_TEB: {
