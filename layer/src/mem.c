@@ -2253,6 +2253,13 @@ int xrl_mem_stack_guard(u64 addr)
     for (LONG i = 0; i < g_nstk; i++)
         if (g_stk[i].guard == pg) { stk_grow(&g_stk[i]); ok = 1; break; }
     ReleaseSRWLockExclusive(&g_stk_lock);
+    /* a guard page whose entry went (its mapping was removed while a snapshot kept the memory): every PAGE_GUARD
+     * page in the arena is ours, and the fault already cleared the guard bit, so the access just runs again */
+    if (!ok && addr >= g_arena_base && addr < g_arena_end) {
+        static volatile LONG once;
+        if (!InterlockedExchange(&once, 1)) LOGW("mem: a stack guard page at %llx without its entry: retried", pg);
+        ok = 1;
+    }
     return ok;
 }
 /* [s, e) is about to be written by Windows (I/O) or re-protected: no guard page may be in it */
@@ -2283,7 +2290,11 @@ static void stk_forget(u64 s, u64 e)
     if (!g_nstk) return;
     AcquireSRWLockExclusive(&g_stk_lock);
     for (LONG i = 0; i < g_nstk; i++)
-        if (g_stk[i].e && g_stk[i].s < e && g_stk[i].e > s) { g_stk[i].e = 0; g_stk[i].guard = 0; }
+        if (g_stk[i].e && g_stk[i].s < e && g_stk[i].e > s) {
+            DWORD op;
+            if (g_stk[i].guard) VirtualProtect((void *)g_stk[i].guard, LX_PAGE, PAGE_READWRITE, &op);   /* kept memory: no guard */
+            g_stk[i].e = 0; g_stk[i].guard = 0;
+        }
     ReleaseSRWLockExclusive(&g_stk_lock);
 }
 static volatile LONG64 g_stk_saved;   /* bytes not committed at thread creation (the log at exit) */

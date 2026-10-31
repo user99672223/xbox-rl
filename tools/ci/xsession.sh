@@ -64,7 +64,8 @@ xfce|firefox|tv)
 EOF
         mkdir -p /tmp/xrl-ffprofile
         # fewer processes on a console with ~5 GiB for everything: two content processes, no per-site isolation, no
-        # preallocated, file://, privileged, extension, socket, RDD, utility, GPU or fork-server processes
+        # preallocated, file://, privileged, extension, socket, RDD, utility, GPU or fork-server processes; software
+        # WebRender, no WebGL (no Mesa/libLLVM, 120+ MiB, in Firefox's processes)
         for pr in 'dom.ipc.processCount", 2' 'fission.autostart", false' 'browser.shell.checkDefaultBrowser", false' \
                 'dom.ipc.processPrelaunch.enabled", false' 'browser.tabs.remote.separateFileUriScheme", false' \
                 'browser.tabs.remote.separatePrivilegedContentProcess", false' \
@@ -72,7 +73,9 @@ EOF
                 'extensions.webextensions.remote", false' 'network.process.enabled", false' \
                 'media.rdd-process.enabled", false' 'media.utility-process.enabled", false' \
                 'layers.gpu-process.enabled", false' 'dom.ipc.forkserver.enable", false' \
-                'browser.sessionstore.resume_from_crash", false' 'datareporting.policy.dataSubmissionEnabled", false'; do
+                'browser.sessionstore.resume_from_crash", false' 'datareporting.policy.dataSubmissionEnabled", false' \
+                'gfx.webrender.software", true' 'layers.acceleration.disabled", true' 'webgl.disabled", true' \
+                'media.hardware-video-decoding.enabled", false'; do
             echo "user_pref(\"$pr);"
         done > /tmp/xrl-ffprofile/user.js
         # MOZ_LOG: process start-up and IPC, to see where it waits when no window comes (/tmp/xrl-firefox.log);

@@ -2,6 +2,25 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (7) - CI run 42 (4e022f1): the sharded CI works; where Firefox's memory is
+
+- The new workflow ran end to end: build once, shards core / x / firefox in parallel, one publish. m1-m4 and m6
+  PASS, procs-test TOTAL FAILS=0. Wall time of the probes: core ~1 min, x ~3 min, firefox ~1 min (it crashed).
+- Firefox crashed in both probes: m5 at 42 s (a DOM Worker executed JIT code in a page Firefox had just made RW,
+  `mem-fail ... access=8 prot=3`: intermittent, not seen in runs 39-41); m5s at 24 s (a stack guard page whose entry
+  had gone, hit by a layer memcpy: fixed, every arena guard page is the layer's, so the fault is now retried).
+- **The memory breakdown (new) at 1.8 GiB committed, Firefox + XFCE:** private file mappings 859 MiB (48%:
+  libxul 156, libLLVM 124 (Mesa), libgtk 80, omni.ja 44+36, ...), thread stacks 530 MiB in 252 stacks (30%, all
+  committed at thread creation), anonymous 274 MiB, heaps 50 MiB. By process: the content process 720 MiB (300 file),
+  xfce4-session 302 MiB, the XFCE helpers 70-100 MiB each.
+  So: lazy stacks (5s) are worth ~400 MiB, and shared file sections (1b) are the bigger lever as processes multiply.
+  Next batch: the guard fix, and Firefox prefs for software WebRender / no WebGL (keeps Mesa + libLLVM out of
+  Firefox's processes).
+- LTP on this branch was started by hand with the TCONF reasons recorded (results go to
+  `ci-results:ltp-claude_desktop-debian/latest/`; a branch run no longer overwrites main's `ltp/`). The first look
+  at main's results: 106 tests break on "Failed to acquire device" (no loop device), 66 on "Cannot parse kernel
+  .config" (now given the runner's Ubuntu kernel config via KCONFIG_PATH), 5 on /proc/sys/kernel/tainted (added).
+
 ## 2026-10-31 (6) - memory + TV: CI run 41 (78c9048); next batch pushed
 
 ### Run 41: milestones 1-6 PASS, procs-test TOTAL FAILS=0
