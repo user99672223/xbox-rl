@@ -293,55 +293,110 @@ static DWORD WINAPI sample_thread(LPVOID p)
     }
 }
 
-/* ---- stall snapshot (XRL_STALL=<ms>, default 250 with XRL_SAMPLE) ----
+/* ---- stall profile (XRL_STALL=<ms>, default 250 with XRL_SAMPLE) ----
  * The game's graphics calls reach the host as COM calls (com.c counts them). When they have been flowing (over
- * 1000/s) and then stop for XRL_STALL ms, the frame is stuck: log, for every guest thread, the syscall it is in (or
- * where it runs, sampled), and who holds the memory lock and for how long; again at 4x and 16x the threshold if the
- * stall lasts. At most 40 snapshots a run. */
+ * 1000/s) and then stop for XRL_STALL ms, the frame is stuck. From then until they flow again, every guest thread is
+ * sampled every 10 ms: the syscall it is in, or where its code runs (named like the sampler's report), and who holds
+ * the memory lock. When the stall ends, one summary: its length, then per thread its most frequent places with their
+ * share of the samples. At most 60 stalls a run. */
 extern volatile LONG64 xrl_com_calls;
-static void stall_snapshot(u64 ms)
+#define ST_THR 96
+#define ST_KEYS 6
+typedef struct st_key { char what[88]; u32 n; } st_key;
+typedef struct st_thr { int tid; char name[16]; u32 n; st_key k[ST_KEYS]; u32 other; } st_thr;
+static st_thr g_st[ST_THR];
+static int g_nst;
+static u32 g_st_samples, g_st_lock_held;
+
+static void st_add(xrl_thread *t, const char *what)
 {
-    static volatile LONG n;
-    if (InterlockedIncrement(&n) > 40) return;
+    st_thr *e = NULL;
+    for (int i = 0; i < g_nst; i++) if (g_st[i].tid == t->tid) { e = &g_st[i]; break; }
+    if (!e) {
+        if (g_nst >= ST_THR) return;
+        e = &g_st[g_nst++];
+        memset(e, 0, sizeof *e);
+        e->tid = t->tid;
+        strncpy_s(e->name, sizeof e->name, t->name, _TRUNCATE);
+    }
+    e->n++;
+    for (int i = 0; i < ST_KEYS; i++) {
+        if (e->k[i].n && !strcmp(e->k[i].what, what)) { e->k[i].n++; return; }
+        if (!e->k[i].n) { strncpy_s(e->k[i].what, sizeof e->k[i].what, what, _TRUNCATE); e->k[i].n = 1; return; }
+    }
+    e->other++;
+}
+
+static void st_sample(void)
+{
     u32 ltid; u64 lus;
     xrl_mem_lock_owner(&ltid, &lus);
-    LOGW("stall: no graphics call for %llu ms; memory lock %s%u (held %llu ms)", ms, ltid ? "held by tid " : "free", ltid,
-         lus / 1000);
+    g_st_samples++;
+    if (ltid) g_st_lock_held++;
     AcquireSRWLockShared(&G.thread_lock);
     for (xrl_thread *t = G.threads; t; t = t->next) {
+        char what[88];
         int nr = t->cur_nr;
+        const char *lk = (u32)t->win_tid == ltid ? " [holds mem lock]" : "";
         if (t->in_sys > 0 && nr >= 0) {
-            LOGW("stall:   %s/%d in %s%s", t->name, t->tid, xrl_sysname(nr), (u32)t->win_tid == ltid ? " (holds the memory lock)" : "");
-            continue;
+            _snprintf_s(what, sizeof what, _TRUNCATE, "in %s%s", xrl_sysname(nr), lk);
+        } else {
+            if (!t->handle || SuspendThread(t->handle) == (DWORD)-1) continue;
+            CONTEXT c;
+            c.ContextFlags = CONTEXT_CONTROL;
+            BOOL ok = GetThreadContext(t->handle, &c);
+            ResumeThread(t->handle);
+            if (!ok) continue;
+            s_where w; where_of(c.Rip, &w);
+            char ex[64] = ""; u32 d = 0;
+            if (w.kind == 2 && host_export(c.Rip, ex, sizeof ex, &d)) _snprintf_s(what, sizeof what, _TRUNCATE, "run %s!%s%s", w.mod, ex, lk);
+            else _snprintf_s(what, sizeof what, _TRUNCATE, "run %s+0x%llx%s", w.mod, w.off & ~0xffull, lk);   /* 256-byte buckets */
         }
-        if (!t->handle || SuspendThread(t->handle) == (DWORD)-1) continue;
-        CONTEXT c;
-        c.ContextFlags = CONTEXT_CONTROL;
-        BOOL ok = GetThreadContext(t->handle, &c);
-        ResumeThread(t->handle);
-        if (!ok) continue;
-        s_where w; where_of(c.Rip, &w);
-        char ex[96] = ""; u32 d = 0;
-        if (w.kind == 2 && host_export(c.Rip, ex, sizeof ex, &d)) LOGW("stall:   %s/%d running %s!%s+0x%x%s", t->name, t->tid, w.mod, ex, d,
-                                                                       (u32)t->win_tid == ltid ? " (holds the memory lock)" : "");
-        else LOGW("stall:   %s/%d running %s+0x%llx%s", t->name, t->tid, w.mod, w.off, (u32)t->win_tid == ltid ? " (holds the memory lock)" : "");
+        st_add(t, what);
     }
     ReleaseSRWLockShared(&G.thread_lock);
+}
+
+static void st_report(u64 ms)
+{
+    static volatile LONG n;
+    if (InterlockedIncrement(&n) > 60) return;
+    LOGW("stall: %llu ms without a graphics call; %u samples, memory lock held in %u of them", ms, g_st_samples, g_st_lock_held);
+    for (int i = 0; i < g_nst; i++) {
+        st_thr *e = &g_st[i];
+        int idle = 1;   /* a thread that only waited the whole time is listed in one line */
+        for (int k = 0; k < ST_KEYS; k++)
+            if (e->k[k].n && strncmp(e->k[k].what, "in futex", 8) && strncmp(e->k[k].what, "in ioctl", 8) && strncmp(e->k[k].what, "in poll", 7) &&
+                strncmp(e->k[k].what, "in ppoll", 8) && strncmp(e->k[k].what, "in epoll_wait", 13) && strncmp(e->k[k].what, "in select", 9) &&
+                strncmp(e->k[k].what, "in nanosleep", 12) && strncmp(e->k[k].what, "in clock_nanosleep", 18) && strncmp(e->k[k].what, "in wait4", 8)) idle = 0;
+        char line[600]; int o = 0;
+        o += _snprintf_s(line + o, sizeof line - o, _TRUNCATE, "stall:   %s/%d%s:", e->name, e->tid, idle ? " (waiting)" : "");
+        for (int k = 0; k < ST_KEYS && o < (int)sizeof line - 100; k++)
+            if (e->k[k].n) o += _snprintf_s(line + o, sizeof line - o, _TRUNCATE, " %u%% %s;", e->k[k].n * 100 / e->n, e->k[k].what);
+        if (e->other && o < (int)sizeof line - 30) _snprintf_s(line + o, sizeof line - o, _TRUNCATE, " %u%% other", e->other * 100 / e->n);
+        LOGW("%s", line);
+    }
 }
 
 static DWORD WINAPI stall_thread(LPVOID p)
 {
     const u64 lim = (u64)(UINT_PTR)p;
     LONG64 last = xrl_com_calls, rate_mark = last;
-    u64 t_last = GetTickCount64(), t_rate = t_last, next = lim;
-    int active = 0;
+    u64 t_last = GetTickCount64(), t_rate = t_last;
+    int active = 0, in_stall = 0;
     for (;;) {
-        Sleep(20);
+        Sleep(10);
         LONG64 c = xrl_com_calls;
         u64 now = GetTickCount64();
-        if (now - t_rate >= 1000) { active = c - rate_mark > 1000; rate_mark = c; t_rate = now; }
-        if (c != last) { last = c; t_last = now; next = lim; continue; }
-        if (active && now - t_last >= next) { stall_snapshot(now - t_last); next *= 4; }
+        if (now - t_rate >= 1000) { if (!in_stall) active = c - rate_mark > 1000; rate_mark = c; t_rate = now; }
+        if (c != last) {
+            if (in_stall) { st_report(now - t_last); in_stall = 0; }
+            last = c; t_last = now;
+            continue;
+        }
+        if (!active || now - t_last < lim) continue;
+        if (!in_stall) { in_stall = 1; g_nst = 0; g_st_samples = g_st_lock_held = 0; }
+        if (g_st_samples < 3000) st_sample();   /* 30 s of samples at most */
     }
 }
 
@@ -354,7 +409,7 @@ void xrl_sample_start(void)
         if (ms) {
             HANDLE sh = CreateThread(NULL, 64 << 10, stall_thread, (LPVOID)(UINT_PTR)ms, 0, NULL);
             if (sh) CloseHandle(sh);
-            LOGI("stall: a snapshot of every guest thread when graphics calls stop for %llu ms (XRL_STALL)", ms);
+            LOGI("stall: every guest thread sampled every 10 ms while graphics calls stop for over %llu ms (XRL_STALL)", ms);
         }
     }
     char v[16];

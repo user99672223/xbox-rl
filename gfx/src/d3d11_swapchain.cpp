@@ -388,7 +388,7 @@ private:
         win_frames_++;
         win_present_ += q1.QuadPart - q0.QuadPart;
         int64_t span = q1.QuadPart - win_start_;
-        if (span < 10 * qf_) return;
+        if (span < PerfSeconds() * qf_) return;
         double secs = (double)span / (double)qf_;
         Log(LOG_INFO, "perf: frames %.1f fps (%llu in %.1f s), worst gap %.1f ms, present %.2f ms avg; %ux%u sync %u; "
             "%llu frames so far", (double)win_frames_ / secs, (unsigned long long)win_frames_, secs,

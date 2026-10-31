@@ -94,6 +94,12 @@ State& G();
 
 // Window source, resolved lazily at swapchain-creation time (the host's window
 // may not exist when we are initialised).
+// Seconds between the perf lines (XRL_PERF, as the layer's perf.c; default 10, 0 counts as 10)
+inline int PerfSeconds() {
+    static int s = -1;
+    if (s < 0) { char v[8]; s = GetEnvironmentVariableA("XRL_PERF", v, sizeof v) ? atoi(v) : 10; if (s <= 0) s = 10; }
+    return s;
+}
 void* GetCoreWindow();                       // IUnknown* or NULL; NOT AddRef'd
 void GetWindowSize(uint32_t* w, uint32_t* h);
 void* GetTestHwnd();                         // desktop builds only, else NULL

@@ -170,7 +170,7 @@ void Pacer120::Present() {
             WaitUntil(at);
         }
         int64_t now = Now();
-        if (now - st_t0_ >= qf_ * 10) {
+        if (now - st_t0_ >= qf_ * PerfSeconds()) {
             double secs = (double)(now - st_t0_) / (double)qf_;
             Log(LOG_INFO, "perf: pacer %.1f flips/s (new frames %.1f/s), %.1f slots/s with no new frame, %llu copies late; a copy takes %.2f ms",
                 st_flips_ / secs, st_new_ / secs, st_skipped_ / secs, (unsigned long long)st_late_copy_,
