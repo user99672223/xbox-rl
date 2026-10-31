@@ -1,0 +1,13 @@
+probe 19 (m5): PASS exit   0   41s  1356 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 20 (m5s): PASS exit   0   43s  1622 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 21 (m5t): PASS exit   0   56s  1893 MiB  XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox
+--- syscalls answered ENOSYS (count, nr, name):
+     48 ENOSYS 334 rseq
+     30 ENOSYS 434 pidfd_open
+     30 ENOSYS 187 readahead
+      6 ENOSYS 303 name_to_handle_at
+      6 ENOSYS 125 capget
+milestone 5 (Firefox opens a local page): PASS
+milestone 5s (Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)): PASS
+milestone 5t (Firefox, every process with its own library copies (XRL_SHARED_TEXT=0)): PASS
+exit 0
