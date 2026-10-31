@@ -1517,6 +1517,15 @@ static u32 cur_mm(void)
 }
 u32 xrl_mm_new(void) { return (u32)InterlockedIncrement(&g_next_mm); }
 u32 xrl_mem_cur_mm(void) { return cur_mm(); }
+int xrl_mem_lock_held(void) { return t_mem_locked; }
+/* nothing is mapped in [a, a+len) and an mmap hint there would be taken (inside the arena, above the mmap floor) */
+int xrl_mem_range_free(u64 a, u64 len)
+{
+    AcquireSRWLockShared(&g_lock);
+    int f = a >= g_mmap_floor && in_arena(a, a + len) && range_free(a, a + len);
+    ReleaseSRWLockShared(&g_lock);
+    return f;
+}
 u32 xrl_mem_owner(u64 addr)
 {
     u32 o = 0;
@@ -2192,12 +2201,14 @@ slong xrl_mem_mincore(u64 addr, u64 len, u64 vec)
     slong r = populate_from(vec, pages, CS_MINCORE);   /* vec is written under g_lock: must not fault */
     if (r) return r;
     AcquireSRWLockShared(&g_lock);
+    t_mem_locked = 1;   /* xrl_ctu's ownership check must not take g_lock again */
     for (u64 p = 0; p < pages; p++) {
         size_t i = vma_lower(addr + p * LX_PAGE);
         if (i >= g_n || g_v[i].start > addr + p * LX_PAGE) { r = -LX_ENOMEM; break; }
         u8 b = g_v[i].committed ? 1 : g_v[i].lazy ? (u8)(committed_bytes(addr + p * LX_PAGE, addr + (p + 1) * LX_PAGE) != 0) : 0;
         if (xrl_ctu(vec + p, &b, 1)) { r = -LX_EFAULT; break; }
     }
+    t_mem_locked = 0;
     ReleaseSRWLockShared(&g_lock);
     return r;
 }
