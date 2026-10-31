@@ -1032,6 +1032,17 @@ static void test_fs(void)
     long fd2 = sc4(257, -100, "/tmp_link/xrl_viasym.txt", 0102, 0644);
     CHECK(fd2 >= 3, "open through symlink");
     sc1(3, fd2); sc1(87, "/tmp/xrl_viasym.txt"); sc1(87, "/tmp_link");
+    /* a link whose name differs from a file's only in case (Debian: /usr/bin/thunar -> Thunar) */
+    long cf = sc4(257, -100, "/tmp/Xrlcase", 0102, 0644);
+    sc3(1, cf, "case", 4); sc1(3, cf);
+    CHECK(sc2(88, "Xrlcase", "/tmp/xrlcase") == 0, "symlink next to a file differing only in case");
+    memset(lb, 0, sizeof lb);
+    CHECK(sc3(89, "/tmp/xrlcase", lb, 63) == 7 && !memcmp(lb, "Xrlcase", 7), "readlink of the lower-case link");
+    CHECK(sc3(89, "/tmp/Xrlcase", lb, 63) < 0, "the upper-case name is still the file");
+    cf = sc3(2, "/tmp/xrlcase", 0, 0);
+    memset(buf, 0, sizeof buf);
+    CHECK(cf >= 3 && sc3(0, cf, buf, 4) == 4 && !memcmp(buf, "case", 4), "open through the link reads the file");
+    sc1(3, cf); sc1(87, "/tmp/xrlcase"); sc1(87, "/tmp/Xrlcase");
     /* special names */
     long fz = sc3(2, "/dev/zero", 0, 0); char z[8] = {1,1,1,1,1,1,1,1};
     CHECK(fz >= 0 && sc3(0, fz, z, 8) == 8 && z[0] == 0 && z[7] == 0, "/dev/zero");

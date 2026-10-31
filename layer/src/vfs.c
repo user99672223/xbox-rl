@@ -1552,13 +1552,30 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
     return 0;
 }
 
+/* 1 if the host entry at gabs exists only under another letter case of its last component (NTFS matched it
+ * case-insensitively): Linux sees no such name. */
+static int host_name_case_differs(const char *gabs)
+{
+    wchar_t h[PATHBUF];
+    if (xrl_vfs_host_path(gabs, h, ARRAY_LEN(h))) return 0;
+    WIN32_FIND_DATAW fd;
+    HANDLE f = FindFirstFileExW(h, FindExInfoBasic, &fd, FindExSearchNameMatch, NULL, 0);
+    if (f == INVALID_HANDLE_VALUE) return 0;
+    FindClose(f);
+    const wchar_t *last = wcsrchr(h, L'\\');
+    return wcscmp(last ? last + 1 : h, fd.cFileName) != 0;
+}
+
 slong xrl_vfs_symlink(const char *target, int dirfd, const char *linkpath)
 {
     char gabs[PATHBUF];
     slong r = xrl_vfs_resolve(dirfd, linkpath, 0, gabs, sizeof gabs);
     if (r) return r;
     lx_stat st;
-    if (xrl_vfs_stat(LX_AT_FDCWD, gabs, LX_AT_SYMLINK_NOFOLLOW, &st) == 0) return -LX_EEXIST;
+    /* The table is case-sensitive and looked up before the host, so a link may sit next to a host file whose name
+     * differs only in case (Debian's thunar package: /usr/bin/thunar -> Thunar) */
+    if (xrl_vfs_stat(LX_AT_FDCWD, gabs, LX_AT_SYMLINK_NOFOLLOW, &st) == 0 && !host_name_case_differs(gabs))
+        return -LX_EEXIST;
     return sym_add(gabs, target, 1);
 }
 
