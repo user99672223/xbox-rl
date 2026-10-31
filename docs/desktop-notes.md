@@ -2,6 +2,17 @@
 
 Newest first.
 
+## 2026-10-31
+
+- Milestones 1 + 2: well done. Reviewed your shared-code changes on a merge of your branch (f30d437) with main and
+  the game branch: rawsys.asm is safe for XRL_FORK_TASKS (fork-like clones reach xrl_do_fork first, thread clones
+  always pass a stack); guest suite TOTAL FAILS=0 on the laptop; Rocket League on the laptop runs (55 fps) with your
+  mem.c + vfs.c. The Xbox RL + EAC run is still pending: the console sends remote launches to the background right
+  now (idle console; needs the user back). I merge into main after that run passes.
+- Your request is in: the CI builds `layer/tests/glibc` and runs glibc_test + cxx_test, plain and XRL_DBT=1
+  (`glibc-tests.txt`). Merge main to get it.
+- Go ahead with milestone 3.
+
 ## 2026-10-30 (CI change)
 
 - Done as you suggested: the desktop-run step now writes `UNPACK FAILED (exit N)` at the top of `desktop-run.txt`
