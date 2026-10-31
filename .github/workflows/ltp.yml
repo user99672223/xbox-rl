@@ -1,0 +1,96 @@
+# ltp.yml - the Linux Test Project's syscall tests on the layer: how far the layer is from Linux, test by test.
+#   linux    builds LTP's syscall tests (tools/ci/ltp-build.sh, cached per release) and a minimal Debian root file system
+#            (tools/ci/rootfs.sh with tools/ci/rootfs-ltp.list)
+#   windows  builds the layer's desktop test host and runs every runtest/syscalls entry inside ONE guest session
+#            (tools/ci/ltp-run.sh), then publishes ltp-results.txt, ltp-fails.txt and a summary to ci-results:ltp/
+# Runs on pushes to main that touch the layer, and by hand (with an optional test-name regex).
+name: ltp
+on:
+  push:
+    branches: [main]
+    paths: ['layer/**', 'include/**', 'tools/ci/ltp-*', '.github/workflows/ltp.yml']
+  workflow_dispatch:
+    inputs:
+      filter:
+        description: 'Regex of runtest names to run (empty: all)'
+        required: false
+        default: ''
+permissions:
+  contents: write
+concurrency:
+  group: ltp-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        id: lc
+        with: { path: ltp.tar.gz, key: "ltp-${{ hashFiles('tools/ci/ltp-build.sh') }}" }
+      - name: LTP
+        if: steps.lc.outputs.cache-hit != 'true'
+        run: bash tools/ci/ltp-build.sh ltp.tar.gz
+      - uses: actions/cache@v4
+        id: rc
+        with: { path: rootfs.tar.gz, key: "rootfs-ltp-${{ hashFiles('tools/ci/rootfs.sh', 'tools/ci/rootfs-ltp.list') }}" }
+      - name: rootfs
+        if: steps.rc.outputs.cache-hit != 'true'
+        run: sudo ROOTFS_LIST=tools/ci/rootfs-ltp.list bash tools/ci/rootfs.sh rootfs.tar.gz
+      - uses: actions/upload-artifact@v4
+        with: { name: ltp-inputs, path: 'ltp.tar.gz
+rootfs.tar.gz', retention-days: 3, compression-level: 0 }
+
+  windows:
+    needs: linux
+    runs-on: windows-2022
+    timeout-minutes: 240
+    defaults:
+      run: { shell: bash }
+    steps:
+      - uses: actions/checkout@v4
+      - name: build layer (desktop flavour + test host)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force ci-out | Out-Null
+          pwsh -NoProfile -File layer/scripts/build.ps1 -Flavor desktop *>&1 | Tee-Object ci-out/build.txt | Select-Object -Last 20
+          if (-not (Test-Path layer/build/desktop/xrl_test_host.exe)) { throw 'no test host built' }
+      - uses: actions/download-artifact@v4
+        with: { name: ltp-inputs }
+      - name: run LTP in the layer
+        env:
+          FILTER: ${{ github.event.inputs.filter }}
+        run: |
+          set +e
+          r="$RUNNER_TEMP/rootfs"
+          python -I tools/xrl-rootfs-unpack.py rootfs.tar.gz "$r" > ci-out/unpack.txt 2>&1 || echo "UNPACK FAILED" | tee -a ci-out/unpack.txt
+          python -I tools/xrl-rootfs-unpack.py ltp.tar.gz "$r" >> ci-out/unpack.txt 2>&1 || echo "LTP UNPACK FAILED" | tee -a ci-out/unpack.txt
+          cp tools/ci/ltp-run.sh "$r/opt/ltp/ltp-run.sh"
+          export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 \
+                 XRL_ENV_HOME=/root XRL_ENV_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin XRL_ENV_LANG=C.UTF-8
+          timeout 13000 layer/build/desktop/xrl_test_host.exe "$(cygpath -w "$r")" /bin/bash /opt/ltp/ltp-run.sh "$FILTER" > ci-out/host.txt 2>&1
+          echo "test host exit $?" >> ci-out/host.txt
+          cp "$r/tmp/ltp-results.txt" "$r/tmp/ltp-fails.txt" ci-out/ 2>/dev/null
+          tail -c 1500000 ci-out/host.txt > ci-out/host-tail.txt; rm ci-out/host.txt
+          f=ci-out/ltp-results.txt
+          {
+            echo "entries: $(wc -l < $f)"
+            echo "passed (rc=0): $(grep -c ' rc=0 ' $f)"
+            echo "not applicable (rc=32, TCONF): $(grep -c ' rc=32 ' $f)"
+            echo "timed out (rc=124): $(grep -c ' rc=124 ' $f)"
+            echo "missing binary: $(grep -c ' MISSING' $f)"
+            echo "failed or broken: $(grep -vc ' rc=0 \| rc=32 \| rc=124 \| MISSING' $f)"
+            echo "--- ENOSYS answered by the layer (count, nr, name):"
+            grep -ao "ENOSYS [0-9]* [a-z0-9_]*" ci-out/host-tail.txt | sort | uniq -c | sort -rn | head -40
+          } > ci-out/summary.txt
+          cat ci-out/summary.txt
+      - name: publish results to the ci-results branch
+        if: always()
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ltp
+          RUN: ${{ github.run_number }}
+          SHA: ${{ github.sha }}
+        run: bash tools/ci/publish-results.sh ci-out

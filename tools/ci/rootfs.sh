@@ -9,7 +9,9 @@ command -v debootstrap > /dev/null || { apt-get update -qq; apt-get install -y -
 r=$(mktemp -d)/rootfs
 script=/usr/share/debootstrap/scripts/trixie
 [ -e "$script" ] || script=/usr/share/debootstrap/scripts/sid
-pk=$(grep -v '^#' "$here/rootfs-debian.list" | tr -s ' \n' ',' | sed 's/^,//; s/,$//')
+# ROOTFS_LIST=<file>: another package list (the LTP run uses tools/ci/rootfs-ltp.list)
+list=${ROOTFS_LIST:+$(realpath "$ROOTFS_LIST")}; list=${list:-$here/rootfs-debian.list}
+pk=$(grep -v '^#' "$list" | tr -s ' \n' ',' | sed 's/^,//; s/,$//')
 debootstrap --variant=minbase ${pk:+--include="$pk"} trixie "$r" http://deb.debian.org/debian "$script"
 printf 'nameserver 1.1.1.1\nnameserver 1.0.0.1\n' > "$r/etc/resolv.conf"
 # No man pages, docs or translations, now or from later apt installs: they are the bulk of the names that differ only
