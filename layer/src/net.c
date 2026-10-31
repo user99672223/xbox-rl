@@ -304,8 +304,7 @@ static slong wt_wait(waiter *w, LONG seen)
         left = (s64)(w->deadline - now);
     }
     if (left < 0 || left > 250000000ll) left = 250000000ll;
-    const void *k = &g_net_ev;
-    if (xrl_io_wait_keys(seen, &k, 1, left) < 0) return -NE(EINTR);
+    if (xrl_io_wait(seen, left) < 0) return -NE(EINTR);   /* any change, as before keyed wake-ups (ipc.c file_keys) */
     return 0;
 }
 

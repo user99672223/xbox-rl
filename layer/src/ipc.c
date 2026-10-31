@@ -432,9 +432,14 @@ slong xrl_eventfd_create(u32 initval, int flags)
 }
 
 /* ================================================================== poll */
-/* The keys a file's changes are notified with (up to 2 into out), or -1: unknown, wake on any change */
+/* The keys a file's changes are notified with (up to 2 into out), or -1: unknown, wake on any change.
+ * Sockets: -1 (woken by every change, as before keyed wake-ups) unless XRL_NET_KEYED=1. With their own key RL's online
+ * login failed often (TLS handshakes over Winsock stalled: SSL_ERROR_SYSCALL, WSAENOTSOCK; the 20 ms re-check below
+ * helped but did not cure it); the old behaviour logged in reliably. Pipes, the Wine server's traffic, stay keyed. */
+static int g_net_keyed = -1;
 static int file_keys(xfile *f, const void **out)
 {
+    if (g_net_keyed < 0) { char v[4]; g_net_keyed = GetEnvironmentVariableA("XRL_NET_KEYED", v, sizeof v) && v[0] == '1'; }
     if (f->ops == &g_pipe_ops) {
         pipeend *e = (pipeend *)f->priv;
         int n = 0;
@@ -443,7 +448,7 @@ static int file_keys(xfile *f, const void **out)
         return n;
     }
     if (f->ops == &g_ev_ops) { out[0] = f->priv; return 1; }
-    if ((out[0] = xrl_net_key(f)) != NULL) return 1;
+    if ((out[0] = xrl_net_key(f)) != NULL) return g_net_keyed ? 1 : -1;
     return -1;
 }
 
