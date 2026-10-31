@@ -845,7 +845,8 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
         u64 stk[2];
         int g = xrl_teb_enter_host(t);
         xrl_teb_stack_here(stk);   /* we may be on a guest stack (teb.c) */
-        int ok = xrl_mem_lazy_fault((u64)r->ExceptionInformation[1], (int)r->ExceptionInformation[0]);
+        int ok = xrl_mem_cow_fault((u64)r->ExceptionInformation[1], (int)r->ExceptionInformation[0]) ||   /* fork snapshot */
+                 xrl_mem_lazy_fault((u64)r->ExceptionInformation[1], (int)r->ExceptionInformation[0]);
         xrl_teb_stack_back(stk);
         xrl_teb_restore(t, g);
         if (ok) return EXCEPTION_CONTINUE_EXECUTION;

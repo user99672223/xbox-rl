@@ -74,7 +74,8 @@ for e in "${list[@]}"; do
         fi
     fi
     [ $v = FAIL ] && fails[$m]=$((${fails[$m]:-0} + 1))
-    printf 'probe %d (m%s): %s exit %3d %4ds  %s\n' "$n" "$m" "$v" "$rc" $((SECONDS - s0)) "$p"
+    hw=$(grep -aoE "committed [0-9]+ MiB" "$log" | awk '{print $2}' | sort -n | tail -1)   # peak committed
+    printf 'probe %d (m%s): %s exit %3d %4ds %5s MiB  %s\n' "$n" "$m" "$v" "$rc" $((SECONDS - s0)) "${hw:--}" "$p"
 done
 grep -ho "ENOSYS [0-9]* [a-z0-9_]*" "$out"/probe-*.txt 2>/dev/null | sort | uniq -c | sort -rn > "$out/enosys.txt"
 echo "--- syscalls answered ENOSYS (count, nr, name):"

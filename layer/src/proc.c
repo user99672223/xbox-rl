@@ -19,6 +19,12 @@ static SRWLOCK g_proc_lock = SRWLOCK_INIT;
 static xrl_proc *g_procs;          /* every process, zombies included, newest first */
 static int g_tty_pgrp;             /* foreground process group of the (one) terminal stand-in */
 
+static int fork_cow_enabled(void)
+{
+    static int on = -1;
+    if (on < 0) { char v[4]; on = !(GetEnvironmentVariableA("XRL_FORK_COW", v, sizeof v) && v[0] == '0'); }
+    return on;
+}
 static u64 fork_snapshot_cap(void)
 {
     static u64 cap = ~0ull;
@@ -352,9 +358,15 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
             if (!single) { pp->freezer = p; xrl_proc_freeze(pp, p); frozen = 1; }
             LARGE_INTEGER q0, q1, f;
             QueryPerformanceCounter(&q0);
-            np->snap = xrl_mem_snapshot(pp->mm->id, fork_snapshot_cap());
+            /* the snapshot is restored when the child execs or exits (no fork group): copy-on-write, so only the pages
+             * written meanwhile are copied (mem.c); a fork group keeps whole images (XRL_FORK_COW=0: always whole) */
+            int cow = !(single && swap_enabled()) && fork_cow_enabled();
+            np->snap = cow ? xrl_mem_snapshot_cow(pp->mm->id) : xrl_mem_snapshot(pp->mm->id, fork_snapshot_cap());
             QueryPerformanceCounter(&q1); QueryPerformanceFrequency(&f);
-            if (np->snap)
+            if (np->snap && cow)
+                LOGI("fork: pid %d -> child %d, copy-on-write snapshot (%llu MiB write-protected) in %.2f ms", pp->pid, np->pid,
+                     xrl_mem_snap_cow_bytes(np->snap, NULL) >> 20, (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart);
+            else if (np->snap)
                 LOGI("fork: pid %d -> child %d, snapshot of the parent's writable memory taken in %.2f ms", pp->pid, np->pid,
                      (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)f.QuadPart);
             else
@@ -399,7 +411,11 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
         ReleaseSRWLockExclusive(&g_proc_lock);
         CloseHandle(ev);
         np->vfork_ev = NULL;
-        if (np->snap) { xrl_mem_snap_restore(np->snap); xrl_mem_snap_free(np->snap); np->snap = NULL; }
+        if (np->snap) {
+            u64 saved = 0, prot = xrl_mem_snap_cow_bytes(np->snap, &saved);
+            if (prot) LOGI("fork: pid %d: child %d done; %llu KiB of %llu MiB written meanwhile put back", pp->pid, np->pid, saved >> 10, prot >> 20);
+            xrl_mem_snap_restore(np->snap); xrl_mem_snap_free(np->snap); np->snap = NULL;
+        }
         xrl_ctu(p->frame, np->vfork_frame, np->vfork_len);
         if (frozen) { pp->freezer = NULL; late_replay(pp); xrl_proc_thaw(pp); }
     }

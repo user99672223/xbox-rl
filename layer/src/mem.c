@@ -1287,8 +1287,10 @@ static u64 evict_batch(u32 *v, int n)
     return freed;
 }
 
+static volatile LONG g_cow_live;   /* copy-on-write fork snapshots with protected pages: the clock must not touch them */
 static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
 {
+    if (g_cow_live) return 0;
     u64 freed = 0, pending = 0;
     u32 pv[CLK_BATCH], ev[CLK_BATCH];
     int np = 0, ne = 0;
@@ -2542,6 +2544,11 @@ struct xrl_msnap {
     u8 *data; size_t dlen;
     int has_brk;
     int registered;   /* counted in g_sreg */
+    int cow;          /* copy-on-write: rg/data fill as pages are first written (xrl_mem_snapshot_cow) */
+    int cow_live;     /* its pages are still write-protected */
+    size_t dcap;      /* bytes allocated for data (copy-on-write growth) */
+    u64 cow_bytes;    /* bytes it protected */
+    snaprange *pr; size_t npr, cap_pr;   /* the ranges it protected (committed at the snapshot), ascending */
 };
 
 typedef struct snapctx { struct xrl_msnap *s; int fail; } snapctx;
@@ -2601,6 +2608,167 @@ xrl_msnap *xrl_mem_snapshot(u32 mm, u64 cap_bytes)
     return sn;
 }
 
+/* ---------------------------------------------------- copy-on-write fork snapshots
+ * A fork of a multi-threaded parent (proc.c's sync path: the child runs on the parent's memory until it execs, then
+ * the parent's memory is put back) used to copy all the parent's writable memory first: hundreds of MiB per Firefox
+ * content process, which filled the console. Instead the writable pages are made read-only, and the first write to
+ * one (the child's, or a parent thread finishing a syscall) saves the page as it was and makes it writable again
+ * (xrl_mem_cow_fault, from signal.c's handler before the lazy commit; its own lock, so it works under g_lock too).
+ * The restore puts back only the saved pages. The swap clock waits while such a snapshot is live. */
+typedef struct cowrange { u64 s, e; DWORD prot; struct xrl_msnap *sn; } cowrange;
+static cowrange *g_cow;
+static size_t g_ncow, g_capcow;
+static SRWLOCK g_cow_lock = SRWLOCK_INIT;
+
+static int cow_add(u64 s, u64 e, DWORD prot, struct xrl_msnap *sn)
+{
+    AcquireSRWLockExclusive(&g_cow_lock);
+    if (g_ncow == g_capcow) {
+        size_t nc = g_capcow ? g_capcow * 2 : 256;
+        cowrange *n = (cowrange *)realloc(g_cow, nc * sizeof *n);
+        if (!n) { ReleaseSRWLockExclusive(&g_cow_lock); return -1; }
+        g_cow = n; g_capcow = nc;
+    }
+    g_cow[g_ncow].s = s; g_cow[g_ncow].e = e; g_cow[g_ncow].prot = prot; g_cow[g_ncow].sn = sn; g_ncow++;
+    ReleaseSRWLockExclusive(&g_cow_lock);
+    return 0;
+}
+
+/* write-protect the committed writable pages of [s, e), recording each piece's protection */
+static int op_cow_protect(u64 s, u64 e, DWORD state, void *ctx)
+{
+    struct xrl_msnap *sn = (struct xrl_msnap *)ctx;
+    if (state != MEM_COMMIT) return 0;
+    while (s < e) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)s, &mbi, sizeof mbi)) break;
+        u64 re = (u64)mbi.BaseAddress + mbi.RegionSize;
+        if (re > e) re = e;
+        DWORD p = mbi.Protect & 0xff, np = p == PAGE_READWRITE ? PAGE_READONLY : p == PAGE_EXECUTE_READWRITE ? PAGE_EXECUTE_READ : 0;
+        DWORD old;
+        if (mbi.State == MEM_COMMIT && np && !(mbi.Protect & PAGE_GUARD) && w_protect((void *)s, re - s, np | (mbi.Protect & ~0xffu), &old)) {
+            if (cow_add(s, re, mbi.Protect, sn)) { w_protect((void *)s, re - s, mbi.Protect, &old); return 1; }
+            if (sn->npr == sn->cap_pr) {
+                size_t nc = sn->cap_pr ? sn->cap_pr * 2 : 256;
+                snaprange *n = (snaprange *)realloc(sn->pr, nc * sizeof *n);
+                if (!n) return 1;
+                sn->pr = n; sn->cap_pr = nc;
+            }
+            sn->pr[sn->npr].s = s; sn->pr[sn->npr].e = re; sn->pr[sn->npr].off = 0; sn->npr++;
+            sn->cow_bytes += re - s;
+        }
+        s = re;
+    }
+    return 0;
+}
+
+xrl_msnap *xrl_mem_snapshot_cow(u32 mm)
+{
+    struct xrl_msnap *sn = (struct xrl_msnap *)calloc(1, sizeof *sn);
+    if (!sn) return NULL;
+    sn->mm = mm;
+    sn->cow = 1;
+    InterlockedIncrement(&g_cow_live);   /* no swap clock from here: it must not unprotect or evict these pages */
+    sn->cow_live = 1;
+    AcquireSRWLockExclusive(&g_lock);
+    sn->mid_mark = g_next_mid;
+    sreg_add(mm, sn->mid_mark, 1);
+    sn->registered = 1;
+    for (size_t i = 0; i < g_n; i++) if (g_v[i].owner == mm) sn->nv++;
+    sn->v = (vma *)malloc((sn->nv + 1) * sizeof(vma));
+    int fail = !sn->v;
+    size_t k = 0;
+    for (size_t i = 0; i < g_n && !fail; i++) {
+        vma *v = &g_v[i];
+        if (v->owner != mm) continue;
+        sn->v[k] = *v;
+        sn->v[k].file = NULL;
+        k++;
+        if (snap_writable_private(v)) {
+            swap_restore(v->start, v->end);   /* evicted or probed spans back first: a probed page would come back writable */
+            if (each_region(v->start, v->end, op_cow_protect, sn)) fail = 1;
+        }
+    }
+    sn->nv = k;
+    brkwin *b = brk_of(mm, 0);
+    if (b) { sn->has_brk = 1; sn->brk_cur = b->cur; }
+    ReleaseSRWLockExclusive(&g_lock);
+    if (fail) { xrl_mem_snap_free(sn); return NULL; }
+    xrl_heapcheck("cow snapshot taken");
+    return sn;
+}
+u64 xrl_mem_snap_cow_bytes(const xrl_msnap *sn, u64 *saved) { if (saved) *saved = sn->dlen; return sn->cow_bytes; }
+
+/* signal.c: a write fault. 1 if it was a first write to a copy-on-write page (saved; the write retries) */
+int xrl_mem_cow_fault(u64 addr, int access)
+{
+    if (access != 1 || !g_cow_live) return 0;
+    u64 pg = addr & ~(u64)(LX_PAGE - 1);
+    int ok = 0;
+    AcquireSRWLockExclusive(&g_cow_lock);
+    for (size_t i = 0; i < g_ncow; i++) {
+        cowrange *r = &g_cow[i];
+        if (pg < r->s || pg >= r->e) continue;
+        MEMORY_BASIC_INFORMATION mbi;
+        if (VirtualQuery((void *)pg, &mbi, sizeof mbi) && (mbi.Protect & (PAGE_READWRITE | PAGE_EXECUTE_READWRITE))) { ok = 1; break; }   /* saved by another thread just now */
+        struct xrl_msnap *sn = r->sn;
+        if (sn->nr == sn->cap_rg) {
+            size_t nc = sn->cap_rg ? sn->cap_rg * 2 : 256;
+            snaprange *n = (snaprange *)realloc(sn->rg, nc * sizeof *n);
+            if (!n) break;
+            sn->rg = n; sn->cap_rg = nc;
+        }
+        if (sn->dlen + LX_PAGE > sn->dcap) {
+            size_t nc = sn->dcap ? sn->dcap * 2 : (1u << 20);
+            u8 *n = (u8 *)realloc(sn->data, nc);
+            if (!n) break;
+            sn->data = n; sn->dcap = nc;
+        }
+        memcpy(sn->data + sn->dlen, (const void *)pg, LX_PAGE);
+        sn->rg[sn->nr].s = pg; sn->rg[sn->nr].e = pg + LX_PAGE; sn->rg[sn->nr].off = sn->dlen;
+        sn->nr++; sn->dlen += LX_PAGE;
+        DWORD old;
+        ok = w_protect((void *)pg, LX_PAGE, r->prot, &old) != 0;
+        break;
+    }
+    ReleaseSRWLockExclusive(&g_cow_lock);
+    return ok;
+}
+
+/* the snapshot's pages get their protection back (restore or drop) */
+static void cow_end(struct xrl_msnap *sn)
+{
+    if (!sn->cow_live) return;
+    AcquireSRWLockExclusive(&g_cow_lock);
+    for (size_t i = 0; i < g_ncow;) {
+        if (g_cow[i].sn != sn) { i++; continue; }
+        DWORD old;
+        w_protect((void *)g_cow[i].s, g_cow[i].e - g_cow[i].s, g_cow[i].prot, &old);   /* may fail where the range changed: the restore resets it */
+        g_cow[i] = g_cow[--g_ncow];
+    }
+    ReleaseSRWLockExclusive(&g_cow_lock);
+    sn->cow_live = 0;
+    InterlockedDecrement(&g_cow_live);
+}
+
+/* copy-on-write: zero only the committed pages that were not committed at the snapshot (outside sn->pr): the others
+ * hold the parent's data, and the ones the child wrote come back from the saved copies in step 4 */
+static int op_zero_new(u64 s, u64 e, DWORD state, void *ctx)
+{
+    const struct xrl_msnap *sn = (const struct xrl_msnap *)ctx;
+    if (state != MEM_COMMIT) return 0;
+    size_t lo = 0, hi = sn->npr;   /* first protected range ending after s */
+    while (lo < hi) { size_t m = (lo + hi) / 2; if (sn->pr[m].e <= s) lo = m + 1; else hi = m; }
+    u64 a = s;
+    for (size_t i = lo; i < sn->npr && a < e; i++) {
+        if (sn->pr[i].s >= e) break;
+        if (sn->pr[i].s > a) memset((void *)a, 0, (size_t)(sn->pr[i].s - a));
+        if (sn->pr[i].e > a) a = sn->pr[i].e;
+    }
+    if (a < e) memset((void *)a, 0, (size_t)(e - a));
+    return 0;
+}
+
 static int op_zero_committed(u64 s, u64 e, DWORD state, void *ctx)
 {
     (void)ctx;
@@ -2610,6 +2778,7 @@ static int op_zero_committed(u64 s, u64 e, DWORD state, void *ctx)
 
 void xrl_mem_snap_restore(xrl_msnap *sn)
 {
+    cow_end(sn);   /* copy-on-write: unsaved pages are as they were; the saved ones come back in step 4 */
     u32 mm = sn->mm;
     u64 *rg = NULL;
     size_t n = 0, cap = 0;
@@ -2676,7 +2845,7 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
                 u64 zb = k < g_n ? (g_v[k].start > za ? g_v[k].start : g_v[k].end) : sv->end;
                 ReleaseSRWLockShared(&g_lock);
                 if (zb > sv->end) zb = sv->end;
-                if (mine) each_region(za, zb, op_zero_committed, NULL);
+                if (mine) each_region(za, zb, sn->cow ? op_zero_new : op_zero_committed, sn);
                 za = zb;
             }
         }
@@ -2712,6 +2881,7 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
 void xrl_mem_snap_free(xrl_msnap *sn)
 {
     if (!sn) return;
+    cow_end(sn);
     if (sn->registered) sreg_add(sn->mm, 0, -1);
-    free(sn->v); free(sn->rg); free(sn->data); free(sn);
+    free(sn->v); free(sn->rg); free(sn->data); free(sn->pr); free(sn);
 }

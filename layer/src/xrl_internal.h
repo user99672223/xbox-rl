@@ -414,6 +414,9 @@ u32  xrl_mem_owner(u64 addr);     /* the mm (address space) that maps addr, 0: n
 u32  xrl_mem_cur_mm(void);
 int  xrl_mem_range_free(u64 a, u64 len);
 u64  xrl_mem_find_near(u64 len, u64 center, u64 maxdist);
+xrl_msnap *xrl_mem_snapshot_cow(u32 mm);   /* copy-on-write fork snapshot (mem.c) */
+u64  xrl_mem_snap_cow_bytes(const xrl_msnap *sn, u64 *saved);
+int  xrl_mem_cow_fault(u64 addr, int access);
 int  xrl_mem_locked_here(void);   /* this thread holds g_lock (mem.c t_mem_locked) */
 int  xrl_mem_page_writable(u64 addr);
 int  xrl_mem_writewatch_allow(u64 addr);   /* task.c: cap the fork stack snapshot at the writable stack end */
