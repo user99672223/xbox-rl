@@ -1,11 +1,11 @@
 === shard core
 procs-test: exit 0 (TOTAL FAILS=0)
-probe 1 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
-probe 2 (m1): PASS exit   0    0s     - MiB  /usr/bin/ls -la /
-probe 3 (m1): PASS exit   0    1s     - MiB  /usr/bin/id
+probe 1 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
+probe 2 (m1): PASS exit   0    1s     - MiB  /usr/bin/ls -la /
+probe 3 (m1): PASS exit   0    0s     - MiB  /usr/bin/id
 probe 4 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
-probe 5 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
-probe 6 (m1): PASS exit   0    1s     - MiB  /usr/bin/ps aux
+probe 5 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
+probe 6 (m1): PASS exit   0    0s     - MiB  /usr/bin/ps aux
 probe 7 (m1): PASS exit   0    0s    13 MiB  /usr/bin/dpkg -l
 probe 8 (m1): PASS exit   0    1s     - MiB  /usr/bin/apt-get --version
 probe 9 (m1): PASS exit   0    0s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
@@ -19,9 +19,9 @@ milestone 1 (bash, coreutils, ps, dpkg -l): PASS
 milestone 2 (apt-get update + install): PASS
 exit 0
 === shard x
-probe 13 (m3): PASS exit   0   11s    93 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
-probe 14 (m4): PASS exit   0   36s   585 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
-probe 17 (m6): PASS exit   0  125s   608 MiB  /bin/bash /tmp/xrl-xsession.sh tv
+probe 13 (m3): PASS exit   0   11s    92 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
+probe 14 (m4): PASS exit   0   38s   582 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
+probe 17 (m6): PASS exit   0  125s   594 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
 --- syscalls answered ENOSYS (count, nr, name):
      40 ENOSYS 334 rseq
      20 ENOSYS 434 pidfd_open
@@ -32,8 +32,8 @@ milestone 4 (XFCE session): PASS
 milestone 6 (TV: the session on /dev/fb0): PASS
 exit 0
 === shard firefox
-probe 15 (m5): PASS exit   0   71s  1989 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
-probe 16 (m5s): PASS exit   0   68s  2068 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 15 (m5): PASS exit   0   67s  1967 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 16 (m5s): PASS exit   0   68s  2069 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
 --- syscalls answered ENOSYS (count, nr, name):
      32 ENOSYS 334 rseq
      20 ENOSYS 434 pidfd_open
