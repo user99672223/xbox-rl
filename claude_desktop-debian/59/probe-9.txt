@@ -1,0 +1,61 @@
+$ XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/true, 1 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] placeholder probe: VirtualAlloc2 yes, MapViewOfFile3 yes, UnmapViewOfFile2 yes
+[I layer    ] placeholder probe: reserve 4 MiB placeholder: ok (0)
+[I layer    ] placeholder probe: split at 4 KiB: ok (0); a 64 KiB piece at +4 KiB: ok (0)
+[I layer    ] placeholder probe: 64 MiB pagefile section (SEC_COMMIT, execute): ok (0)
+[I layer    ] placeholder probe: view at a 4 KiB-aligned address, section offset 4 KiB: ok (0)
+[I layer    ] placeholder probe: unmap back to a placeholder: ok
+[I layer    ] placeholder probe: private 4 KiB allocation in a 4 KiB piece: ok (0)
+[I layer    ] placeholder probe: commit charge: read-only 64 MiB view +132 KiB (ok), copy-on-write view +0 KiB (refused), 16 MiB written into it +0 KiB
+[I layer    ] mem: arena [7ef4b9310000,7ff4b9310000) 1048576 MiB VA, brk <= 7ef4f9310000, commit budget 4096 MiB, granularity 65536
+[I layer    ] img: shared library pages on (XRL_SHARED_TEXT): image region [7ee479310000,7ef479310000)
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 1448 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/true: 0 syscall + 43 %fs + 0 %gs sites (0 in place, 43 jumps, 0 traps, 0 neighbours moved), pool 1728 bytes at 7ff4b1310000 in 0.6 ms
+[I layer    ] elf: loaded /usr/bin/true type=DYN bias=7ff4b1305000 span=[7ff4b1305000,7ff4b1310000) entry=7ff4b13077e0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4b12b0000 in 5.0 ms
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4b12cd000 span=[7ff4b12cd000,7ff4b1305000) entry=7ff4b12ea2c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000002731D112F40)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4b12afd30
+[I layer    ] boot: guest main thread tid=5268 entry=7ff4b12ea2c0 sp=7ff4b12afd30
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.073 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ef4790d0000 in 47.8 ms
+[W layer    ] ENOSYS 334 rseq (a1=7ff4b12c4680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (2516 bytes) follows:
+[W layer    ] MAP 7ef4790d0000-7ef479108000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ef479110000-7ef479138000 r--p 00000000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef479138000-7ef47929b000 r-xp 00028000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef47929b000-7ef4792f1000 r--p 0018b000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef4792f1000-7ef4792f5000 r--p 001e0000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef4792f5000-7ef4792f7000 rw-p 001e4000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef4792f7000-7ef479304000 rw-p 00000000 00:00 0 
+7ff4b0aaf000-7ff4b0ab0000 ---p 00000000 00:00 0                        [stack]
+7ff4b0ab0000-7ff4b12b0000 rw-p 00000000 00:00 0                        [stack]
+7ff4b12b0000-7ff4b12b2000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
+7ff4b12c4000-7ff4b12c7000 rw-p 00000000 00:00 0 
+7ff4b12c7000-7ff4b12c9000 rw-p 00000000
+[W layer    ] MAP 30c000 r-xp 00002000 00:00 281474976712410                        /usr/bin/true
+7ff4b130c000-7ff4b130e000 r--p 00007000 00:00 281474976712410                        /usr/bin/true
+7ff4b130e000-7ff4b130f000 r--p 00009000 00:00 281474976712410                        /usr/bin/true
+7ff4b130f000-7ff4b1310000 rw-p 0000a000 00:00 281474976712410                        /usr/bin/true
+7ff4b1310000-7ff4b1311000 r-xp 00000000 00:00 0                        [xrl-pool true]
+7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
+7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
+
+xrl_layer_boot returned 0
+exit 0

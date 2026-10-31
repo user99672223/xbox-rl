@@ -9,13 +9,13 @@ probe 6 (m1): PASS exit   0    0s     - MiB  /usr/bin/ps aux
 probe 7 (m1): PASS exit   0    1s    13 MiB  /usr/bin/dpkg -l
 probe 8 (m1): PASS exit   0    0s     - MiB  /usr/bin/apt-get --version
 probe 9 (m1): PASS exit   0    0s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
-probe 10 (m2): PASS exit   0    6s    75 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
-probe 11 (m2): PASS exit   0    5s   179 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
-probe 12 (m2): PASS exit   0    0s     - MiB  /usr/bin/hello
-probe 13 (m2b): PASS exit   0    5s    83 MiB  XRL_SHARED_TEXT=0 XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
-probe 14 (m2b): PASS exit   0    5s    75 MiB  XRL_SHARED_SEGS=x XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+probe 10 (m2): PASS exit   0    3s    75 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
+probe 11 (m2): PASS exit   0    3s   179 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
+probe 12 (m2): PASS exit   0    1s     - MiB  /usr/bin/hello
+probe 13 (m2b): PASS exit   0    4s    83 MiB  XRL_SHARED_TEXT=0 XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+probe 14 (m2b): PASS exit   0    3s    75 MiB  XRL_SHARED_SEGS=x XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
 probe 15 (m2b): PASS exit   0    5s    75 MiB  XRL_SHARED_SEGS=r XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
-probe 16 (m2b): PASS exit   0    6s    75 MiB  XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+probe 16 (m2b): PASS exit   0    3s    75 MiB  XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
 --- syscalls answered ENOSYS (count, nr, name):
      98 ENOSYS 334 rseq
       8 ENOSYS 277 sync_file_range
@@ -24,9 +24,9 @@ milestone 2 (apt-get update + install): PASS
 milestone 2b (apt-get update bisect (shared pages off / code only / data only / both)): PASS
 exit 0
 === shard x
-probe 17 (m3): PASS exit   0   12s    81 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
-probe 18 (m4): PASS exit   0   36s   345 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
-probe 22 (m6): PASS exit   0  125s   352 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
+probe 17 (m3): PASS exit   0   10s    81 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
+probe 18 (m4): PASS exit   0   31s   342 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
+probe 22 (m6): PASS exit   0  126s   393 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
 --- syscalls answered ENOSYS (count, nr, name):
      40 ENOSYS 334 rseq
      20 ENOSYS 434 pidfd_open
@@ -37,9 +37,9 @@ milestone 4 (XFCE session): PASS
 milestone 6 (TV: the session on /dev/fb0): PASS
 exit 0
 === shard firefox
-probe 19 (m5): PASS exit   0   69s  1331 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
-probe 20 (m5s): PASS exit   0   68s  1561 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
-probe 21 (m5t): PASS exit   0   68s  1827 MiB  XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 19 (m5): PASS exit   0   55s  1374 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 20 (m5s): PASS exit   0   46s  1609 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 21 (m5t): PASS exit   0   69s  1832 MiB  XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox
 --- syscalls answered ENOSYS (count, nr, name):
      48 ENOSYS 334 rseq
      30 ENOSYS 434 pidfd_open

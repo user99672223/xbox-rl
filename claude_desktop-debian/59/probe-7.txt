@@ -1,0 +1,426 @@
+$ /usr/bin/dpkg -l
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/dpkg, 2 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4cd830000,7ff4cd830000) 1048576 MiB VA, brk <= 7ef50d830000, commit budget 4096 MiB, granularity 65536
+[I layer    ] img: shared library pages on (XRL_SHARED_TEXT): image region [7ee48d830000,7ef48d830000)
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 1448 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs + 0 %gs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4c5540000 in 5.7 ms
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4c555c000 span=[7ff4c555c000,7ff4c5830000) entry=7ff4c5563d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4c54f0000 in 5.0 ms
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4c5508000 span=[7ff4c5508000,7ff4c5540000) entry=7ff4c55252c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000002C1078F4B60)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4c54efd30
+[I layer    ] boot: guest main thread tid=4448 entry=7ff4c55252c0 sp=7ff4c54efd30
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.074 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs + 0 %gs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ef48d810000 in 1.4 ms
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs + 0 %gs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ef48d780000 in 4.0 ms
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ef48d4f0000 in 47.3 ms
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ef48d330000 in 15.3 ms
+[W layer    ] ENOSYS 334 rseq (a1=7ff4c5554ba0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] exec: pid 5244 tid 4448 -> /usr/bin/dpkg-query (3 args, 10 env)
+[I layer    ] exec: pid 5244 leaves address space 1 (1 user(s)), released in place
+[W layer    ] img: a private piece was split by copying ([7ef48d3ed000,7ef48d3ef000) at 7ef48d3ee000)
+[I layer    ] exec: guest memory committed 13 MiB -> 0 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dpkg-query: 0 syscall + 203 %fs + 0 %gs sites (0 in place, 203 jumps, 0 traps, 0 neighbours moved), pool 8128 bytes at 7ff4c5570000 in 3.2 ms
+[I layer    ] elf: loaded /usr/bin/dpkg-query type=DYN bias=7ff4c5582000 span=[7ff4c5582000,7ff4c5830000) entry=7ff4c5586880
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4c5520000 in 5.0 ms
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4c5538000 span=[7ff4c5538000,7ff4c5570000) entry=7ff4c55552c0
+[I layer    ] exec: /usr/bin/dpkg-query running, main thread tid 2248 entry 7ff4c55552c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs + 0 %gs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ef48d810000 in 1.4 ms
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ef48d590000 in 48.2 ms
+[W layer    ] ENOSYS 334 rseq (a1=7ff4c5579680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I guest.out] Desired=Unknown/Install/Remove/Purge/Hold
+[I guest.out] | Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend
+[I guest.out] |/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)
+[I guest.out] ||/ Name                           Version                              Architecture Description
+[I guest.out] +++-==============================-====================================-============-================================================================================
+[I guest.out] ii  adduser                        3.152                                all          add and remove users and groups
+[I guest.out] ii  adwaita-icon-theme             48.1-1                               all          default icon theme of GNOME
+[I guest.out] ii  apt                            3.0.3                                amd64        commandline package manager
+[I guest.out] ii  at-spi2-common                 2.56.2-1+deb13u2                     all          Assistive Technology Service Provider Interface (common files)
+[I guest.out] ii  base-files                     13.8+deb13u7                         amd64        Debian base system miscellaneous files
+[I guest.out] ii  base-passwd                    3.6.7                                amd64        Debian base system master password and group files
+[I guest.out] ii  bash                           5.2.37-2+b10                         amd64        GNU Bourne Again SHell
+[I guest.out] ii  bsdextrautils                  2.41.5-0+deb13u1                     amd64        extra utilities from 4.4BSD-Lite
+[I guest.out] ii  bsdutils                       1:2.41.5-0+deb13u1                   amd64        basic utilities from 4.4BSD-Lite
+[I guest.out] ii  coreutils                      9.7-3                                amd64        GNU core utilities
+[I guest.out] ii  cpp                            4:14.2.0-1                           amd64        GNU C preprocessor (cpp)
+[I guest.out] ii  cpp-14                         14.2.0-19                            amd64        GNU C preprocessor
+[I guest.out] ii  cpp-14-x86-64-linux-gnu        14.2.0-19                            amd64        GNU C preprocessor for x86_64-linux-gnu
+[I guest.out] ii  cpp-x86-64-linux-gnu           4:14.2.0-1                           amd64        GNU C preprocessor (cpp) for the amd64 architecture
+[I guest.out] ii  dash                           0.5.12-12                            amd64        POSIX-compliant shell
+[I guest.out] ii  dbus                           1.16.2-2                             amd64        simple interprocess messaging system (system message bus)
+[I guest.out] ii  dbus-bin                       1.16.2-2                             amd64        simple interprocess messaging system (command line utilities)
+[I guest.out] ii  dbus-daemon                    1.16.2-2                             amd64        simple interprocess messaging system (reference message bus)
+[I guest.out] ii  dbus-session-bus-common        1.16.2-2                             all          simple interprocess messaging system (session bus configuration)
+[I guest.out] ii  dbus-system-bus-common         1.16.2-2                             all          simple interprocess messaging system (system bus configuration)
+[I guest.out] ii  dbus-x11                       1.16.2-2                             amd64        simple interprocess messaging system (X11 deps)
+[I guest.out] ii  dconf-gsettings-backend:amd64  0.40.0-5                             amd64        simple configuration storage system - GSettings back-end
+[I guest.out] ii  dconf-service                  0.40.0-5                             amd64        simple configuration storage system - D-Bus service
+[I guest.out] ii  debconf                        1.5.91                               all          Debian configuration management system
+[I guest.out] ii  debian-archive-keyring         2025.1                               all          OpenPGP archive certificates of the Debian archive
+[I guest.out] ii  debianutils                    5.23.2                               amd64        Miscellaneous utilities specific to Debian
+[I guest.out] ii  desktop-file-utils             0.28-1                               amd64        Utilities for .desktop files
+[I guest.out] ii  diffutils                      1:3.10-4                             amd64        File comparison utilities
+[I guest.out] ii  dpkg                           1.22.22                              amd64        Debian package management system
+[I guest.out] ii  exo-utils                      4.20.0-1                             amd64        Utility files for libexo
+[I guest.out] ii  findutils                      4.10.0-3                             amd64        utilities for finding files--find, xargs
+[I guest.out] ii  firefox-esr                    140.15.0esr-1~deb13u1                amd64        Mozilla Firefox web browser - Extended Support Release (ESR)
+[I guest.out] ii  fontconfig                     2.15.0-2.3                           amd64        generic font configuration library - support binaries
+[I guest.out] ii  fontconfig-config              2.15.0-2.3                           amd64        generic font configuration library - configuration
+[I guest.out] ii  fonts-dejavu-core              2.37-8                               all          Vera font family derivate with additional characters
+[I guest.out] ii  fonts-dejavu-mono              2.37-8                               all          Vera font family derivate with additional characters
+[I guest.out] ii  gcc-14-base:amd64              14.2.0-19                            amd64        GCC, the GNU Compiler Collection (base package)
+[I guest.out] ii  grep                           3.11-4                               amd64        GNU grep, egrep and fgrep
+[I guest.out] ii  groff-base                     1.23.0-9                             amd64        GNU troff text-formatting system (base system components)
+[I guest.out] ii  gtk-update-icon-cache          4.18.6+ds-2                          amd64        icon theme caching utility
+[I guest.out] ii  gzip                           1.13-1+deb13u1                       amd64        GNU compression utilities
+[I guest.out] ii  hicolor-icon-theme             0.18-2                               all          default fallback theme for FreeDesktop.org icon themes
+[I guest.out] ii  hostname                       3.25                                 amd64        utility to set/show the host name or domain name
+[I guest.out] ii  init-system-helpers            1.69~deb13u1                         all          helper tools for all init systems
+[I guest.out] ii  libacl1:amd64                  2.3.2-2+b1                           amd64        access control list - shared library
+[I guest.out] ii  libapparmor1:amd64             4.1.0-1                              amd64        changehat AppArmor library
+[I guest.out] ii  libapt-pkg7.0:amd64            3.0.3                                amd64        package management runtime library
+[I guest.out] ii  libasound2-data                1.2.14-1+deb13u1                     all          Configuration files and profiles for ALSA drivers
+[I guest.out] ii  libasound2t64:amd64            1.2.14-1+deb13u1                     amd64        shared library for ALSA applications
+[I guest.out] ii  libasyncns0:amd64              0.8-6+b5                             amd64        Asynchronous name service query library
+[I guest.out] ii  libatk-bridge2.0-0t64:amd64    2.56.2-1+deb13u2                     amd64        AT-SPI 2 toolkit bridge - shared library
+[I guest.out] ii  libatk1.0-0t64:amd64           2.56.2-1+deb13u2                     amd64        ATK accessibility toolkit
+[I guest.out] ii  libatomic1:amd64               14.2.0-19                            amd64        support library providing __atomic built-in functions
+[I guest.out] ii  libatspi2.0-0t64:amd64         2.56.2-1+deb13u2                     amd64        Assistive Technology Service Provider Interface - shared library
+[I guest.out] ii  libattr1:amd64                 1:2.5.2-3                            amd64        extended attribute handling - shared library
+[I guest.out] ii  libaudit-common                1:4.0.2-2+deb13u1                    all          Dynamic library for security auditing - common files
+[I guest.out] ii  libaudit1:amd64                1:4.0.2-2+deb13u1                    amd64        Dynamic library for security auditing
+[I guest.out] ii  libavahi-client3:amd64         0.8-16                               amd64        Avahi client library
+[I guest.out] ii  libavahi-common-data:amd64     0.8-16                               amd64        Avahi common data files
+[I guest.out] ii  libavahi-common3:amd64         0.8-16                               amd64        Avahi common library
+[I guest.out] ii  libblkid1:amd64                2.41.5-0+deb13u1                     amd64        block device ID library
+[I guest.out] ii  libbrotli1:amd64               1.1.0-2+b7                           amd64        library implementing brotli encoder and decoder (shared libraries)
+[I guest.out] ii  libbsd0:amd64                  0.12.2-2                             amd64        utility functions from BSD systems - shared library
+[I guest.out] ii  libbz2-1.0:amd64               1.0.8-6                              amd64        high-quality block-sorting file compressor library - runtime
+[I guest.out] ii  libc-bin                       2.41-12+deb13u4                      amd64        GNU C Library: Binaries
+[I guest.out] ii  libc6:amd64                    2.41-12+deb13u4                      amd64        GNU C Library: Shared libraries
+[I guest.out] ii  libcairo-gobject2:amd64        1.18.4-1+b1                          amd64        Cairo 2D vector graphics library (GObject library)
+[I guest.out] ii  libcairo2:amd64                1.18.4-1+b1                          amd64        Cairo 2D vector graphics library
+[I guest.out] ii  libcap-ng0:amd64               0.8.5-4+b1                           amd64        alternate POSIX capabilities library
+[I guest.out] ii  libcap2:amd64                  1:2.75-10+deb13u1+b3                 amd64        POSIX 1003.1e capabilities (library)
+[I guest.out] ii  libcloudproviders0:amd64       0.3.6-2                              amd64        cloud provider library
+[I guest.out] ii  libcolord2:amd64               1.4.7-3                              amd64        system service to manage device colour profiles -- runtime
+[I guest.out] ii  libcom-err2:amd64              1.47.2-3+b12                         amd64        common error description library
+[I guest.out] ii  libcrypt1:amd64                1:4.4.38-1                           amd64        libcrypt shared library
+[I guest.out] ii  libcups2t64:amd64              2.4.10-3+deb13u2                     amd64        Common UNIX Printing System(tm) - Core library
+[I guest.out] ii  libdatrie1:amd64               0.2.13-3+b1                          amd64        Double-array trie library
+[I guest.out] ii  libdb5.3t64:amd64              5.3.28+dfsg2-9                       amd64        Berkeley v5.3 Database Libraries [runtime]
+[I guest.out] ii  libdbus-1-3:amd64              1.16.2-2                             amd64        simple interprocess messaging system (library)
+[I guest.out] ii  libdbusmenu-glib4:amd64        18.10.20180917~bzr492+repack1-4      amd64        library for passing menus over DBus
+[I guest.out] ii  libdbusmenu-gtk3-4:amd64       18.10.20180917~bzr492+repack1-4      amd64        library for passing menus over DBus - GTK-3+ version
+[I guest.out] ii  libdconf1:amd64                0.40.0-5                             amd64        simple configuration storage system - runtime library
+[I guest.out] ii  libdebconfclient0:amd64        0.280                                amd64        Debian Configuration Management System (C-implementation library)
+[I guest.out] ii  libdeflate0:amd64              1.23-2                               amd64        fast, whole-buffer DEFLATE-based compression and decompression
+[I guest.out] ii  libdisplay-info2:amd64         0.2.0-2                              amd64        EDID and DisplayID library (shared library)
+[I guest.out] ii  libdrm-amdgpu1:amd64           2.4.124-2                            amd64        Userspace interface to amdgpu-specific kernel DRM services -- runtime
+[I guest.out] ii  libdrm-common                  2.4.124-2                            all          Userspace interface to kernel DRM services -- common files
+[I guest.out] ii  libdrm-intel1:amd64            2.4.124-2                            amd64        Userspace interface to intel-specific kernel DRM services -- runtime
+[I guest.out] ii  libdrm2:amd64                  2.4.124-2                            amd64        Userspace interface to kernel DRM services -- runtime
+[I guest.out] ii  libedit2:amd64                 3.1-20250104-1                       amd64        BSD editline and history libraries
+[I guest.out] ii  libelf1t64:amd64               0.192-4                              amd64        library to read and write ELF files
+[I guest.out] ii  libepoxy0:amd64                1.5.10-2                             amd64        OpenGL function pointer management library
+[I guest.out] ii  libevent-2.1-7t64:amd64        2.1.12-stable-10+b1                  amd64        Asynchronous event notification library
+[I guest.out] ii  libexif12:amd64                0.6.25-1+deb13u1                     amd64        library to parse EXIF files
+[I guest.out] ii  libexo-2-0:amd64               4.20.0-1                             amd64        Library with extensions for Xfce (GTK-3 version)
+[I guest.out] ii  libexo-common                  4.20.0-1                             all          libexo common files
+[I guest.out] ii  libexpat1:amd64                2.8.3-1~deb13u1                      amd64        XML parsing C library - runtime library
+[I guest.out] ii  libffi8:amd64                  3.4.8-2                              amd64        Foreign Function Interface library runtime
+[I guest.out] ii  libflac14:amd64                1.5.0+ds-2                           amd64        Free Lossless Audio Codec - runtime C library
+[I guest.out] ii  libfontconfig1:amd64           2.15.0-2.3                           amd64        generic font configuration library - runtime
+[I guest.out] ii  libfontenc1:amd64              1:1.1.8-1+b2                         amd64        X11 font encoding library
+[I guest.out] ii  libfreetype6:amd64             2.13.3+dfsg-1+deb13u1                amd64        FreeType 2 font engine, shared library files
+[I guest.out] ii  libfribidi0:amd64              1.0.16-1                             amd64        Free Implementation of the Unicode BiDi algorithm
+[I guest.out] ii  libgarcon-1-0:amd64            4.20.0-1                             amd64        freedesktop.org compliant menu implementation for Xfce
+[I guest.out] ii  libgarcon-common               4.20.0-1                             all          common files for libgarcon menu implementation
+[I guest.out] ii  libgarcon-gtk3-1-0:amd64       4.20.0-1                             amd64        menu library for Xfce (GTK3 library)
+[I guest.out] ii  libgbm1:amd64                  25.0.7-2+deb13u1                     amd64        generic buffer management API -- runtime
+[I guest.out] ii  libgcc-s1:amd64                14.2.0-19                            amd64        GCC support library
+[I guest.out] ii  libgdbm-compat4t64:amd64       1.24-2                               amd64        GNU dbm database routines (legacy support runtime version) 
+[I guest.out] ii  libgdbm6t64:amd64              1.24-2                               amd64        GNU dbm database routines (runtime version) 
+[I guest.out] ii  libgdk-pixbuf-2.0-0:amd64      2.42.12+dfsg-4+deb13u1               amd64        GDK Pixbuf library
+[I guest.out] ii  libgdk-pixbuf2.0-common        2.42.12+dfsg-4+deb13u1               all          GDK Pixbuf library - data files
+[I guest.out] ii  libgl1:amd64                   1.7.0-1+b2                           amd64        Vendor neutral GL dispatch library -- legacy GL support
+[I guest.out] ii  libgl1-mesa-dri:amd64          25.0.7-2+deb13u1                     amd64        free implementation of the OpenGL API -- DRI modules
+[I guest.out] ii  libglib2.0-0t64:amd64          2.84.4-3~deb13u5                     amd64        GLib library of C routines
+[I guest.out] ii  libglvnd0:amd64                1.7.0-1+b2                           amd64        Vendor neutral GL dispatch library
+[I guest.out] ii  libglx-mesa0:amd64             25.0.7-2+deb13u1                     amd64        free implementation of the OpenGL API -- GLX vendor library
+[I guest.out] ii  libglx0:amd64                  1.7.0-1+b2                           amd64        Vendor neutral GL dispatch library -- GLX support
+[I guest.out] ii  libgmp10:amd64                 2:6.3.0+dfsg-3                       amd64        Multiprecision arithmetic library
+[I guest.out] ii  libgnutls30t64:amd64           3.8.9-3+deb13u4                      amd64        GNU TLS library - main runtime library
+[I guest.out] ii  libgraphite2-3:amd64           1.3.14-2+deb13u1                     amd64        Font rendering engine for Complex Scripts -- library
+[I guest.out] ii  libgssapi-krb5-2:amd64         1.21.3-5+deb13u1                     amd64        MIT Kerberos runtime libraries - krb5 GSS-API Mechanism
+[I guest.out] ii  libgtk-3-0t64:amd64            3.24.49-3                            amd64        GTK graphical user interface library
+[I guest.out] ii  libgtk-3-common                3.24.49-3                            all          common files for the GTK graphical user interface library
+[I guest.out] ii  libgtk-layer-shell0            0.9.0-2                              amd64        Wayland Layer Shell protocol desktop component library
+[I guest.out] ii  libgtop-2.0-11:amd64           2.41.3-1+b2                          amd64        gtop system monitoring library (shared)
+[I guest.out] ii  libgtop2-common                2.41.3-1                             all          gtop system monitoring library (common)
+[I guest.out] ii  libgudev-1.0-0:amd64           238-6                                amd64        GObject-based wrapper library for libudev
+[I guest.out] ii  libharfbuzz0b:amd64            10.2.0-1+deb13u1                     amd64        OpenType text shaping engine (shared library)
+[I guest.out] ii  libhogweed6t64:amd64           3.10.1-1                             amd64        low level cryptographic library (public-key cryptos)
+[I guest.out] ii  libice6:amd64                  2:1.1.1-1                            amd64        X11 Inter-Client Exchange library
+[I guest.out] ii  libicu76:amd64                 76.1-4                               amd64        International Components for Unicode
+[I guest.out] ii  libidn2-0:amd64                2.3.8-2                              amd64        Internationalized domain names (IDNA2008/TR46) library
+[I guest.out] ii  libisl23:amd64                 0.27-1                               amd64        manipulating sets and relations of integer points bounded by linear constraints
+[I guest.out] ii  libjbig0:amd64                 2.1-6.1+b2                           amd64        JBIGkit libraries
+[I guest.out] ii  libjpeg62-turbo:amd64          1:2.1.5-4                            amd64        libjpeg-turbo JPEG runtime library
+[I guest.out] ii  libk5crypto3:amd64             1.21.3-5+deb13u1                     amd64        MIT Kerberos runtime libraries - Crypto Library
+[I guest.out] ii  libkeybinder-3.0-0:amd64       0.3.2-1.1+b3                         amd64        registers global key bindings for applications - Gtk+3
+[I guest.out] ii  libkeyutils1:amd64             1.6.3-6                              amd64        Linux Key Management Utilities (library)
+[I guest.out] ii  libkrb5-3:amd64                1.21.3-5+deb13u1                     amd64        MIT Kerberos runtime libraries
+[I guest.out] ii  libkrb5support0:amd64          1.21.3-5+deb13u1                     amd64        MIT Kerberos runtime libraries - Support library
+[I guest.out] ii  liblastlog2-2:amd64            2.41.5-0+deb13u1                     amd64        lastlog2 database shared library
+[I guest.out] ii  liblcms2-2:amd64               2.16-2+deb13u2                       amd64        Little CMS 2 color management library
+[I guest.out] ii  liblerc4:amd64                 4.0.0+ds-5                           amd64        Limited Error Raster Compression library
+[I guest.out] ii  libllvm19:amd64                1:19.1.7-3+b1                        amd64        Modular compiler and toolchain technologies, runtime library
+[I guest.out] ii  liblz4-1:amd64                 1.10.0-4                             amd64        Fast LZ compression algorithm library - runtime
+[I guest.out] ii  liblzma5:amd64                 5.8.1-1+deb13u1                      amd64        XZ-format compression library
+[I guest.out] ii  libmd0:amd64                   1.1.0-2+b1                           amd64        message digest functions from BSD systems - shared library
+[I guest.out] ii  libmount1:amd64                2.41.5-0+deb13u1                     amd64        device mounting library
+[I guest.out] ii  libmp3lame0:amd64              3.100-6+b3                           amd64        MP3 encoding library
+[I guest.out] ii  libmpc3:amd64                  1.3.1-1+b3                           amd64        multiple precision complex floating-point library
+[I guest.out] ii  libmpfr6:amd64                 4.2.2-1                              amd64        multiple precision floating-point computation
+[I guest.out] ii  libmpg123-0t64:amd64           1.32.10-1+deb13u1                    amd64        MPEG layer 1/2/3 audio decoder (shared library)
+[I guest.out] ii  libncursesw6:amd64             6.5+20250216-2                       amd64        shared libraries for terminal handling (wide character support)
+[I guest.out] ii  libnettle8t64:amd64            3.10.1-1                             amd64        low level cryptographic library (symmetric and one-way cryptos)
+[I guest.out] ii  libnotify4:amd64               0.8.6-1                              amd64        sends desktop notifications to a notification daemon
+[I guest.out] ii  libnspr4:amd64                 2:4.36-1                             amd64        NetScape Portable Runtime Library
+[I guest.out] ii  libogg0:amd64                  1.3.5-3+b2                           amd64        Ogg bitstream library
+[I guest.out] ii  libopus0:amd64                 1.5.2-2                              amd64        Opus codec runtime library
+[I guest.out] ii  libp11-kit0:amd64              0.25.5-3                             amd64        library for loading and coordinating access to PKCS#11 modules - runtime
+[I guest.out] ii  libpam-modules:amd64           1.7.0-5                              amd64        Pluggable Authentication Modules for PAM
+[I guest.out] ii  libpam-modules-bin             1.7.0-5                              amd64        Pluggable Authentication Modules for PAM - helper binaries
+[I guest.out] ii  libpam-runtime                 1.7.0-5                              all          Runtime support for the PAM library
+[I guest.out] ii  libpam0g:amd64                 1.7.0-5                              amd64        Pluggable Authentication Modules library
+[I guest.out] ii  libpango-1.0-0:amd64           1.56.3-1                             amd64        Layout and rendering of internationalized text
+[I guest.out] ii  libpangocairo-1.0-0:amd64      1.56.3-1                             amd64        Layout and rendering of internationalized text
+[I guest.out] ii  libpangoft2-1.0-0:amd64        1.56.3-1                             amd64        Layout and rendering of internationalized text
+[I guest.out] ii  libpciaccess0:amd64            0.17-3+b3                            amd64        Generic PCI access library for X
+[I guest.out] ii  libpcre2-8-0:amd64             10.46-1~deb13u2                      amd64        New Perl Compatible Regular Expression Library- 8 bit runtime files
+[I guest.out] ii  libperl5.40:amd64              5.40.1-6+deb13u1                     amd64        shared Perl library
+[I guest.out] ii  libpipeline1:amd64             1.5.8-1                              amd64        Unix process pipeline manipulation library
+[I guest.out] ii  libpixman-1-0:amd64            0.44.0-3                             amd64        pixel-manipulation library for X and cairo
+[I guest.out] ii  libpng16-16t64:amd64           1.6.48-1+deb13u5                     amd64        PNG library - runtime (version 1.6)
+[I guest.out] ii  libpolkit-gobject-1-0:amd64    126-2                                amd64        polkit Authorization API
+[I guest.out] ii  libproc2-0:amd64               2:4.0.4-9                            amd64        library for accessing process information from /proc
+[I guest.out] ii  libpulse-mainloop-glib0:amd64  17.0+dfsg1-2+b1                      amd64        PulseAudio client libraries (glib support)
+[I guest.out] ii  libpulse0:amd64                17.0+dfsg1-2+b1                      amd64        PulseAudio client libraries
+[I guest.out] ii  libpython3-stdlib:amd64        3.13.5-1                             amd64        interactive high-level object-oriented language (default python3 version)
+[I guest.out] ii  libpython3.13-minimal:amd64    3.13.5-2+deb13u5                     amd64        Minimal subset of the Python language (version 3.13)
+[I guest.out] ii  libpython3.13-stdlib:amd64     3.13.5-2+deb13u5                     amd64        Interactive high-level object-oriented language (standard library, version 3.13)
+[I guest.out] ii  libreadline8t64:amd64          8.2-6                                amd64        GNU readline and history libraries, run-time libraries
+[I guest.out] ii  libseccomp2:amd64              2.6.0-2                              amd64        high level interface to Linux seccomp filter
+[I guest.out] ii  libselinux1:amd64              3.8.1-1                              amd64        SELinux runtime shared libraries
+[I guest.out] ii  libsemanage-common             3.8.1-1                              all          Common files for SELinux policy management libraries
+[I guest.out] ii  libsemanage2:amd64             3.8.1-1                              amd64        SELinux policy management library
+[I guest.out] ii  libsensors-config              1:3.6.2-2                            all          lm-sensors configuration files
+[I guest.out] ii  libsensors5:amd64              1:3.6.2-2                            amd64        library to read temperature/voltage/fan sensors
+[I guest.out] ii  libsepol2:amd64                3.8.1-1                              amd64        SELinux library for manipulating binary security policies
+[I guest.out] ii  libsharpyuv0:amd64             1.5.0-0.1                            amd64        Library for sharp RGB to YUV conversion
+[I guest.out] ii  libsm6:amd64                   2:1.2.6-1                            amd64        X11 Session Management library
+[I guest.out] ii  libsmartcols1:amd64            2.41.5-0+deb13u1                     amd64        smart column output alignment library
+[I guest.out] ii  libsndfile1:amd64              1.2.2-2+deb13u1                      amd64        Library for reading/writing audio files
+[I guest.out] ii  libsqlite3-0:amd64             3.46.1-7+deb13u2                     amd64        SQLite 3 shared library
+[I guest.out] ii  libssl3t64:amd64               3.5.7-1~deb13u2                      amd64        Secure Sockets Layer toolkit - shared libraries
+[I guest.out] ii  libstartup-notification0:amd64 0.12-8                               amd64        library for program launch feedback (shared library)
+[I guest.out] ii  libstdc++6:amd64               14.2.0-19                            amd64        GNU Standard C++ Library v3
+[I guest.out] ii  libsystemd0:amd64              257.13-1~deb13u1                     amd64        systemd utility library
+[I guest.out] ii  libtasn1-6:amd64               4.20.0-2+deb13u1                     amd64        Manage ASN.1 structures (runtime)
+[I guest.out] ii  libthai-data                   0.1.29-2                             all          Data files for Thai language support library
+[I guest.out] ii  libthai0:amd64                 0.1.29-2+b1                          amd64        Thai language support library
+[I guest.out] ii  libthunarx-3-0:amd64           4.20.2-1+deb13u1                     amd64        extension library for thunar
+[I guest.out] ii  libtiff6:amd64                 4.7.0-3+deb13u3                      amd64        Tag Image File Format (TIFF) library
+[I guest.out] ii  libtinfo6:amd64                6.5+20250216-2                       amd64        shared low-level terminfo library for terminal handling
+[I guest.out] ii  libuchardet0:amd64             0.0.8-1+b2                           amd64        universal charset detection library - shared library
+[I guest.out] ii  libudev1:amd64                 257.13-1~deb13u1                     amd64        libudev shared library
+[I guest.out] ii  libunistring5:amd64            1.3-2                                amd64        Unicode string library for C
+[I guest.out] ii  libunwind8:amd64               1.8.1-0.1                            amd64        library to determine the call-chain of a program - runtime
+[I guest.out] ii  libutempter0:amd64             1.2.1-4                              amd64        privileged helper for utmp/wtmp updates (runtime)
+[I guest.out] ii  libuuid1:amd64                 2.41.5-0+deb13u1                     amd64        Universally Unique ID library
+[I guest.out] ii  libvorbis0a:amd64              1.3.7-3                              amd64        decoder library for Vorbis General Audio Compression Codec
+[I guest.out] ii  libvorbisenc2:amd64            1.3.7-3                              amd64        encoder library for Vorbis General Audio Compression Codec
+[I guest.out] ii  libvpx9:amd64                  1.15.0-2.1+deb13u1                   amd64        VP8 and VP9 video codec (shared library)
+[I guest.out] ii  libvte-2.91-0:amd64            0.80.1-1                             amd64        Terminal emulator widget for GTK 3 - runtime files
+[I guest.out] ii  libvte-2.91-common             0.80.1-1                             amd64        Terminal emulator widget for GTK 3 - common files
+[I guest.out] ii  libvulkan1:amd64               1.4.309.0-1                          amd64        Vulkan loader library
+[I guest.out] ii  libwayland-client0:amd64       1.23.1-3                             amd64        wayland compositor infrastructure - client library
+[I guest.out] ii  libwayland-cursor0:amd64       1.23.1-3                             amd64        wayland compositor infrastructure - cursor library
+[I guest.out] ii  libwayland-egl1:amd64          1.23.1-3                             amd64        wayland compositor infrastructure - EGL library
+[I guest.out] ii  libwayland-server0:amd64       1.23.1-3                             amd64        wayland compositor infrastructure - server library
+[I guest.out] ii  libwebp7:amd64                 1.5.0-0.1                            amd64        Lossy compression of digital photographic images (shared library)
+[I guest.out] ii  libwnck-3-0:amd64              43.2-1                               amd64        Window Navigator Construction Kit - runtime files
+[I guest.out] ii  libwnck-3-common               43.2-1                               all          Window Navigator Construction Kit - common files
+[I guest.out] ii  libx11-6:amd64                 2:1.8.12-1                           amd64        X11 client-side library
+[I guest.out] ii  libx11-data                    2:1.8.12-1                           all          X11 client-side library
+[I guest.out] ii  libx11-xcb1:amd64              2:1.8.12-1                           amd64        Xlib/XCB interface library
+[I guest.out] ii  libxau6:amd64                  1:1.0.11-1                           amd64        X11 authorisation library
+[I guest.out] ii  libxaw7:amd64                  2:1.0.16-1                           amd64        X11 Athena Widget library
+[I guest.out] ii  libxcb-damage0:amd64           1.17.0-2+b1                          amd64        X C Binding, damage extension
+[I guest.out] ii  libxcb-dri3-0:amd64            1.17.0-2+b1                          amd64        X C Binding, dri3 extension
+[I guest.out] ii  libxcb-glx0:amd64              1.17.0-2+b1                          amd64        X C Binding, glx extension
+[I guest.out] ii  libxcb-present0:amd64          1.17.0-2+b1                          amd64        X C Binding, present extension
+[I guest.out] ii  libxcb-randr0:amd64            1.17.0-2+b1                          amd64        X C Binding, randr extension
+[I guest.out] ii  libxcb-render0:amd64           1.17.0-2+b1                          amd64        X C Binding, render extension
+[I guest.out] ii  libxcb-shape0:amd64            1.17.0-2+b1                          amd64        X C Binding, shape extension
+[I guest.out] ii  libxcb-shm0:amd64              1.17.0-2+b1                          amd64        X C Binding, shm extension
+[I guest.out] ii  libxcb-sync1:amd64             1.17.0-2+b1                          amd64        X C Binding, sync extension
+[I guest.out] ii  libxcb-util1:amd64             0.4.1-1                              amd64        utility libraries for X C Binding -- atom, aux and event
+[I guest.out] ii  libxcb-xfixes0:amd64           1.17.0-2+b1                          amd64        X C Binding, xfixes extension
+[I guest.out] ii  libxcb1:amd64                  1.17.0-2+b1                          amd64        X C Binding
+[I guest.out] ii  libxcomposite1:amd64           1:0.4.6-1                            amd64        X11 Composite extension library
+[I guest.out] ii  libxcursor1:amd64              1:1.2.3-1                            amd64        X cursor management library
+[I guest.out] ii  libxdamage1:amd64              1:1.1.6-1+b2                         amd64        X11 damaged region extension library
+[I guest.out] ii  libxdmcp6:amd64                1:1.1.5-1                            amd64        X11 Display Manager Control Protocol library
+[I guest.out] ii  libxext6:amd64                 2:1.3.4-1+b3                         amd64        X11 miscellaneous extension library
+[I guest.out] ii  libxfce4panel-2.0-4            4.20.4-1                             amd64        Xfce4 panel library (GTK3 variant)
+[I guest.out] ii  libxfce4ui-2-0:amd64           4.20.1-1                             amd64        widget library for Xfce - Gtk+3 variant
+[I guest.out] ii  libxfce4ui-common              4.20.1-1                             all          common files for libxfce4ui
+[I guest.out] ii  libxfce4ui-utils               4.20.1-1                             amd64        Utility files for libxfce4ui
+[I guest.out] ii  libxfce4util-common            4.20.1-1                             all          common files for libxfce4util
+[I guest.out] ii  libxfce4util7:amd64            4.20.1-1                             amd64        Utility functions library for Xfce4
+[I guest.out] ii  libxfce4windowing-0-0:amd64    4.20.2-1                             amd64        Wayland utility functions library for Xfce4
+[I guest.out] ii  libxfce4windowing-common       4.20.2-1                             all          common files for libxfce4windowing
+[I guest.out] ii  libxfconf-0-3:amd64            4.20.0-1                             amd64        Client library for Xfce4 configure interface
+[I guest.out] ii  libxfixes3:amd64               1:6.0.0-2+b4                         amd64        X11 miscellaneous 'fixes' extension library
+[I guest.out] ii  libxfont2:amd64                1:2.0.6-1+deb13u1                    amd64        X11 font rasterisation library
+[I guest.out] ii  libxft2:amd64                  2.3.6-1+b4                           amd64        FreeType-based font drawing library for X
+[I guest.out] ii  libxi6:amd64                   2:1.8.2-1                            amd64        X11 Input extension library
+[I guest.out] ii  libxinerama1:amd64             2:1.1.4-3+b4                         amd64        X11 Xinerama extension library
+[I guest.out] ii  libxkbcommon0:amd64            1.7.0-2                              amd64        library interface to the XKB compiler - shared library
+[I guest.out] ii  libxkbfile1:amd64              1:1.1.0-1+b4                         amd64        X11 keyboard file manipulation library
+[I guest.out] ii  libxklavier16:amd64            5.4-5+b2                             amd64        X Keyboard Extension high-level API
+[I guest.out] ii  libxml2:amd64                  2.12.7+dfsg+really2.9.14-2.1+deb13u3 amd64        GNOME XML library
+[I guest.out] ii  libxmu6:amd64                  2:1.1.3-3+b4                         amd64        X11 miscellaneous utility library
+[I guest.out] ii  libxmuu1:amd64                 2:1.1.3-3+b4                         amd64        X11 miscellaneous micro-utility library
+[I guest.out] ii  libxpm4:amd64                  1:3.5.17-1+deb13u1                   amd64        X11 pixmap library
+[I guest.out] ii  libxpresent1:amd64             1.0.1-1+b2                           amd64        X11 Present extension library
+[I guest.out] ii  libxrandr2:amd64               2:1.5.4-1+b3                         amd64        X11 RandR extension library
+[I guest.out] ii  libxrender1:amd64              1:0.9.12-1                           amd64        X Rendering Extension client library
+[I guest.out] ii  libxres1:amd64                 2:1.2.1-1+b2                         amd64        X11 Resource extension library
+[I guest.out] ii  libxshmfence1:amd64            1.3.3-1                              amd64        X shared memory fences - shared library
+[I guest.out] ii  libxt6t64:amd64                1:1.2.1-1.2+b2                       amd64        X11 toolkit intrinsics library
+[I guest.out] ii  libxtst6:amd64                 2:1.2.5-1                            amd64        X11 Testing -- Record extension library
+[I guest.out] ii  libxv1:amd64                   2:1.0.11-1.1+b3                      amd64        X11 Video extension library
+[I guest.out] ii  libxxf86dga1:amd64             2:1.1.5-1+b3                         amd64        X11 Direct Graphics Access extension library
+[I guest.out] ii  libxxf86vm1:amd64              1:1.1.4-1+b4                         amd64        X11 XFree86 video mode extension library
+[I guest.out] ii  libxxhash0:amd64               0.8.3-2                              amd64        shared library for xxhash
+[I guest.out] ii  libyaml-0-2:amd64              0.2.5-2                              amd64        Fast YAML 1.1 parser and emitter library
+[I guest.out] ii  libz3-4:amd64                  4.13.3-1                             amd64        theorem prover from Microsoft Research - runtime libraries
+[I guest.out] ii  libzstd1:amd64                 1.5.7+dfsg-1                         amd64        fast lossless compression algorithm
+[I guest.out] ii  login                          1:4.16.0-2+really2.41.5-0+deb13u1    amd64        system login tools
+[I guest.out] ii  login.defs                     1:4.17.4-2                           all          system user management configuration
+[I guest.out] ii  lsb-base                       11.6                                 all          transitional package for Linux Standard Base init script functionality
+[I guest.out] ii  man-db                         2.13.1-1                             amd64        tools for reading manual pages
+[I guest.out] ii  mawk                           1.3.4.20250131-1                     amd64        Pattern scanning and text processing language
+[I guest.out] ii  media-types                    13.0.0                               all          List of standard media types and their usual file extension
+[I guest.out] ii  mesa-libgallium:amd64          25.0.7-2+deb13u1                     amd64        shared infrastructure for Mesa drivers
+[I guest.out] ii  mount                          2.41.5-0+deb13u1                     amd64        tools for mounting and manipulating filesystems
+[I guest.out] ii  ncurses-base                   6.5+20250216-2                       all          basic terminal type definitions
+[I guest.out] ii  ncurses-bin                    6.5+20250216-2                       amd64        terminal-related programs and man pages
+[I guest.out] ii  netbase                        6.5                                  all          Basic TCP/IP networking system
+[I guest.out] ii  openssl-provider-legacy        3.5.7-1~deb13u2                      amd64        Secure Sockets Layer toolkit - cryptographic utility
+[I guest.out] ii  passwd                         1:4.17.4-2                           amd64        change and administer password and group data
+[I guest.out] ii  perl                           5.40.1-6+deb13u1                     amd64        Larry Wall's Practical Extraction and Report Language
+[I guest.out] ii  perl-base                      5.40.1-6+deb13u1                     amd64        minimal Perl system
+[I guest.out] ii  perl-modules-5.40              5.40.1-6+deb13u1                     all          Core Perl modules
+[I guest.out] ii  procps                         2:4.0.4-9                            amd64        /proc file system utilities
+[I guest.out] ii  python3                        3.13.5-1                             amd64        interactive high-level object-oriented language (default python3 version)
+[I guest.out] ii  python3-minimal                3.13.5-1                             amd64        minimal subset of the Python language (default python3 version)
+[I guest.out] ii  python3-urllib3                2.3.0-3+deb13u2                      all          HTTP library with thread-safe connection pooling for Python3
+[I guest.out] ii  python3.13                     3.13.5-2+deb13u5                     amd64        Interactive high-level object-oriented language (version 3.13)
+[I guest.out] ii  python3.13-minimal             3.13.5-2+deb13u5                     amd64        Minimal subset of the Python language (version 3.13)
+[I guest.out] ii  readline-common                8.2-6                                all          GNU readline and history libraries, common files
+[I guest.out] ii  sed                            4.9-2+deb13u1                        amd64        GNU stream editor for filtering/transforming text
+[I guest.out] ii  shared-mime-info               2.4-5+b2                             amd64        FreeDesktop.org shared MIME database and spec
+[I guest.out] ii  sqv                            1.3.0-3+b2                           amd64        OpenPGP signature verification program from Sequoia
+[I guest.out] ii  strace                         6.13+ds-1                            amd64        System call tracer
+[I guest.out] ii  sysvinit-utils                 3.14-4                               amd64        System-V-like utilities
+[I guest.out] ii  tar                            1.35+dfsg-3.1                        amd64        GNU version of the tar archiving utility
+[I guest.out] ii  thunar                         4.20.2-1+deb13u1                     amd64        File Manager for Xfce
+[I guest.out] ii  thunar-data                    4.20.2-1+deb13u1                     all          Provides thunar documentation, icons and translations
+[I guest.out] ii  tzdata                         2026c-0+deb13u1                      all          time zone and daylight-saving time data
+[I guest.out] ii  usr-is-merged                  39+nmu2                              all          Transitional package to assert a merged-/usr system
+[I guest.out] ii  util-linux                     2.41.5-0+deb13u1                     amd64        miscellaneous system utilities
+[I guest.out] ii  x11-apps                       7.7+11+b1                            amd64        X applications
+[I guest.out] ii  x11-common                     1:7.7+24+deb13u1                     all          X Window System (X.Org) infrastructure
+[I guest.out] ii  x11-utils                      7.7+7                                amd64        X11 utilities
+[I guest.out] ii  x11-xkb-utils                  7.7+9                                amd64        X11 XKB utilities
+[I guest.out] ii  x11-xserver-utils              7.7+11                               amd64        X server utilities
+[I guest.out] ii  xauth                          1:1.1.2-1.1                          amd64        X authentication utility
+[I guest.out] ii  xbitmaps                       1.1.1-2.2                            all          Base X bitmaps
+[I guest.out] ii  xfce4                          4.20.1                               all          Meta-package for the Xfce Lightweight Desktop Environment
+[I guest.out] ii  xfce4-appfinder                4.20.0-2                             amd64        Application finder for the Xfce4 desktop environment
+[I guest.out] ii  xfce4-helpers                  4.20.1-1                             amd64        helpers for the Xfce4 desktop environment
+[I guest.out] ii  xfce4-panel                    4.20.4-1                             amd64        panel for Xfce4 desktop environment
+[I guest.out] ii  xfce4-pulseaudio-plugin:amd64  0.4.9-1                              amd64        Xfce4 panel plugin to control pulseaudio
+[I guest.out] ii  xfce4-session                  4.20.2-2                             amd64        Xfce4 Session Manager
+[I guest.out] ii  xfce4-settings                 4.20.1-1                             amd64        graphical application for managing Xfce settings
+[I guest.out] ii  xfce4-terminal                 1.1.4-1                              amd64        Xfce terminal emulator
+[I guest.out] ii  xfconf                         4.20.0-1                             amd64        utilities for managing settings in Xfce
+[I guest.out] ii  xfdesktop4                     4.20.1-1                             amd64        Xfce desktop background, icons and root menu manager
+[I guest.out] ii  xfdesktop4-data                4.20.1-1                             all          Xfce desktop background, icons and root menu (common files)
+[I guest.out] ii  xfonts-base                    1:1.0.5+nmu1                         all          standard fonts for X
+[I guest.out] ii  xfonts-encodings               1:1.0.4-2.2                          all          Encodings for X.Org fonts
+[I guest.out] ii  xfonts-utils                   1:7.7+7                              amd64        X Window System font utility programs
+[I guest.out] ii  xfwm4                          4.20.0-1                             amd64        window manager of the Xfce project
+[I guest.out] ii  xkb-data                       2.42-1                               all          X Keyboard Extension (XKB) configuration data
+[I guest.out] ii  xserver-common                 2:21.1.16-1.3+deb13u3                all          common files used by various X servers
+[I guest.out] ii  xterm                          398-1                                amd64        X terminal emulator
+[I guest.out] ii  xvfb                           2:21.1.16-1.3+deb13u3                amd64        Virtual Framebuffer 'fake' X server
+[I guest.out] ii  zlib1g:amd64                   1:1.3.dfsg+really1.3.1-1+b1          amd64        compression library - runtime
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (5304 bytes) follows:
+[W layer    ] MAP 7ef48d590000-7ef48d5c8000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ef48d5d0000-7ef48d5f8000 r--p 00000000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef48d5f8000-7ef48d75b000 r-xp 00028000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef48d75b000-7ef48d7b1000 r--p 0018b000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef48d7b1000-7ef48d7b5000 r--p 001e0000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef48d7b5000-7ef48d7b7000 rw-p 001e4000 00:00 281474976712781                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef48d7b7000-7ef48d7c4000 rw-p 00000000 00:00 0 
+7ef48d810000-7ef48d811000 r-xp 00000000 00:00 0                        [xrl-pool libmd.so.0.1.0]
+7ef48d820000-7ef48d822000 r--p 00000000 00:00 281474976712729                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ef48d822000-7ef48d82b000 r-xp 00002000 00:00 281474976712729                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+
+[W layer    ] MAP f4cd8c5000 rw-p 00000000 00:00 0                        [heap]
+7ff4c4cc5000-7ff4c4d1f000 r--p 00000000 00:00 281474976714498                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff4c4d1f000-7ff4c4d20000 ---p 00000000 00:00 0                        [stack]
+7ff4c4d20000-7ff4c5520000 rw-p 00000000 00:00 0                        [stack]
+7ff4c5520000-7ff4c5522000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
+7ff4c5531000-7ff4c5532000 r--p 00000000 00:00 281474976714500                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff4c5532000-7ff4c5533000 r--p 00000000 00:00 281474976714504                        /usr/lib/locale/C.utf8/LC_TIME
+7ff4c5533000-7ff4c5534000 r--p 00000000 00:00 281474976714497                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff4c5534000-7ff4c5535000 r--p 00000000 00:00 281474976714508                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff4c5535000-7ff4c5536000 r--p 00000000 00:00 281474976714507                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+7ff4c5536000-7ff4c5537000 r--p 00000000 00:0
+[W layer    ] MAP x86-64.so.2
+7ff4c556f000-7ff4c5570000 rw-p 00000000 00:00 0 
+7ff4c5570000-7ff4c5572000 r-xp 00000000 00:00 0                        [xrl-pool dpkg-query]
+7ff4c5572000-7ff4c5579000 r--s 00000000 00:00 281474976713559                        /usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache
+7ff4c5579000-7ff4c557c000 rw-p 00000000 00:00 0 
+7ff4c557c000-7ff4c557e000 rw-p 00000000 00:00 0 
+7ff4c557e000-7ff4c557f000 r--p 00000000 00:00 281474976714505                        /usr/lib/locale/C.utf8/LC_ADDRESS
+7ff4c557f000-7ff4c5580000 r--p 00000000 00:00 281474976714503                        /usr/lib/locale/C.utf8/LC_TELEPHONE
+7ff4c5580000-7ff4c5581000 r--p 00000000 00:00 281474976714501                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff4c5581000-7ff4c5582000 r--p 00000000 00:00 281474976714502                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff4c5582000-7ff4c5586000 r--p 00000000 00:00 281474976712342                        /usr/bin/dpkg-query
+7ff4c5586000-7ff4c559e000 r-xp 00004000 00:00 281474976712342                        /usr/bin/dpkg-query
+7ff4c55
+xrl_layer_boot returned 0
+exit 0
