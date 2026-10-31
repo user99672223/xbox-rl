@@ -1,19 +1,33 @@
 === shard core
 procs-test: exit 0 (TOTAL FAILS=0)
-probe 1 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
+probe 1 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
 probe 2 (m1): PASS exit   0    0s     - MiB  /usr/bin/ls -la /
-probe 3 (m1): PASS exit   0    1s     - MiB  /usr/bin/id
-probe 4 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
+probe 3 (m1): PASS exit   0    0s     - MiB  /usr/bin/id
+probe 4 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
 probe 5 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
-probe 6 (m1): PASS exit   0    1s     - MiB  /usr/bin/ps aux
+probe 6 (m1): PASS exit   0    0s     - MiB  /usr/bin/ps aux
 probe 7 (m1): PASS exit   0    0s    13 MiB  /usr/bin/dpkg -l
+probe 8 (m1): PASS exit   0    1s     - MiB  /usr/bin/apt-get --version
+probe 9 (m1): PASS exit   0    0s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
+probe 10 (m2): FAIL exit 100    1s    51 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
+probe 11 (m2): FAIL exit 100    1s    29 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
+probe 12 (m2): FAIL exit 127    0s     - MiB  /usr/bin/hello
+probe 13 (m2b): FAIL exit 139    3s    83 MiB  XRL_SHARED_TEXT=0 XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+probe 14 (m2b): FAIL exit 139    1s    62 MiB  XRL_SHARED_SEGS=x XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+probe 15 (m2b): FAIL exit 139    3s    72 MiB  XRL_SHARED_SEGS=r XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+probe 16 (m2b): FAIL exit 139    1s    51 MiB  XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'
+--- syscalls answered ENOSYS (count, nr, name):
+     90 ENOSYS 334 rseq
+milestone 1 (bash, coreutils, ps, dpkg -l): PASS
+milestone 2 (apt-get update + install): FAIL (3 probe(s))
+milestone 2b (apt-get update bisect (shared pages off / code only / data only / both)): FAIL (4 probe(s))
+exit 0
 === shard x
 probe 17 (m3): PASS exit   0   10s    81 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
-probe 18 (m4): PASS exit   0   27s   348 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
-probe 22 (m6): PASS exit   0  124s   400 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
+probe 18 (m4): PASS exit   0   31s   340 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
+probe 22 (m6): PASS exit   0  124s   395 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
 --- syscalls answered ENOSYS (count, nr, name):
      40 ENOSYS 334 rseq
-     20 ENOSYS 434 pidfd_open
       4 ENOSYS 303 name_to_handle_at
       4 ENOSYS 125 capget
 milestone 3 (Xvfb + xterm): PASS
@@ -21,12 +35,11 @@ milestone 4 (XFCE session): PASS
 milestone 6 (TV: the session on /dev/fb0): PASS
 exit 0
 === shard firefox
-probe 19 (m5): PASS exit   0   48s  1380 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
-probe 20 (m5s): PASS exit   0   48s  1602 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
-probe 21 (m5t): PASS exit   0   65s  1792 MiB  XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 19 (m5): PASS exit   0   40s  1360 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 20 (m5s): PASS exit   0   39s  1610 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 21 (m5t): PASS exit   0   49s  1865 MiB  XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox
 --- syscalls answered ENOSYS (count, nr, name):
      48 ENOSYS 334 rseq
-     30 ENOSYS 434 pidfd_open
      30 ENOSYS 187 readahead
       6 ENOSYS 303 name_to_handle_at
       6 ENOSYS 125 capget

@@ -1,0 +1,28 @@
+[W layer    ] ENOSYS 334 rseq (a1=7ff42fbef680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff42fb97680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff42fce86a0 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff42f19fba0 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[I guest.out] Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]
+[W layer    ] ENOSYS 334 rseq (a1=7ff42eb5b6a0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I guest.out] Get:2 http://deb.debian.org/debian trixie/main amd64 Packages [9678 kB]
+[W layer    ] mem-fail[0] addr=7ff42a230000 access=1 vma=COVERS [7ff42a230000,7ff42a232000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[1] addr=7ff42a231000 access=1 vma=COVERS [7ff42a230000,7ff42a232000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[2] addr=7ff42a232000 access=1 vma=NEAR [7ff42a244000,7ff42a245000) prot=1 lazy=0 committed=1 host(state=2000 prot=0)
+[E layer    ] === UNHANDLED GUEST FAULT tid 4976 code c0000005 rip 00007ef3f148ba18 addr 00007ff42a232000 (1) rsp 00007ff42a21f238 teb-stack [00007ff42a1dd000,00007ff42a22e000) ===
+[E layer    ] ACCESS_VIOLATION (0xc0000005) at rip=00007ef3f148ba18  fault_addr=00007ff42a232000 (write)
+[E layer    ] rax=00007ff42a21f890 rbx=00007ff425a94b00 rcx=00007ff42a21f890 rdx=00007ff42a2419f8
+[E layer    ] rsi=00007ff425206a80 rdi=00007ff42a231fc0 rbp=0000000000010000 rsp=00007ff42a21f238
+[E layer    ] r8 =0000000000000000 r9 =0000000000000000 r10=00007ff425a5a7e3 r11=00007ff42a21f4c8
+[E layer    ] r12=0000000000020240 r13=00007ff42a21f4d0 r14=00007ff425a5a7e3 r15=0000000000000009
+[E layer    ] fs_base(guest tp)=00007ff42a28e900 fsbase_now=0000000000000000 eflags=00010203
+[E layer    ] code @rip: 62 e1 fd 48 7f 57 01 62 e1 fd 48 7f
+[E layer    ] [rsp+00] 00007ef3f10c7b7e
+[E layer    ] [rsp+08] 00007ff42a21f280
+[E layer    ] [rsp+10] 00007ff42a21f4c8
+[E layer    ] [rsp+18] 000000000000846d
+[E layer    ] [rsp+20] 0000000000022268
+[E layer    ] [rsp+28] 0000000000000000
+[E layer    ] [rsp+30] 00007ff42a21f890
+[E layer    ] [rsp+38] 00007ff425a94578
+[E layer    ] rip vma: 7ef3f1338000-7ef3f149b000 r-xp 00028000 00:00 281474976712771                        /usr/lib/x86_64-linux-gnu/libc.so.6
+exit 139
