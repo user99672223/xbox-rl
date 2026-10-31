@@ -2,6 +2,21 @@
 
 Newest first.
 
+## 2026-10-31 (plan from the user) - priorities
+
+1. Memory first: copy-on-write fork snapshots (protect + save on first write); shared Windows sections for file mmaps
+   (MapViewOfFile3 into placeholders, FILE_MAP_COPY for MAP_PRIVATE); no snapshot for vfork/posix_spawn children;
+   fix "copy into another process's memory ... pid -1"; Firefox prefs dom.ipc.processCount=2, fission.autostart=false.
+   Goal: the Firefox session under ~2 GiB committed and a clean teardown.
+2. TV output: bridge over the X protocol (MIT-SHM ShmGetImage + XDamage, x11vnc as reference) to /dev/fb0 with XTest
+   input from event0-2 (controller as mouse + keyboard); prove in CI by reading fb0 back.
+3. Looks: KDE Plasma 6 (X11) on Mesa llvmpipe first, polished theme; then GPU: Mesa d3d12 gallium (the WSLg approach)
+   built with STDMETHODCALLTYPE = __attribute__((ms_abi)), the ID3D12Device from the layer's host op table
+   (XRL_SYS_GET_GFX_OPS), present via Mesa's xlib/MIT-SHM software winsys; later Dozen (Vulkan). WARP in CI.
+4. Speed: cache rewritten library code across loads/runs; cheaper fork/exec.
+5. Later: audio, persistent /home, on-screen keyboard, Steam/Proton.
+Shared code must not change RL's behaviour (XRL_FORK_TASKS); I test shared changes on the Xbox before main.
+
 ## 2026-10-31 (Xbox result) - milestones 1-5 PASS on the console
 
 - Branch `claude/xbox-desktop-test` (your branch + the RL work), app v1.5.441, your CI rootfs (run 41174414886) in
