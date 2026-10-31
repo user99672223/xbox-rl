@@ -59,6 +59,27 @@ typedef struct vma {
 } vma;
 
 static SRWLOCK g_lock = SRWLOCK_INIT;
+static volatile LONG g_lock_tid;    /* who holds g_lock exclusively (sample.c's stall snapshot), 0: nobody */
+static volatile LONG64 g_lock_t0;   /* QPC when it was taken */
+static void mem_lock(void)
+{
+    AcquireSRWLockExclusive(&g_lock);
+    LARGE_INTEGER q; QueryPerformanceCounter(&q);
+    g_lock_t0 = q.QuadPart;
+    g_lock_tid = (LONG)GetCurrentThreadId();
+}
+static void mem_unlock(void)
+{
+    g_lock_tid = 0;
+    ReleaseSRWLockExclusive(&g_lock);
+}
+void xrl_mem_lock_owner(u32 *tid, u64 *held_us)
+{
+    LONG t = g_lock_tid;
+    LARGE_INTEGER q, f; QueryPerformanceCounter(&q); QueryPerformanceFrequency(&f);
+    *tid = (u32)t;
+    *held_us = t ? (u64)((q.QuadPart - g_lock_t0) * 1000000 / f.QuadPart) : 0;
+}
 static u64 g_next_mid;      /* g_lock held */
 static volatile LONG g_next_mm;
 static vma *g_v;
@@ -368,7 +389,7 @@ static void sync_memfd_readonly(xfile *f, u64 ino)
 int xrl_mem_sync_shared_page(u64 addr, u64 len)
 {
     int synced = 0;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     size_t i = vma_lower(addr);
     if (i >= g_n || g_v[i].start > addr) goto out;
     vma *target = &g_v[i];
@@ -395,7 +416,7 @@ int xrl_mem_sync_shared_page(u64 addr, u64 len)
         LOGW("memfd-sync: copied %llu bytes from [%llx] to [%llx] (ino=%llu)", copy_len, s_addr, t_addr, target->ino);
     }
 out:
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return synced;
 }
 
@@ -1555,7 +1576,7 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
     }
 
     slong res;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     int shared = (flags & LX_MAP_SHARED) != 0;
     u64 target = 0;
 
@@ -1592,7 +1613,7 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
     res = map_range(target, len, prot, shared, f, off, name,
                     !(flags & (LX_MAP_STACK | LX_MAP_POPULATE)) && len >= LAZY_MIN);
 out:
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     if (f) xfile_unref(f);
     return res;
 }
@@ -1604,9 +1625,9 @@ slong xrl_mem_munmap(u64 addr, u64 len)
     if (addr + len < addr) return -LX_EINVAL;
     slong sr = xrl_shm_munmap(addr, len);   /* inside a shared segment: only the attachment goes away (shm.c) */
     if (sr != XRL_NOT_NET) return sr;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     slong r = vma_unmap_range(addr, addr + len, 1);
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return r;
 }
 
@@ -1618,12 +1639,12 @@ slong xrl_mem_munmap(u64 addr, u64 len)
  * ordering exposes the write). Not a security-sensitive region for EAC, and avoids a spurious tracer crash. */
 static struct { u64 lo, hi; } g_interp_rw[4];
 static int g_interp_rw_n;
-void xrl_mem_interp_rw_reset(void) { AcquireSRWLockExclusive(&g_lock); g_interp_rw_n = 0; ReleaseSRWLockExclusive(&g_lock); }
+void xrl_mem_interp_rw_reset(void) { mem_lock(); g_interp_rw_n = 0; mem_unlock(); }
 void xrl_mem_interp_rw_add(u64 lo, u64 hi)
 {
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     if (g_interp_rw_n < (int)(sizeof g_interp_rw / sizeof g_interp_rw[0])) { g_interp_rw[g_interp_rw_n].lo = lo; g_interp_rw[g_interp_rw_n].hi = hi; g_interp_rw_n++; }
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
 }
 static int interp_rw_covers(u64 addr, u64 end)   /* caller holds g_lock */
 {
@@ -1637,18 +1658,18 @@ static int interp_rw_covers(u64 addr, u64 end)   /* caller holds g_lock */
 u64 xrl_mem_shared_alloc(u64 len, const char *name)
 {
     len = ALIGN_UP(len, LX_PAGE);
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     u64 t = find_gap(len, g_arena_end);
     slong r = t ? map_range(t, len, LX_PROT_READ | LX_PROT_WRITE, 1, NULL, 0, name, len >= LAZY_MIN) : -LX_ENOMEM;
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return r < 0 ? 0 : (u64)r;
 }
 
 void xrl_mem_shared_free(u64 addr, u64 len)
 {
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     vma_unmap_range(addr, addr + ALIGN_UP(len, LX_PAGE), 1);
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
 }
 
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
@@ -1660,7 +1681,7 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
     u64 end = addr + len;
     if (end < addr) return -LX_ENOMEM;
     slong r = 0;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     if ((prot & (LX_PROT_READ | LX_PROT_WRITE)) == LX_PROT_READ && interp_rw_covers(addr, end)) prot |= LX_PROT_WRITE;
     /* coverage check */
     for (u64 p = addr; p < end;) {
@@ -1699,19 +1720,19 @@ slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
     }
     for (size_t i = vma_lower(addr); i < g_n && g_v[i].start <= end; i++) { vma_try_merge(i); }
 out:
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return r;
 }
 
 void xrl_mem_rename_range(u64 lo, u64 hi, const char *new_name)
 {
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     for (size_t i = 0; i < g_n; i++) {
         vma *v = &g_v[i];
         if (v->start >= lo && v->end <= hi)
             vma_name(v, new_name);
     }
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
 }
 
 slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_addr)
@@ -1723,7 +1744,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
     if ((flags & LX_MREMAP_FIXED) && !(flags & LX_MREMAP_MAYMOVE)) return -LX_EINVAL;
     if (!old_len) return -LX_EINVAL;
     slong res;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     size_t i = vma_lower(old_addr);
     if (i >= g_n || g_v[i].start > old_addr || g_v[i].end < old_addr + old_len) { res = -LX_EFAULT; goto out; }
     int prot = g_v[i].prot, shared = g_v[i].shared;
@@ -1768,16 +1789,16 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
         }
         if (prot != (LX_PROT_READ | LX_PROT_WRITE) && prot != LX_PROT_NONE) {
             /* restore requested protection via the normal path */
-            ReleaseSRWLockExclusive(&g_lock);
+            mem_unlock();
             slong pr = xrl_mem_mprotect(target, new_len, prot);
-            AcquireSRWLockExclusive(&g_lock);
+            mem_lock();
             if (pr) { res = pr; goto out; }
         }
         if (!(flags & LX_MREMAP_DONTUNMAP)) vma_unmap_range(old_addr, old_addr + old_len, 1);
         res = (slong)target;
     }
 out:
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return res;
 }
 
@@ -1807,7 +1828,7 @@ static brkwin *brk_of(u32 mm, int create)   /* g_lock held */
 slong xrl_mem_brk(u64 addr)
 {
     slong res;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     brkwin *b = brk_of(cur_mm(), 1);
     if (!b) { res = 0; goto out; }
     if (addr == 0 || addr < b->base || addr > b->limit) { res = (slong)b->cur; goto out; }
@@ -1821,7 +1842,7 @@ slong xrl_mem_brk(u64 addr)
     b->cur = addr;
     res = (slong)addr;
 out:
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return res;
 }
 
@@ -1832,7 +1853,7 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
     switch (advice) {
     case LX_MADV_DONTNEED:
     case LX_MADV_FREE: {
-        AcquireSRWLockExclusive(&g_lock);
+        mem_lock();
         swap_forget(addr, addr + len);
         /* anonymous pages: decommit (zero-filled on the next touch, which commits
          * lazily) and give the commit charge back */
@@ -1847,7 +1868,7 @@ slong xrl_mem_madvise(u64 addr, u64 len, int advice)
             v->committed = 0;
             v->lazy = 1;
         }
-        ReleaseSRWLockExclusive(&g_lock);
+        mem_unlock();
         return 0;
     }
     case LX_MADV_POPULATE_READ:
@@ -1879,13 +1900,13 @@ slong xrl_mem_populate(u64 addr, u64 len)
     u64 end = ALIGN_UP(addr + len, LX_PAGE);
     addr = ALIGN_DOWN(addr, LX_PAGE);
     slong r = 0;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < end && !r; i++) {
         vma *v = &g_v[i];
         if (!v->lazy) continue;
         r = commit_lazy_locked(v->start > addr ? v->start : addr, v->end < end ? v->end : end, v->prot);
     }
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return r;
 }
 
@@ -2025,7 +2046,7 @@ int xrl_mem_is_exec(u64 a)
 int xrl_mem_lock_held(void)
 {
     if (!TryAcquireSRWLockExclusive(&g_lock)) return 1;
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return 0;
 }
 
@@ -2120,7 +2141,7 @@ void xrl_mem_dump_faults(void)
 static int lazy_fault_locked_entry(u64 addr, int access)
 {
     int ok = 0;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     size_t i = vma_lower(addr);
     if (i < g_n && g_v[i].start <= addr) {
         vma *v = &g_v[i];
@@ -2164,7 +2185,7 @@ static int lazy_fault_locked_entry(u64 addr, int access)
         }
     }
     if (!ok) memfail_capture(addr, access, (i < g_n) ? &g_v[i] : NULL);
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return ok;
 }
 
@@ -2232,7 +2253,7 @@ int xrl_mem_page_writable(u64 addr)
 int xrl_mem_writewatch_allow(u64 addr)
 {
     int ok = 0;
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     size_t i = vma_lower(addr);
     if (i < g_n && g_v[i].start <= addr && addr < g_v[i].end && !(g_v[i].prot & LX_PROT_WRITE)) {
         u64 ps = addr & ~(u64)(LX_PAGE - 1);
@@ -2249,7 +2270,7 @@ int xrl_mem_writewatch_allow(u64 addr)
                      ps, e1, GetLastError(), g_v[i].prot, g_v[i].lazy, g_v[i].committed); }
         }
     }
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
     return ok;
 }
 
@@ -2348,7 +2369,7 @@ void xrl_mm_release(u32 mm)
     ReleaseSRWLockShared(&g_lock);
     for (size_t i = 0; i + 1 < n; i += 2) xrl_mem_munmap(rg[i], rg[i + 1] - rg[i]);
     free(rg);
-    AcquireSRWLockExclusive(&g_lock);
+    mem_lock();
     brkwin *b = brk_of(mm, 0);
     if (b) {
         if (mm == 1) b->cur = b->base;
@@ -2359,7 +2380,7 @@ void xrl_mm_release(u32 mm)
             free(b);
         }
     }
-    ReleaseSRWLockExclusive(&g_lock);
+    mem_unlock();
 }
 
 /* /proc/<pid>/maps of one mm (0: every mapping, for the crash report) */
@@ -2530,10 +2551,10 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
     /* 4. the bytes */
     for (size_t i = 0; i < sn->nr; i++) memcpy((void *)sn->rg[i].s, sn->data + sn->rg[i].off, (size_t)(sn->rg[i].e - sn->rg[i].s));
     if (sn->has_brk) {
-        AcquireSRWLockExclusive(&g_lock);
+        mem_lock();
         brkwin *b = brk_of(mm, 0);
         if (b) b->cur = sn->brk_cur;
-        ReleaseSRWLockExclusive(&g_lock);
+        mem_unlock();
     }
     xrl_heapcheck("snapshot restored");
 }

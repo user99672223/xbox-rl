@@ -293,8 +293,70 @@ static DWORD WINAPI sample_thread(LPVOID p)
     }
 }
 
+/* ---- stall snapshot (XRL_STALL=<ms>, default 250 with XRL_SAMPLE) ----
+ * The game's graphics calls reach the host as COM calls (com.c counts them). When they have been flowing (over
+ * 1000/s) and then stop for XRL_STALL ms, the frame is stuck: log, for every guest thread, the syscall it is in (or
+ * where it runs, sampled), and who holds the memory lock and for how long; again at 4x and 16x the threshold if the
+ * stall lasts. At most 40 snapshots a run. */
+extern volatile LONG64 xrl_com_calls;
+static void stall_snapshot(u64 ms)
+{
+    static volatile LONG n;
+    if (InterlockedIncrement(&n) > 40) return;
+    u32 ltid; u64 lus;
+    xrl_mem_lock_owner(&ltid, &lus);
+    LOGW("stall: no graphics call for %llu ms; memory lock %s%u (held %llu ms)", ms, ltid ? "held by tid " : "free", ltid,
+         lus / 1000);
+    AcquireSRWLockShared(&G.thread_lock);
+    for (xrl_thread *t = G.threads; t; t = t->next) {
+        int nr = t->cur_nr;
+        if (t->in_sys > 0 && nr >= 0) {
+            LOGW("stall:   %s/%d in %s%s", t->name, t->tid, xrl_sysname(nr), (u32)t->win_tid == ltid ? " (holds the memory lock)" : "");
+            continue;
+        }
+        if (!t->handle || SuspendThread(t->handle) == (DWORD)-1) continue;
+        CONTEXT c;
+        c.ContextFlags = CONTEXT_CONTROL;
+        BOOL ok = GetThreadContext(t->handle, &c);
+        ResumeThread(t->handle);
+        if (!ok) continue;
+        s_where w; where_of(c.Rip, &w);
+        char ex[96] = ""; u32 d = 0;
+        if (w.kind == 2 && host_export(c.Rip, ex, sizeof ex, &d)) LOGW("stall:   %s/%d running %s!%s+0x%x%s", t->name, t->tid, w.mod, ex, d,
+                                                                       (u32)t->win_tid == ltid ? " (holds the memory lock)" : "");
+        else LOGW("stall:   %s/%d running %s+0x%llx%s", t->name, t->tid, w.mod, w.off, (u32)t->win_tid == ltid ? " (holds the memory lock)" : "");
+    }
+    ReleaseSRWLockShared(&G.thread_lock);
+}
+
+static DWORD WINAPI stall_thread(LPVOID p)
+{
+    const u64 lim = (u64)(UINT_PTR)p;
+    LONG64 last = xrl_com_calls, rate_mark = last;
+    u64 t_last = GetTickCount64(), t_rate = t_last, next = lim;
+    int active = 0;
+    for (;;) {
+        Sleep(20);
+        LONG64 c = xrl_com_calls;
+        u64 now = GetTickCount64();
+        if (now - t_rate >= 1000) { active = c - rate_mark > 1000; rate_mark = c; t_rate = now; }
+        if (c != last) { last = c; t_last = now; next = lim; continue; }
+        if (active && now - t_last >= next) { stall_snapshot(now - t_last); next *= 4; }
+    }
+}
+
 void xrl_sample_start(void)
 {
+    {
+        char sv[16];
+        u64 ms = GetEnvironmentVariableA("XRL_STALL", sv, sizeof sv) ? strtoull(sv, NULL, 10)
+               : GetEnvironmentVariableA("XRL_SAMPLE", sv, sizeof sv) ? 250 : 0;
+        if (ms) {
+            HANDLE sh = CreateThread(NULL, 64 << 10, stall_thread, (LPVOID)(UINT_PTR)ms, 0, NULL);
+            if (sh) CloseHandle(sh);
+            LOGI("stall: a snapshot of every guest thread when graphics calls stop for %llu ms (XRL_STALL)", ms);
+        }
+    }
     char v[16];
     if (!GetEnvironmentVariableA("XRL_SAMPLE", v, sizeof v)) return;
     DWORD hz = (DWORD)strtoul(v, NULL, 10);

@@ -485,6 +485,7 @@ static u8 dbt_snap_at(u64 p, u8 *out, u8 cap)
     for (u64 i = 0; i < avail; i++) out[i] = s[i];
     return (u8)avail;
 }
+static int policy_on(void);
 static dbt_fault_rec g_fcap[FCAP_N];
 /* XRL_FAULT_RIP=<hex>: the first real fault at exactly that rip is also kept here (with what every register points
  * to), so a crash site among thousands of handled faults keeps its registers until the dump. */

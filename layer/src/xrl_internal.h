@@ -93,6 +93,7 @@ struct xrl_thread {
     /* --- C-only --- */
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
+    volatile int cur_nr;   /* the outermost syscall being run (sample.c's stall snapshot), -1: none */
     u64  nsys;             /* syscalls made (perf.c); written by this thread only */
     u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;
@@ -640,7 +641,8 @@ int   xrl_mem_guest_ctx(u64 rip, u64 rsp);
 void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
 int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
 int  xrl_mem_vma_of(u64 a, char *name, size_t n, u64 *off);   /* mem.c: the mapping containing a (sample.c) */
-void xrl_sample_start(void);   /* sample.c: XRL_SAMPLE=<hz> sampling profiler */
+void xrl_sample_start(void);
+void xrl_mem_lock_owner(u32 *tid, u64 *held_us);   /* mem.c: who holds the memory lock, for how long (0: nobody) */   /* sample.c: XRL_SAMPLE=<hz> sampling profiler */
 void xrl_mem_breakdown(void);  /* mem.c: committed memory by guest mapping vs the partition, to the log */
 int   xrl_mem_is_exec(u64 a);
 int   xrl_mem_lock_held(void);
