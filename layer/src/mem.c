@@ -2341,7 +2341,19 @@ void xrl_mm_release(u32 mm)
         rg[n++] = g_v[i].start; rg[n++] = g_v[i].end;
     }
     ReleaseSRWLockShared(&g_lock);
-    for (size_t i = 0; i + 1 < n; i += 2) xrl_mem_munmap(rg[i], rg[i + 1] - rg[i]);
+    /* only what is still this mm's when its turn comes: a range collected above may hold another process's mapping
+     * by then (unmapping by address alone took that one away, and its owner's next mmap landed on its own code) */
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        if (xrl_shm_munmap(rg[i], rg[i + 1] - rg[i]) != XRL_NOT_NET) continue;   /* a shared segment: shm.c */
+        AcquireSRWLockExclusive(&g_lock);
+        for (size_t k = vma_lower(rg[i]); k < g_n && g_v[k].start < rg[i + 1];) {
+            if (g_v[k].owner != mm) { k++; continue; }
+            u64 a = g_v[k].start, e = g_v[k].end < rg[i + 1] ? g_v[k].end : rg[i + 1];
+            if (vma_unmap_range(a, e, 1)) { k++; continue; }
+            k = vma_lower(e);
+        }
+        ReleaseSRWLockExclusive(&g_lock);
+    }
     free(rg);
     AcquireSRWLockExclusive(&g_lock);
     brkwin *b = brk_of(mm, 0);

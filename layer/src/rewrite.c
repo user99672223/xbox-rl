@@ -44,24 +44,49 @@ static int g_rw_off = -1, g_rw_trace;
 /* ----------------------------------------------------------- trap sites */
 #define TRAP_BITS 17
 #define TRAP_SLOTS (1u << TRAP_BITS)
-static struct { volatile LONG64 site; LONG64 stub; } g_trap[TRAP_SLOTS];
+typedef struct trapslot { volatile LONG64 site; LONG64 stub; } trapslot;
+static trapslot g_trap0[TRAP_SLOTS];
+static trapslot *volatile g_trap = g_trap0;   /* replaced whole by trap_sweep; rw_veh reads it lock-free */
 static PVOID g_rw_veh;
 static LONG g_trap_n;
 
 static u32 trap_hash(u64 site) { return (u32)((site * 0x9e3779b97f4a7c15ull) >> (64 - TRAP_BITS)); }
 
-static void trap_add(u64 site, u64 stub)
+static void trap_put(trapslot *t, u64 site, u64 stub)
 {
-    if (g_trap_n >= (LONG)(TRAP_SLOTS / 2)) { LOGE("rewrite: trap table full, site %llx will not be redirected", site); return; }
     for (u32 i = trap_hash(site);; i = (i + 1) & (TRAP_SLOTS - 1)) {
-        if (g_trap[i].site == 0) {
-            g_trap[i].stub = (LONG64)stub;
-            InterlockedExchange64(&g_trap[i].site, (LONG64)site);     /* publish after the stub */
+        if (t[i].site == 0) {
+            t[i].stub = (LONG64)stub;
+            InterlockedExchange64(&t[i].site, (LONG64)site);     /* publish after the stub */
             InterlockedIncrement(&g_trap_n);
             return;
         }
-        if ((u64)g_trap[i].site == site) { g_trap[i].stub = (LONG64)stub; return; }
+        if ((u64)t[i].site == site) { t[i].stub = (LONG64)stub; return; }
     }
+}
+
+/* Sites of images that are gone stay in the table (every process of a desktop session loads libc's 17 at an address
+ * of its own): when it is half full, a new table keeps only the sites that are still mapped and still hold the int3.
+ * The old one is left as it is, a fault handler may be reading it. g_rw_lock held. */
+static void trap_sweep(void)
+{
+    trapslot *old = g_trap, *nt = (trapslot *)calloc(TRAP_SLOTS, sizeof *nt);
+    if (!nt) return;
+    LONG before = g_trap_n;
+    g_trap_n = 0;
+    for (u32 i = 0; i < TRAP_SLOTS; i++) {
+        u64 site = (u64)old[i].site; u8 b = 0;
+        if (site && xrl_mem_is_mapped(site) && !xrl_cfu(&b, site, 1) && b == 0xcc) trap_put(nt, site, (u64)old[i].stub);
+    }
+    InterlockedExchangePointer((PVOID volatile *)&g_trap, nt);
+    LOGI("rewrite: trap table swept: %ld sites -> %ld still mapped", (long)before, (long)g_trap_n);
+}
+
+static void trap_add(u64 site, u64 stub)
+{
+    if (g_trap_n >= (LONG)(TRAP_SLOTS / 2)) trap_sweep();
+    if (g_trap_n >= (LONG)(TRAP_SLOTS / 2)) { LOGE("rewrite: trap table full, site %llx will not be redirected", site); return; }
+    trap_put(g_trap, site, stub);
 }
 
 /* Runs wherever the guest faulted, with the guest TEB view live: touches only static memory. */
@@ -69,10 +94,11 @@ static LONG CALLBACK rw_veh(PEXCEPTION_POINTERS ep)
 {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT) return EXCEPTION_CONTINUE_SEARCH;
     u64 site = (u64)ep->ExceptionRecord->ExceptionAddress;
+    trapslot *t = g_trap;
     for (u32 i = trap_hash(site);; i = (i + 1) & (TRAP_SLOTS - 1)) {
-        u64 k = (u64)g_trap[i].site;
+        u64 k = (u64)t[i].site;
         if (k == 0) return EXCEPTION_CONTINUE_SEARCH;
-        if (k == site) { ep->ContextRecord->Rip = (DWORD64)g_trap[i].stub; return EXCEPTION_CONTINUE_EXECUTION; }
+        if (k == site) { ep->ContextRecord->Rip = (DWORD64)t[i].stub; return EXCEPTION_CONTINUE_EXECUTION; }
     }
 }
 

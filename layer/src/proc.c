@@ -425,6 +425,7 @@ void xrl_proc_exec_mm(xrl_proc *p)
     xrl_mm *old = p->mm;
     xrl_shm_proc_gone(p->pid);   /* userland: exec detaches shm */
     swap_leave(p);
+    LOGI("exec: pid %d leaves address space %u (%ld user(s))%s", p->pid, old->id, (long)old->refs, old->refs > 1 ? "" : ", released in place");
     if (old->refs > 1) {
         p->mm = mm_new();
         mm_put(old);
