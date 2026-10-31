@@ -1,0 +1,17 @@
+probe 19 (mg1): FAIL exit   0  488s   901 MiB  XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=startplasma XRL_TRACE_MAX=20000 /bin/bash /tmp/xrl-xsession.sh plasma
+probe 20 (mg1w): FAIL exit   0  486s   891 MiB  XRL_FORK_COW=0 /bin/bash /tmp/xrl-xsession.sh plasma
+probe 21 (mg2): FAIL exit 127    4s     - MiB  XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma
+probe 22 (mg3): FAIL exit 127    3s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 XRL_ENV_XRL_D3D12_DEBUG=1 /bin/bash /usr/local/bin/xrl-plasma-session glx-gpu
+probe 23 (mg4): FAIL exit 127    4s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma-gpu
+probe 24 (mg5): FAIL exit 127    3s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 XRL_ENV_XRL_D3D12_DEBUG=1 /bin/bash /usr/local/bin/xrl-plasma-session vk-gpu
+--- syscalls answered ENOSYS (count, nr, name):
+     44 ENOSYS 334 rseq
+      4 ENOSYS 434 pidfd_open
+      4 ENOSYS 125 capget
+milestone g1 (probes-gpu.list): FAIL (1 probe(s))
+milestone g1w (probes-gpu.list): FAIL (1 probe(s))
+milestone g2 (probes-gpu.list): FAIL (1 probe(s))
+milestone g3 (probes-gpu.list): FAIL (1 probe(s))
+milestone g4 (probes-gpu.list): FAIL (1 probe(s))
+milestone g5 (probes-gpu.list): FAIL (1 probe(s))
+exit 0
