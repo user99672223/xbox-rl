@@ -567,6 +567,11 @@ slong xrl_sys_tgkill(int tgid, int tid, int sig)
     if (!t || (tgid != -1 && t->proc->pid != tgid)) return -LX_ESRCH;
     if (sig == 0) return 0;
     if (!SIGBIT_OK(sig)) return -LX_EINVAL;
+    xrl_thread *self = xrl_cur();
+    if (sig == LX_SIGABRT && t == self && t->frame) {   /* abort(): where from (glibc's __stack_chk_fail, an assert...) */
+        static volatile LONG n;
+        if (InterlockedIncrement(&n) <= 16) xrl_perf_backtrace("abort", t->tid, 0, t->frame + 56);
+    }
     return send_signal(t, sig, 0);
 }
 

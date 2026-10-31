@@ -61,6 +61,18 @@ static int spin_sample(xrl_thread *t, pf_spin *s)
     s->name[sizeof s->name - 1] = 0;
     return 1;
 }
+static void spin_report(const pf_spin *s);
+/* A guest backtrace in the log: the code at rip and the return addresses into guest code on the stack at rsp (a
+ * process that aborts itself: "stack smashing detected", signal.c) */
+void xrl_perf_backtrace(const char *why, int tid, u64 rip, u64 rsp)
+{
+    pf_spin s;
+    memset(&s, 0, sizeof s);
+    s.tid = tid; s.rip = rip; s.rsp = rsp;
+    strncpy_s(s.name, sizeof s.name, why, _TRUNCATE);
+    spin_report(&s);
+}
+
 static void spin_report(const pf_spin *s)
 {
     char nm[96], line[700];
