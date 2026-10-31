@@ -158,7 +158,8 @@ xrl_status HostSwapchainCreate(ID3D12CommandQueue* queue, uint32_t w, uint32_t h
 // Same for a native D3D11 device (native D3D11 mode): a flip-model swapchain of the host window made
 // from the device itself; the D3D11 buffer 0 of it is the copy target.
 xrl_status HostSwapchainCreate11(ID3D11Device* dev, uint32_t w, uint32_t h, uint32_t buffer_count,
-                                 uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format);
+                                 uint32_t dxgi_format, ComPtr<IDXGISwapChain3>& out, DXGI_FORMAT* out_format,
+                                 UINT extra_flags = 0);   // DXGI_SWAP_CHAIN_FLAG_* added (ALLOW_TEARING for the 120 Hz pacer)
 
 // ---------------------------------------------------------------- d3d11_swapchain.cpp
 xrl_status D3D11SwapchainCreateOp(xrl_handle d3d11_device, xrl_handle d3d12_queue, const xrl_swapchain_desc* desc,

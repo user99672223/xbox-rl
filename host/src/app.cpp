@@ -30,6 +30,8 @@ namespace xrl {
 // reaches "301 loaded". Must be requested while foreground; the session is kept alive (static).
 void request_extended_execution() {
     using namespace winrt::Windows::ApplicationModel::ExtendedExecution;
+    // XRL_NO_EXTEXEC=1: do not ask (tests whether the request itself gets the app backgrounded)
+    { char v[4]; if (GetEnvironmentVariableA("XRL_NO_EXTEXEC", v, sizeof v) && v[0] == '1') { XLOGW("host", "extended execution: not requested (XRL_NO_EXTEXEC)"); return; } }
     try {
         static ExtendedExecutionSession s{ nullptr };
         s = ExtendedExecutionSession();
@@ -37,6 +39,11 @@ void request_extended_execution() {
         s.Description(L"xbox-rl: EAC in-game load");
         s.Revoked([](auto&&, ExtendedExecutionRevokedEventArgs const& a) {
             XLOGW("host", "extended execution revoked (reason %d)", (int)a.Reason());
+            // Reason 1 (SystemPolicy) came ~1 s after some launches (often the first after an install) and the
+            // exec-host child then died at once (0xc0000374/0xc0000409/0xc0000005): ask again while still in front.
+            static std::atomic<int> again{0};
+            if (a.Reason() == ExtendedExecutionRevokedReason::SystemPolicy && again++ < 3)
+                std::thread([] { request_extended_execution(); }).detach();
         });
         auto r = s.RequestExtensionAsync().get();
         XLOGI("host", "extended execution request -> %d (0=Allowed, 1=Denied)", (int)r);

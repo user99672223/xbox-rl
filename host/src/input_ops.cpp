@@ -47,6 +47,14 @@ void ensure_init() {
     std::lock_guard<std::mutex> lk(p->m);
     if (p->inited) return;
     p->inited = true;
+    // A spawned (windowless) child has no input of its own: the window and its gamepads belong to the first process.
+    // XRL_CHILD_INPUT=1 keeps the old behaviour (Windows.Gaming.Input in every process) for comparison.
+    char v[16];
+    if ((GetEnvironmentVariableA("XRL_TRACEE_R", v, sizeof v) || (GetEnvironmentVariableA("XRL_SPAWN_DEPTH", v, sizeof v) && atoi(v) > 0)) &&
+        !(GetEnvironmentVariableA("XRL_CHILD_INPUT", v, sizeof v) && v[0] == '1')) {
+        XLOGI("input", "spawned child: no Windows.Gaming.Input (the first process owns the window and the pads)");
+        return;
+    }
     try {
         p->added = WGI::Gamepad::GamepadAdded([p](winrt::Windows::Foundation::IInspectable const&, WGI::Gamepad const& g) {
             std::lock_guard<std::mutex> l(p->m); p->add_locked(g);

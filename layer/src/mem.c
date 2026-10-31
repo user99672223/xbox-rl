@@ -2057,6 +2057,75 @@ int xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off)
     ReleaseSRWLockShared(&g_lock);
     return r;
 }
+/* Memory by source (sample.c, every report): the pages Windows really has committed in each guest mapping
+ * (VirtualQuery, so lazily committed and swapped-out pages count as they are), summed by mapping name - the
+ * file a mapping came from, or [anon]/[stack]/a memfd - and the partition's whole commit charge beside it:
+ * what is not in a guest mapping is the host's (the app, D3D and the driver's CPU side, the swap file's
+ * cache, ...). */
+typedef struct mb_src { char name[160]; u64 bytes, vsize; int n; } mb_src;
+void xrl_mem_breakdown(void)
+{
+    static struct { u64 s, e; char name[160]; } *cp;
+    static size_t cpcap;
+    AcquireSRWLockShared(&g_lock);
+    if (cpcap < g_n) {
+        void *nc = realloc(cp, g_n * 2 * sizeof *cp);
+        if (!nc) { ReleaseSRWLockShared(&g_lock); return; }
+        cp = nc; cpcap = g_n * 2;
+    }
+    size_t n = g_n;
+    for (size_t i = 0; i < n; i++) { cp[i].s = g_v[i].start; cp[i].e = g_v[i].end; memcpy(cp[i].name, g_v[i].name, sizeof cp[i].name); }
+    ReleaseSRWLockShared(&g_lock);
+    static mb_src src[512];
+    int ns = 0;
+    u64 total = 0;
+    for (size_t i = 0; i < n; i++) {
+        u64 c = 0;
+        for (u64 a = cp[i].s; a < cp[i].e; ) {
+            MEMORY_BASIC_INFORMATION mbi;
+            if (!VirtualQuery((void *)a, &mbi, sizeof mbi)) break;
+            u64 re = (u64)mbi.BaseAddress + mbi.RegionSize;
+            if (re > cp[i].e) re = cp[i].e;
+            if (mbi.State == MEM_COMMIT) c += re - a;
+            a = re;
+        }
+        total += c;
+        const char *nm = cp[i].name[0] ? cp[i].name : "[anon]";
+        int k = 0;
+        while (k < ns && strcmp(src[k].name, nm)) k++;
+        if (k == ns) {
+            if (ns == 512) k = 511;   /* the last slot takes the rest */
+            else { strcpy_s(src[ns].name, sizeof src[ns].name, nm); src[ns].bytes = src[ns].vsize = 0; src[ns].n = 0; ns++; }
+        }
+        src[k].bytes += c; src[k].vsize += cp[i].e - cp[i].s; src[k].n++;
+    }
+    MEMORYSTATUSEX ms = { sizeof ms };
+    GlobalMemoryStatusEx(&ms);
+    u64 part = ms.ullTotalPageFile - ms.ullAvailPageFile;
+    LOGI("mem: guest committed %llu MiB in %zu mappings (layer count %llu MiB); partition commit %llu of %llu MiB, so %llu MiB "
+         "outside guest mappings (host, D3D/driver CPU side)", total >> 20, n, (u64)g_committed >> 20, part >> 20,
+         ms.ullTotalPageFile >> 20, part > total ? (part - total) >> 20 : 0);
+    for (int k = 0; k < ns && k < 20; k++) {
+        int b = k;
+        for (int j = k + 1; j < ns; j++) if (src[j].bytes > src[b].bytes) b = j;
+        mb_src t = src[k]; src[k] = src[b]; src[b] = t;
+        if (!src[k].bytes) break;
+        LOGI("mem: %7.1f MiB committed (%7.1f MiB mapped, %d mapping%s) %s", (double)src[k].bytes / 1048576.0,
+             (double)src[k].vsize / 1048576.0, src[k].n, src[k].n == 1 ? "" : "s", src[k].name);
+    }
+}
+
+/* the guest mapping that contains `a` (start <= a < end): its name and the offset (file offset for a file
+ * mapping); 0 outside every mapping, -1 when the lock is busy (sample.c) */
+int xrl_mem_vma_of(u64 a, char *name, size_t n, u64 *off)
+{
+    if (!TryAcquireSRWLockShared(&g_lock)) return -1;
+    size_t i = vma_lower(a);
+    int r = i < g_n && g_v[i].start <= a && a < g_v[i].end;
+    if (r) { strncpy_s(name, n, g_v[i].name, _TRUNCATE); *off = a - g_v[i].start + (u64)g_v[i].foff; }
+    ReleaseSRWLockShared(&g_lock);
+    return r;
+}
 /* `a` lies in an executable guest mapping (-1: the lock is busy) */
 int xrl_mem_is_exec(u64 a)
 {

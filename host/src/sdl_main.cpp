@@ -20,6 +20,7 @@
 #include <SDL_syswm.h>
 
 #include <windows.h>
+#include <dxgi1_3.h>
 #include <atomic>
 #include <bitset>
 #include <cstdio>
@@ -204,6 +205,17 @@ int sdl_main(int, char**) {
     xrl::gfx_thread_start();
     // Keep the CoreWindow presenting so the Xbox PLM does not suspend the package while the EAC
     // bootstrapper (which renders nothing) runs and injects the game in a 2nd process.
+    {   // XRL_NO_VBLANK_VIRT=1: the real display clock instead of the steady virtual one the system gives apps (dxgi)
+        char v[4];
+        if (GetEnvironmentVariableA("XRL_NO_VBLANK_VIRT", v, sizeof v) && v[0] == '1') {
+            IDXGIFactory2* fac = nullptr;
+            CreateDXGIFactory2(0, __uuidof(IDXGIFactory2), (void**)&fac);   // loads dxgi.dll
+            auto fn = (HRESULT(WINAPI*)())GetProcAddress(GetModuleHandleW(L"dxgi.dll"), "DXGIDisableVBlankVirtualization");
+            HRESULT hr = fn ? fn() : E_NOTIMPL;
+            XLOGI("sdl", "DXGIDisableVBlankVirtualization: %s 0x%08lx", fn ? "called" : "not exported", (unsigned long)hr);
+            if (fac) fac->Release();
+        }
+    }
     xrl::gfx_keepalive_start();
 
     void* worker = xrl::start_thread("boot", 256u << 20, [] {
@@ -214,6 +226,21 @@ int sdl_main(int, char**) {
             SetEnvironmentVariableA("XRL_PP_DIR", xrl::local_state_utf8().c_str());
             xrl::procprobe_parent(v);
             return;   // stay foreground; do not boot the guest
+        } }
+        // XRL_DISCOVER=1 (host_env): what the console offers (discover.cpp), into LocalState\discover; then exit
+        { char v[4]; if (GetEnvironmentVariableA("XRL_DISCOVER", v, sizeof v) && v[0] == '1') {
+            xrl::discover_run();
+            g_worker_done = true;
+            return;
+        } }
+        // XRL_PRESENT_TEST=1 (host_env): what reaches the screen at the HDMI mode, without the game; then exit
+        { char v[4]; if (GetEnvironmentVariableA("XRL_PRESENT_TEST", v, sizeof v) && (v[0] >= '1' && v[0] <= '9')) {
+            MEMORYSTATUSEX ms{sizeof ms};
+            GlobalMemoryStatusEx(&ms);
+            XLOGI("ptest", "memory: phys %llu MiB, commit limit %llu MiB", ms.ullTotalPhys >> 20, ms.ullTotalPageFile >> 20);
+            xrl::gfx_present_test(v[0] - '0');   // 1: the measured battery, 2: the visual test, 3: the 60/120 A/B, 4: the early-flip sweep, 5: the fine sweep, 6: stripes
+            g_worker_done = true;
+            return;
         } }
         const auto& cfg = xrl::config();
         if (cfg.probe_mode != "none") {
