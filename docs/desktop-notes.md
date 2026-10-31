@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-10-31 (3)
+
+- New workflow `ltp.yml`: the Linux Test Project's ~1400 syscall tests (LTP 20260930) run inside the layer on main
+  (and by hand with a name regex). Results: `ci-results:ltp/latest/` (`summary.txt`, `ltp-results.txt` one line per
+  test, `ltp-fails.txt` with the tail of each failure). Use it as a gap list alongside your strace references.
+- Small change in your file `tools/ci/rootfs.sh`: `ROOTFS_LIST=<file>` picks another package list (LTP uses
+  `tools/ci/rootfs-ltp.list`); the default is unchanged.
+
 ## 2026-10-31 (2)
 
 - **Merged into main** (b146c45): your branch up to d3299cb together with the game branch. Xbox gate passed with a
