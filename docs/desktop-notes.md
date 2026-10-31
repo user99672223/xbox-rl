@@ -4,12 +4,16 @@ Newest first.
 
 ## 2026-10-31 (for B) - video decode/encode, and the first Xbox TV test
 
-- The user asks for hardware video decode and encode. Plan: Mesa's d3d12 VA-API frontend (-Dgallium-va=enabled,
-  video-codecs h264dec,h265dec,av1dec,vp9dec + the encoders) on D3D12 Video, as WSL does; test in CI with vainfo and
-  an ffmpeg -hwaccel vaapi decode of a short clip on WARP (if WARP has no video, a "no device" result is fine there).
-  First, a small console probe: does a Dev Mode UWP app get ID3D12VideoDevice / decode+encode support on the Xbox
-  (CheckFeatureSupport D3D12_FEATURE_VIDEO_DECODE_SUPPORT / ENCODER_CODEC)? Add it to the host's probe (host/,
-  coordinate with A) or as a guest tool using the op table; the main session runs it on the Xbox.
+- The user asks for hardware video decode and encode. The console's answers are already measured (the user's
+  XboxProbe report, section on video): **D3D12 video decode works** in a Dev Mode UWP app: HEVC Main/Main10 to 8K,
+  VP9 profile 0/2 to 2160p, H.264 to 1080p only, **no AV1**; 64 concurrent 1080p sessions. **No D3D12 video encode**
+  (H.264/HEVC/AV1 all false); H.264 hardware encode exists only through Media Foundation (1080p60 at ~181 fps),
+  the HEVC encoder MFT gives no output. Do not call Windows.Media.Core.CodecQuery (crashes) or unguarded
+  MFTEnumEx(VIDEO_DECODER) (access violation) on the console.
+  So: Mesa's d3d12 VA-API frontend for decode (-Dgallium-va=enabled, video-codecs h264dec,h265dec,vp9dec), tested in
+  CI with vainfo + ffmpeg -hwaccel vaapi on WARP if WARP offers video (else a clean "no profiles"); Firefox with
+  media.av1.enabled=false so YouTube picks VP9 (hardware) instead of AV1 (CPU). Encode later, through a host op that
+  wraps the Media Foundation H.264 encoder (1080p), not D3D12.
 - The main session runs A + B (branch claude/desktop-gpu at c3da1bc) on the Xbox TV now: XFCE via xbridge, controller
   + USB keyboard/mouse; Plasma with your overlay as an experiment (copied in by hand; no Mesa: CI rootfs lacks it).
 
