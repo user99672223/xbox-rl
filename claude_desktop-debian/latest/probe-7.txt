@@ -1,38 +1,38 @@
 $ /usr/bin/dpkg -l
-[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/dpkg, 2 args, 7 env, budget=1024 MiB
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/dpkg, 2 args, 7 env, budget=4096 MiB
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef4a7f90000,7ff4a7f90000) 1048576 MiB VA, brk <= 7ef4e7f90000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef4f1100000,7ff4f1100000) 1048576 MiB VA, brk <= 7ef531100000, commit budget 4096 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
 [I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
 [I layer    ] vfs: modes and owners on: 1447 entries from .xrl-meta (default owner 0:0)
 [I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
-[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff49fcb9000
-[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff49fcbc000 span=[7ff49fcbc000,7ff49ff90000) entry=7ff49fcc3d30
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff49fc7f000
-[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff49fc81000 span=[7ff49fc81000,7ff49fcb9000) entry=7ff49fc9e2c0
+[I layer    ] rewrite: /usr/bin/dpkg: 0 syscall + 291 %fs sites (0 in place, 291 jumps, 0 traps, 0 neighbours moved), pool 11648 bytes at 7ff4e8e29000
+[I layer    ] elf: loaded /usr/bin/dpkg type=DYN bias=7ff4e8e2c000 span=[7ff4e8e2c000,7ff4e9100000) entry=7ff4e8e33d30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4e8def000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4e8df1000 span=[7ff4e8df1000,7ff4e8e29000) entry=7ff4e8e0e2c0
 [I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
-[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=00000234A1BE8370)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000024B1A7FC860)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff49fc7ed30
-[I layer    ] boot: guest main thread tid=4452 entry=7ff49fc9e2c0 sp=7ff49fc7ed30
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff49f468000
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff49f431000
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff49f205000
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff49f154000
-[W layer    ] ENOSYS 334 rseq (a1=7ff49f152ba0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
-[I layer    ] exec: pid 6924 tid 4452 -> /usr/bin/dpkg-query (3 args, 10 env)
+[I layer    ] boot: stack sp=7ff4e8deed30
+[I layer    ] boot: guest main thread tid=6484 entry=7ff4e8e0e2c0 sp=7ff4e8deed30
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4e85d8000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff4e85a1000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4e8375000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff4e82c4000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4e82c2ba0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] exec: pid 1240 tid 6484 -> /usr/bin/dpkg-query (3 args, 10 env)
 [I layer    ] exec: guest memory committed 13 MiB -> 0 MiB after releasing the old image
-[I layer    ] rewrite: /usr/bin/dpkg-query: 0 syscall + 203 %fs sites (0 in place, 203 jumps, 0 traps, 0 neighbours moved), pool 8128 bytes at 7ff49fce0000
-[I layer    ] elf: loaded /usr/bin/dpkg-query type=DYN bias=7ff49fce2000 span=[7ff49fce2000,7ff49ff90000) entry=7ff49fce6880
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff49fca6000
-[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff49fca8000 span=[7ff49fca8000,7ff49fce0000) entry=7ff49fcc52c0
-[I layer    ] exec: /usr/bin/dpkg-query running, main thread tid 5492 entry 7ff49fcc52c0
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff49f48f000
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff49f263000
-[W layer    ] ENOSYS 334 rseq (a1=7ff49f260680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/bin/dpkg-query: 0 syscall + 203 %fs sites (0 in place, 203 jumps, 0 traps, 0 neighbours moved), pool 8128 bytes at 7ff4e8e50000
+[I layer    ] elf: loaded /usr/bin/dpkg-query type=DYN bias=7ff4e8e52000 span=[7ff4e8e52000,7ff4e9100000) entry=7ff4e8e56880
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4e8e16000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4e8e18000 span=[7ff4e8e18000,7ff4e8e50000) entry=7ff4e8e352c0
+[I layer    ] exec: /usr/bin/dpkg-query running, main thread tid 7948 entry 7ff4e8e352c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff4e85ff000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4e83d3000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4e83d0680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
 [I guest.out] Desired=Unknown/Install/Remove/Purge/Hold
 [I guest.out] | Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend
 [I guest.out] |/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)
@@ -382,39 +382,39 @@ $ /usr/bin/dpkg -l
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (5115 bytes) follows:
-[W layer    ] MAP 7ef4a7f90000-7ef4a7fb1000 rw-p 00000000 00:00 0                        [heap]
-7ef4a7fb1000-7ef4a7fd2000 rw-p 00000000 00:00 0                        [heap]
-7ef4a7fd2000-7ef4a7ff4000 rw-p 00000000 00:00 0                        [heap]
-7ef4a7ff4000-7ef4a8015000 rw-p 00000000 00:00 0                        [heap]
-7ef4a8015000-7ef4a8025000 rw-p 00000000 00:00 0                        [heap]
-7ff49f1f8000-7ff49f252000 r--p 00000000 00:00 281474976714196                        /usr/lib/locale/C.utf8/LC_CTYPE
-7ff49f252000-7ff49f253000 r--p 00000000 00:00 281474976714198                        /usr/lib/locale/C.utf8/LC_NUMERIC
-7ff49f253000-7ff49f254000 r--p 00000000 00:00 281474976714202                        /usr/lib/locale/C.utf8/LC_TIME
-7ff49f254000-7ff49f255000 r--p 00000000 00:00 281474976714195                        /usr/lib/locale/C.utf8/LC_COLLATE
-7ff49f255000-7ff49f256000 r--p 00000000 00:00 281474976714206                        /usr/lib/locale/C.utf8/LC_MONETARY
-7ff49f256000-7ff49f257000 r--p 00000000 00:00 281474976714205                        /usr/lib/locale/C.utf8/LC_MES
+[W layer    ] MAP 7ef4f1100000-7ef4f1121000 rw-p 00000000 00:00 0                        [heap]
+7ef4f1121000-7ef4f1142000 rw-p 00000000 00:00 0                        [heap]
+7ef4f1142000-7ef4f1164000 rw-p 00000000 00:00 0                        [heap]
+7ef4f1164000-7ef4f1185000 rw-p 00000000 00:00 0                        [heap]
+7ef4f1185000-7ef4f1195000 rw-p 00000000 00:00 0                        [heap]
+7ff4e8368000-7ff4e83c2000 r--p 00000000 00:00 281474976714196                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff4e83c2000-7ff4e83c3000 r--p 00000000 00:00 281474976714198                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff4e83c3000-7ff4e83c4000 r--p 00000000 00:00 281474976714202                        /usr/lib/locale/C.utf8/LC_TIME
+7ff4e83c4000-7ff4e83c5000 r--p 00000000 00:00 281474976714195                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff4e83c5000-7ff4e83c6000 r--p 00000000 00:00 281474976714206                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff4e83c6000-7ff4e83c7000 r--p 00000000 00:00 281474976714205                        /usr/lib/locale/C.utf8/LC_MES
 [W layer    ] MAP x86_64-linux-gnu/libc.so.6
-7ff49f426000-7ff49f47c000 r--p 0018b000 00:00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff49f47c000-7ff49f480000 r--p 001e0000 00:00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff49f480000-7ff49f482000 rw-p 001e4000 00:00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff49f482000-7ff49f48f000 rw-p 00000000 00:00 0 
-7ff49f48f000-7ff49f490000 rwxp 00000000 00:00 0 
-7ff49f490000-7ff49f492000 r--p 00000000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
-7ff49f492000-7ff49f49b000 r-xp 00002000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
-7ff49f49b000-7ff49f49d000 r--p 0000b000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
-7ff49f49d000-7ff49f49e000 r--p 0000d000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
-7ff49f49e000-7ff49f49f000 rw-p 0000e000 00:00 281474976712427                        /usr/lib/x86_64-li
+7ff4e8596000-7ff4e85ec000 r--p 0018b000 00:00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4e85ec000-7ff4e85f0000 r--p 001e0000 00:00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4e85f0000-7ff4e85f2000 rw-p 001e4000 00:00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4e85f2000-7ff4e85ff000 rw-p 00000000 00:00 0 
+7ff4e85ff000-7ff4e8600000 rwxp 00000000 00:00 0 
+7ff4e8600000-7ff4e8602000 r--p 00000000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4e8602000-7ff4e860b000 r-xp 00002000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4e860b000-7ff4e860d000 r--p 0000b000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4e860d000-7ff4e860e000 r--p 0000d000 00:00 281474976712427                        /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0
+7ff4e860e000-7ff4e860f000 rw-p 0000e000 00:00 281474976712427                        /usr/lib/x86_64-li
 [W layer    ] MAP       [stack]
-7ff49fca6000-7ff49fca8000 rwxp 00000000 00:00 0 
-7ff49fca8000-7ff49fca9000 r--p 00000000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-7ff49fca9000-7ff49fcd1000 r-xp 00001000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-7ff49fcd1000-7ff49fcdc000 r--p 00029000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-7ff49fcdc000-7ff49fcdf000 rw-p 00034000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-7ff49fcdf000-7ff49fce0000 rw-p 00000000 00:00 0 
-7ff49fce0000-7ff49fce2000 rwxp 00000000 00:00 0 
-7ff49fce2000-7ff49fce6000 r--p 00000000 00:00 281474976712040                        /usr/bin/dpkg-query
-7ff49fce6000-7ff49fcfe000 r-xp 00004000 00:00 281474976712040                        /usr/bin/dpkg-query
-7ff49fcfe000-7ff49fd0a000 r--p 0001c000 00:00 281474976712040                        /usr/bin/dpkg-query
-7ff49fd0a000-7ff49fd0c000 r--p 00028000 00:00 281474976712040                        /usr/b
+7ff4e8e16000-7ff4e8e18000 rwxp 00000000 00:00 0 
+7ff4e8e18000-7ff4e8e19000 r--p 00000000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4e8e19000-7ff4e8e41000 r-xp 00001000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4e8e41000-7ff4e8e4c000 r--p 00029000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4e8e4c000-7ff4e8e4f000 rw-p 00034000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4e8e4f000-7ff4e8e50000 rw-p 00000000 00:00 0 
+7ff4e8e50000-7ff4e8e52000 rwxp 00000000 00:00 0 
+7ff4e8e52000-7ff4e8e56000 r--p 00000000 00:00 281474976712040                        /usr/bin/dpkg-query
+7ff4e8e56000-7ff4e8e6e000 r-xp 00004000 00:00 281474976712040                        /usr/bin/dpkg-query
+7ff4e8e6e000-7ff4e8e7a000 r--p 0001c000 00:00 281474976712040                        /usr/bin/dpkg-query
+7ff4e8e7a000-7ff4e8e7c000 r--p 00028000 00:00 281474976712040                        /usr/b
 xrl_layer_boot returned 0
 exit 0
