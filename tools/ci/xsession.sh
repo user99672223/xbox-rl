@@ -53,6 +53,11 @@ xfce|firefox|tv)
             > /tmp/xrl-bridge.log 2>&1 &
         bridge=$!
     fi
+    # no compositor: xfwm4's loads Mesa (libLLVM, 124 MiB per process) for an effect Xvfb/the TV bridge does not need
+    x=$HOME/.config/xfce4/xfconf/xfce-perchannel-xml; mkdir -p "$x"
+    [ -f "$x/xfwm4.xml" ] || printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' '<channel name="xfwm4" version="1.0">' \
+        '  <property name="general" type="empty">' '    <property name="use_compositing" type="bool" value="false"/>' \
+        '  </property>' '</channel>' > "$x/xfwm4.xml"
     /usr/bin/dbus-launch --exit-with-session /usr/bin/startxfce4 > /tmp/xrl-xfce.log 2>&1 &
     pids="$pids $!"
     wait_for 240 '"xfce4-panel"' && wait_for 120 '"(Desktop|xfdesktop)"'
@@ -75,7 +80,11 @@ EOF
                 'layers.gpu-process.enabled", false' 'dom.ipc.forkserver.enable", false' \
                 'browser.sessionstore.resume_from_crash", false' 'datareporting.policy.dataSubmissionEnabled", false' \
                 'gfx.webrender.software", true' 'layers.acceleration.disabled", true' 'webgl.disabled", true' \
-                'media.hardware-video-decoding.enabled", false'; do
+                'media.hardware-video-decoding.enabled", false' 'media.utility-ffmpeg.enabled", false' \
+                'media.utility-vorbis.enabled", false' 'browser.startup.page", 0' 'browser.startup.homepage", "about:blank"' \
+                'browser.newtabpage.enabled", false' 'browser.startup.homepage_override.mstone", "ignore"' \
+                'browser.aboutwelcome.enabled", false' 'startup.homepage_welcome_url", ""' 'browser.tabs.remote.autostart", true' \
+                'dom.ipc.processCount.file", 0' 'dom.ipc.processCount.privilegedabout", 0'; do
             echo "user_pref(\"$pr);"
         done > /tmp/xrl-ffprofile/user.js
         # MOZ_LOG: process start-up and IPC, to see where it waits when no window comes (/tmp/xrl-firefox.log);

@@ -2,6 +2,22 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (8) - CI run 43 (9f223f0): all milestones PASS; Firefox session 4084 -> 2665 MiB
+
+| Firefox session (XFCE + Firefox page), peak committed | run 41 | run 43 |
+|---|---|---|
+| plain | 4084 MiB | 2855 MiB (fewer processes, software WebRender) |
+| + thread stacks on demand (XRL_LAZY_STACKS=1) | - | **2665 MiB** |
+
+- XFCE alone: 1048 MiB (1106 before). TV session: 1377 MiB. procs-test TOTAL FAILS=0.
+- At the peak, **1.6-1.8 GiB of the 2.7 GiB is private file mappings**: libxul.so 626 MiB (156 MiB in each of four
+  Firefox processes), libLLVM 124-247 MiB (Mesa, loaded by xfwm4's compositor), gtk/glib per XFCE helper. Shared
+  sections (1b) are the remaining big lever; working on it now.
+- This batch: lazy stacks become the CI default (probe 5s keeps the old path as a check; on the Xbox set
+  `XRL_LAZY_STACKS=1` in the host env), xfwm4 without compositor (no Mesa in the window manager), and prefs that
+  should stop the privileged about: process, the file:// process and the media utility process, which still
+  started in run 43.
+
 ## 2026-10-31 (7) - CI run 42 (4e022f1): the sharded CI works; where Firefox's memory is
 
 - The new workflow ran end to end: build once, shards core / x / firefox in parallel, one publish. m1-m4 and m6
