@@ -8,7 +8,8 @@
 root=$(cygpath -w "$1"); rootu=$1; out=$2; shift 2
 host=layer/build/desktop/xrl_test_host.exe
 # XRL_TEST_BUDGET_MB: the guest's commit budget, as the Xbox app gives it (host/src/xrl_host.h guest_mem_budget)
-export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096
+# XRL_PROFILE=1: the perf lines name each busy thread's most frequent syscalls (busy loops, stalls)
+export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 XRL_PROFILE=1
 # One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line. A milestone
 # passes when all its probes do; earlier milestones stay in the list as regression checks.
 names=([1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page")

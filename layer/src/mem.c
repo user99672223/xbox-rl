@@ -2468,8 +2468,24 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
         }
     }
     if (lost) LOGW("fork: the child unmapped %d range(s) of the parent that could not be put back (file mappings)", lost);
-    /* 4. the bytes */
-    for (size_t i = 0; i < sn->nr; i++) memcpy((void *)sn->rg[i].s, sn->data + sn->rg[i].off, (size_t)(sn->rg[i].e - sn->rg[i].s));
+    /* 4. the bytes, only where the address space is still this process's: a range the child unmapped before its exec
+     * can hold another process's mappings by now (the exec'd program's stack: "stack smashing detected" there) */
+    size_t skipped = 0;
+    for (size_t i = 0; i < sn->nr; i++) {
+        u64 a = sn->rg[i].s, e = sn->rg[i].e;
+        while (a < e) {
+            AcquireSRWLockShared(&g_lock);
+            size_t k = vma_lower(a);
+            int mine = k < g_n && g_v[k].start <= a && g_v[k].owner == mm;
+            u64 b = k < g_n ? (g_v[k].start > a ? g_v[k].start : g_v[k].end) : e;
+            ReleaseSRWLockShared(&g_lock);
+            if (b > e) b = e;
+            if (mine) memcpy((void *)a, sn->data + sn->rg[i].off + (a - sn->rg[i].s), (size_t)(b - a));
+            else skipped += (size_t)(b - a);
+            a = b;
+        }
+    }
+    if (skipped) LOGW("fork: %zu bytes of process memory not restored: that address range belongs to another process now", skipped);
     if (sn->has_brk) {
         AcquireSRWLockExclusive(&g_lock);
         brkwin *b = brk_of(mm, 0);
