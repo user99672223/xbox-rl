@@ -8,7 +8,7 @@
 
 enum { K_PLAIN = 0, K_SYSCALL = 1, K_FS = 2, K_UNIT = 3, K_DONE = 0x80 };
 
-typedef struct eb { uint8_t b[640]; int n; } eb;
+typedef struct eb { uint8_t b[640]; int n; int abspos; } eb;   /* abspos: where jmp_abs put its target (-1: none) */
 
 static void put(eb *e, const void *p, int n) { memcpy(e->b + e->n, p, (size_t)n); e->n += n; }
 static void put1(eb *e, unsigned v) { e->b[e->n++] = (uint8_t)v; }
@@ -258,6 +258,7 @@ static int ends_flow(const uint8_t *code, const rgn *r, size_t i)
 static void jmp_abs(eb *e, uint64_t target)
 {
     put1(e, 0xff); put1(e, 0x25); put32(e, 0); put64(e, target);     /* jmp *0(%rip); .quad target */
+    e->abspos = e->n - 8;
 }
 
 /* Append the stub bytes to the pool (or just count them); returns its guest address. */
@@ -269,6 +270,15 @@ static int pool_commit(xrw *w, const eb *e, uint64_t *va)
     if (!w->pool) return 0;
     if (w->pool_used > w->pool_cap) return -1;
     memcpy(w->pool + at, e->b, (size_t)e->n);
+    if (e->abspos >= 0 && w->abs_cap != (size_t)-1) {   /* abs_cap -1: the record was lost (out of memory) */
+        if (w->nabs == w->abs_cap) {
+            size_t nc = w->abs_cap ? w->abs_cap * 2 : 1024;
+            uint32_t *n = (uint32_t *)realloc(w->abs, nc * sizeof *n);
+            if (!n) { free(w->abs); w->abs = NULL; w->nabs = 0; w->abs_cap = (size_t)-1; return 0; }
+            w->abs = n; w->abs_cap = nc;
+        }
+        w->abs[w->nabs++] = (uint32_t)(at + (size_t)e->abspos);
+    }
     return 0;
 }
 static uint64_t pool_next_va(const xrw *w) { return w->pool_vaddr + ((w->pool_used + 15) & ~(size_t)15); }
@@ -276,7 +286,7 @@ static uint64_t pool_next_va(const xrw *w) { return w->pool_vaddr + ((w->pool_us
 /* Compose the stub for instructions [lo..hi]. Returns 0 or -1 (a unit we cannot rewrite). */
 static int compose(eb *e, xrw *w, const uint8_t *code, uint64_t vaddr, const rgn *r, size_t lo, size_t hi, uint64_t stub_va)
 {
-    e->n = 0;
+    e->n = 0; e->abspos = -1;
     for (size_t i = lo; i <= hi; i++) {
         const uint8_t *ins = code + r->off[i];
         x86i t;

@@ -234,6 +234,8 @@ slong xrl_mem_pin_stack(u64 addr, u64 len);    /* commit and never swap (a sigal
 int xrl_mem_lazy_fault(u64 addr, int access); /* VEH: 1 = committed, retry */
 int xrl_mem_stack_guard(u64 addr);
 void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot);   /* XRL_SHARED_TEXT: a read-only segment becomes a shared view */
+struct xfile;
+int  xrl_mem_share_cached(struct xfile *f, u64 addr, u64 len, s64 off, int prot);  /* rewrite.c's cache: map the live rewritten section */
 u64  xrl_mem_pool_slot(u64 code, u64 cap);   /* XRL_SHARED_TEXT: the trampoline pool's fixed place below its image, 0 = any */            /* VEH: a lazy thread stack's guard page (XRL_LAZY_STACKS): 1 = grown, retry */
 int  xrl_fd_list(int *out, int cap);
 slong xrl_fd_close_range(unsigned first, unsigned last, unsigned flags);

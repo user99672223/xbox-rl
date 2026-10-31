@@ -2,6 +2,18 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (16) - run 53: apt bisect all PASS; item 3: a rewrite cache on top of the shared sections
+
+- Run 53 (c826616): all PASS, including five fresh `apt-get update`s (shared pages off, code only, data only, both,
+  and the traced one). The xz failure of runs 51-52 did not come back; in those runs every .xz download failed to
+  decode (the .gz ones worked), whatever the cause. The bisect probes stay for a few runs to collect a rate.
+- **Speed, measured (run 52, Firefox session):** 1476 library rewrites took 23.5 s of CPU: libxul 2.7 s per load
+  (3 loads), libc 43 ms x 81, libgtk 105 ms x 13, ...
+- New (XRL_SHARED_TEXT only): the rewrite cache. When a process maps a segment whose rewritten code already lives in
+  a shared section, it gets that section as is, and its trampoline pool is the first process's pool with the
+  absolute jumps back into the code moved by the image's distance (rewrite_core.c now records where it writes them),
+  plus the int3 trap sites moved the same way. No decode, no dry run, no rewrite. Log lines say "from the cache".
+
 ## 2026-10-31 (15) - run 51: shared library pages everywhere; apt's xz error came back once
 
 | run 51 (add9b2f), peak committed | before today | run 51 |

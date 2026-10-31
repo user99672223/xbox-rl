@@ -135,6 +135,58 @@ static int vaddr_to_off(const RPhdr *ph, int n, u64 v, u64 *off)
 
 static int cmp_u64(const void *a, const void *b) { u64 x = *(const u64 *)a, y = *(const u64 *)b; return x < y ? -1 : x > y; }
 
+/* The rewrite cache (XRL_SHARED_TEXT): a segment rewritten once with its pool at the fixed slot below its image
+ * (mem.c xrl_mem_pool_slot) has the same rewritten bytes in every process, and they live in a shared section. The
+ * next process that maps it gets that section mapped as is and the pool from the first one's template, with the
+ * absolute jumps back into the code (xrw.abs) and the int3 trap sites moved by the image's distance: no decode, no
+ * dry run, no rewrite. Never with XRL_FORK_TASKS. */
+typedef struct rwcache {
+    char path[160]; u64 ino, size, mtime; s64 off; u64 len;
+    u64 code, pool;              /* where the first one was (mapping start, pool) */
+    size_t cap, used; u8 *tpl;   /* its pool bytes (used of cap) */
+    u32 *abs; size_t nabs;
+    xrw_trap *traps; size_t ntraps;
+    xrw_stats st;
+    struct rwcache *next;
+} rwcache;
+static rwcache *g_rwc;
+static u64 g_rwc_bytes;
+static rwcache *rwc_find(const lx_stat *st, const char *path, s64 off, u64 len)
+{
+    for (rwcache *c = g_rwc; c; c = c->next)
+        if (c->ino == st->st_ino && c->size == (u64)st->st_size && c->mtime == (u64)st->st_mtim.tv_sec && c->off == off && c->len == len &&
+            !strcmp(c->path, path)) return c;
+    return NULL;
+}
+/* g_rw_lock held. 1 = the mapping now runs the cached rewrite */
+static int rwc_apply(xfile *f, rwcache *c, u64 addr, u64 len, s64 off, int prot, const char *name)
+{
+    LARGE_INTEGER q0, q1, qf; QueryPerformanceCounter(&q0); QueryPerformanceFrequency(&qf);
+    u64 slot = xrl_mem_pool_slot(addr, c->cap);
+    if (!slot || addr - slot != c->code - c->pool) return 0;   /* not the same place below the image: rewrite */
+    slong pm = xrl_mem_mmap(slot, c->cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
+                            LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE | LX_MAP_FIXED_NOREPLACE, -1, 0);
+    if (pm != (slong)slot) { if (pm >= 0) xrl_mem_munmap((u64)pm, c->cap); return 0; }
+    u8 *pool = (u8 *)pm;
+    u64 delta = addr - c->code;
+    memcpy(pool, c->tpl, c->used);
+    memset(pool + c->used, 0xcc, c->cap - c->used);
+    for (size_t i = 0; i < c->nabs; i++) { u64 v; memcpy(&v, pool + c->abs[i], 8); v += delta; memcpy(pool + c->abs[i], &v, 8); }
+    *(u64 *)pool = (u64)(uintptr_t)&xrl_rawsys;
+    if (!xrl_mem_share_cached(f, addr, len, off, prot)) { xrl_mem_munmap(slot, c->cap); return 0; }   /* no live section: rewrite */
+    FlushInstructionCache(GetCurrentProcess(), pool, c->cap);
+    char pn[96]; const char *b = strrchr(name, '/');
+    snprintf(pn, sizeof pn, "[xrl-pool %s]", b ? b + 1 : name);
+    xrl_mem_rename_range(slot, slot + c->cap, pn);
+    xrl_mem_mprotect(slot, c->cap, LX_PROT_READ | LX_PROT_EXEC);
+    for (size_t i = 0; i < c->ntraps; i++) trap_add(c->traps[i].site + delta, c->traps[i].stub + delta);
+    if (c->ntraps && !g_rw_veh) g_rw_veh = AddVectoredExceptionHandler(1, rw_veh);
+    QueryPerformanceCounter(&q1);
+    LOGI("rewrite: %s: %u syscall + %u %%fs + %u %%gs sites from the cache (shared code, pool %zu bytes at %llx) in %.1f ms",
+         name, c->st.syscalls, c->st.fs_sites, c->st.gs_sites, c->used, (u64)pool, (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart);
+    return 1;
+}
+
 void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
 {
     if (!(prot & LX_PROT_EXEC) || !f || !f->ops->read) return;
@@ -160,6 +212,12 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
     AcquireSRWLockExclusive(&g_rw_lock);
     LARGE_INTEGER q0, qf; QueryPerformanceCounter(&q0); QueryPerformanceFrequency(&qf);
     const char *name = f->gpath ? f->gpath : "?";
+    lx_stat fst; int have_st = !xrl_fork_tasks_enabled() && f->gpath && f->ops->fstat && !f->ops->fstat(f, &fst);
+    if (have_st) {
+        rwcache *c = rwc_find(&fst, f->gpath, off, len);
+        if (c && rwc_apply(f, c, addr, len, off, prot, name)) { ReleaseSRWLockExclusive(&g_rw_lock); return; }
+    }
+    int at_slot = 0;
     RPhdr *ph = (RPhdr *)malloc(eh.phnum * sizeof(RPhdr));
     crange *rg = NULL; int nrg = 0;
     u64 *starts = NULL; size_t nst = 0;
@@ -230,7 +288,7 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
         if (slot) {
             slong r = xrl_mem_mmap(slot, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
                                    LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE | LX_MAP_FIXED_NOREPLACE, -1, 0);
-            if (r == (slong)slot) pm = r;
+            if (r == (slong)slot) { pm = r; at_slot = 1; }
             else if (r >= 0) xrl_mem_munmap((u64)r, cap);
         }
     }
@@ -289,7 +347,27 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
          (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart);
     if (w.st.unsupported || w.st.decode_fail || w.st.legacy_sys)
         LOGW("rewrite: %s: %u unsupported site(s), %u undecodable region(s), %u sysenter/int80 left alone", name, w.st.unsupported, w.st.decode_fail, w.st.legacy_sys);
-    free(w.traps);
+    /* the cache: this rewrite at the fixed slot is what every later mapping of the segment will get (64 MiB of
+     * templates at most) */
+    if (ok && at_slot && have_st && w.abs_cap != (size_t)-1 && strlen(f->gpath) < 160 && g_rwc_bytes + w.pool_used < (64ull << 20) &&
+        !rwc_find(&fst, f->gpath, off, len)) {
+        rwcache *c = (rwcache *)calloc(1, sizeof *c);
+        u8 *tpl = c ? (u8 *)malloc(w.pool_used) : NULL;
+        u32 *abs = c && w.nabs ? (u32 *)malloc(w.nabs * sizeof *abs) : NULL;
+        xrw_trap *tr = c && w.ntraps ? (xrw_trap *)malloc(w.ntraps * sizeof *tr) : NULL;
+        if (c && tpl && (abs || !w.nabs) && (tr || !w.ntraps)) {
+            strcpy_s(c->path, sizeof c->path, f->gpath);
+            c->ino = fst.st_ino; c->size = (u64)fst.st_size; c->mtime = (u64)fst.st_mtim.tv_sec; c->off = off; c->len = len;
+            c->code = addr; c->pool = (u64)pool; c->cap = cap; c->used = w.pool_used;
+            memcpy(tpl, pool, w.pool_used); c->tpl = tpl;
+            if (w.nabs) memcpy(abs, w.abs, w.nabs * sizeof *abs);
+            c->abs = abs; c->nabs = w.nabs;
+            for (size_t i = 0; i < w.ntraps; i++) { tr[i].site = w.traps[i].site; tr[i].stub = w.traps[i].stub; }
+            c->traps = tr; c->ntraps = w.ntraps; c->st = w.st;
+            c->next = g_rwc; g_rwc = c; g_rwc_bytes += w.pool_used;
+        } else { free(c); free(tpl); free(abs); free(tr); }
+    }
+    free(w.traps); free(w.abs);
 out:
     free(ph); free(rg); free(starts); free(hdr); free(sh);
     ReleaseSRWLockExclusive(&g_rw_lock);

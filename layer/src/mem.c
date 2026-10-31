@@ -958,16 +958,30 @@ static int elf_bounds(xfile *f, u64 *b, int max)
 }
 
 /* After a non-writable file mapping of [addr, addr+len) in the image region was made (and rewritten): share it */
+static int share_impl(xfile *f, u64 addr, u64 len, s64 off, int prot, int trusted);
 void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
 {
     if (g_shtx != 1 || (prot & LX_PROT_WRITE) || !len || !img_contains(addr, addr + len)) return;
-    static int segs = -1;   /* XRL_SHARED_SEGS=x: code only, r: read-only data only (a bisect knob), default both */
-    if (segs < 0) { char v[4] = ""; GetEnvironmentVariableA("XRL_SHARED_SEGS", v, sizeof v); segs = v[0] == 'x' ? 1 : v[0] == 'r' ? 2 : 3; }
-    if (!(segs & ((prot & LX_PROT_EXEC) ? 1 : 2))) return;
     xfile *f = xrl_fd_get(fd);
     if (!f) return;
+    share_impl(f, addr, len, off, prot, 0);
+    xfile_unref(f);
+}
+/* rewrite.c's cache: [addr, addr+len) holds this segment's file bytes, and the rewritten code for it is in a live
+ * section (another process has it): map that, without comparing. 1 = done (the caller installs the pool) */
+int xrl_mem_share_cached(xfile *f, u64 addr, u64 len, s64 off, int prot)
+{
+    if (g_shtx != 1 || (prot & LX_PROT_WRITE) || !len || !img_contains(addr, addr + len)) return 0;
+    return share_impl(f, addr, len, off, prot, 1);
+}
+static int share_impl(xfile *f, u64 addr, u64 len, s64 off, int prot, int trusted)
+{
+    static int segs = -1;   /* XRL_SHARED_SEGS=x: code only, r: read-only data only (a bisect knob), default both */
+    if (segs < 0) { char v[4] = ""; GetEnvironmentVariableA("XRL_SHARED_SEGS", v, sizeof v); segs = v[0] == 'x' ? 1 : v[0] == 'r' ? 2 : 3; }
+    if (!(segs & ((prot & LX_PROT_EXEC) ? 1 : 2))) return 0;
     lx_stat st;
-    if (!f->gpath || !f->ops->fstat || f->ops->fstat(f, &st) || xrl_dbt_wanted_file(f->gpath)) { xfile_unref(f); return; }
+    if (!f->gpath || !f->ops->fstat || f->ops->fstat(f, &st) || xrl_dbt_wanted_file(f->gpath)) return 0;
+    int done = 0;
     len = ALIGN_UP(len, LX_PAGE);
     AcquireSRWLockExclusive(&g_lock);
     size_t i = vma_lower(addr);
@@ -981,7 +995,8 @@ void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
         for (sc = g_isec; sc; sc = sc->next)
             if (sc->ino == st.st_ino && sc->size == (u64)st.st_size && sc->mtime == (u64)st.st_mtim.tv_sec && sc->off == off && sc->len == len &&
                 sc->exec == exec && !strcmp(sc->path, f->gpath)) break;
-        if (sc && memcmp(sc->host, (void *)addr, (size_t)len)) {
+        if (trusted && !sc) ok = 0;   /* the cache's text lives only in a section */
+        if (sc && !trusted && memcmp(sc->host, (void *)addr, (size_t)len)) {
             static volatile LONG warned;
             if (InterlockedIncrement(&warned) <= 8) LOGW("img: %s +%llx: this copy differs from the shared one: kept private", f->gpath, (u64)off);
             ok = 0;
@@ -1014,12 +1029,14 @@ void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
             g_ip[k].kind = IP_VIEW; g_ip[k].sec = sc; g_ip[k].secoff = 0;
             InterlockedAdd64(&g_committed, -(LONG64)len);   /* ... and is no longer charged */
             for (size_t j = vma_lower(addr); j < g_n && g_v[j].start < addr + len; j++) { g_v[j].view = 1; g_v[j].committed = 0; g_v[j].lazy = 0; }
+            done = 1;
         } else {   /* cannot happen with a placeholder in hand; if it does, a private copy again from the section */
             LOGE("img: cannot map a view at %llx (%lu): private copy", addr, GetLastError());
             img_make_priv(addr, addr + len);
             w_alloc((void *)addr, len, MEM_COMMIT, PAGE_READWRITE);
             memcpy((void *)addr, sc->host, (size_t)len);
             DWORD op; w_protect((void *)addr, (SIZE_T)len, wp, &op);
+            done = trusted;   /* the section's bytes are in it: what the cache wanted */
         }
     }
     if (made) isec_put(sc);   /* the creator's hold: the views keep it now */
@@ -1029,7 +1046,7 @@ void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
         LOGI("img: %llu views share %llu MiB of library pages held once in %llu MiB of sections", g_img_views, g_img_viewbytes >> 20, g_img_shared >> 20);
     }
     ReleaseSRWLockExclusive(&g_lock);
-    xfile_unref(f);
+    return done;
 }
 /* a view in [s, e) becomes private memory (g_lock held): mprotect adding PROT_WRITE, mremap */
 static slong img_unshare_locked(u64 s, u64 e)

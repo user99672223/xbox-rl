@@ -55,6 +55,8 @@ typedef struct xrw {
     int verbose;              /* log every trap site                                */
     void (*log)(const char *fmt, ...);
     uint64_t gs_slot_off;     /* %gs offset of the guest's GS base slot; 0: %gs left alone */
+    uint32_t *abs; size_t nabs, abs_cap;   /* pool offsets of the absolute code addresses written (jumps back): a
+                                            * copy of the pool for the same code at another address adds the delta */
 } xrw;
 
 #define XRW_SLOT_BYTES 16
