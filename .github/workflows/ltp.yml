@@ -40,8 +40,13 @@ jobs:
         if: steps.rc.outputs.cache-hit != 'true'
         run: sudo ROOTFS_LIST=tools/ci/rootfs-ltp.list bash tools/ci/rootfs.sh rootfs.tar.gz
       - uses: actions/upload-artifact@v4
-        with: { name: ltp-inputs, path: 'ltp.tar.gz
-rootfs.tar.gz', retention-days: 3, compression-level: 0 }
+        with:
+          name: ltp-inputs
+          path: |
+            ltp.tar.gz
+            rootfs.tar.gz
+          retention-days: 3
+          compression-level: 0
 
   windows:
     needs: linux
