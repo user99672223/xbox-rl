@@ -1,0 +1,86 @@
+$ /usr/bin/ps aux
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/ps, 2 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4e1e90000,7ff4e1e90000) 1048576 MiB VA, brk <= 7ef521e90000, commit budget 4096 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 1447 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/ps: 0 syscall + 103 %fs + 0 %gs sites (0 in place, 103 jumps, 0 traps, 0 neighbours moved), pool 4416 bytes at 7ff4d9e48000
+[I layer    ] elf: loaded /usr/bin/ps type=DYN bias=7ff4d9e4a000 span=[7ff4d9e4a000,7ff4d9e90000) entry=7ff4d9e54d80
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d9e0e000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d9e10000 span=[7ff4d9e10000,7ff4d9e48000) entry=7ff4d9e2d2c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=00000227D6C599C0)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4d9e0dd30
+[I layer    ] boot: guest main thread tid=1092 entry=7ff4d9e2d2c0 sp=7ff4d9e0dd30
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.067 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2: 0 syscall + 93 %fs + 0 %gs sites (0 in place, 93 jumps, 0 traps, 0 neighbours moved), pool 3744 bytes at 7ff4d95d3000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d93a7000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs + 0 %gs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff4d9283000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs + 0 %gs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff4d9276000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs + 0 %gs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff4d917d000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d9178680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I guest.out] USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+[I guest.out] root           1  0.0  0.0   4096  4096 ?        Ss   02:01   0:00 /init
+[I guest.out] root        7480  0.0  0.3  15168 15168 ?        Rs+  02:10   0:00 /usr/bin/ps aux
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (7192 bytes) follows:
+[W layer    ] MAP 7ef4e1e90000-7ef4e1eb1000 rw-p 00000000 00:00 0                        [heap]
+7ef4e1eb1000-7ef4e1ed3000 rw-p 00000000 00:00 0                        [heap]
+7ff4d90ac000-7ff4d90cd000 rw-p 00000000 00:00 0 
+7ff4d90cd000-7ff4d90ce000 ---p 00000000 00:00 0 
+7ff4d90ce000-7ff4d90ef000 rw-p 00000000 00:00 0 
+7ff4d90ef000-7ff4d9110000 rw-p 00000000 00:00 0 
+7ff4d9110000-7ff4d916a000 r--p 00000000 00:00 281474976714197                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff4d916a000-7ff4d916b000 r--p 00000000 00:00 281474976714199                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff4d916b000-7ff4d916c000 r--p 00000000 00:00 281474976714203                        /usr/lib/locale/C.utf8/LC_TIME
+7ff4d916c000-7ff4d916d000 r--p 00000000 00:00 281474976714196                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff4d916d000-7ff4d916e000 r--p 00000000 00:00 281474976714207                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff4d916e000-7ff4d916f000 r--p 00000000 00:00 281474976714206                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+7ff4d916f000-7ff
+[W layer    ] MAP   /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff4d9214000-7ff4d9274000 r--p 0008e000 00:00 281474976714171                        /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff4d9274000-7ff4d9275000 r--p 000ed000 00:00 281474976714171                        /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff4d9275000-7ff4d9276000 rw-p 000ee000 00:00 281474976714171                        /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff4d9276000-7ff4d9277000 r-xp 00000000 00:00 0 
+7ff4d9277000-7ff4d927a000 r--p 00000000 00:00 281474976714165                        /usr/lib/x86_64-linux-gnu/libcap.so.2.75
+7ff4d927a000-7ff4d927f000 r-xp 00003000 00:00 281474976714165                        /usr/lib/x86_64-linux-gnu/libcap.so.2.75
+7ff4d927f000-7ff4d9281000 r--p 00008000 00:00 281474976714165                        /usr/lib/x86_64-linux-gnu/libcap.so.2.75
+7ff4d9281000-7ff4d9282000 r--p 0000a000 00:00 281474976714165                        /usr/lib/x86_64-linux-gnu/libcap.so.2.75
+7ff4d9282000-7ff4d9283000 rw-p 0000b000 00:00 281474976714165                        /usr/lib/x86_64-linux-gnu/libcap.so.2.75
+7ff4d9283000-7f
+[W layer    ] MAP 0-7ff4d93a7000 rw-p 00000000 00:00 0 
+7ff4d93a7000-7ff4d93df000 r-xp 00000000 00:00 0 
+7ff4d93df000-7ff4d9407000 r--p 00000000 00:00 281474976712480                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d9407000-7ff4d956a000 r-xp 00028000 00:00 281474976712480                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d956a000-7ff4d95c0000 r--p 0018b000 00:00 281474976712480                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d95c0000-7ff4d95c4000 r--p 001e0000 00:00 281474976712480                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d95c4000-7ff4d95c6000 rw-p 001e4000 00:00 281474976712480                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d95c6000-7ff4d95d3000 rw-p 00000000 00:00 0 
+7ff4d95d3000-7ff4d95d4000 r-xp 00000000 00:00 0 
+7ff4d95d4000-7ff4d95e1000 r--p 00000000 00:00 281474976712449                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff4d95e1000-7ff4d95f6000 r-xp 0000d000 00:00 281474976712449                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff4d95f6000-7ff4d9600000 r--p 00022000 00:00 2
+[W layer    ] MAP          /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff4d960c000-7ff4d960d000 r--p 00000000 00:00 281474976714201                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff4d960d000-7ff4d960e000 ---p 00000000 00:00 0                        [stack]
+7ff4d960e000-7ff4d9e0e000 rw-p 00000000 00:00 0                        [stack]
+7ff4d9e0e000-7ff4d9e10000 r-xp 00000000 00:00 0 
+7ff4d9e10000-7ff4d9e11000 r--p 00000000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d9e11000-7ff4d9e39000 r-xp 00001000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d9e39000-7ff4d9e44000 r--p 00029000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d9e44000-7ff4d9e47000 rw-p 00034000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d9e47000-7ff4d9e48000 rw-p 00000000 00:00 0 
+7ff4d9e48000-7ff4d9e4a000 r-xp 00000000 00:00 0 
+7ff4d9e4a000-7ff4d9e53000 r--p 00000000 00:00 281474976712068                        /usr
+xrl_layer_boot returned 0
+exit 0

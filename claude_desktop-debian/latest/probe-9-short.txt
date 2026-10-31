@@ -1,11 +1,27 @@
-[W layer    ] ENOSYS 334 rseq (a1=7ff472e7c6a0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
-[W layer    ] ENOSYS 334 rseq (a1=7ff471fd4ba0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
-[W layer    ] ENOSYS 334 rseq (a1=7ff4712936a0 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
-[W layer    ] ENOSYS 334 rseq (a1=7ff4712936a0 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fbf8c6a0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fb0e4ba0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fa3a36a0 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fa3a36a0 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
 [I guest.out] Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]
 [I guest.out] Get:2 http://deb.debian.org/debian trixie/main amd64 Packages [9678 kB]
-[W layer    ] ENOSYS 334 rseq (a1=7ff469d3b6a0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
-[I guest.out] Get:3 http://deb.debian.org/debian trixie/main Translation-en [6486 kB]
-[I guest.out] Fetched 16.3 MB in 3s (5703 kB/s)
-[I guest.out] Reading package lists...
-exit 0
+[W layer    ] ENOSYS 334 rseq (a1=7ff3f2e4b6a0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[W layer    ] mem-fail[0] addr=7ff3f8839000 access=1 vma=COVERS [7ff3f8839000,7ff3f883b000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[1] addr=f8 access=0 vma=NEAR [7ef405a60000,7ef405a81000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[E layer    ] === UNHANDLED GUEST FAULT tid 1980 code c0000005 rip 00007ff3f8839440 addr 00000000000000f8 (0) rsp 00007ff3f88279c0 teb-stack [00007ff3f87e6000,00007ff3f8837000) ===
+[E layer    ] ACCESS_VIOLATION (0xc0000005) at rip=00007ff3f8839440  fault_addr=00000000000000f8 (read)
+[E layer    ] rax=00007ff3f3af9968 rbx=00007ff3f4032aa0 rcx=00000000000000c6 rdx=00007ff3f2e50480
+[E layer    ] rsi=0000005000000007 rdi=00007ff3f3b1de78 rbp=000000000000019e rsp=00007ff3f88279c0
+[E layer    ] r8 =00007ff3f2e50ab0 r9 =0000000000000000 r10=0000000006969198 r11=00007ff3f88284f8
+[E layer    ] r12=00007ff3f3b885a8 r13=00007ff3f3d4fcf0 r14=00007ff3f88285f0 r15=0000000000000058
+[E layer    ] fs_base(guest tp)=00007ff3f2e4b900 fsbase_now=0000000000000000 eflags=00010202
+[E layer    ] code @rip: 38 61 32 64 32 34 0a 6c 32 30 37 1d
+[E layer    ] [rsp+00] 00007ff3f3af9968
+[E layer    ] [rsp+08] 0000000000000000
+[E layer    ] [rsp+10] 00007ff3f8828420
+[E layer    ] [rsp+18] 00007ff3f2e4b888
+[E layer    ] [rsp+20] 0000000000000001
+[E layer    ] [rsp+28] 00007ff3f8828640
+[E layer    ] [rsp+30] 00007ff3f88285f0
+[E layer    ] [rsp+38] 00007ff3f884e50a
+[E layer    ] rip vma: 7ff3f8839000-7ff3f883b000 r-xp 00000000 00:00 0 
+exit 139
