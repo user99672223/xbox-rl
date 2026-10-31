@@ -347,7 +347,7 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
         xrl_cfu(np->vfork_frame, fr, (size_t)len);
         if (snapshot_fork) {
             int single = pp->nthreads - pp->ndaemons == 1;
-            if (!single) { xrl_proc_freeze(pp, p); frozen = 1; }
+            if (!single) { pp->freezer = p; xrl_proc_freeze(pp, p); frozen = 1; }
             LARGE_INTEGER q0, q1, f;
             QueryPerformanceCounter(&q0);
             np->snap = xrl_mem_snapshot(pp->mm->id, fork_snapshot_cap());
@@ -399,7 +399,7 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
         np->vfork_ev = NULL;
         if (np->snap) { xrl_mem_snap_restore(np->snap); xrl_mem_snap_free(np->snap); np->snap = NULL; }
         xrl_ctu(p->frame, np->vfork_frame, np->vfork_len);
-        if (frozen) xrl_proc_thaw(pp);
+        if (frozen) { pp->freezer = NULL; late_replay(pp); xrl_proc_thaw(pp); }
     }
     if (flags & LX_CLONE_PARENT_SETTID) xrl_ctu(ptid, &np->pid, 4);
     return np->pid;
@@ -495,6 +495,39 @@ void xrl_proc_kill_threads(xrl_proc *p, xrl_thread *self, int keep_daemons)
 
 /* Freeze every thread of p but `self`: a thread in a syscall parks when it returns (xrl_proc_park), a thread
  * in guest code is suspended where it is. */
+/* A process frozen for a fork snapshot (multi-threaded parent, proc_clone's sync path): its threads that were in a
+ * syscall finish it meanwhile and copy results into guest memory (a recvmsg's message, epoll events), which the
+ * snapshot restore would then undo while the layer's side has moved on (Firefox's IPC lost messages). Those copies are
+ * recorded and replayed after the restore. */
+typedef struct late_write { struct late_write *next; u64 addr; size_t n; int zero; u8 data[]; } late_write;
+void xrl_proc_late_write(xrl_proc *p, u64 addr, const void *src, size_t n)
+{
+    late_write *w = (late_write *)malloc(sizeof *w + (src ? n : 0));
+    if (!w) { LOGE("fork: cannot keep a %zu-byte write made during the snapshot; it will be lost", n); return; }
+    w->next = NULL; w->addr = addr; w->n = n; w->zero = !src;
+    if (src) memcpy(w->data, src, n);
+    AcquireSRWLockExclusive(&p->late_lock);
+    if (p->late_tail) p->late_tail->next = w; else p->late = w;
+    p->late_tail = w;
+    ReleaseSRWLockExclusive(&p->late_lock);
+}
+static void late_replay(xrl_proc *p)
+{
+    AcquireSRWLockExclusive(&p->late_lock);
+    late_write *w = p->late;
+    p->late = p->late_tail = NULL;
+    ReleaseSRWLockExclusive(&p->late_lock);
+    size_t n = 0, bytes = 0;
+    while (w) {
+        late_write *nx = w->next;
+        if (w->zero) xrl_zerou(w->addr, w->n); else xrl_ctu(w->addr, w->data, w->n);
+        n++; bytes += w->n;
+        free(w);
+        w = nx;
+    }
+    if (n) LOGI("fork: %zu write(s) (%zu bytes) other threads made during the snapshot put back after the restore", n, bytes);
+}
+
 void xrl_proc_freeze(xrl_proc *p, xrl_thread *self)
 {
     xrl_thread *tg[512];

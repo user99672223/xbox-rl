@@ -266,6 +266,9 @@ struct xrl_proc {
     volatile LONG dying;            /* the process is being torn down: its threads end at their next syscall return */
     volatile LONG frozen;           /* xrl_proc_freeze: threads park at syscall return */
     HANDLE thaw_ev;                 /* manual-reset: set while not frozen */
+    xrl_thread *freezer;            /* the forking thread while frozen for a fork snapshot (proc.c), else NULL */
+    SRWLOCK late_lock;
+    struct late_write *late, *late_tail;   /* copies to guest memory its other threads made meanwhile: replayed */
     xrl_files *files;
     xrl_mm *mm;
     char cwd[XRL_CWD_MAX];
@@ -306,7 +309,8 @@ void  xrl_proc_thaw(xrl_proc *p);
 void  xrl_proc_park(xrl_thread *t);             /* syscall return: a frozen or stopped process waits here */
 int   xrl_swap_block(void);                     /* about to block in the layer: let another fork-group member run (1: released) */
 void  xrl_swap_resume(void);                    /* the wait is over: get the address space back */
-void  xrl_swap_yield(void);                     /* about to start a first thread: let waiting fork-group members run first */
+void  xrl_swap_yield(void);
+void  xrl_proc_late_write(xrl_proc *p, u64 addr, const void *src, size_t n);   /* proc.c: src NULL = zeroes */                     /* about to start a first thread: let waiting fork-group members run first */
 void  xrl_proc_exec_done(xrl_proc *p);          /* execve loaded the new image: release a vfork parent */
 void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its own (in place when it is the only user) */
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */

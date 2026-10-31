@@ -59,6 +59,15 @@ static void foreign_check(u64 udst, size_t n)
          n, udst, o, t && t->proc ? t->proc->pid : -1, t ? t->tid : -1, me, t ? xrl_sysname(t->cur_nr) : "?");
 }
 
+/* the caller's process is frozen for a fork snapshot by another of its threads: the write is replayed after the
+ * restore (proc.c xrl_proc_late_write) */
+static void late_check(u64 udst, const void *src, size_t n)
+{
+    xrl_thread *t = xrl_cur();
+    xrl_proc *p = t ? t->proc : NULL;
+    if (p && p->frozen && p->freezer && p->freezer != t) xrl_proc_late_write(p, udst, src, n);
+}
+
 int xrl_ctu(u64 udst, const void *src, size_t n)
 {
     if (!n) return 0;
@@ -66,6 +75,7 @@ int xrl_ctu(u64 udst, const void *src, size_t n)
     foreign_check(udst, n);
     __try { memcpy((void *)udst, src, n); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -LX_EFAULT; }
+    late_check(udst, src, n);
     return 0;
 }
 
@@ -76,6 +86,7 @@ int xrl_zerou(u64 udst, size_t n)
     foreign_check(udst, n);
     __try { memset((void *)udst, 0, n); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -LX_EFAULT; }
+    late_check(udst, NULL, n);
     return 0;
 }
 
