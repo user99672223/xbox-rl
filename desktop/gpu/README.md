@@ -36,6 +36,13 @@ glxgears / kwin_x11 / Firefox (Linux, glibc)
   xrl-gpu through `VK_DRIVER_FILES`): same device, same shim, same signing; X11 presentation through Mesa's WSI
   software path (`sw_device`: CPU copy and XPutImage), like GL. Its multi-fence waits use
   `SetEventOnMultipleFenceCompletion(..., NULL)` (blocks) or polling.
+- **Video decode: VA-API** (`lib/dri/d3d12_drv_video.so`, `LIBVA_DRIVER_NAME=d3d12` from xrl-gpu): Mesa's d3d12
+  video decoder for H.264, HEVC and VP9 (`-Dvideo-codecs=h264dec,h265dec,vp9dec`; the console decodes HEVC/VP9 to
+  8K/2160p and H.264 to 1080p, no AV1, no D3D12 encode: docs/desktop-notes.md). On X11 the VA frontend falls back to
+  the X software winsys (`vl_xlib_swrast_screen_create`), the same d3d12 screen as GL: no DRM device needed. Its fence
+  waits are synchronous (`SetEventOnCompletion(v, NULL)`). Firefox: `media.av1.enabled=false` (YouTube then serves
+  VP9); Firefox's own VA-API path needs a DRM render node for dmabuf, which the layer does not have, so it decodes
+  VP9 on the CPU until then.
 - **Methods that return a struct** (`GetDesc`, `GetCPUDescriptorHandleForHeapStart`, `GetAdapterLuid`, ...): MSVC
   returns them through a hidden pointer passed after `this`, even when small. DirectX-Headers already spells that
   out for MinGW (`T *GetDesc(T *RetVal)`, C++ half: `#if defined(_MSC_VER) || !defined(_WIN32)`) and for every

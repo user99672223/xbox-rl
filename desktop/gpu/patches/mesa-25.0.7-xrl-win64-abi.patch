@@ -87,8 +87,8 @@ diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.cpp b/src/gallium/drivers/d3d1
     return complete;
 diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/d3d12_fence.h
 --- a/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 07:14:29.441049629 +0000
-+++ b/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 08:01:37.831155437 +0000
-@@ -53,6 +53,30 @@
++++ b/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 08:27:43.647524739 +0000
+@@ -53,6 +53,32 @@
     DWORD timeout_ms = (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > MaxTimeoutInNs) ? INFINITE : (DWORD)(timeout_ns / NsPerMs);
     return WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0;
  }
@@ -114,7 +114,9 @@ diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/
 +inline bool
 +d3d12_fence_wait_event(HANDLE event, int event_fd, uint64_t timeout_ns)
 +{
-+   return false;   /* the video paths' waits; d3d12_fence_finish uses xrl_fence_wait */
++   /* the video paths call SetEventOnCompletion(value, event) first: with no event (NULL) that call itself blocked
++    * until the fence reached the value, so the wait is over (d3d12_fence_finish uses xrl_fence_wait instead) */
++   return true;
 +}
  #else
  #include <sys/eventfd.h>

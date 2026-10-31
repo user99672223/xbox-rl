@@ -8,6 +8,8 @@
 #     -DXRL_WIN64_ABI: DirectX-Headers' STDMETHODCALLTYPE/WINAPI become __attribute__((ms_abi)) and struct-returning
 #     methods take MSVC's hidden return pointer, so Mesa calls the console's Win64 D3D12 objects directly
 #     (patches/mesa-*.patch: fences without eventfds, DXIL signed in nir_to_dxil, llvmpipe fallback)
+#   - VA-API decode (lib/dri/d3d12_drv_video.so: H.264, HEVC, VP9) on the same d3d12 screen, X11 through the
+#     software winsys (no DRM device needed)
 #   - libxrl-d3d12.so (xrl-d3d12/), installed as libd3d12.so and libdxcore.so: the device from the layer's host
 #     op table, a root signature serializer, one DXCore adapter
 #   - bin/xrl-gpu: runs a program with this Mesa (LD_LIBRARY_PATH, the glvnd EGL vendor file, GALLIUM_DRIVER=d3d12)
@@ -71,7 +73,7 @@ apt-get install -y -qq --no-install-recommends \
     python3-mako python3-yaml python3-packaging \
     libdrm-dev libx11-dev libxext-dev libxfixes-dev libx11-xcb-dev libxcb-glx0-dev libxcb-shm0-dev libxcb-dri2-0-dev \
     libxcb-dri3-dev libxcb-present-dev libxcb-sync-dev libxcb-xfixes0-dev libxcb-randr0-dev libxshmfence-dev \
-    libxxf86vm-dev libxrandr-dev libexpat1-dev zlib1g-dev libzstd-dev libglvnd-dev llvm-19-dev > /dev/null
+    libxxf86vm-dev libxrandr-dev libexpat1-dev zlib1g-dev libzstd-dev libglvnd-dev llvm-19-dev libva-dev > /dev/null
 w=${XRL_GPU_WORK:-/tmp/xrl-gpu-build}
 mkdir -p "$w"
 cd "$w"
@@ -134,7 +136,7 @@ meson setup build "mesa-$MESA_VERSION" --wrap-mode=nodownload --force-fallback-f
     -Dc_args=-DXRL_WIN64_ABI -Dcpp_args=-DXRL_WIN64_ABI \
     -Dplatforms=x11 -Dglx=dri -Dglvnd=enabled -Degl=enabled -Dgbm=disabled -Dgles1=disabled -Dgles2=enabled \
     -Dgallium-drivers=d3d12,llvmpipe -Dvulkan-drivers=microsoft-experimental -Dllvm=enabled -Dshared-llvm=enabled \
-    -Dgallium-d3d12-video=disabled -Dgallium-d3d12-graphics=enabled -Dvideo-codecs= -Dgallium-va=disabled \
+    -Dgallium-d3d12-video=enabled -Dgallium-d3d12-graphics=enabled -Dvideo-codecs=h264dec,h265dec,vp9dec -Dgallium-va=enabled \
     -Dgallium-vdpau=disabled -Dgallium-xa=disabled -Dmicrosoft-clc=disabled -Dspirv-to-dxil=false \
     -Dvalgrind=disabled -Dlibunwind=disabled -Dlmsensors=disabled -Dbuild-tests=false > meson-setup.log 2>&1 \
     || { tail -40 meson-setup.log; exit 1; }
@@ -163,6 +165,8 @@ cat > "$d/bin/xrl-gpu" <<'SH'
 p=/opt/xrl-gpu/lib
 export LD_LIBRARY_PATH="$p${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 export __EGL_VENDOR_LIBRARY_FILENAMES=/opt/xrl-gpu/share/glvnd/egl_vendor.d/50_mesa.json
+# VA-API: Mesa's d3d12 video driver (decode: H.264, HEVC, VP9; the console has no AV1 and no D3D12 encode)
+export LIBVA_DRIVERS_PATH=/opt/xrl-gpu/lib/dri LIBVA_DRIVER_NAME=d3d12
 # Vulkan: Dozen (Mesa's Vulkan on D3D12) as the only driver
 export VK_DRIVER_FILES=/opt/xrl-gpu/share/vulkan/icd.d/dzn_icd.x86_64.json VK_ICD_FILENAMES=/opt/xrl-gpu/share/vulkan/icd.d/dzn_icd.x86_64.json
 unset LIBGL_ALWAYS_SOFTWARE

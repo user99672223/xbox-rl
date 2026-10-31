@@ -9,6 +9,8 @@
 #   plasma-tv     plasma-gpu shown on /dev/fb0 (the TV) through xbridge, controller/keyboard/mouse in
 #   glx | glx-gpu glxinfo -B and glxgears for 10 s, Debian's Mesa or /opt/xrl-gpu
 #   vk-gpu        vulkaninfo --summary and vkcube for 300 frames on Dozen (Vulkan on D3D12, /opt/xrl-gpu)
+#   va-gpu        vainfo, then H.264 / HEVC / VP9 test clips (made here by ffmpeg in software) decoded with
+#                 ffmpeg -hwaccel vaapi on Mesa's d3d12 video driver: frames per second, or why not
 # What it prints, for the probe logs: when the desktop and the dock appear, glxgears frames per second inside the
 # session (compositor on), the memory of every process (RSS, sorted) and the total, the window tree.
 #
@@ -84,6 +86,23 @@ until /usr/bin/xdpyinfo > /dev/null 2>&1; do n=$((n + 1)); [ $n -gt 90 ] && brea
 say "display $size up after $n tries"
 
 case $mode in
+va-gpu)
+    gl /usr/bin/vainfo --display x11 2>&1 | grep -aE "Driver version|VAProfile|vaInitialize|error|failed" | head -n 30
+    for c in h264:libx264 hevc:libx265 vp9:libvpx-vp9; do
+        n=${c%%:*}; enc=${c#*:}; f=/tmp/xrl-va-$n.mkv
+        # 2 s of 1080p30 test pattern, encoded on the CPU (the clip only has to exist)
+        /usr/bin/ffmpeg -nostdin -loglevel error -y -f lavfi -i testsrc2=size=1920x1080:rate=30 -t 2 -c:v "$enc" \
+            -pix_fmt yuv420p "$f" 2> /tmp/xrl-plasma-enc-$n.log || { say "$n: no test clip ($(tail -n 1 /tmp/xrl-plasma-enc-$n.log))"; continue; }
+        t0n=$(date +%s%N)
+        gl /usr/bin/ffmpeg -nostdin -hide_banner -loglevel verbose -hwaccel vaapi -hwaccel_output_format vaapi \
+            -vaapi_device :0 -i "$f" -f null - > /tmp/xrl-plasma-dec-$n.log 2>&1; rc=$?
+        ms=$((($(date +%s%N) - t0n) / 1000000))
+        hw=no; grep -qaE "Using VAAPI|vaapi.*(hwaccel|Format)|hwaccel.*vaapi" /tmp/xrl-plasma-dec-$n.log && hw=yes
+        grep -qaE "Failed setup for format vaapi|No support for codec|hwaccel initialisation returned error" /tmp/xrl-plasma-dec-$n.log && hw=no
+        say "va $n: exit $rc, 60 frames in $ms ms, hardware path: $hw"
+        grep -aE "vaapi|VAAPI|hwaccel" /tmp/xrl-plasma-dec-$n.log | head -n 4
+    done
+    ;;
 vk-gpu)
     gl /usr/bin/vulkaninfo --summary 2>&1 | grep -aE "deviceName|driverName|driverInfo|apiVersion|deviceType|ERROR" | head -n 12
     s0=$(date +%s%N)
