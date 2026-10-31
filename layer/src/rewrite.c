@@ -44,24 +44,49 @@ static int g_rw_off = -1, g_rw_trace;
 /* ----------------------------------------------------------- trap sites */
 #define TRAP_BITS 17
 #define TRAP_SLOTS (1u << TRAP_BITS)
-static struct { volatile LONG64 site; LONG64 stub; } g_trap[TRAP_SLOTS];
+typedef struct trapslot { volatile LONG64 site; LONG64 stub; } trapslot;
+static trapslot g_trap0[TRAP_SLOTS];
+static trapslot *volatile g_trap = g_trap0;   /* replaced whole by trap_sweep; rw_veh reads it lock-free */
 static PVOID g_rw_veh;
 static LONG g_trap_n;
 
 static u32 trap_hash(u64 site) { return (u32)((site * 0x9e3779b97f4a7c15ull) >> (64 - TRAP_BITS)); }
 
-static void trap_add(u64 site, u64 stub)
+static void trap_put(trapslot *t, u64 site, u64 stub)
 {
-    if (g_trap_n >= (LONG)(TRAP_SLOTS / 2)) { LOGE("rewrite: trap table full, site %llx will not be redirected", site); return; }
     for (u32 i = trap_hash(site);; i = (i + 1) & (TRAP_SLOTS - 1)) {
-        if (g_trap[i].site == 0) {
-            g_trap[i].stub = (LONG64)stub;
-            InterlockedExchange64(&g_trap[i].site, (LONG64)site);     /* publish after the stub */
+        if (t[i].site == 0) {
+            t[i].stub = (LONG64)stub;
+            InterlockedExchange64(&t[i].site, (LONG64)site);     /* publish after the stub */
             InterlockedIncrement(&g_trap_n);
             return;
         }
-        if ((u64)g_trap[i].site == site) { g_trap[i].stub = (LONG64)stub; return; }
+        if ((u64)t[i].site == site) { t[i].stub = (LONG64)stub; return; }
     }
+}
+
+/* Sites of images that are gone stay in the table (every process of a desktop session loads libc's 17 at an address
+ * of its own): when it is half full, a new table keeps only the sites that are still mapped and still hold the int3.
+ * The old one is left as it is, a fault handler may be reading it. g_rw_lock held. */
+static void trap_sweep(void)
+{
+    trapslot *old = g_trap, *nt = (trapslot *)calloc(TRAP_SLOTS, sizeof *nt);
+    if (!nt) return;
+    LONG before = g_trap_n;
+    g_trap_n = 0;
+    for (u32 i = 0; i < TRAP_SLOTS; i++) {
+        u64 site = (u64)old[i].site; u8 b = 0;
+        if (site && xrl_mem_is_mapped(site) && !xrl_cfu(&b, site, 1) && b == 0xcc) trap_put(nt, site, (u64)old[i].stub);
+    }
+    InterlockedExchangePointer((PVOID volatile *)&g_trap, nt);
+    LOGI("rewrite: trap table swept: %ld sites -> %ld still mapped", (long)before, (long)g_trap_n);
+}
+
+static void trap_add(u64 site, u64 stub)
+{
+    if (g_trap_n >= (LONG)(TRAP_SLOTS / 2)) trap_sweep();
+    if (g_trap_n >= (LONG)(TRAP_SLOTS / 2)) { LOGE("rewrite: trap table full, site %llx will not be redirected", site); return; }
+    trap_put(g_trap, site, stub);
 }
 
 /* Runs wherever the guest faulted, with the guest TEB view live: touches only static memory. */
@@ -69,10 +94,11 @@ static LONG CALLBACK rw_veh(PEXCEPTION_POINTERS ep)
 {
     if (ep->ExceptionRecord->ExceptionCode != EXCEPTION_BREAKPOINT) return EXCEPTION_CONTINUE_SEARCH;
     u64 site = (u64)ep->ExceptionRecord->ExceptionAddress;
+    trapslot *t = g_trap;
     for (u32 i = trap_hash(site);; i = (i + 1) & (TRAP_SLOTS - 1)) {
-        u64 k = (u64)g_trap[i].site;
+        u64 k = (u64)t[i].site;
         if (k == 0) return EXCEPTION_CONTINUE_SEARCH;
-        if (k == site) { ep->ContextRecord->Rip = (DWORD64)g_trap[i].stub; return EXCEPTION_CONTINUE_EXECUTION; }
+        if (k == site) { ep->ContextRecord->Rip = (DWORD64)t[i].stub; return EXCEPTION_CONTINUE_EXECUTION; }
     }
 }
 
@@ -184,25 +210,42 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
 
     /* dry run: how big a trampoline pool? */
     xrw dry; memset(&dry, 0, sizeof dry);
-    dry.tp_gs_off = XRL_TP_GS_OFFSET; dry.log = rw_log;
+    dry.tp_gs_off = XRL_TP_GS_OFFSET; dry.gs_slot_off = xrl_gs_slot_off(); dry.log = rw_log;
     dry.pool_vaddr = rg[0].mem;
     for (int i = 0; i < nrg; i++) xrw_rewrite_range(&dry, (u8 *)rg[i].mem, rg[i].mem, (size_t)rg[i].size, starts, nst);
-    if (!dry.st.syscalls && !dry.st.fs_sites) {
+    if (!dry.st.syscalls && !dry.st.fs_sites && !dry.st.gs_sites) {
         if (dry.st.decode_fail) LOGW("rewrite: %s: %u undecodable region(s), nothing to rewrite elsewhere", name, dry.st.decode_fail);
         goto out;
     }
 
     size_t cap = (dry.pool_used + 64 + 4095) & ~(size_t)4095;
-    slong pm = xrl_mem_mmap(0, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
-                            LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
+    /* near the code: a stub is reached by jmp rel32, so a pool more than ~2 GiB away makes every site an int3 trap.
+     * The default placement is the highest free gap, which in a long session (holes left by ended processes) can be
+     * far above the image: try the space just below the image first, stepping down. */
+    slong pm = -LX_ENOMEM;
+    for (int tries = 0; tries < 4 && pm < 0 && !xrl_fork_tasks_enabled(); tries++) {   /* the EAC path keeps its placement */
+        u64 hint = xrl_mem_find_near(cap, rg[0].mem, 0x70000000ull - (u64)cap - (u64)rg[nrg - 1].size);
+        if (!hint) break;
+        slong r = xrl_mem_mmap(hint, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
+                               LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
+        if (r == (slong)hint) pm = r;
+        else if (r >= 0) xrl_mem_munmap((u64)r, cap);   /* taken meanwhile: look again */
+    }
+    if (pm < 0) pm = xrl_mem_mmap(0, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
+                                  LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
     if (pm < 0) { LOGE("rewrite: %s: cannot allocate %zu bytes for the trampoline pool (%lld); image left as is", name, cap, pm); goto out; }
     u8 *pool = (u8 *)pm;
+    if (!xrl_fork_tasks_enabled()) {   /* named after its image in /proc/self/maps and backtraces (EAC's maps stay as they were) */
+        char pn[96]; const char *b = strrchr(name, '/');
+        snprintf(pn, sizeof pn, "[xrl-pool %s]", b ? b + 1 : name);
+        xrl_mem_rename_range((u64)pool, (u64)pool + cap, pn);
+    }
     memset(pool, 0xcc, cap);
     u64 dlo = (u64)pool > rg[0].mem ? (u64)pool - rg[0].mem : rg[0].mem - (u64)pool;
     if (dlo > 0x70000000ull) LOGW("rewrite: %s: trampoline pool %llx is far from the code (%llx): every site becomes a trap", name, (u64)pool, rg[0].mem);
 
     xrw w; memset(&w, 0, sizeof w);
-    w.tp_gs_off = XRL_TP_GS_OFFSET; w.log = rw_log; w.verbose = g_rw_trace;
+    w.tp_gs_off = XRL_TP_GS_OFFSET; w.gs_slot_off = dry.gs_slot_off; w.log = rw_log; w.verbose = g_rw_trace;
     w.pool = pool; w.pool_vaddr = (u64)pool; w.pool_cap = cap;
     DWORD olds[256]; int ok = 1;
     for (int i = 0; i < nrg; i++) {
@@ -221,12 +264,16 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
     }
     *(u64 *)pool = (u64)(uintptr_t)&xrl_rawsys;
     FlushInstructionCache(GetCurrentProcess(), pool, cap);
+    /* nothing writes a pool after this: read+exec, so a stray write (another guest process's, in the shared address
+     * space) faults at the writer instead of turning trampolines into data. Not with XRL_FORK_TASKS (Rocket League
+     * through EAC keeps its pools as they always were). */
+    if (!xrl_fork_tasks_enabled()) xrl_mem_mprotect((u64)pool, cap, LX_PROT_READ | LX_PROT_EXEC);
     if (w.ntraps) {
         for (size_t i = 0; i < w.ntraps; i++) trap_add(w.traps[i].site, w.traps[i].stub);
         if (!g_rw_veh) g_rw_veh = AddVectoredExceptionHandler(1, rw_veh);
     }
-    LOGI("rewrite: %s: %u syscall + %u %%fs sites (%u in place, %u jumps, %u traps, %u neighbours moved), pool %zu bytes at %llx%s",
-         name, w.st.syscalls, w.st.fs_sites, w.st.inplace, w.st.jumps, w.st.traps, w.st.moved, w.pool_used, (u64)pool, ok ? "" : " [INCOMPLETE]");
+    LOGI("rewrite: %s: %u syscall + %u %%fs + %u %%gs sites (%u in place, %u jumps, %u traps, %u neighbours moved), pool %zu bytes at %llx%s",
+         name, w.st.syscalls, w.st.fs_sites, w.st.gs_sites, w.st.inplace, w.st.jumps, w.st.traps, w.st.moved, w.pool_used, (u64)pool, ok ? "" : " [INCOMPLETE]");
     if (w.st.unsupported || w.st.decode_fail || w.st.legacy_sys)
         LOGW("rewrite: %s: %u unsupported site(s), %u undecodable region(s), %u sysenter/int80 left alone", name, w.st.unsupported, w.st.decode_fail, w.st.legacy_sys);
     free(w.traps);

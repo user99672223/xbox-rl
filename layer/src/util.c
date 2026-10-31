@@ -44,12 +44,38 @@ int xrl_cfu(void *dst, u64 usrc, size_t n)
     return 0;
 }
 
+/* DIAG (not with XRL_FORK_TASKS): a copy to guest memory that another process's address space owns. Something in
+ * the fork machinery leaves a process writing to addresses that are not its own any more (apt's methods crash on
+ * text that is not theirs); name the writer. Logged, not refused: shared segments may be owned by another mm. */
+static void foreign_check(u64 udst, size_t n)
+{
+    if (xrl_fork_tasks_enabled() || xrl_mem_locked_here()) return;
+    u32 o = xrl_mem_owner(udst), me = xrl_mem_cur_mm();
+    if (!o || o == me) return;
+    static volatile LONG cnt;
+    if (InterlockedIncrement(&cnt) > 64) return;
+    xrl_thread *t = xrl_cur();
+    LOGE("copy into another process's memory: %zu bytes at %llx (address space %u) by pid %d tid %d (address space %u) in %s",
+         n, udst, o, t && t->proc ? t->proc->pid : -1, t ? t->tid : -1, me, t ? xrl_sysname(t->cur_nr) : "?");
+}
+
+/* the caller's process is frozen for a fork snapshot by another of its threads: the write is replayed after the
+ * restore (proc.c xrl_proc_late_write) */
+static void late_check(u64 udst, const void *src, size_t n)
+{
+    xrl_thread *t = xrl_cur();
+    xrl_proc *p = t ? t->proc : NULL;
+    if (p && p->frozen && p->freezer && p->freezer != t) xrl_proc_late_write(p, udst, src, n);
+}
+
 int xrl_ctu(u64 udst, const void *src, size_t n)
 {
     if (!n) return 0;
     if (udst < 0x10000) return -LX_EFAULT;
+    foreign_check(udst, n);
     __try { memcpy((void *)udst, src, n); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -LX_EFAULT; }
+    late_check(udst, src, n);
     return 0;
 }
 
@@ -57,8 +83,10 @@ int xrl_zerou(u64 udst, size_t n)
 {
     if (!n) return 0;
     if (udst < 0x10000) return -LX_EFAULT;
+    foreign_check(udst, n);
     __try { memset((void *)udst, 0, n); }
     __except (EXCEPTION_EXECUTE_HANDLER) { return -LX_EFAULT; }
+    late_check(udst, NULL, n);
     return 0;
 }
 

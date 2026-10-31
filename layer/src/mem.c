@@ -55,6 +55,7 @@ typedef struct vma {
     u64 mid;                /* the mmap that made it: separate mappings never merge, so
                              * "the mapping containing X" (a new thread's stack) stays its own */
     u32 owner;              /* the mm (guest process address space) that mapped it (proc.c) */
+    int cpid;               /* the process that mapped it (a fork child shares its parent's mm until it execs) */
     char name[160];         /* guest path of a file map, or "[stack]" */
 } vma;
 
@@ -456,6 +457,60 @@ static slong vma_unmap_range(u64 s, u64 e, int release_granules)
             size_t k = vma_lower(g);
             if (k < g_n && g_v[k].start < g + GRAN) continue;   /* still used */
             if (gr_has(g)) { VirtualFree((void *)g, 0, MEM_RELEASE); gr_del(g); }
+        }
+    }
+    return 0;
+}
+
+/* Fork snapshots (xrl_mem_snapshot, proc.c) of an mm that are still live: a mapping that existed when one was taken
+ * is still that process's memory in the snapshot, so freeing its address range (munmap, mremap moving or shrinking
+ * it) would let another process map there while the snapshot's owner still writes to it (apt-get's methods). Such a
+ * range is kept, PROT_NONE, until the snapshot is restored or dropped. */
+typedef struct snapreg { u32 mm; int n; u64 mark; } snapreg;
+static snapreg g_sreg[64];
+static int g_nsreg;
+static SRWLOCK g_sreg_lock = SRWLOCK_INIT;   /* taken after g_lock */
+
+static void sreg_add(u32 mm, u64 mark, int d)
+{
+    AcquireSRWLockExclusive(&g_sreg_lock);
+    int k = -1;
+    for (int i = 0; i < g_nsreg; i++) if (g_sreg[i].mm == mm) k = i;
+    if (k < 0 && d > 0 && g_nsreg < (int)ARRAY_LEN(g_sreg)) { k = g_nsreg++; g_sreg[k].mm = mm; g_sreg[k].n = 0; g_sreg[k].mark = 0; }
+    if (k >= 0) {
+        g_sreg[k].n += d;
+        if (d > 0 && mark > g_sreg[k].mark) g_sreg[k].mark = mark;
+        if (g_sreg[k].n <= 0) g_sreg[k] = g_sreg[--g_nsreg];
+    }
+    ReleaseSRWLockExclusive(&g_sreg_lock);
+}
+
+static int sreg_keeps(const vma *v)
+{
+    int keep = 0;
+    AcquireSRWLockShared(&g_sreg_lock);
+    for (int i = 0; i < g_nsreg; i++) if (g_sreg[i].mm == v->owner && v->mid <= g_sreg[i].mark) keep = 1;
+    ReleaseSRWLockShared(&g_sreg_lock);
+    return keep;
+}
+
+/* vma_unmap_range for what the guest gives back: what a live fork snapshot covers stays (PROT_NONE). Lock held. */
+static slong unmap_keep_locked(u64 s, u64 e)
+{
+    if (!g_nsreg) return vma_unmap_range(s, e, 1);
+    if (vma_split(s) || vma_split(e)) return -LX_ENOMEM;
+    size_t i = vma_lower(s);
+    while (i < g_n && g_v[i].start < e) {
+        vma *v = &g_v[i];
+        if (sreg_keeps(v)) {
+            if (v->prot != LX_PROT_NONE && (v->committed || v->lazy)) win_protect(v->start, v->end, LX_PROT_NONE);
+            v->prot = LX_PROT_NONE;
+            i++;
+        } else {
+            u64 b = v->end;
+            slong r = vma_unmap_range(v->start, b, 1);
+            if (r) return r;
+            i = vma_lower(b);
         }
     }
     return 0;
@@ -1483,6 +1538,53 @@ static u32 cur_mm(void)
     return p && p->mm ? p->mm->id : 1;
 }
 u32 xrl_mm_new(void) { return (u32)InterlockedIncrement(&g_next_mm); }
+u32 xrl_mem_cur_mm(void) { return cur_mm(); }
+int xrl_mem_locked_here(void) { return t_mem_locked; }
+/* The free, 64 KiB aligned range of len bytes closest to `center` within +-maxdist inside the arena, above the mmap
+ * floor; 0: none (rewrite.c places trampoline pools next to their code with it) */
+u64 xrl_mem_find_near(u64 len, u64 center, u64 maxdist)
+{
+    len = ALIGN_UP(len, GRAN);
+    u64 lo = center > maxdist ? center - maxdist : 0, hi = center + maxdist;
+    if (lo < g_mmap_floor) lo = g_mmap_floor;
+    if (lo < g_arena_base) lo = g_arena_base;
+    if (hi > g_arena_end) hi = g_arena_end;
+    u64 best = 0, bestd = ~0ull;
+    AcquireSRWLockShared(&g_lock);
+    u64 gap = lo;   /* start of the current free stretch */
+    for (size_t i = vma_lower(lo); gap < hi; i++) {
+        u64 end = i < g_n && g_v[i].start < hi ? g_v[i].start : hi;   /* the stretch ends at the next mapping */
+        u64 a = ALIGN_UP(gap, GRAN), b = ALIGN_DOWN(end, GRAN);
+        if (b > a && b - a >= len) {
+            /* the candidate in [a, b-len] nearest the centre */
+            u64 c = center < a ? a : center > b - len ? b - len : ALIGN_DOWN(center, GRAN);
+            u64 d = c > center ? c - center : center - c;
+            if (d < bestd) { bestd = d; best = c; }
+        }
+        if (i >= g_n || g_v[i].start >= hi) break;
+        gap = g_v[i].end;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return best;
+}
+
+/* nothing is mapped in [a, a+len) and an mmap hint there would be taken (inside the arena, above the mmap floor) */
+int xrl_mem_range_free(u64 a, u64 len)
+{
+    AcquireSRWLockShared(&g_lock);
+    int f = a >= g_mmap_floor && in_arena(a, a + len) && range_free(a, a + len);
+    ReleaseSRWLockShared(&g_lock);
+    return f;
+}
+u32 xrl_mem_owner(u64 addr)
+{
+    u32 o = 0;
+    AcquireSRWLockShared(&g_lock);
+    size_t i = vma_lower(addr);
+    if (i < g_n && g_v[i].start <= addr) o = g_v[i].owner;
+    ReleaseSRWLockShared(&g_lock);
+    return o;
+}
 
 static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64 off, const char *name, int lazy_ok)
 {
@@ -1515,6 +1617,7 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
         v.start = addr; v.end = end; v.prot = prot; v.committed = committed; v.lazy = lazy; v.shared = shared;
         v.mid = ++g_next_mid;
         v.owner = cur_mm();
+        { xrl_proc *cp = xrl_curproc(); v.cpid = cp ? cp->pid : 0; }
         vma_name(&v, name);
         if (file) {
             lx_stat fst;
@@ -1626,7 +1729,7 @@ slong xrl_mem_munmap(u64 addr, u64 len)
     slong sr = xrl_shm_munmap(addr, len);   /* inside a shared segment: only the attachment goes away (shm.c) */
     if (sr != XRL_NOT_NET) return sr;
     mem_lock();
-    slong r = vma_unmap_range(addr, addr + len, 1);
+    slong r = unmap_keep_locked(addr, addr + len);
     mem_unlock();
     return r;
 }
@@ -1746,13 +1849,17 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
     slong res;
     mem_lock();
     size_t i = vma_lower(old_addr);
-    if (i >= g_n || g_v[i].start > old_addr || g_v[i].end < old_addr + old_len) { res = -LX_EFAULT; goto out; }
+    if (i >= g_n || g_v[i].start > old_addr) { res = -LX_EFAULT; goto out; }
+    /* the old range must lie in one mapping: one vma, or pieces of the same mmap (an mprotect split) */
+    for (size_t j = i; g_v[j].end < old_addr + old_len; j++)
+        if (j + 1 >= g_n || g_v[j + 1].start != g_v[j].end || g_v[j + 1].mid != g_v[i].mid) { res = -LX_EFAULT; goto out; }
     int prot = g_v[i].prot, shared = g_v[i].shared;
+    u64 mid = g_v[i].mid;
     char name[sizeof g_v[i].name]; memcpy(name, g_v[i].name, sizeof name);
 
     if (!(flags & LX_MREMAP_FIXED) && new_len == old_len) { res = (slong)old_addr; goto out; }
     if (!(flags & LX_MREMAP_FIXED) && new_len < old_len) {
-        res = vma_unmap_range(old_addr + new_len, old_addr + old_len, 1);
+        res = unmap_keep_locked(old_addr + new_len, old_addr + old_len);
         if (!res) res = (slong)old_addr;
         goto out;
     }
@@ -1760,7 +1867,13 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
         u64 ext_s = old_addr + old_len, ext_e = old_addr + new_len;
         if (range_free(ext_s, ext_e) && (in_arena(ext_s, ext_e) || !ensure_reserved(ext_s, ext_e))) {
             slong m = map_range(ext_s, ext_e - ext_s, prot, shared, NULL, 0, name, 1);
-            if (m >= 0) { res = (slong)old_addr; goto out; }
+            if (m >= 0) {
+                /* the extension is part of the old mapping (a later mremap of the whole range must find one) */
+                size_t k = vma_lower(ext_s);
+                if (k < g_n && g_v[k].start == ext_s) { g_v[k].mid = mid; vma_try_merge(k); }
+                res = (slong)old_addr;
+                goto out;
+            }
         }
     }
     if (!(flags & LX_MREMAP_MAYMOVE)) { res = -LX_ENOMEM; goto out; }
@@ -1794,7 +1907,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
             mem_lock();
             if (pr) { res = pr; goto out; }
         }
-        if (!(flags & LX_MREMAP_DONTUNMAP)) vma_unmap_range(old_addr, old_addr + old_len, 1);
+        if (!(flags & LX_MREMAP_DONTUNMAP)) unmap_keep_locked(old_addr, old_addr + old_len);
         res = (slong)target;
     }
 out:
@@ -1961,75 +2074,6 @@ int xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off)
     if (!TryAcquireSRWLockShared(&g_lock)) return -1;
     size_t i = vma_lower(a);
     int r = i < g_n && g_v[i].start <= a;
-    if (r) { strncpy_s(name, n, g_v[i].name, _TRUNCATE); *off = a - g_v[i].start + (u64)g_v[i].foff; }
-    ReleaseSRWLockShared(&g_lock);
-    return r;
-}
-/* Memory by source (sample.c, every report): the pages Windows really has committed in each guest mapping
- * (VirtualQuery, so lazily committed and swapped-out pages count as they are), summed by mapping name - the
- * file a mapping came from, or [anon]/[stack]/a memfd - and the partition's whole commit charge beside it:
- * what is not in a guest mapping is the host's (the app, D3D and the driver's CPU side, the swap file's
- * cache, ...). */
-typedef struct mb_src { char name[160]; u64 bytes, vsize; int n; } mb_src;
-void xrl_mem_breakdown(void)
-{
-    static struct { u64 s, e; char name[160]; } *cp;
-    static size_t cpcap;
-    AcquireSRWLockShared(&g_lock);
-    if (cpcap < g_n) {
-        void *nc = realloc(cp, g_n * 2 * sizeof *cp);
-        if (!nc) { ReleaseSRWLockShared(&g_lock); return; }
-        cp = nc; cpcap = g_n * 2;
-    }
-    size_t n = g_n;
-    for (size_t i = 0; i < n; i++) { cp[i].s = g_v[i].start; cp[i].e = g_v[i].end; memcpy(cp[i].name, g_v[i].name, sizeof cp[i].name); }
-    ReleaseSRWLockShared(&g_lock);
-    static mb_src src[512];
-    int ns = 0;
-    u64 total = 0;
-    for (size_t i = 0; i < n; i++) {
-        u64 c = 0;
-        for (u64 a = cp[i].s; a < cp[i].e; ) {
-            MEMORY_BASIC_INFORMATION mbi;
-            if (!VirtualQuery((void *)a, &mbi, sizeof mbi)) break;
-            u64 re = (u64)mbi.BaseAddress + mbi.RegionSize;
-            if (re > cp[i].e) re = cp[i].e;
-            if (mbi.State == MEM_COMMIT) c += re - a;
-            a = re;
-        }
-        total += c;
-        const char *nm = cp[i].name[0] ? cp[i].name : "[anon]";
-        int k = 0;
-        while (k < ns && strcmp(src[k].name, nm)) k++;
-        if (k == ns) {
-            if (ns == 512) k = 511;   /* the last slot takes the rest */
-            else { strcpy_s(src[ns].name, sizeof src[ns].name, nm); src[ns].bytes = src[ns].vsize = 0; src[ns].n = 0; ns++; }
-        }
-        src[k].bytes += c; src[k].vsize += cp[i].e - cp[i].s; src[k].n++;
-    }
-    MEMORYSTATUSEX ms = { sizeof ms };
-    GlobalMemoryStatusEx(&ms);
-    u64 part = ms.ullTotalPageFile - ms.ullAvailPageFile;
-    LOGI("mem: guest committed %llu MiB in %zu mappings (layer count %llu MiB); partition commit %llu of %llu MiB, so %llu MiB "
-         "outside guest mappings (host, D3D/driver CPU side)", total >> 20, n, (u64)g_committed >> 20, part >> 20,
-         ms.ullTotalPageFile >> 20, part > total ? (part - total) >> 20 : 0);
-    for (int k = 0; k < ns && k < 20; k++) {
-        int b = k;
-        for (int j = k + 1; j < ns; j++) if (src[j].bytes > src[b].bytes) b = j;
-        mb_src t = src[k]; src[k] = src[b]; src[b] = t;
-        if (!src[k].bytes) break;
-        LOGI("mem: %7.1f MiB committed (%7.1f MiB mapped, %d mapping%s) %s", (double)src[k].bytes / 1048576.0,
-             (double)src[k].vsize / 1048576.0, src[k].n, src[k].n == 1 ? "" : "s", src[k].name);
-    }
-}
-
-/* the guest mapping that contains `a` (start <= a < end): its name and the offset (file offset for a file
- * mapping); 0 outside every mapping, -1 when the lock is busy (sample.c) */
-int xrl_mem_vma_of(u64 a, char *name, size_t n, u64 *off)
-{
-    if (!TryAcquireSRWLockShared(&g_lock)) return -1;
-    size_t i = vma_lower(a);
-    int r = i < g_n && g_v[i].start <= a && a < g_v[i].end;
     if (r) { strncpy_s(name, n, g_v[i].name, _TRUNCATE); *off = a - g_v[i].start + (u64)g_v[i].foff; }
     ReleaseSRWLockShared(&g_lock);
     return r;
@@ -2208,12 +2252,14 @@ slong xrl_mem_mincore(u64 addr, u64 len, u64 vec)
     slong r = populate_from(vec, pages, CS_MINCORE);   /* vec is written under g_lock: must not fault */
     if (r) return r;
     AcquireSRWLockShared(&g_lock);
+    t_mem_locked = 1;   /* xrl_ctu's ownership check must not take g_lock again */
     for (u64 p = 0; p < pages; p++) {
         size_t i = vma_lower(addr + p * LX_PAGE);
         if (i >= g_n || g_v[i].start > addr + p * LX_PAGE) { r = -LX_ENOMEM; break; }
         u8 b = g_v[i].committed ? 1 : g_v[i].lazy ? (u8)(committed_bytes(addr + p * LX_PAGE, addr + (p + 1) * LX_PAGE) != 0) : 0;
         if (xrl_ctu(vec + p, &b, 1)) { r = -LX_EFAULT; break; }
     }
+    t_mem_locked = 0;
     ReleaseSRWLockShared(&g_lock);
     return r;
 }
@@ -2367,7 +2413,19 @@ void xrl_mm_release(u32 mm)
         rg[n++] = g_v[i].start; rg[n++] = g_v[i].end;
     }
     ReleaseSRWLockShared(&g_lock);
-    for (size_t i = 0; i + 1 < n; i += 2) xrl_mem_munmap(rg[i], rg[i + 1] - rg[i]);
+    /* only what is still this mm's when its turn comes: a range collected above may hold another process's mapping
+     * by then (unmapping by address alone took that one away, and its owner's next mmap landed on its own code) */
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        if (xrl_shm_munmap(rg[i], rg[i + 1] - rg[i]) != XRL_NOT_NET) continue;   /* a shared segment: shm.c */
+        mem_lock();
+        for (size_t k = vma_lower(rg[i]); k < g_n && g_v[k].start < rg[i + 1];) {
+            if (g_v[k].owner != mm) { k++; continue; }
+            u64 a = g_v[k].start, e = g_v[k].end < rg[i + 1] ? g_v[k].end : rg[i + 1];
+            if (vma_unmap_range(a, e, 1)) { k++; continue; }
+            k = vma_lower(e);
+        }
+        mem_unlock();
+    }
     free(rg);
     mem_lock();
     brkwin *b = brk_of(mm, 0);
@@ -2435,6 +2493,7 @@ struct xrl_msnap {
     snaprange *rg; size_t nr, cap_rg;
     u8 *data; size_t dlen;
     int has_brk;
+    int registered;   /* counted in g_sreg */
 };
 
 typedef struct snapctx { struct xrl_msnap *s; int fail; } snapctx;
@@ -2465,6 +2524,8 @@ xrl_msnap *xrl_mem_snapshot(u32 mm, u64 cap_bytes)
     snapctx c = { sn, 0 };
     AcquireSRWLockShared(&g_lock);
     sn->mid_mark = g_next_mid;
+    sreg_add(mm, sn->mid_mark, 1);
+    sn->registered = 1;
     for (size_t i = 0; i < g_n; i++) if (g_v[i].owner == mm) sn->nv++;
     sn->v = (vma *)malloc((sn->nv + 1) * sizeof(vma));
     if (sn->v) {
@@ -2504,10 +2565,14 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
     u32 mm = sn->mm;
     u64 *rg = NULL;
     size_t n = 0, cap = 0;
-    /* 1. what the child mapped (everything newer than the snapshot) goes */
+    /* 1. what the child mapped (everything newer than the snapshot) goes - not what this process mapped itself
+     * meanwhile: another of its threads may have been in mmap during the fork (Firefox), and freeing that range let
+     * the exec'd child map there while the thread wrote to it ("stack smashing detected" in the child) */
+    xrl_proc *rp = xrl_curproc();
+    int me = rp ? rp->pid : 0;
     AcquireSRWLockShared(&g_lock);
     for (size_t i = 0; i < g_n; i++) {
-        if (g_v[i].owner != mm || g_v[i].mid <= sn->mid_mark) continue;
+        if (g_v[i].owner != mm || g_v[i].mid <= sn->mid_mark || (me && g_v[i].cpid == me)) continue;
         if (n + 2 > cap) {
             u64 *nr = (u64 *)realloc(rg, (cap ? cap * 2 : 64) * sizeof(u64));
             if (!nr) break;
@@ -2539,17 +2604,54 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
                     slong r = xrl_mem_mmap(gs, ge - gs, LX_PROT_READ | LX_PROT_WRITE, LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_FIXED_NOREPLACE, -1, 0);
                     if (r < 0 || (u64)r != gs) { LOGW("fork: cannot recreate [%llx,%llx) the child unmapped (%lld)", gs, ge, r); lost++; }
                     else if (sv->prot != (LX_PROT_READ | LX_PROT_WRITE)) xrl_mem_mprotect(gs, ge - gs, sv->prot);
+                } else if (!sv->shared && sv->name[0] == '/' && strncmp(sv->name, "/memfd:", 7)) {
+                    /* a private file mapping (the child mapped over it): map the same file part again */
+                    slong r = -LX_ENOENT;
+                    s64 off = sv->moff + (s64)(gs - sv->start);
+                    slong fd = xrl_vfs_open(LX_AT_FDCWD, sv->name, LX_O_RDONLY | LX_O_CLOEXEC, 0);
+                    if (fd >= 0) {
+                        r = xrl_mem_mmap(gs, ge - gs, sv->prot, LX_MAP_PRIVATE | LX_MAP_FIXED_NOREPLACE, (int)fd, off);
+                        if (r == (slong)gs && (sv->prot & LX_PROT_EXEC)) xrl_rewrite_fd_mapped((int)fd, gs, ge - gs, off, sv->prot);
+                        xrl_fd_close((int)fd);
+                    }
+                    if (r != (slong)gs) { LOGW("fork: cannot map %s back at [%llx,%llx) (%lld)", sv->name, gs, ge, r); lost++; }
                 } else lost++;
             } else if (cur_owner == mm && cur_prot != sv->prot) xrl_mem_mprotect(gs, ge - gs, sv->prot);
             a = ge;
         }
-        if (snap_writable_private(sv)) {
-            if (!sv->committed) each_region(sv->start, sv->end, op_zero_committed, NULL);   /* lazy: pages the child touched first read as zero again */
+        if (snap_writable_private(sv) && !sv->committed) {   /* lazy: pages the child touched first read as zero again ... */
+            u64 za = sv->start;
+            while (za < sv->end) {   /* ... in what is still this mm's (the range may hold another process's memory now) */
+                AcquireSRWLockShared(&g_lock);
+                size_t k = vma_lower(za);
+                int mine = k < g_n && g_v[k].start <= za && g_v[k].owner == mm;
+                u64 zb = k < g_n ? (g_v[k].start > za ? g_v[k].start : g_v[k].end) : sv->end;
+                ReleaseSRWLockShared(&g_lock);
+                if (zb > sv->end) zb = sv->end;
+                if (mine) each_region(za, zb, op_zero_committed, NULL);
+                za = zb;
+            }
         }
     }
     if (lost) LOGW("fork: the child unmapped %d range(s) of the parent that could not be put back (file mappings)", lost);
-    /* 4. the bytes */
-    for (size_t i = 0; i < sn->nr; i++) memcpy((void *)sn->rg[i].s, sn->data + sn->rg[i].off, (size_t)(sn->rg[i].e - sn->rg[i].s));
+    /* 4. the bytes, only where the address space is still this process's: a range the child unmapped before its exec
+     * can hold another process's mappings by now (the exec'd program's stack: "stack smashing detected" there) */
+    size_t skipped = 0;
+    for (size_t i = 0; i < sn->nr; i++) {
+        u64 a = sn->rg[i].s, e = sn->rg[i].e;
+        while (a < e) {
+            AcquireSRWLockShared(&g_lock);
+            size_t k = vma_lower(a);
+            int mine = k < g_n && g_v[k].start <= a && g_v[k].owner == mm;
+            u64 b = k < g_n ? (g_v[k].start > a ? g_v[k].start : g_v[k].end) : e;
+            ReleaseSRWLockShared(&g_lock);
+            if (b > e) b = e;
+            if (mine) memcpy((void *)a, sn->data + sn->rg[i].off + (a - sn->rg[i].s), (size_t)(b - a));
+            else skipped += (size_t)(b - a);
+            a = b;
+        }
+    }
+    if (skipped) LOGW("fork: %zu bytes of process memory not restored: that address range belongs to another process now", skipped);
     if (sn->has_brk) {
         mem_lock();
         brkwin *b = brk_of(mm, 0);
@@ -2562,5 +2664,6 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
 void xrl_mem_snap_free(xrl_msnap *sn)
 {
     if (!sn) return;
+    if (sn->registered) sreg_add(sn->mm, 0, -1);
     free(sn->v); free(sn->rg); free(sn->data); free(sn);
 }

@@ -80,6 +80,32 @@ static int spin_sample(xrl_thread *t, pf_spin *s)
     s->name[sizeof s->name - 1] = 0;
     return 1;
 }
+/* A guest backtrace in the log: the return addresses into guest code among the 16 KiB of stack at rsp, up to 24, a
+ * few per line (a process that aborts itself: "stack smashing detected", signal.c) */
+void xrl_perf_backtrace(const char *why, int pid, int tid, u64 rsp)
+{
+    static u64 stk[2048];   /* callers are serialised by signal.c's counter; a rare path */
+    size_t got = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((void *)rsp, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+        u64 end = (u64)mbi.BaseAddress + mbi.RegionSize;
+        got = end - rsp < sizeof stk ? (size_t)(end - rsp) : sizeof stk;
+        if (xrl_cfu(stk, rsp, got)) got = 0;
+    }
+    char line[600], nm[96];
+    int len = snprintf(line, sizeof line, "backtrace %s pid %d tid %d:", why, pid, tid), shown = 0, inl = 0;
+    for (size_t i = 0; i < got / 8 && shown < 24; i++) {
+        u64 off = 0;
+        if (stk[i] < 0x10000 || xrl_mem_is_exec(stk[i]) != 1) continue;
+        if (xrl_mem_name_of(stk[i], nm, sizeof nm, &off) != 1) continue;
+        const char *b = strrchr(nm, '/');
+        len += snprintf(line + len, sizeof line - len, " [sp+%zx] %s+0x%llx", i * 8, nm[0] ? (b ? b + 1 : nm) : "anon", off);
+        shown++;
+        if (++inl == 6) { LOGI("%s", line); len = snprintf(line, sizeof line, "backtrace %s pid %d (cont):", why, pid); inl = 0; }
+    }
+    if (inl || !shown) LOGI("%s", line);
+}
+
 static void spin_report(const pf_spin *s)
 {
     char nm[96], line[700];
@@ -150,7 +176,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
         last_user = user; last_kern = kern;
 
         int n = 0, nn = 0, nthr = 0, nspin = 0;
-        pf_spin spins[2];
+        pf_spin spins[4];
         u64 sys_all = 0;
         AcquireSRWLockShared(&G.thread_lock);
         for (xrl_thread *t = G.threads; t && n < PF_MAX; t = t->next) {
@@ -168,7 +194,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
             take_srv(t, r);
             memcpy(r->name, t->name, sizeof r->name);
             r->name[sizeof r->name - 1] = 0;
-            if (r->nsys == 0 && (double)r->cpu >= 0.9e7 * secs && nspin < 2 && spin_sample(t, &spins[nspin])) nspin++;
+            if (r->nsys == 0 && (double)r->cpu >= 0.2e7 * secs && nspin < 4 && spin_sample(t, &spins[nspin])) nspin++;   /* many spinners share the cores */
             if (nn < PF_MAX) { next[nn].tid = t->tid; next[nn].cpu = cpu; next[nn].nsys = t->nsys; nn++; }
         }
         ReleaseSRWLockShared(&G.thread_lock);

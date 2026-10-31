@@ -16,9 +16,9 @@ static void put32(eb *e, uint32_t v) { memcpy(e->b + e->n, &v, 4); e->n += 4; }
 static void put64(eb *e, uint64_t v) { memcpy(e->b + e->n, &v, 8); e->n += 8; }
 
 /* ------------------------------------------------------------------ units */
-static int is_fs_unit(const x86i *in)
+static int is_seg_unit(const x86i *in, int seg)
 {
-    if (in->seg != 0x64) return 0;
+    if (in->seg != seg) return 0;
     if (in->map == 0 && in->opcode == 0x8d) return 0;               /* lea ignores the override */
     if (in->has_modrm && (in->modrm >> 6) != 3) return 1;
     if (in->map == 0 && in->opcode >= 0xa0 && in->opcode <= 0xa3) return 1;   /* moffs forms */
@@ -47,11 +47,11 @@ static void emit_load_tp(eb *e, int r, uint32_t off)
     put1(e, ((r & 7) << 3) | 4); put1(e, 0x25); put32(e, off);
 }
 
-/* The instruction `ins` (decoded as `in`) with %fs dropped and its memory
+/* The instruction `ins` (decoded as `in`) with its segment override dropped and its memory
  * operand rebuilt as [base_new + index_new*2^scale + disp] under ModRM mod `nmod`. */
 static void emit_insn_with_operand(eb *e, const uint8_t *ins, const x86i *in, int nmod, int scale, int index_new, int base_new)
 {
-    for (int i = 0; i < in->nprefix; i++) if (ins[i] != 0x64) put1(e, ins[i]);
+    for (int i = 0; i < in->nprefix; i++) if (ins[i] != in->seg) put1(e, ins[i]);
     unsigned rex = 0x40 | (in->rex & 0x0c) | ((index_new >= 8) ? 2 : 0) | (base_new >= 8 ? 1 : 0);
     if (rex != 0x40 || in->rex) put1(e, rex);
     int ops = in->op_off - (in->map == 1 ? 1 : in->map >= 2 ? 2 : 0);
@@ -62,9 +62,11 @@ static void emit_insn_with_operand(eb *e, const uint8_t *ins, const x86i *in, in
     if (in->imm_size) put(e, ins + in->imm_off, in->imm_size);
 }
 
+/* a %fs (or, with gs_slot_off, %gs) memory operand rebuilt relative to the base kept in that segment's TEB slot */
 static int emit_fs(eb *e, const xrw *w, const uint8_t *ins, const x86i *in)
 {
     if (in->vex || !in->has_modrm || in->addr32 || (in->flags & (X86_RIPREL | X86_STACK | X86_CF))) return -1;
+    uint32_t slot = (uint32_t)(in->seg == 0x65 ? w->gs_slot_off : w->tp_gs_off);
     unsigned mod = in->modrm >> 6, rm = in->modrm & 7;
     int reg = ((in->modrm >> 3) & 7) | ((in->rex & 4) ? 8 : 0);
     int has_sib = rm == 4, no_index = 1, no_base = 0, base = 0, index = 0, scale = 0;
@@ -82,7 +84,7 @@ static int emit_fs(eb *e, const xrw *w, const uint8_t *ins, const x86i *in)
     int load = !in->opsz16 && ((in->map == 0 && (in->opcode == 0x8b || in->opcode == 0x63)) ||
                                (in->map == 1 && (in->opcode == 0xb6 || in->opcode == 0xb7 || in->opcode == 0xbe || in->opcode == 0xbf)));
     if (load && no_base && no_index && has_sib && mod == 0) {
-        emit_load_tp(e, reg, (uint32_t)w->tp_gs_off);
+        emit_load_tp(e, reg, slot);
         emit_insn_with_operand(e, ins, in, 2, 0, 4, reg);
         return 0;
     }
@@ -98,7 +100,7 @@ static int emit_fs(eb *e, const xrw *w, const uint8_t *ins, const x86i *in)
 
     put(e, k_pad, 5);
     emit_push(e, S);
-    emit_load_tp(e, S, (uint32_t)w->tp_gs_off);
+    emit_load_tp(e, S, slot);
     int nmod = (int)mod, nscale = scale, nindex, nbase;
     if (!has_sib || (!no_base && no_index)) {
         /* base only: tp + base (rsp cannot be an index register) */
@@ -128,6 +130,16 @@ int xrw_emit_syscall(uint8_t *out, uint64_t out_va, uint64_t slot)
 {
     eb e; e.n = 0;
     emit_syscall(&e, out_va, slot);
+    memcpy(out, e.b, (size_t)e.n);
+    return e.n;
+}
+
+int xrw_emit_gs(uint64_t gs_slot_off, uint8_t *out, const uint8_t *ins, const x86i *in)
+{
+    eb e; e.n = 0;
+    xrw w; memset(&w, 0, sizeof w);
+    w.gs_slot_off = gs_slot_off;
+    if (in->seg != 0x65 || emit_fs(&e, &w, ins, in)) return -1;
     memcpy(out, e.b, (size_t)e.n);
     return e.n;
 }
@@ -204,7 +216,7 @@ static int movable(const uint8_t *code, const rgn *r, size_t i)
     if (r->kind[i] & K_DONE) return 0;
     if (r->kind[i] & K_UNIT) return 1;
     if (x86_decode(code + r->off[i], r->len[i], &t) != r->len[i]) return 0;
-    if (is_fs_unit(&t)) return 0;
+    if (is_seg_unit(&t, 0x64)) return 0;
     if (t.flags & X86_REL) return is_reloc_branch(&t);
     if (t.flags & X86_CF) {
         if (t.map == 0 && (t.opcode == 0xc2 || t.opcode == 0xc3)) return 1;                          /* ret */
@@ -321,7 +333,8 @@ static int process_region(xrw *w, uint8_t *code, uint64_t vaddr, size_t total, s
         if (o + (size_t)l > off1) break;               /* straddles the next function start: padding/data */
         int kind = K_PLAIN;
         if (is_syscall(&in)) { kind = K_SYSCALL; w->st.syscalls++; }
-        else if (is_fs_unit(&in)) { kind = K_FS; w->st.fs_sites++; }
+        else if (is_seg_unit(&in, 0x64)) { kind = K_FS; w->st.fs_sites++; }
+        else if (w->gs_slot_off && is_seg_unit(&in, 0x65)) { kind = K_FS; w->st.gs_sites++; }
         else if (in.flags & X86_SYSCALL) w->st.legacy_sys++;
         if (rg_push(r, (uint32_t)o, l, kind)) return -1;
         w->st.insns++;

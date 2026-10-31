@@ -47,7 +47,7 @@ static int do_elf(const char *path)
         starts = xrw_eh_starts(img + ph[i].p_offset, ph[i].p_filesz, ph[i].p_vaddr, &nst);
     }
     xrw w; memset(&w, 0, sizeof w);
-    w.tp_gs_off = 0x1678;
+    w.tp_gs_off = 0x1678; w.gs_slot_off = 0x1670;
     w.log = tlog; w.verbose = getenv("XRW_TEST_VERBOSE") != NULL;
     for (int i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != PT_LOAD || !(ph[i].p_flags & PF_X)) continue;
@@ -61,7 +61,7 @@ static int do_elf(const char *path)
            d.st.moved, d.st.unsupported, d.st.decode_fail, d.st.legacy_sys, nst, need);
     /* second, real pass over a scratch copy to check the patched bytes decode cleanly */
     xrw r; memset(&r, 0, sizeof r);
-    r.tp_gs_off = 0x1678; r.log = tlog;
+    r.tp_gs_off = 0x1678; r.gs_slot_off = 0x1670; r.log = tlog;
     uint8_t *pool = (uint8_t *)malloc(need + 64);
     for (int i = 0; i < eh->e_phnum; i++) {
         if (ph[i].p_type != PT_LOAD || !(ph[i].p_flags & PF_X)) continue;
@@ -83,7 +83,7 @@ static int do_elf(const char *path)
         }
         if (left_sys || left_fs) printf("  segment %d: %u syscall and %u %%fs still present after rewriting (unsupported forms or desynced decode)\n", i, left_sys, left_fs);
     }
-    printf("  real pass: %u syscall, %u %%fs, pool used %zu\n", r.st.syscalls, r.st.fs_sites, r.pool_used);
+    printf("  real pass: %u syscall, %u %%fs, %u %%gs, pool used %zu\n", r.st.syscalls, r.st.fs_sites, r.st.gs_sites, r.pool_used);
     free(starts); free(img); free(pool); free(r.traps);
     return 0;
 }
@@ -170,6 +170,11 @@ SNIP(s_ret_in_window, "mov %fs:(%rax),%ecx\n ret")
 /* the syscall of a sigreturn restorer is followed by another function (musl: __sigsetjmp): not a window to extend into */
 SNIP(s_sigret_boundary, "lea 2f(%rip),%rbx\n call *%rbx\n mov %rax,%rdx\n jmp 9f\n1: mov $15,%eax\n syscall\n2: xor %eax,%eax\n inc %eax\n ret\n9: xor %ebx,%ebx")
 
+/* %gs operands (wasm2c's segue: the sandbox heap base in GS), rewritten against a guest GS base slot */
+SNIP(g_load,      "mov %gs:0x10,%rax\n mov %gs:(%rcx),%edx\n movzbl %gs:0x3(%rbx,%rcx,2),%esi")
+SNIP(g_store,     "mov %rax,%gs:0x40\n movl $7,%gs:(%rdx)\n mov %r9,%gs:8(%r8)")
+SNIP(g_rmw,       "addq $5,%gs:0x20\n lock incl %gs:(%rbx)\n cmp %rcx,%gs:0x10")
+
 typedef struct snip { const char *name; char *s, *e; } snip;
 #define S(n) { #n, n, n##_end }
 static snip g_snips[] = {
@@ -253,9 +258,52 @@ static int do_diff(void)
     return fails != 0;
 }
 
+/* the %gs forms: native run with the GS base at a data block, rewritten run with the host-TEB stand-in at GS and the
+ * block's address in the guest GS slot (0x1670) */
+static snip g_gsnips[] = { S(g_load), S(g_store), S(g_rmw) };
+static int do_gs_diff(void)
+{
+    uint8_t *blk = (uint8_t *)mmap(NULL, 0x2000, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    uint8_t *code = (uint8_t *)mmap(NULL, 1 << 16, PROT_READ | PROT_WRITE | PROT_EXEC, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    static uint8_t snap[2][0x2000];
+    int fails = 0;
+    for (size_t t = 0; t < sizeof g_gsnips / sizeof g_gsnips[0]; t++) {
+        snip *sn = &g_gsnips[t];
+        size_t len = (size_t)(sn->e - sn->s);
+        uint8_t *buf = code + t * 4096;
+        memcpy(buf, sn->s, len);
+        memset(&g_w, 0, sizeof g_w);
+        g_w.tp_gs_off = 0x1678; g_w.gs_slot_off = 0x1670; g_w.log = tlog;
+        uint8_t *pool = buf + 1024;
+        g_w.pool = pool; g_w.pool_vaddr = (uint64_t)pool; g_w.pool_cap = 3000;
+        if (xrw_rewrite_range(&g_w, buf, (uint64_t)buf, len, NULL, 0)) { printf("FAIL %s: pool\n", sn->name); fails++; continue; }
+        regs in; memset(&in, 0, sizeof in);
+        uint64_t seed[16] = { 0x41, 0x48, 0x60, 0x50, 0, 0x58, 0x60, 0x68, 0x70, 0x22, 0x78, 0x80, 0x88, 0x90, 0x98, 0xa0 };
+        memcpy(in.r, seed, sizeof seed);
+        regs out[2]; memset(out, 0, sizeof out);
+        for (int k = 0; k < 2; k++) {
+            for (int i = 0; i < 0x2000; i++) blk[i] = (uint8_t)(i * 13 + 5);
+            memset(g_gs_block, 0, 0x4000);
+            *(uint64_t *)(g_gs_block + 0x1678) = (uint64_t)(g_tcb_block + TCB_OFF);
+            *(uint64_t *)(g_gs_block + 0x1670) = (uint64_t)blk;
+            run_snippet(k == 0 ? (void *)sn->s : (void *)buf, &in, &out[k], (uint64_t)(g_tcb_block + TCB_OFF), k == 0 ? (uint64_t)blk : (uint64_t)g_gs_block);
+            memcpy(snap[k], blk, 0x2000);
+        }
+        int bad = 0;
+        for (int i = 0; i < 16; i++) if (i != 4 && out[0].r[i] != out[1].r[i]) { printf("  reg %d: %llx vs %llx\n", i, (unsigned long long)out[0].r[i], (unsigned long long)out[1].r[i]); bad = 1; }
+        if ((out[0].flags & 0x8d5) != (out[1].flags & 0x8d5)) { printf("  flags differ\n"); bad = 1; }
+        if (memcmp(snap[0], snap[1], 0x2000)) { printf("  gs block differs\n"); bad = 1; }
+        printf("%s %-16s gs units=%u jump=%u trap=%u bytes=%zu\n", bad ? "FAIL" : "ok  ", sn->name, g_w.st.gs_sites, g_w.st.jumps, g_w.st.traps, len);
+        fails += bad;
+        free(g_w.traps);
+    }
+    printf("rewrite_test --diff (%%gs): %d failure(s)\n", fails);
+    return fails != 0;
+}
+
 int main(int argc, char **argv)
 {
-    if (argc >= 2 && !strcmp(argv[1], "--diff")) return do_diff();
+    if (argc >= 2 && !strcmp(argv[1], "--diff")) { int rc = do_diff(); return do_gs_diff() | rc; }
     if (argc >= 3 && !strcmp(argv[1], "--elf")) { int rc = 0; for (int i = 2; i < argc; i++) rc |= do_elf(argv[i]); return rc; }
     fprintf(stderr, "usage: rewrite_test --diff | --elf FILE...\n");
     return 2;

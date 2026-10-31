@@ -1404,6 +1404,7 @@ slong xrl_vfs_stat(int dirfd, const char *path, int atflags, lx_stat *st)
         if (t) {
             xrl_stat_synth(st, LX_S_IFLNK | 0777, hash_str(gabs), (s64)strlen(t));
             free(t);
+            if (g_meta_on) { meta_apply(gabs, st); st->st_mode = LX_S_IFLNK | 0777; }   /* owner as the tree's files */
             return 0;
         }
     }
@@ -1497,6 +1498,32 @@ slong xrl_vfs_unlink(int dirfd, const char *path, int flags)
     return 0;
 }
 
+/* rename(2) replaces a target that is still open elsewhere (dpkg's status file: apt holds it). MoveFileEx refuses
+ * that (ERROR_ACCESS_DENIED); a by-handle rename with POSIX semantics does it (Windows 10 1607+, NTFS). 0 ok, -1:
+ * not available here, use MoveFileEx; else a Win32 error. */
+#define XRL_FileRenameInfoEx ((FILE_INFO_BY_HANDLE_CLASS)22)
+#define XRL_RENAME_REPLACE_IF_EXISTS 0x1
+#define XRL_RENAME_POSIX_SEMANTICS 0x2
+static long rename_posix(const wchar_t *ho, const wchar_t *hn, int isdir)
+{
+    size_t nl = wcslen(hn);
+    struct { DWORD flags; HANDLE root; DWORD len; WCHAR name[PATHBUF]; } ri;
+    if (nl >= PATHBUF) return -1;
+    HANDLE h = hopen(ho, DELETE | SYNCHRONIZE, OPEN_EXISTING, isdir ? FILE_FLAG_BACKUP_SEMANTICS : FILE_ATTRIBUTE_NORMAL);
+    if (h == INVALID_HANDLE_VALUE) return (long)GetLastError();
+    memset(&ri, 0, sizeof ri);
+    ri.flags = XRL_RENAME_REPLACE_IF_EXISTS | XRL_RENAME_POSIX_SEMANTICS;
+    ri.len = (DWORD)(nl * sizeof(WCHAR));
+    wmemcpy(ri.name, hn, nl);
+    long r = 0;
+    if (!SetFileInformationByHandle(h, XRL_FileRenameInfoEx, &ri, (DWORD)sizeof ri)) {
+        DWORD e = GetLastError();
+        r = (e == ERROR_INVALID_PARAMETER || e == ERROR_NOT_SUPPORTED || e == ERROR_INVALID_FUNCTION) ? -1 : (long)e;
+    }
+    CloseHandle(h);
+    return r;
+}
+
 slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *newp, int flags)
 {
     char go[PATHBUF], gn[PATHBUF]; wchar_t ho[PATHBUF], hn[PATHBUF];
@@ -1518,7 +1545,9 @@ slong xrl_vfs_rename(int olddirfd, const char *oldp, int newdirfd, const char *n
         if (!(ao & FILE_ATTRIBUTE_DIRECTORY)) return -LX_EISDIR;
         if (!RemoveDirectoryW(hn)) return xrl_lasterr();   /* ENOTEMPTY if not empty */
     } else if (an != INVALID_FILE_ATTRIBUTES && (ao & FILE_ATTRIBUTE_DIRECTORY)) return -LX_ENOTDIR;
-    if (!MoveFileExW(ho, hn, MOVEFILE_REPLACE_EXISTING)) return xrl_lasterr();
+    long pr = rename_posix(ho, hn, (ao & FILE_ATTRIBUTE_DIRECTORY) != 0);
+    if (pr > 0) { SetLastError((DWORD)pr); return xrl_lasterr(); }
+    if (pr < 0 && !MoveFileExW(ho, hn, MOVEFILE_REPLACE_EXISTING)) return xrl_lasterr();
     meta_move(go, gn, (ao & FILE_ATTRIBUTE_DIRECTORY) != 0);
     return 0;
 }

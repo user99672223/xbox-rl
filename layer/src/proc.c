@@ -205,6 +205,7 @@ typedef struct swapgrp {
     SRWLOCK lock;
     CONDITION_VARIABLE cv;
     xrl_proc *holder;     /* runs guest code now; NULL: nobody (everyone is blocked or waiting) */
+    int waiting;          /* members waiting for the baton in swap_acquire */
     xrl_proc *image;      /* whose memory is in the address space */
     int image_valid;      /* 0: that process left, the memory is leftovers */
 } swapgrp;
@@ -233,10 +234,12 @@ static void swap_in(swapgrp *g, xrl_proc *p)   /* p is the holder; the lock is n
 static void swap_acquire(swapgrp *g, xrl_proc *p, xrl_thread *t)
 {
     AcquireSRWLockExclusive(&g->lock);
+    g->waiting++;
     while (g->holder && g->holder != p) {
         if (p->dying || (t && t->exec_kill)) break;   /* being killed: do not wait for anybody */
         SleepConditionVariableSRW(&g->cv, &g->lock, 50, 0);
     }
+    g->waiting--;
     if (!g->holder) g->holder = p;
     int mine = g->holder == p;
     ReleaseSRWLockExclusive(&g->lock);
@@ -264,6 +267,29 @@ void xrl_swap_resume(void)
     if (t && t->proc && t->proc->grp) swap_acquire(t->proc->grp, t->proc, t);
 }
 
+/* The holder is about to start its first thread: from then on it never lets go of the baton (a thread that blocks
+ * cannot stop its siblings), so a member waiting for it now would wait for good. The usual case is a daemon start:
+ * fork, the parent only exits, the child starts threads (Firefox's crashhelper; Firefox waits for that parent).
+ * Let the waiting members run first, until they block, exec or end, then take the baton back. */
+void xrl_swap_yield(void)
+{
+    xrl_thread *t = xrl_cur();
+    if (!t || !t->proc || !t->proc->grp) return;
+    xrl_proc *p = t->proc;
+    swapgrp *g = p->grp;
+    if (p->nthreads - p->ndaemons != 1) return;
+    AcquireSRWLockExclusive(&g->lock);
+    int others = g->holder == p && g->waiting > 0;
+    if (others) {
+        g->holder = NULL;
+        WakeAllConditionVariable(&g->cv);
+        /* until one of them has it (or none came: they may have been woken for another reason) */
+        for (int i = 0; i < 40 && !g->holder; i++) SleepConditionVariableSRW(&g->cv, &g->lock, 5, 0);
+    }
+    ReleaseSRWLockExclusive(&g->lock);
+    if (others) swap_acquire(g, p, t);
+}
+
 /* p ends or execs: it leaves the group. */
 static void swap_leave(xrl_proc *p)
 {
@@ -278,6 +304,8 @@ static void swap_leave(xrl_proc *p)
     xrl_mem_snap_free(p->saved);
     p->saved = NULL;
 }
+
+static void late_replay(xrl_proc *p);   /* below, with xrl_proc_freeze */
 
 /* ------------------------------------------------------- fork / clone */
 /* Another process (flags have no CLONE_THREAD): see the file comment. */
@@ -321,7 +349,7 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
         xrl_cfu(np->vfork_frame, fr, (size_t)len);
         if (snapshot_fork) {
             int single = pp->nthreads - pp->ndaemons == 1;
-            if (!single) { xrl_proc_freeze(pp, p); frozen = 1; }
+            if (!single) { pp->freezer = p; xrl_proc_freeze(pp, p); frozen = 1; }
             LARGE_INTEGER q0, q1, f;
             QueryPerformanceCounter(&q0);
             np->snap = xrl_mem_snapshot(pp->mm->id, fork_snapshot_cap());
@@ -373,7 +401,7 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
         np->vfork_ev = NULL;
         if (np->snap) { xrl_mem_snap_restore(np->snap); xrl_mem_snap_free(np->snap); np->snap = NULL; }
         xrl_ctu(p->frame, np->vfork_frame, np->vfork_len);
-        if (frozen) xrl_proc_thaw(pp);
+        if (frozen) { pp->freezer = NULL; late_replay(pp); xrl_proc_thaw(pp); }
     }
     if (flags & LX_CLONE_PARENT_SETTID) xrl_ctu(ptid, &np->pid, 4);
     return np->pid;
@@ -399,6 +427,7 @@ void xrl_proc_exec_mm(xrl_proc *p)
     xrl_mm *old = p->mm;
     xrl_shm_proc_gone(p->pid);   /* userland: exec detaches shm */
     swap_leave(p);
+    LOGI("exec: pid %d leaves address space %u (%ld user(s))%s", p->pid, old->id, (long)old->refs, old->refs > 1 ? "" : ", released in place");
     if (old->refs > 1) {
         p->mm = mm_new();
         mm_put(old);
@@ -468,6 +497,39 @@ void xrl_proc_kill_threads(xrl_proc *p, xrl_thread *self, int keep_daemons)
 
 /* Freeze every thread of p but `self`: a thread in a syscall parks when it returns (xrl_proc_park), a thread
  * in guest code is suspended where it is. */
+/* A process frozen for a fork snapshot (multi-threaded parent, proc_clone's sync path): its threads that were in a
+ * syscall finish it meanwhile and copy results into guest memory (a recvmsg's message, epoll events), which the
+ * snapshot restore would then undo while the layer's side has moved on (Firefox's IPC lost messages). Those copies are
+ * recorded and replayed after the restore. */
+typedef struct late_write { struct late_write *next; u64 addr; size_t n; int zero; u8 data[]; } late_write;
+void xrl_proc_late_write(xrl_proc *p, u64 addr, const void *src, size_t n)
+{
+    late_write *w = (late_write *)malloc(sizeof *w + (src ? n : 0));
+    if (!w) { LOGE("fork: cannot keep a %zu-byte write made during the snapshot; it will be lost", n); return; }
+    w->next = NULL; w->addr = addr; w->n = n; w->zero = !src;
+    if (src) memcpy(w->data, src, n);
+    AcquireSRWLockExclusive(&p->late_lock);
+    if (p->late_tail) p->late_tail->next = w; else p->late = w;
+    p->late_tail = w;
+    ReleaseSRWLockExclusive(&p->late_lock);
+}
+static void late_replay(xrl_proc *p)
+{
+    AcquireSRWLockExclusive(&p->late_lock);
+    late_write *w = p->late;
+    p->late = p->late_tail = NULL;
+    ReleaseSRWLockExclusive(&p->late_lock);
+    size_t n = 0, bytes = 0;
+    while (w) {
+        late_write *nx = w->next;
+        if (w->zero) xrl_zerou(w->addr, w->n); else xrl_ctu(w->addr, w->data, w->n);
+        n++; bytes += w->n;
+        free(w);
+        w = nx;
+    }
+    if (n) LOGI("fork: %zu write(s) (%zu bytes) other threads made during the snapshot put back after the restore", n, bytes);
+}
+
 void xrl_proc_freeze(xrl_proc *p, xrl_thread *self)
 {
     xrl_thread *tg[512];

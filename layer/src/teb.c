@@ -85,6 +85,20 @@ void xrl_teb_thread_init(xrl_thread *t)
     }
 }
 
+/* Set one TEB qword as the guest sees it, from a syscall (host view live): the guest view's copy when the field is in
+ * the swap set, else the live TEB (the guest GS base slot, thread.c: TlsSlots[0..62] are swapped) */
+void xrl_teb_set_guest_qword(xrl_thread *t, u32 off, u64 v)
+{
+    if (g_swap && t && !t->teb_guest_live) {
+        for (size_t i = 0, k = 0; i < ARRAY_LEN(k_swap); k += k_swap[i].n, i++)
+            if (off >= k_swap[i].off && off < k_swap[i].off + 8u * k_swap[i].n && !((off - k_swap[i].off) & 7)) {
+                t->teb_guest[k + (off - k_swap[i].off) / 8] = v;
+                return;
+            }
+    }
+    __writegsqword(off, v);
+}
+
 int xrl_teb_enter_host(xrl_thread *t)
 {
     if (t) t->host_t0 = __rdtsc();

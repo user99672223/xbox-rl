@@ -144,6 +144,41 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-31 (later) — Debian desktop milestones 1-5 pass in CI (run 39).** Branch `claude/desktop-debian`.
+  - **Firefox needed:** a guest GS base (TEB slot + `%gs` rewriting; wasm2c sandboxes), trampoline pools within rel32
+    of their code (else every site is an int3 trap and the trap table overflows), fork-group yield before a first
+    thread (crashhelper), replay of other threads' copies made during a fork snapshot, restore never undoing the
+    restoring process's own mappings, and a fork-snapshot cap above its writable memory (`XRL_FORK_SNAPSHOT_MB`).
+  - **Process lesson:** each CI cycle is ~30 min; batch every fix and diagnostic into one push, read every layer
+    warning of a failing probe first (the vfork fallback warning was in the log for several runs), and compile-check
+    locally before pushing (MinGW `-fsyntax-only` against a baseline of main).
+
+- **2026-10-31 — Debian desktop on the layer: what the X session and Firefox needed.** Branch `claude/desktop-debian`.
+  - **Fork groups and memory ownership.** A snapshot-forked child runs on its parent's memory until it execs (proc.c).
+    Three rules came out of apt-get and Firefox: (1) a child's munmap before its exec keeps the range (PROT_NONE,
+    same mm) so no exec'd program can map where the parent's data still lives; (2) a snapshot restore writes only into
+    ranges its mm still owns; (3) a member about to start its first thread first lets waiting members run
+    (`xrl_swap_yield`), else a daemon start (fork, child starts threads, parent exits) never lets the parent exit.
+    All proc.c-path only; XRL_FORK_TASKS forks never form groups.
+  - **EPOLLET on files whose readiness never changes reports once.** `/proc` files have a constant edge counter;
+    every layer wake-up used to count as an edge, and libmount's mountinfo monitor made GLib programs spin.
+  - **Rewrite pools are read+exec once written** (not with XRL_FORK_TASKS): stray writes fault at the writer.
+  - **CI runs the X milestones with the Xbox app's budget** (`XRL_TEST_BUDGET_MB=4096`); the session + Firefox does
+    not fit the test host's 1024 MiB default. The rootfs preinstalls the X/XFCE/Firefox packages.
+
+- **2026-10-30 — A Debian 13 (glibc) userland on the layer: first fixes.** Branch `claude/desktop-debian`
+  (docs/desktop-brief.md; progress in that branch's `REPORT.md`).
+  - **Case collisions are skipped, not fatal.** `tools/xrl-rootfs-unpack.py` keeps the first of two names that differ
+    only in case and lists the second; the CI rootfs carries a dpkg `path-exclude` for man/info/doc/locale, where
+    nearly all such names live, so later `apt install`s inside the layer do not unpack them either. Names that matter
+    (terminfo, some language trees) will need a VFS answer.
+  - **glibc forks with `clone(flags, stack=0)`.** `asm/rawsys.asm` passes a6 = 0 (no resume pc) for a raw clone with
+    no new stack, so it takes the same path as `fork` (proc.c); with a stack it still passes its child entry. The
+    `XRL_FORK_TASKS` path is unchanged (it is taken before a6 is read).
+  - **mremap growth stays one mapping.** An in-place extension takes the old mapping's id and merges, and the old range
+    may span pieces of one mmap: APT grows its cache by 1 MiB at a time, and the second in-place growth used to fail
+    with EFAULT ("Dynamic MMap ran out of room").
+
 - **2026-10-26 — Keyboard, mouse and a framebuffer for a Linux desktop: ABI v3, evdev devices, `/dev/fb0`.**
   Branch `claude/linux-display`. The spec for the guest-visible parts is in `docs/syscall-abi.md` ("ABI v3").
   - **Events speak Linux.** `xrl_input_event` uses evdev's types and codes (`KEY_*`/`BTN_*`, `REL_*`, `ABS_*`) rather

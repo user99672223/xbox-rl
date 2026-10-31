@@ -1013,6 +1013,26 @@ static void test_fs(void)
     CHECK(sc2(21, "/tmp/xrl_dir/moved.txt", 0) == 0, "access");
     CHECK(sc1(87, "/tmp/xrl_dir/moved.txt") == 0, "unlink");
     CHECK(sc1(84, "/tmp/xrl_dir") == 0, "rmdir");
+    /* rename over a file another fd still has open (dpkg's status-new -> status while apt reads status) */
+    long ofd = sc4(257, -100, "/tmp/xrl_old.txt", 0102, 0644), nfd = sc4(257, -100, "/tmp/xrl_new.txt", 0102, 0644);
+    sc3(1, ofd, "old", 3); sc3(1, nfd, "new", 3); sc1(3, nfd);
+    CHECK(sc2(82, "/tmp/xrl_new.txt", "/tmp/xrl_old.txt") == 0, "rename over a file that is open");
+    memset(buf, 0, sizeof buf);
+    CHECK(sc4(17, ofd, buf, 3, 0) == 3 && !memcmp(buf, "old", 3), "the open fd still reads the replaced file");
+    sc1(3, ofd);
+    ofd = sc3(2, "/tmp/xrl_old.txt", 0, 0);
+    memset(buf, 0, sizeof buf);
+    CHECK(ofd >= 3 && sc3(0, ofd, buf, 3) == 3 && !memcmp(buf, "new", 3), "the path opens the new file");
+    sc1(3, ofd);
+    /* statx's device numbers are stat's st_dev / st_rdev split the way glibc's major()/minor() do (GLib uses statx,
+     * other code stat: mount and same-file-system checks compare the two) */
+    u32 sx[64]; memset(sx, 0, sizeof sx); memset(st, 0, sizeof st);
+    #define MKDEV(ma, mi) ((((u64)(ma) & 0xfff) << 8) | (((u64)(ma) & ~0xfffull) << 32) | ((u64)(mi) & 0xff) | (((u64)(mi) & ~0xffull) << 12))
+    CHECK(sc2(4, "/tmp/xrl_old.txt", st) == 0 && sc(332, -100, "/tmp/xrl_old.txt", 0, 0xfff, sx, 0) == 0 &&
+          MKDEV(sx[34], sx[35]) == st[0] && *(u64 *)&sx[8] == st[1], "statx dev/ino == stat's");
+    CHECK(sc2(4, "/dev/null", st) == 0 && sc(332, -100, "/dev/null", 0, 0xfff, sx, 0) == 0 && MKDEV(sx[32], sx[33]) == st[5] &&
+          st[5] == ((1 << 8) | 3), "statx rdev == stat's (/dev/null 1:3)");
+    sc1(87, "/tmp/xrl_old.txt");
     /* symlink table */
     CHECK(sc2(88, "/tmp", "/tmp_link") == 0, "symlink");
     char lb[64]; memset(lb, 0, sizeof lb);
@@ -1175,6 +1195,18 @@ static void test_mem(void)
     u8 *r = (u8 *)sc(25, p, 1 << 20, 2 << 20, 1, 0, 0);
     CHECK((long)r > 0x10000 && r[5] == 9, "mremap grow+move preserves data");
     CHECK(sc2(11, r, 2 << 20) == 0, "munmap");
+    /* grow in place twice, then move (APT's cache: mremap(base, n, n + 1 MiB, MAYMOVE) over and over); the
+     * second call spans the first one's extension */
+    u8 *g = mmap_anon(4 << 20, 3);
+    CHECK((long)g > 0x10000 && sc2(11, g + (1 << 20), 3 << 20) == 0, "mmap 4 MiB, keep the first 1 MiB");
+    g[0] = 11;
+    u8 *g1 = (u8 *)sc(25, g, 1 << 20, 2 << 20, 1, 0, 0);
+    if ((long)g1 > 0x10000) g1[(2 << 20) - 1] = 12;
+    u8 *g2 = (u8 *)sc(25, g1, 2 << 20, 3 << 20, 1, 0, 0);
+    CHECK(g1 == g && g2 == g, "mremap grows in place twice (the second over the first's extension)");
+    u8 *g3 = (u8 *)sc(25, g2, 3 << 20, 64 << 20, 1, 0, 0);
+    CHECK((long)g3 > 0x10000 && g3[0] == 11 && g3[(2 << 20) - 1] == 12, "then grows by moving, data kept");
+    if ((long)g3 > 0x10000) sc2(11, g3, 64 << 20);
     long b0 = sc1(12, 0);
     long b1 = sc1(12, b0 + 65536);
     CHECK(b1 == b0 + 65536, "brk grow");
@@ -1202,7 +1234,12 @@ static void test_misc(void)
     long ts[2]; CHECK(sc2(228, 0, ts) == 0 && ts[0] > 1700000000, "clock_gettime(REALTIME)");
     CHECK(sc1(186, 0) > 0, "gettid");
     u64 fsv = 0; CHECK(sc2(158, 0x1003, &fsv) == 0, "arch_prctl(GET_FS)");
-    CHECK(sc2(158, 0x1001, 0x1234000) == -1, "arch_prctl(SET_GS) refused (-EPERM) for non-TEB value");
+    if (fork_tasks()) CHECK(sc2(158, 0x1001, 0x1234000) == -1, "arch_prctl(SET_GS) refused (-EPERM) for non-TEB value (XRL_FORK_TASKS)");
+    else {   /* a guest GS base of its own lives in a TEB slot; rewritten %gs operands use it (wasm2c sandboxes) */
+        u64 gsv = 0;
+        CHECK(sc2(158, 0x1001, 0x1234000) == 0 && sc2(158, 0x1004, &gsv) == 0 && gsv == 0x1234000, "arch_prctl(SET_GS) then GET_GS");
+        sc2(158, 0x1001, 0);
+    }
     u64 teb = 0; CHECK(sc2(158, 0x5801, &teb) == 0 && teb > 0x10000, "arch_prctl(XRL_GET_HOST_TEB)");
     CHECK(sc(202, 0, 999, 0, 0, 0, 0) == -38, "unknown futex op -> -ENOSYS");
     CHECK(sc1(999, 0) == -38, "unknown syscall 999 -> -ENOSYS");
@@ -2309,6 +2346,18 @@ static void test_epoll_et(void)
     sc3(1, pf[1], "y", 1);
     CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET pipe: drained and refilled -> event");
     sc1(3, ep); sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf[1]);
+    /* a /proc file is always readable: ET reports it once, then never, however busy the rest of the system is (libmount's
+     * mount-table monitor on /proc/self/mountinfo) */
+    ep = sc1(291, 0);
+    long mi = sc3(2, "/proc/self/mountinfo", 0, 0);
+    sc2(293, pf, 04000);
+    sc4(233, ep, 1, mi, &ev);
+    CHECK(sc4(232, ep, &evo, 1, 0) == 1, "ET /proc file: reported once");
+    sc3(1, pf[1], "z", 1); sc3(0, pf[0], b, 16);   /* layer I/O elsewhere */
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET /proc file: not again after unrelated I/O");
+    struct { int fd; short ev, rev; } pfd = { (int)ep, 1, 0 };
+    CHECK(sc3(7, &pfd, 1, 0) == 0, "...and the epoll fd itself does not poll readable for it");
+    sc1(3, ep); sc1(3, mi); sc1(3, pf[0]); sc1(3, pf[1]);
 }
 
 /* ---- regressions found by review: control buffer sizes, WAITALL + bad iovec, shm sizes, pty mode switch, memfd seals --- */

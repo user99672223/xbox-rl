@@ -176,6 +176,9 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
 slong xrl_do_exit(int code, int group);
 /* task.c: fork() and ptrace() for children that alternate with their parent (experiment) */
 int  xrl_fork_tasks_enabled(void);
+void xrl_teb_set_guest_qword(xrl_thread *t, u32 off, u64 v);   /* teb.c: what guest code sees at gs:[off] */
+u32  xrl_gs_slot_off(void);
+void xrl_perf_backtrace(const char *why, int pid, int tid, u64 rsp);   /* perf.c */       /* %gs offset of the guest GS base slot (thread.c), 0: none */
 slong xrl_do_fork(void);
 int  xrl_task_pid(xrl_thread *t, int *ppid);             /* the task's pid (0: not a task) and its parent's */
 slong xrl_task_wait(int pid, u64 ustatus, int options);
@@ -269,6 +272,9 @@ struct xrl_proc {
     volatile LONG dying;            /* the process is being torn down: its threads end at their next syscall return */
     volatile LONG frozen;           /* xrl_proc_freeze: threads park at syscall return */
     HANDLE thaw_ev;                 /* manual-reset: set while not frozen */
+    xrl_thread *freezer;            /* the forking thread while frozen for a fork snapshot (proc.c), else NULL */
+    SRWLOCK late_lock;
+    struct late_write *late, *late_tail;   /* copies to guest memory its other threads made meanwhile: replayed */
     xrl_files *files;
     xrl_mm *mm;
     char cwd[XRL_CWD_MAX];
@@ -309,6 +315,8 @@ void  xrl_proc_thaw(xrl_proc *p);
 void  xrl_proc_park(xrl_thread *t);             /* syscall return: a frozen or stopped process waits here */
 int   xrl_swap_block(void);                     /* about to block in the layer: let another fork-group member run (1: released) */
 void  xrl_swap_resume(void);                    /* the wait is over: get the address space back */
+void  xrl_swap_yield(void);
+void  xrl_proc_late_write(xrl_proc *p, u64 addr, const void *src, size_t n);   /* proc.c: src NULL = zeroes */                     /* about to start a first thread: let waiting fork-group members run first */
 void  xrl_proc_exec_done(xrl_proc *p);          /* execve loaded the new image: release a vfork parent */
 void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its own (in place when it is the only user) */
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */
@@ -407,6 +415,11 @@ u64  xrl_mem_committed(void);
 u64  xrl_mem_arena_base(void);
 u64  xrl_mem_arena_size(void);
 int  xrl_mem_is_mapped(u64 addr);
+u32  xrl_mem_owner(u64 addr);     /* the mm (address space) that maps addr, 0: none */
+u32  xrl_mem_cur_mm(void);
+int  xrl_mem_range_free(u64 a, u64 len);
+u64  xrl_mem_find_near(u64 len, u64 center, u64 maxdist);
+int  xrl_mem_locked_here(void);   /* this thread holds g_lock (mem.c t_mem_locked) */
 int  xrl_mem_page_writable(u64 addr);
 int  xrl_mem_writewatch_allow(u64 addr);   /* task.c: cap the fork stack snapshot at the writable stack end */
 void xrl_mem_interp_rw_reset(void);          /* RELRO-safe: keep the interpreter's RW PT_LOAD writable */

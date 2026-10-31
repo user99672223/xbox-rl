@@ -14,7 +14,10 @@
  *     zone skipped;
  *   - every `%fs:` memory operand: the same operand relative to the thread
  *     pointer kept in the host TEB slot (%gs:tp_gs_off), because the console
- *     has no FSGSBASE; `mov %fs:0,%r64` is patched in place (tools/xrl-tpfix.py form).
+ *     has no FSGSBASE; `mov %fs:0,%r64` is patched in place (tools/xrl-tpfix.py form);
+ *   - with gs_slot_off set, every `%gs:` memory operand the same way, relative to
+ *     the guest's GS base kept in its own TEB slot (Linux code that sets a GS base
+ *     with arch_prctl, such as Firefox's wasm2c sandboxes: %gs is the host TEB here).
  * A patch needs 5 bytes for `jmp rel32`; neighbouring instructions are moved
  * into the stub (the "window") when the instruction is shorter. If no window
  * exists the instruction becomes `int3` and signal-free handler code in
@@ -38,6 +41,7 @@ typedef struct xrw_stats {
     uint32_t unsupported;     /* units we could not rewrite (logged)                */
     uint32_t decode_fail;     /* regions abandoned at an undecodable byte           */
     uint32_t legacy_sys;      /* sysenter / int 0x80 seen (not rewritten)           */
+    uint32_t gs_sites;        /* %gs memory operands found (gs_slot_off set)        */
 } xrw_stats;
 
 typedef struct xrw {
@@ -50,6 +54,7 @@ typedef struct xrw {
     xrw_stats st;
     int verbose;              /* log every trap site                                */
     void (*log)(const char *fmt, ...);
+    uint64_t gs_slot_off;     /* %gs offset of the guest's GS base slot; 0: %gs left alone */
 } xrw;
 
 #define XRW_SLOT_BYTES 16
@@ -75,5 +80,7 @@ uint64_t *xrw_eh_starts(const uint8_t *hdr, size_t hdr_len, uint64_t hdr_vaddr, 
 struct x86i;
 int xrw_emit_syscall(uint8_t *out, uint64_t out_va, uint64_t slot);
 int xrw_emit_fs(uint64_t tp_gs_off, uint8_t *out, const uint8_t *ins, const struct x86i *in);
+/* the same for a %gs operand: relative to the guest GS base slot at %gs:gs_slot_off */
+int xrw_emit_gs(uint64_t gs_slot_off, uint8_t *out, const uint8_t *ins, const struct x86i *in);
 
 #endif
