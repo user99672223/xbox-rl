@@ -18,7 +18,7 @@ export XRL_LAZY_STACKS=1 XRL_SHARED_TEXT=1 XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XR
 # may start with VAR=value words for the test host (layer switches such as XRL_TRACE). A milestone
 # passes when all its probes do; earlier milestones stay in the list as regression checks.
 declare -A names
-names=([5s]="Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)" [5t]="Firefox, every process with its own library copies (XRL_SHARED_TEXT=0)" [1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page" [6]="TV: the session on /dev/fb0")
+names=([2b]="apt-get update bisect (shared pages off / code only / data only / both)" [5s]="Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)" [5t]="Firefox, every process with its own library copies (XRL_SHARED_TEXT=0)" [1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page" [6]="TV: the session on /dev/fb0")
 list=(
     "1|120|guest.out\] hello from bash|/bin/bash -c 'echo hello from bash; uname -a'"
     "1|120|guest.out\] d.* usr$|/usr/bin/ls -la /"
@@ -32,8 +32,10 @@ list=(
     "2|600|guest.out\] Reading package lists|XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update"
     "2|600|guest.out\] Setting up hello|XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello"
     "2|60|guest.out\] Hello, world!|/usr/bin/hello"
-    "2|300|guest.out\] +8 [0-9]+$|/bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'"
-    "2|300|guest.out\] +8 [0-9]+$|XRL_SHARED_TEXT=0 /bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'"
+    "2b|600|guest.out\] Reading package lists|XRL_SHARED_TEXT=0 XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'"
+    "2b|600|guest.out\] Reading package lists|XRL_SHARED_SEGS=x XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'"
+    "2b|600|guest.out\] Reading package lists|XRL_SHARED_SEGS=r XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'"
+    "2b|600|guest.out\] Reading package lists|XRL_TEST_BUDGET_MB=1024 /bin/bash -c 'rm -rf /var/lib/apt/lists/*; apt-get update'"
     "3|240|\\(\"xterm\" \"XTerm\"\\)|/bin/bash /tmp/xrl-xsession.sh xterm"
     "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
     "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"

@@ -961,6 +961,9 @@ static int elf_bounds(xfile *f, u64 *b, int max)
 void xrl_mem_share_range(int fd, u64 addr, u64 len, s64 off, int prot)
 {
     if (g_shtx != 1 || (prot & LX_PROT_WRITE) || !len || !img_contains(addr, addr + len)) return;
+    static int segs = -1;   /* XRL_SHARED_SEGS=x: code only, r: read-only data only (a bisect knob), default both */
+    if (segs < 0) { char v[4] = ""; GetEnvironmentVariableA("XRL_SHARED_SEGS", v, sizeof v); segs = v[0] == 'x' ? 1 : v[0] == 'r' ? 2 : 3; }
+    if (!(segs & ((prot & LX_PROT_EXEC) ? 1 : 2))) return;
     xfile *f = xrl_fd_get(fd);
     if (!f) return;
     lx_stat st;
