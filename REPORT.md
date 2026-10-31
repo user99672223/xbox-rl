@@ -2,6 +2,21 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (9) - CI run 44 (bf482c3): Firefox session 2208 MiB (was 4084), all PASS
+
+| peak committed | run 41 | run 44 |
+|---|---|---|
+| m4 XFCE | 1106 MiB | 823 MiB |
+| m5 Firefox session (lazy stacks) | 4084 MiB | **2208 MiB** |
+| m5s same, stacks committed whole | - | 2280 MiB |
+| m6 TV (XFCE + bridge) | 1377 MiB | 801 MiB |
+
+What did it: the Firefox prefs (4 Firefox processes instead of 13; no privileged about: process), xfwm4 without
+its compositor (no Mesa there), thread stacks on demand. At the peak 1316 MiB is private file mappings, 417 MiB
+anonymous, 268 MiB stacks; Mesa (libLLVM + gallium + z3, ~190 MiB) is still loaded by one GTK process: this batch
+sets `GDK_GL=disable` for the session. Also in this batch: `XRL_PROBE_PLACEHOLDERS=1` measures what shared
+file sections need (4 KiB placeholder splits, views at 4 KiB, the commit charge of read-only vs copy-on-write views).
+
 ## 2026-10-31 (8) - CI run 43 (9f223f0): all milestones PASS; Firefox session 4084 -> 2665 MiB
 
 | Firefox session (XFCE + Firefox page), peak committed | run 41 | run 43 |

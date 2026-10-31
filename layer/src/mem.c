@@ -541,6 +541,84 @@ static void swap_disable(void);
 static void swap_reserve(u64 bytes);
 static void swap_knobs(void);
 
+/* XRL_PROBE_PLACEHOLDERS=1: what the shared-file-section design (docs/decisions.md) depends on, measured here once:
+ * placeholders split at 4 KiB, a section view at a 4 KiB-aligned address/offset, a private allocation in a
+ * placeholder piece, and the commit charge (process PrivateUsage) of a read-only and a copy-on-write view. */
+#ifndef MEM_RESERVE_PLACEHOLDER
+#define MEM_RESERVE_PLACEHOLDER 0x00040000
+#define MEM_REPLACE_PLACEHOLDER 0x00004000
+#define MEM_PRESERVE_PLACEHOLDER 0x00000002
+#define MEM_COALESCE_PLACEHOLDERS 0x00000001
+#endif
+typedef PVOID (WINAPI *va2_fn)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef PVOID (WINAPI *mv3_fn)(HANDLE, HANDLE, PVOID, ULONG64, SIZE_T, ULONG, ULONG, void *, ULONG);
+typedef BOOL (WINAPI *uv2_fn)(HANDLE, PVOID, ULONG);
+typedef struct { DWORD cb, PageFaultCount; SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage,
+                 QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage; } pmc_ex;
+typedef BOOL (WINAPI *gpmi_fn)(HANDLE, void *, DWORD);
+static u64 probe_private(gpmi_fn g)
+{
+    pmc_ex m; memset(&m, 0, sizeof m); m.cb = sizeof m;
+    return g && g(GetCurrentProcess(), &m, sizeof m) ? (u64)m.PrivateUsage : 0;
+}
+static void probe_placeholders(void)
+{
+    HMODULE kb = GetModuleHandleW(L"kernelbase.dll"), k32 = GetModuleHandleW(L"kernel32.dll");
+    va2_fn va2 = kb ? (va2_fn)(void *)GetProcAddress(kb, "VirtualAlloc2FromApp") : NULL;
+    if (!va2 && kb) va2 = (va2_fn)(void *)GetProcAddress(kb, "VirtualAlloc2");
+    mv3_fn mv3 = kb ? (mv3_fn)(void *)GetProcAddress(kb, "MapViewOfFile3FromApp") : NULL;
+    if (!mv3 && kb) mv3 = (mv3_fn)(void *)GetProcAddress(kb, "MapViewOfFile3");
+    uv2_fn uv2 = kb ? (uv2_fn)(void *)GetProcAddress(kb, "UnmapViewOfFile2") : NULL;
+    gpmi_fn gp = k32 ? (gpmi_fn)(void *)GetProcAddress(k32, "K32GetProcessMemoryInfo") : NULL;
+    LOGI("placeholder probe: VirtualAlloc2 %s, MapViewOfFile3 %s, UnmapViewOfFile2 %s", va2 ? "yes" : "no", mv3 ? "yes" : "no", uv2 ? "yes" : "no");
+    if (!va2 || !mv3 || !uv2) return;
+    const u64 MB = 1ull << 20, SZ = 64 * MB;
+    u8 *r = (u8 *)va2(NULL, NULL, (SIZE_T)(4 * MB), MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
+    LOGI("placeholder probe: reserve 4 MiB placeholder: %s (%lu)", r ? "ok" : "refused", r ? 0ul : GetLastError());
+    if (!r) return;
+    BOOL s1 = VirtualFree(r, 0x1000, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);   /* [r, r+4K) | [r+4K, ...) */
+    DWORD e1 = GetLastError();
+    BOOL s2 = VirtualFree(r + 0x1000, 0x10000, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER);   /* [r+4K, r+68K) */
+    DWORD e2 = GetLastError();
+    LOGI("placeholder probe: split at 4 KiB: %s (%lu); a 64 KiB piece at +4 KiB: %s (%lu)", s1 ? "ok" : "refused", s1 ? 0ul : e1,
+         s2 ? "ok" : "refused", s2 ? 0ul : e2);
+    HANDLE sec = CreateFileMappingW(INVALID_HANDLE_VALUE, NULL, PAGE_EXECUTE_READWRITE | SEC_COMMIT, (DWORD)(SZ >> 32), (DWORD)SZ, NULL);
+    LOGI("placeholder probe: 64 MiB pagefile section (SEC_COMMIT, execute): %s (%lu)", sec ? "ok" : "refused", sec ? 0ul : GetLastError());
+    if (sec) {
+        void *v = s2 ? mv3(sec, GetCurrentProcess(), r + 0x1000, 0x1000, 0x10000, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READ, NULL, 0) : NULL;
+        LOGI("placeholder probe: view at a 4 KiB-aligned address, section offset 4 KiB: %s (%lu)", v ? "ok" : "refused", v ? 0ul : GetLastError());
+        if (!v && s2) {
+            v = mv3(sec, GetCurrentProcess(), r + 0x1000, 0, 0x10000, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READ, NULL, 0);
+            LOGI("placeholder probe: same with section offset 0: %s (%lu)", v ? "ok" : "refused", v ? 0ul : GetLastError());
+        }
+        if (v) {
+            BOOL u = uv2(GetCurrentProcess(), v, MEM_PRESERVE_PLACEHOLDER);
+            LOGI("placeholder probe: unmap back to a placeholder: %s", u ? "ok" : "refused");
+        }
+        void *a = va2(NULL, r, 0x1000, MEM_RESERVE | MEM_COMMIT | MEM_REPLACE_PLACEHOLDER, PAGE_READWRITE, NULL, 0);
+        LOGI("placeholder probe: private 4 KiB allocation in a 4 KiB piece: %s (%lu)", a ? "ok" : "refused", a ? 0ul : GetLastError());
+        if (a) { *(volatile u8 *)a = 1; VirtualFree(a, 0, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER); }
+        /* commit charge: a second placeholder for 64 MiB views */
+        u8 *q = (u8 *)va2(NULL, NULL, (SIZE_T)(2 * SZ), MEM_RESERVE | MEM_RESERVE_PLACEHOLDER, PAGE_NOACCESS, NULL, 0);
+        if (q && VirtualFree(q, (SIZE_T)SZ, MEM_RELEASE | MEM_PRESERVE_PLACEHOLDER)) {
+            u64 p0 = probe_private(gp);
+            void *ro = mv3(sec, GetCurrentProcess(), q, 0, (SIZE_T)SZ, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_READ, NULL, 0);
+            u64 p1 = probe_private(gp);
+            void *cw = mv3(sec, GetCurrentProcess(), q + SZ, 0, (SIZE_T)SZ, MEM_REPLACE_PLACEHOLDER, PAGE_EXECUTE_WRITECOPY, NULL, 0);
+            u64 p2 = probe_private(gp);
+            if (cw) { volatile u8 *w = (volatile u8 *)cw; for (u64 o = 0; o < 16 * MB; o += 4096) w[o] = 1; }
+            u64 p3 = probe_private(gp);
+            LOGI("placeholder probe: commit charge: read-only 64 MiB view %+lld KiB (%s), copy-on-write view %+lld KiB (%s), "
+                 "16 MiB written into it %+lld KiB", (long long)(p1 - p0) / 1024, ro ? "ok" : "refused", (long long)(p2 - p1) / 1024,
+                 cw ? "ok" : "refused", (long long)(p3 - p2) / 1024);
+            if (ro) uv2(GetCurrentProcess(), ro, 0);
+            if (cw) uv2(GetCurrentProcess(), cw, 0);
+        }
+        CloseHandle(sec);
+    }
+    VirtualFree(r, 0, MEM_RELEASE);
+}
+
 int xrl_mem_init(u64 budget)
 {
     SYSTEM_INFO si;
@@ -554,6 +632,7 @@ int xrl_mem_init(u64 budget)
     if (GetEnvironmentVariableA("XRL_NO_SWAP", lm, sizeof lm) && lm[0] == '1') swap_disable();
     if (GetEnvironmentVariableA("XRL_SWAP_RESERVE_MB", lm, sizeof lm)) swap_reserve(strtoull(lm, NULL, 10) << 20);
     swap_knobs();
+    { char pp[4]; if (GetEnvironmentVariableA("XRL_PROBE_PLACEHOLDERS", pp, sizeof pp) && pp[0] == '1') probe_placeholders(); }
     if (GetEnvironmentVariableA("XRL_LAZY_CHUNK_KB", lm, sizeof lm)) {
         u64 c = strtoull(lm, NULL, 10) << 10;
         if (c >= LX_PAGE && !(c & (c - 1))) g_lazy_chunk = c;   /* power of two, >= one page */

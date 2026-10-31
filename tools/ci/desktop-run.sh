@@ -27,6 +27,7 @@ list=(
     "1|120|guest.out\] USER +PID|/usr/bin/ps aux"
     "1|120|guest.out\] ii +bash |/usr/bin/dpkg -l"
     "1|120|guest.out\] apt [0-9]|/usr/bin/apt-get --version"
+    "1|60|placeholder probe: commit charge|XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true"
     "2|600|guest.out\] Reading package lists|XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update"
     "2|600|guest.out\] Setting up hello|XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello"
     "2|60|guest.out\] Hello, world!|/usr/bin/hello"

@@ -13,7 +13,8 @@
 # programs go to /tmp/xrl-*.log and are printed at the end.
 mode=${1:-xterm}
 poll=1; [ "$mode" = xterm ] || poll=3   # each look at the window tree is two processes: fewer of them in the logs
-export DISPLAY=:0 HOME=${HOME:-/root} XDG_RUNTIME_DIR=/tmp/xrl-runtime NO_AT_BRIDGE=1
+# GDK_GL=disable: GTK does not load Mesa (libLLVM + gallium, ~190 MiB per process) for widgets that never need GL
+export DISPLAY=:0 HOME=${HOME:-/root} XDG_RUNTIME_DIR=/tmp/xrl-runtime NO_AT_BRIDGE=1 GDK_GL=disable
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"
 rm -f /tmp/.X0-lock /tmp/.X11-unix/X0 /tmp/xrl-*.log "/tmp/xrl-$mode.xwd"
 t0=$SECONDS
