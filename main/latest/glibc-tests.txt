@@ -3,18 +3,18 @@
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef4885b0000,7ff4885b0000) 1048576 MiB VA, brk <= 7ef4c85b0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef4aead0000,7ff4aead0000) 1048576 MiB VA, brk <= 7ef4eead0000, commit budget 1024 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
-[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.mACfKAcYME (4 symlinks)
-[I layer    ] rewrite: /bin/glibc_test: 210 syscall + 1273 %fs sites (2 in place, 1474 jumps, 3 traps, 516 neighbours moved), pool 67971 bytes at 7ff4804bc000
-[I layer    ] elf: loaded /bin/glibc_test type=DYN bias=7ff4804cd000 span=[7ff4804cd000,7ff4805b0000) entry=7ff4804d6b20
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.NQXLWg57xM (4 symlinks)
+[I layer    ] rewrite: /bin/glibc_test: 210 syscall + 1273 %fs sites (2 in place, 1474 jumps, 3 traps, 516 neighbours moved), pool 67971 bytes at 7ff4a69dc000
+[I layer    ] elf: loaded /bin/glibc_test type=DYN bias=7ff4a69ed000 span=[7ff4a69ed000,7ff4a6ad0000) entry=7ff4a69f6b20
 [W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
-[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001876327BBA0)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=00000209EA8F74F0)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff4804bbdc0
-[I layer    ] boot: guest main thread tid=5144 entry=7ff4804d6b20 sp=7ff4804bbdc0
-[W layer    ] ENOSYS 334 rseq (a1=7ef4885b0de0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] boot: stack sp=7ff4a69dbdc0
+[I layer    ] boot: guest main thread tid=4724 entry=7ff4a69f6b20 sp=7ff4a69dbdc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef4aead0de0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
 [I guest.out] glibc_test: glibc 2.39, argc=1 argv[0]=/bin/glibc_test
 [I guest.out]   ok   main-thread TLS (__thread, local-exec)
 [I guest.out]   ok   errno via %fs after a failing open
@@ -37,17 +37,17 @@
 [I guest.out]   ok   stat size
 [I guest.out]   ok   unlink
 [I guest.out]   ok   nanosleep 20 ms
-[W layer    ] proc maps: 1710 bytes, first 400: 7ef4885b0000-7ef4885b1000 rw-p 00000000 00:00 0                        [heap]
-7ef4885b1000-7ef4885d2000 rw-p 00000000 00:00 0                        [heap]
-7ef4885d2000-7ef4885f3000 rw-p 00000000 00:00 0                        [heap]
-7ef4885f3000-7ef488614000 rw-p 00000000 00:00 0                        [heap]
-7ff47dcb7000-7ff47dcb8000 ---p 00000000 00:00 0                        [stack]
-7ff47dcb8
-[W layer    ] proc maps tail: ...55996                        /bin/glibc_test
-7ff480574000-7ff4805a0000 r--p 000a7000 00:00 1125899907855996                        /bin/glibc_test
-7ff4805a0000-7ff4805a5000 r--p 000d3000 00:00 1125899907855996                        /bin/glibc_test
-7ff4805a5000-7ff4805a7000 rw-p 000d8000 00:00 1125899907855996                        /bin/glibc_test
-7ff4805a7000-7ff4805b0000 rw-p 00000000 00:00 0 
+[W layer    ] proc maps: 1710 bytes, first 400: 7ef4aead0000-7ef4aead1000 rw-p 00000000 00:00 0                        [heap]
+7ef4aead1000-7ef4aeaf2000 rw-p 00000000 00:00 0                        [heap]
+7ef4aeaf2000-7ef4aeb13000 rw-p 00000000 00:00 0                        [heap]
+7ef4aeb13000-7ef4aeb34000 rw-p 00000000 00:00 0                        [heap]
+7ff4a41d7000-7ff4a41d8000 ---p 00000000 00:00 0                        [stack]
+7ff4a41d8
+[W layer    ] proc maps tail: ...79239                        /bin/glibc_test
+7ff4a6a94000-7ff4a6ac0000 r--p 000a7000 00:00 1688849861279239                        /bin/glibc_test
+7ff4a6ac0000-7ff4a6ac5000 r--p 000d3000 00:00 1688849861279239                        /bin/glibc_test
+7ff4a6ac5000-7ff4a6ac7000 rw-p 000d8000 00:00 1688849861279239                        /bin/glibc_test
+7ff4a6ac7000-7ff4a6ad0000 rw-p 00000000 00:00 0 
 
 [W layer    ] proc maps check: libc=1 ld=0 stack=1 vdso=0
 [I guest.out]   ok   /proc/self/maps readable
@@ -58,14 +58,14 @@
 [I guest.out]   ok   setjmp/longjmp
 [I guest.out]   ok   deep recursion on the stack
 [I guest.out]   ok   pipe
-[I layer    ] fork: pid 5560 -> child 6416, snapshot of the parent's writable memory taken in 3.54 ms
-[I layer    ] fork: pid 5560 -> new process 6416 (flags 0x1200011)
-[I layer    ] proc 6416 ended (wait status 0x2a00)
+[I layer    ] fork: pid 6544 -> child 8164, snapshot of the parent's writable memory taken in 4.66 ms
+[I layer    ] fork: pid 6544 -> new process 8164 (flags 0x1200011)
+[I layer    ] proc 8164 ended (wait status 0x2a00)
 [I guest.out]   ok   fork + waitpid: the child's exit status
 [I guest.out]   ok   fork: own pid, getppid, private memory
-[I layer    ] fork: pid 5560 -> child 4452, snapshot of the parent's writable memory taken in 1.41 ms
-[I layer    ] fork: pid 5560 -> new process 4452 (flags 0x11)
-[I layer    ] proc 4452 ended (wait status 0x700)
+[I layer    ] fork: pid 6544 -> child 6172, snapshot of the parent's writable memory taken in 1.80 ms
+[I layer    ] fork: pid 6544 -> new process 6172 (flags 0x11)
+[I layer    ] proc 6172 ended (wait status 0x700)
 [I guest.out]   ok   raw clone(SIGCHLD, stack 0) with a non-zero r9 forks
 [I guest.out] glibc_test: 0 failure(s)
 [I layer    ] boot: FS-base re-arm faults handled: 0
@@ -73,20 +73,20 @@
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (1962 bytes) follows:
-[W layer    ] MAP 7ef4885b0000-7ef4885b1000 rw-p 00000000 00:00 0                        [heap]
-7ef4885b1000-7ef4885d2000 rw-p 00000000 00:00 0                        [heap]
-7ef4885d2000-7ef4885f3000 rw-p 00000000 00:00 0                        [heap]
-7ef4885f3000-7ef488614000 rw-p 00000000 00:00 0                        [heap]
-7ff47dcb7000-7ff47dcb8000 ---p 00000000 00:00 0                        [stack]
-7ff47dcb8000-7ff47e4b8000 rw-p 00000000 00:00 0                        [stack]
-7ff47e4b8000-7ff47e4b9000 ---p 00000000 00:00 0                        [stack]
-7ff47e4b9000-7ff47ecb9000 rw-p 00000000 00:00 0                        [stack]
-7ff47ecb9000-7ff47ecba000 ---p 00000000 00:00 0                        [stack]
-7ff47ecba000-7ff47f4ba000 rw-p 00000000 00:00 0                        [stack]
-7ff47f4ba000-7ff47f4bb000 ---p 00000000 00:00 0                        [stack]
-7ff47f4bb000-7ff47fcbb000 rw-p 00000000 00:00 0                        [stack]
-7ff47fcbb000-7ff47fcbc000 ---p 00000000 00:00 0                        [stack]
-7ff47fcbc000-7ff4804bc000 rw-p 00000000 00:00 0                        [
+[W layer    ] MAP 7ef4aead0000-7ef4aead1000 rw-p 00000000 00:00 0                        [heap]
+7ef4aead1000-7ef4aeaf2000 rw-p 00000000 00:00 0                        [heap]
+7ef4aeaf2000-7ef4aeb13000 rw-p 00000000 00:00 0                        [heap]
+7ef4aeb13000-7ef4aeb34000 rw-p 00000000 00:00 0                        [heap]
+7ff4a41d7000-7ff4a41d8000 ---p 00000000 00:00 0                        [stack]
+7ff4a41d8000-7ff4a49d8000 rw-p 00000000 00:00 0                        [stack]
+7ff4a49d8000-7ff4a49d9000 ---p 00000000 00:00 0                        [stack]
+7ff4a49d9000-7ff4a51d9000 rw-p 00000000 00:00 0                        [stack]
+7ff4a51d9000-7ff4a51da000 ---p 00000000 00:00 0                        [stack]
+7ff4a51da000-7ff4a59da000 rw-p 00000000 00:00 0                        [stack]
+7ff4a59da000-7ff4a59db000 ---p 00000000 00:00 0                        [stack]
+7ff4a59db000-7ff4a61db000 rw-p 00000000 00:00 0                        [stack]
+7ff4a61db000-7ff4a61dc000 ---p 00000000 00:00 0                        [stack]
+7ff4a61dc000-7ff4a69dc000 rw-p 00000000 00:00 0                        [
 [W layer    ] MAP 00-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
 ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
 
@@ -97,18 +97,18 @@ exit 0
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef4be1b0000,7ff4be1b0000) 1048576 MiB VA, brk <= 7ef4fe1b0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef4bced0000,7ff4bced0000) 1048576 MiB VA, brk <= 7ef4fced0000, commit budget 1024 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
-[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.HNdqmBw0U7 (4 symlinks)
-[I layer    ] dbt: /bin/glibc_test: 647168 bytes at 7ff4b60d6000 are translated, not executed (cache 5056 KiB at 7ff4b6580000); the image's bytes are untouched
-[I layer    ] elf: loaded /bin/glibc_test type=DYN bias=7ff4b60cd000 span=[7ff4b60cd000,7ff4b61b0000) entry=7ff4b60d6b20
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.yme1KgxLSL (4 symlinks)
+[I layer    ] dbt: /bin/glibc_test: 647168 bytes at 7ff4b4df6000 are translated, not executed (cache 5056 KiB at 7ff4b52a0000); the image's bytes are untouched
+[I layer    ] elf: loaded /bin/glibc_test type=DYN bias=7ff4b4ded000 span=[7ff4b4ded000,7ff4b4ed0000) entry=7ff4b4df6b20
 [W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
-[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=0000024338FCE2F0)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=0000021999B3B590)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff4b60ccdc0
-[I layer    ] boot: guest main thread tid=7192 entry=7ff4b60d6b20 sp=7ff4b60ccdc0
-[W layer    ] ENOSYS 334 rseq (a1=7ef4be1b0de0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] boot: stack sp=7ff4b4decdc0
+[I layer    ] boot: guest main thread tid=6872 entry=7ff4b4df6b20 sp=7ff4b4decdc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef4bced0de0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
 [I guest.out] glibc_test: glibc 2.39, argc=1 argv[0]=/bin/glibc_test
 [I guest.out]   ok   main-thread TLS (__thread, local-exec)
 [I guest.out]   ok   errno via %fs after a failing open
@@ -131,17 +131,17 @@ exit 0
 [I guest.out]   ok   stat size
 [I guest.out]   ok   unlink
 [I guest.out]   ok   nanosleep 20 ms
-[W layer    ] proc maps: 1710 bytes, first 400: 7ef4be1b0000-7ef4be1b1000 rw-p 00000000 00:00 0                        [heap]
-7ef4be1b1000-7ef4be1d2000 rw-p 00000000 00:00 0                        [heap]
-7ef4be1d2000-7ef4be1f3000 rw-p 00000000 00:00 0                        [heap]
-7ef4be1f3000-7ef4be214000 rw-p 00000000 00:00 0                        [heap]
-7ff4b38c8000-7ff4b38c9000 ---p 00000000 00:00 0                        [stack]
-7ff4b38c9
-[W layer    ] proc maps tail: ...b6174000-7ff4b61a0000 r--p 000a7000 00:00 3377699721541119                        /bin/glibc_test
-7ff4b61a0000-7ff4b61a5000 r--p 000d3000 00:00 3377699721541119                        /bin/glibc_test
-7ff4b61a5000-7ff4b61a7000 rw-p 000d8000 00:00 3377699721541119                        /bin/glibc_test
-7ff4b61a7000-7ff4b61b0000 rw-p 00000000 00:00 0 
-7ff4b6580000-7ff4b6a70000 rwxp 00000000 00:00 0 
+[W layer    ] proc maps: 1710 bytes, first 400: 7ef4bced0000-7ef4bced1000 rw-p 00000000 00:00 0                        [heap]
+7ef4bced1000-7ef4bcef2000 rw-p 00000000 00:00 0                        [heap]
+7ef4bcef2000-7ef4bcf13000 rw-p 00000000 00:00 0                        [heap]
+7ef4bcf13000-7ef4bcf34000 rw-p 00000000 00:00 0                        [heap]
+7ff4b25e8000-7ff4b25e9000 ---p 00000000 00:00 0                        [stack]
+7ff4b25e9
+[W layer    ] proc maps tail: ...b4e94000-7ff4b4ec0000 r--p 000a7000 00:00 1970324837989895                        /bin/glibc_test
+7ff4b4ec0000-7ff4b4ec5000 r--p 000d3000 00:00 1970324837989895                        /bin/glibc_test
+7ff4b4ec5000-7ff4b4ec7000 rw-p 000d8000 00:00 1970324837989895                        /bin/glibc_test
+7ff4b4ec7000-7ff4b4ed0000 rw-p 00000000 00:00 0 
+7ff4b52a0000-7ff4b5790000 rwxp 00000000 00:00 0 
 
 [W layer    ] proc maps check: libc=1 ld=0 stack=1 vdso=0
 [I guest.out]   ok   /proc/self/maps readable
@@ -152,14 +152,14 @@ exit 0
 [I guest.out]   ok   setjmp/longjmp
 [I guest.out]   ok   deep recursion on the stack
 [I guest.out]   ok   pipe
-[I layer    ] fork: pid 2820 -> child 1684, snapshot of the parent's writable memory taken in 4.49 ms
-[I layer    ] fork: pid 2820 -> new process 1684 (flags 0x1200011)
-[I layer    ] proc 1684 ended (wait status 0x2a00)
+[I layer    ] fork: pid 2352 -> child 7884, snapshot of the parent's writable memory taken in 5.91 ms
+[I layer    ] fork: pid 2352 -> new process 7884 (flags 0x1200011)
+[I layer    ] proc 7884 ended (wait status 0x2a00)
 [I guest.out]   ok   fork + waitpid: the child's exit status
 [I guest.out]   ok   fork: own pid, getppid, private memory
-[I layer    ] fork: pid 2820 -> child 7536, snapshot of the parent's writable memory taken in 2.10 ms
-[I layer    ] fork: pid 2820 -> new process 7536 (flags 0x11)
-[I layer    ] proc 7536 ended (wait status 0x700)
+[I layer    ] fork: pid 2352 -> child 7632, snapshot of the parent's writable memory taken in 3.21 ms
+[I layer    ] fork: pid 2352 -> new process 7632 (flags 0x11)
+[I layer    ] proc 7632 ended (wait status 0x700)
 [I guest.out]   ok   raw clone(SIGCHLD, stack 0) with a non-zero r9 forks
 [I guest.out] glibc_test: 0 failure(s)
 [I layer    ] boot: FS-base re-arm faults handled: 0
@@ -167,20 +167,20 @@ exit 0
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (1962 bytes) follows:
-[W layer    ] MAP 7ef4be1b0000-7ef4be1b1000 rw-p 00000000 00:00 0                        [heap]
-7ef4be1b1000-7ef4be1d2000 rw-p 00000000 00:00 0                        [heap]
-7ef4be1d2000-7ef4be1f3000 rw-p 00000000 00:00 0                        [heap]
-7ef4be1f3000-7ef4be214000 rw-p 00000000 00:00 0                        [heap]
-7ff4b38c8000-7ff4b38c9000 ---p 00000000 00:00 0                        [stack]
-7ff4b38c9000-7ff4b40c9000 rw-p 00000000 00:00 0                        [stack]
-7ff4b40c9000-7ff4b40ca000 ---p 00000000 00:00 0                        [stack]
-7ff4b40ca000-7ff4b48ca000 rw-p 00000000 00:00 0                        [stack]
-7ff4b48ca000-7ff4b48cb000 ---p 00000000 00:00 0                        [stack]
-7ff4b48cb000-7ff4b50cb000 rw-p 00000000 00:00 0                        [stack]
-7ff4b50cb000-7ff4b50cc000 ---p 00000000 00:00 0                        [stack]
-7ff4b50cc000-7ff4b58cc000 rw-p 00000000 00:00 0                        [stack]
-7ff4b58cc000-7ff4b58cd000 ---p 00000000 00:00 0                        [stack]
-7ff4b58cd000-7ff4b60cd000 rw-p 00000000 00:00 0                        [
+[W layer    ] MAP 7ef4bced0000-7ef4bced1000 rw-p 00000000 00:00 0                        [heap]
+7ef4bced1000-7ef4bcef2000 rw-p 00000000 00:00 0                        [heap]
+7ef4bcef2000-7ef4bcf13000 rw-p 00000000 00:00 0                        [heap]
+7ef4bcf13000-7ef4bcf34000 rw-p 00000000 00:00 0                        [heap]
+7ff4b25e8000-7ff4b25e9000 ---p 00000000 00:00 0                        [stack]
+7ff4b25e9000-7ff4b2de9000 rw-p 00000000 00:00 0                        [stack]
+7ff4b2de9000-7ff4b2dea000 ---p 00000000 00:00 0                        [stack]
+7ff4b2dea000-7ff4b35ea000 rw-p 00000000 00:00 0                        [stack]
+7ff4b35ea000-7ff4b35eb000 ---p 00000000 00:00 0                        [stack]
+7ff4b35eb000-7ff4b3deb000 rw-p 00000000 00:00 0                        [stack]
+7ff4b3deb000-7ff4b3dec000 ---p 00000000 00:00 0                        [stack]
+7ff4b3dec000-7ff4b45ec000 rw-p 00000000 00:00 0                        [stack]
+7ff4b45ec000-7ff4b45ed000 ---p 00000000 00:00 0                        [stack]
+7ff4b45ed000-7ff4b4ded000 rw-p 00000000 00:00 0                        [
 [W layer    ] MAP 00-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
 ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
 
@@ -191,18 +191,18 @@ exit 0
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef41c540000,7ff41c540000) 1048576 MiB VA, brk <= 7ef45c540000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef4c5510000,7ff4c5510000) 1048576 MiB VA, brk <= 7ef505510000, commit budget 1024 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
-[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.PuUAM8vLc4 (4 symlinks)
-[I layer    ] rewrite: /bin/cxx_test: 115 syscall + 1228 %fs sites (0 in place, 1337 jumps, 3 traps, 335 neighbours moved), pool 60768 bytes at 7ff41444f000
-[I layer    ] elf: loaded /bin/cxx_test type=DYN bias=7ff41445e000 span=[7ff41445e000,7ff414540000) entry=7ff414469930
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.38M0EvY7Uv (4 symlinks)
+[I layer    ] rewrite: /bin/cxx_test: 115 syscall + 1228 %fs sites (0 in place, 1337 jumps, 3 traps, 335 neighbours moved), pool 60768 bytes at 7ff4bd41f000
+[I layer    ] elf: loaded /bin/cxx_test type=DYN bias=7ff4bd42e000 span=[7ff4bd42e000,7ff4bd510000) entry=7ff4bd439930
 [W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
-[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=0000018F93991F00)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001F2628BF040)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff41444edc0
-[I layer    ] boot: guest main thread tid=3104 entry=7ff414469930 sp=7ff41444edc0
-[W layer    ] ENOSYS 334 rseq (a1=7ef41c540ce0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] boot: stack sp=7ff4bd41edc0
+[I layer    ] boot: guest main thread tid=1476 entry=7ff4bd439930 sp=7ff4bd41edc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef4c5510ce0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
 [I guest.out] cxx_test
 [I guest.out]   ok   exception thrown 6 frames deep and caught
 [I guest.out]   ok   destructor ran while unwinding
@@ -218,18 +218,18 @@ exit 0
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (1242 bytes) follows:
-[W layer    ] MAP 7ef41c540000-7ef41c541000 rw-p 00000000 00:00 0                        [heap]
-7ef41c541000-7ef41c562000 rw-p 00000000 00:00 0                        [heap]
-7ef41c562000-7ef41c575000 rw-p 00000000 00:00 0                        [heap]
-7ff413c4e000-7ff413c4f000 ---p 00000000 00:00 0                        [stack]
-7ff413c4f000-7ff41444f000 rw-p 00000000 00:00 0                        [stack]
-7ff41444f000-7ff41445e000 r-xp 00000000 00:00 0 
-7ff41445e000-7ff414468000 r--p 00000000 00:00 6755399442068974                        /bin/cxx_test
-7ff414468000-7ff414501000 r-xp 0000a000 00:00 6755399442068974                        /bin/cxx_test
-7ff414501000-7ff414532000 r--p 000a3000 00:00 6755399442068974                        /bin/cxx_test
-7ff414532000-7ff414538000 r--p 000d4000 00:00 6755399442068974                        /bin/cxx_test
-7ff414538000-7ff41453a000 rw-p 000da000 00:00 6755399442068974                        /bin/cxx_test
-7ff41453a000-7ff414540000 rw-p 00000000 00:00 0 
+[W layer    ] MAP 7ef4c5510000-7ef4c5511000 rw-p 00000000 00:00 0                        [heap]
+7ef4c5511000-7ef4c5532000 rw-p 00000000 00:00 0                        [heap]
+7ef4c5532000-7ef4c5545000 rw-p 00000000 00:00 0                        [heap]
+7ff4bcc1e000-7ff4bcc1f000 ---p 00000000 00:00 0                        [stack]
+7ff4bcc1f000-7ff4bd41f000 rw-p 00000000 00:00 0                        [stack]
+7ff4bd41f000-7ff4bd42e000 r-xp 00000000 00:00 0 
+7ff4bd42e000-7ff4bd438000 r--p 00000000 00:00 2251799814700551                        /bin/cxx_test
+7ff4bd438000-7ff4bd4d1000 r-xp 0000a000 00:00 2251799814700551                        /bin/cxx_test
+7ff4bd4d1000-7ff4bd502000 r--p 000a3000 00:00 2251799814700551                        /bin/cxx_test
+7ff4bd502000-7ff4bd508000 r--p 000d4000 00:00 2251799814700551                        /bin/cxx_test
+7ff4bd508000-7ff4bd50a000 rw-p 000da000 00:00 2251799814700551                        /bin/cxx_test
+7ff4bd50a000-7ff4bd510000 rw-p 00000000 00:00 0 
 7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
 7ffff7fc5000-7ffff7fc7000
 xrl_layer_boot returned 0
@@ -239,18 +239,18 @@ exit 0
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef44def0000,7ff44def0000) 1048576 MiB VA, brk <= 7ef48def0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef4820c0000,7ff4820c0000) 1048576 MiB VA, brk <= 7ef4c20c0000, commit budget 1024 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
-[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.rACC59uZeU (4 symlinks)
-[I layer    ] dbt: /bin/cxx_test: 626688 bytes at 7ff445e18000 are translated, not executed (cache 4896 KiB at 7ff4462c0000); the image's bytes are untouched
-[I layer    ] elf: loaded /bin/cxx_test type=DYN bias=7ff445e0e000 span=[7ff445e0e000,7ff445ef0000) entry=7ff445e19930
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.E4WbEmy6kv (4 symlinks)
+[I layer    ] dbt: /bin/cxx_test: 626688 bytes at 7ff479fe8000 are translated, not executed (cache 4896 KiB at 7ff47a490000); the image's bytes are untouched
+[I layer    ] elf: loaded /bin/cxx_test type=DYN bias=7ff479fde000 span=[7ff479fde000,7ff47a0c0000) entry=7ff479fe9930
 [W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
-[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001CC3F295110)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=0000025A60D0EFD0)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff445e0ddc0
-[I layer    ] boot: guest main thread tid=5848 entry=7ff445e19930 sp=7ff445e0ddc0
-[W layer    ] ENOSYS 334 rseq (a1=7ef44def0ce0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] boot: stack sp=7ff479fdddc0
+[I layer    ] boot: guest main thread tid=6740 entry=7ff479fe9930 sp=7ff479fdddc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef4820c0ce0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
 [I guest.out] cxx_test
 [I guest.out]   ok   exception thrown 6 frames deep and caught
 [I guest.out]   ok   destructor ran while unwinding
@@ -266,18 +266,18 @@ exit 0
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (1242 bytes) follows:
-[W layer    ] MAP 7ef44def0000-7ef44def1000 rw-p 00000000 00:00 0                        [heap]
-7ef44def1000-7ef44df12000 rw-p 00000000 00:00 0                        [heap]
-7ef44df12000-7ef44df25000 rw-p 00000000 00:00 0                        [heap]
-7ff44560d000-7ff44560e000 ---p 00000000 00:00 0                        [stack]
-7ff44560e000-7ff445e0e000 rw-p 00000000 00:00 0                        [stack]
-7ff445e0e000-7ff445e18000 r--p 00000000 00:00 7036874418779630                        /bin/cxx_test
-7ff445e18000-7ff445eb1000 r-xp 0000a000 00:00 7036874418779630                        /bin/cxx_test
-7ff445eb1000-7ff445ee2000 r--p 000a3000 00:00 7036874418779630                        /bin/cxx_test
-7ff445ee2000-7ff445ee8000 r--p 000d4000 00:00 7036874418779630                        /bin/cxx_test
-7ff445ee8000-7ff445eea000 rw-p 000da000 00:00 7036874418779630                        /bin/cxx_test
-7ff445eea000-7ff445ef0000 rw-p 00000000 00:00 0 
-7ff4462c0000-7ff446788000 rwxp 00000000 00:00 0 
+[W layer    ] MAP 7ef4820c0000-7ef4820c1000 rw-p 00000000 00:00 0                        [heap]
+7ef4820c1000-7ef4820e2000 rw-p 00000000 00:00 0                        [heap]
+7ef4820e2000-7ef4820f5000 rw-p 00000000 00:00 0                        [heap]
+7ff4797dd000-7ff4797de000 ---p 00000000 00:00 0                        [stack]
+7ff4797de000-7ff479fde000 rw-p 00000000 00:00 0                        [stack]
+7ff479fde000-7ff479fe8000 r--p 00000000 00:00 2533274791411207                        /bin/cxx_test
+7ff479fe8000-7ff47a081000 r-xp 0000a000 00:00 2533274791411207                        /bin/cxx_test
+7ff47a081000-7ff47a0b2000 r--p 000a3000 00:00 2533274791411207                        /bin/cxx_test
+7ff47a0b2000-7ff47a0b8000 r--p 000d4000 00:00 2533274791411207                        /bin/cxx_test
+7ff47a0b8000-7ff47a0ba000 rw-p 000da000 00:00 2533274791411207                        /bin/cxx_test
+7ff47a0ba000-7ff47a0c0000 rw-p 00000000 00:00 0 
+7ff47a490000-7ff47a958000 rwxp 00000000 00:00 0 
 7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
 7ffff7fc5000-7ffff7fc7000
 xrl_layer_boot returned 0
