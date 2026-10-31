@@ -305,6 +305,8 @@ static void swap_leave(xrl_proc *p)
     p->saved = NULL;
 }
 
+static void late_replay(xrl_proc *p);   /* below, with xrl_proc_freeze */
+
 /* ------------------------------------------------------- fork / clone */
 /* Another process (flags have no CLONE_THREAD): see the file comment. */
 slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 resume_pc)
