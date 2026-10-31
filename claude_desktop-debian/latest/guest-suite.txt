@@ -2,20 +2,20 @@
 [I layer    ] threads: FSGSBASE usable (cpuid=1); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (patched guests) + wrfsbase (unpatched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef48c5b0000,7ff48c5b0000) 1048576 MiB VA, brk <= 7ef4cc5b0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] mem: arena [7ef45e0a0000,7ff45e0a0000) 1048576 MiB VA, brk <= 7ef49e0a0000, commit budget 1024 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
-[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.05vu5v8q9e (4 symlinks)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.FBp8QF6x52 (4 symlinks)
 [I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
-[W layer    ] rewrite: /bin/guest.elf: trampoline pool 7ff4845af000 is far from the code (401000): every site becomes a trap
+[W layer    ] rewrite: /bin/guest.elf: trampoline pool 7ff45609f000 is far from the code (401000): every site becomes a trap
 [E layer    ] rewrite: /bin/guest.elf: cannot make code writable
-[I layer    ] rewrite: /bin/guest.elf: 0 syscall + 0 %fs + 0 %gs sites (0 in place, 0 jumps, 0 traps, 0 neighbours moved), pool 0 bytes at 7ff4845af000 [INCOMPLETE]
+[I layer    ] rewrite: /bin/guest.elf: 0 syscall + 0 %fs + 0 %gs sites (0 in place, 0 jumps, 0 traps, 0 neighbours moved), pool 0 bytes at 7ff45609f000 [INCOMPLETE]
 [I layer    ] elf: loaded /bin/guest.elf type=EXEC bias=0 span=[400000,5b4000) entry=401062
 [W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
-[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000002D94A356940)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=00000261004F6A80)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff4845aedc0
-[I layer    ] boot: guest main thread tid=5560 entry=401062 sp=7ff4845aedc0
+[I layer    ] boot: stack sp=7ff45609edc0
+[I layer    ] boot: guest main thread tid=1676 entry=401062 sp=7ff45609edc0
 [I guest.out] xrl guest test start
 [I guest.out] argc=2
 [I guest.out] misc:
@@ -33,27 +33,27 @@
 [I guest.out]   ok   sched_getaffinity
 [I guest.out]   ok   auxv present
 [I guest.out]   ok   AT_XRL_CTX magic
-[W layer    ] mem-fail[0] addr=ea46400000 access=0 vma=NEAR [7ff483dae000,7ff483daf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[0] addr=b24d900000 access=0 vma=NEAR [7ff45589e000,7ff45589f000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
 [I guest.out]   ok   downcall gfx.d3d12_create_device (host Win64 fn via SysV stub)
 [I guest.out]   ok   downcall with 7 args (stack-passed args marshalled)
 [host] gfx release(77)
-[W layer    ] mem-fail[1] addr=ea46400000 access=0 vma=NEAR [7ff483dae000,7ff483daf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[1] addr=b24d900000 access=0 vma=NEAR [7ff45589e000,7ff45589f000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
 [I guest    ] log via host stub
 [I guest.out] memory:
 [I guest.out]   ok   red zone: an 8 MiB lazily committed mapping
 [I guest.out]   ok   the 128-byte red zone below rsp survives first-touch faults (64 faults, as on Linux)
-[W layer    ] proc maps: 619 bytes, first 400: 00400000-00401000 r--p 00000000 00:00 1125899907841200                        /bin/guest.elf
-00401000-00419000 r-xp 00001000 00:00 1125899907841200                        /bin/guest.elf
-00419000-00426000 r--p 00019000 00:00 1125899907841200                        /bin/guest.elf
+[W layer    ] proc maps: 619 bytes, first 400: 00400000-00401000 r--p 00000000 00:00 1125899907841166                        /bin/guest.elf
+00401000-00419000 r-xp 00001000 00:00 1125899907841166                        /bin/guest.elf
+00419000-00426000 r--p 00019000 00:00 1125899907841166                        /bin/guest.elf
 00426000-005b4000 rw-p 00000000 00:00 0 
-7ff483dad000-7ff483dae000 rw-p 00000000 00:00 0 
-7ff483dae000-7ff483daf000 ---p 
-[W layer    ] proc maps tail: ...0:00 1125899907841200                        /bin/guest.elf
+7ff45589d000-7ff45589e000 rw-p 00000000 00:00 0 
+7ff45589e000-7ff45589f000 ---p 
+[W layer    ] proc maps tail: ...0:00 1125899907841166                        /bin/guest.elf
 00426000-005b4000 rw-p 00000000 00:00 0 
-7ff483dad000-7ff483dae000 rw-p 00000000 00:00 0 
-7ff483dae000-7ff483daf000 ---p 00000000 00:00 0                        [stack]
-7ff483daf000-7ff4845af000 rw-p 00000000 00:00 0                        [stack]
-7ff4845af000-7ff4845b0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
+7ff45589d000-7ff45589e000 rw-p 00000000 00:00 0 
+7ff45589e000-7ff45589f000 ---p 00000000 00:00 0                        [stack]
+7ff45589f000-7ff45609f000 rw-p 00000000 00:00 0                        [stack]
+7ff45609f000-7ff4560a0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
 
 [W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
 [I guest.out]   ok   maps: the highest mapping
@@ -80,7 +80,7 @@
 [I guest.out]   ok   brk grow
 [I guest.out]   ok   madvise(DONTNEED)
 [I guest.out]   ok   DONTNEED zeroes pages
-[I layer    ] mem: swap file C:\Users\RUNNER~1\AppData\Local\Temp\xrl-swap-636.bin (XPRESS-compressed)
+[I layer    ] mem: swap file C:\Users\RUNNER~1\AppData\Local\Temp\xrl-swap-2780.bin (XPRESS-compressed)
 [W layer    ] mem: commit budget exhausted: 8 MiB committed + 2097152 KiB requested > 1024 MiB
 [I guest.out]   ok   mmap(MAP_POPULATE) beyond guest_mem_budget -> -ENOMEM
 [I guest.out]   ok   64 MiB anonymous mmap (lazy)
@@ -117,19 +117,19 @@
 [I guest.out]   ok   /dev/zero
 [I guest.out]   ok   /dev/urandom differs between reads
 [I guest.out]   ok   getrandom
-[W layer    ] proc maps: 838 bytes, first 400: 00400000-00401000 r--p 00000000 00:00 1125899907841200                        /bin/guest.elf
-00401000-00419000 r-xp 00001000 00:00 1125899907841200                        /bin/guest.elf
-00419000-00426000 r--p 00019000 00:00 1125899907841200                        /bin/guest.elf
+[W layer    ] proc maps: 838 bytes, first 400: 00400000-00401000 r--p 00000000 00:00 1125899907841166                        /bin/guest.elf
+00401000-00419000 r-xp 00001000 00:00 1125899907841166                        /bin/guest.elf
+00419000-00426000 r--p 00019000 00:00 1125899907841166                        /bin/guest.elf
 00426000-005b4000 rw-p 00000000 00:00 0 
 140000000-140010000 rw-p 00000000 00:00 0 
-7ef48c5b0000-7ef48c5c0000 rw-p 000000
+7ef45e0a0000-7ef45e0b0000 rw-p 000000
 [W layer    ] proc maps tail: ...p]
-7ff483bad000-7ff483bb1000 rw-p 00000000 00:00 0 
-7ff483bb1000-7ff483cad000 ---p 00000000 00:00 0 
-7ff483dad000-7ff483dae000 rw-p 00000000 00:00 0 
-7ff483dae000-7ff483daf000 ---p 00000000 00:00 0                        [stack]
-7ff483daf000-7ff4845af000 rw-p 00000000 00:00 0                        [stack]
-7ff4845af000-7ff4845b0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
+7ff45569d000-7ff4556a1000 rw-p 00000000 00:00 0 
+7ff4556a1000-7ff45579d000 ---p 00000000 00:00 0 
+7ff45589d000-7ff45589e000 rw-p 00000000 00:00 0 
+7ff45589e000-7ff45589f000 ---p 00000000 00:00 0                        [stack]
+7ff45589f000-7ff45609f000 rw-p 00000000 00:00 0                        [stack]
+7ff45609f000-7ff4560a0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
 
 [W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
 [I guest.out]   ok   /proc/self/maps readable
@@ -205,7 +205,7 @@
 [I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
 [I guest.out]   ok   thread pointer (TP slot) stable across preemption
 [I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
-[I guest.out] futex pingpong round trips/s=4998750
+[I guest.out] futex pingpong round trips/s=3707823
 [I guest.out]   ok   futex ping-pong 2000 round trips
 [I guest.out]   ok   futex wait timeout -> -ETIMEDOUT after >=20ms
 [I guest.out]   ok   futex wait value mismatch -> -EAGAIN
@@ -392,9 +392,9 @@
 [I guest.out]   ok   after IPC_RMID the key is free
 [W layer    ] ftruncate memfd: fd=31 size=16384
 [I guest.out]   ok   memfd_create + ftruncate(16 KiB)
-[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff48c4b0000 len=16384 file_size=16384 shared=1 r=140688302473216
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff45dfa0000 len=16384 file_size=16384 shared=1 r=140687525412864
 [I guest.out]   ok   mmap(MAP_SHARED) of the memfd
-[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=4096 addr=7ff48c4b1000 len=8192 file_size=16384 shared=1 r=140688302477312
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=4096 addr=7ff45dfa1000 len=8192 file_size=16384 shared=1 r=140687525416960
 [I guest.out]   ok   a mapping at offset 4096 is the same pages (sees the write at 5000)
 [I guest.out]   ok   and a write through it shows in the first mapping
 [W layer    ] close memfd: fd=31 gpath=/memfd:xrl-shm (deleted)
@@ -402,8 +402,8 @@
 [I guest.out]   ok   munmap of the second mapping keeps the first
 [I guest.out]   ok   munmap of the first
 [W layer    ] ftruncate memfd: fd=31 size=8192
-[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff48c3b0000 len=8192 file_size=8192 shared=1 r=140688301424640
-[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff48c3b0000 len=8192 file_size=8192 shared=1 r=140688301424640
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff45dea0000 len=8192 file_size=8192 shared=1 r=140687524364288
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff45dea0000 len=8192 file_size=8192 shared=1 r=140687524364288
 [I guest.out]   ok   unmap and map again: the data is still there (fd open)
 [I guest.out]   ok   no seals yet
 [I guest.out]   ok   F_ADD_SEALS(SHRINK|GROW)
@@ -511,11 +511,11 @@
 [I guest.out] review regressions (2):
 [I guest.out]   ok   send(MSG_DONTWAIT) on a full blocking stream socket -> -EAGAIN instead of blocking
 [W layer    ] ftruncate memfd: fd=31 size=4096
-[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff48c2b0000 len=4096 file_size=4096 shared=1 r=140688300376064
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff45dda0000 len=4096 file_size=4096 shared=1 r=140687523315712
 [W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=-4096 addr=0 len=4096 file_size=4096 shared=1 r=-22
 [I guest.out]   ok   mmap(MAP_SHARED, memfd, negative offset) -> -EINVAL
 [W layer    ] ftruncate memfd: fd=31 size=1048576
-[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff48c2b0000 len=1048576 file_size=1048576 shared=1 r=140688300376064
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff45dda0000 len=1048576 file_size=1048576 shared=1 r=140687523315712
 [I guest.out]   ok   growing the memfd and mapping it larger works (same pages, headroom)
 [W layer    ] mmap memfd: fd=31 prot=3 flags=11 off=0 addr=0 len=4096 file_size=1048576 shared=1 r=-22
 [I guest.out]   ok   MAP_FIXED over a shared region -> -EINVAL (the pages are shared with others)
@@ -562,115 +562,102 @@
 [I layer    ] mem: committed 256 MiB (high-water)
 [I layer    ] mem: committed 512 MiB (high-water)
 [I layer    ] mem: committed 768 MiB (high-water)
-[I layer    ] perf: cpu 23% of a core (user 13%, kernel 10%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 410 syscalls/s, 0 COM calls/s, 105 lazy faults/s (707 ms/s in the handler); committed 1007 MiB, swap 26 MiB in the file, out 2.7 MiB/s, in 0.1 MiB/s
-[I layer    ] perf: thr xrl-named/5560 10% 0k/s;
-[I layer    ] perf: cpu 3% of a core (user 0%, kernel 2%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 11 lazy faults/s (984 ms/s in the handler); committed 1003 MiB, swap 138 MiB in the file, out 11.2 MiB/s, in 0.0 MiB/s
-[I layer    ] perf: thr xrl-named/5560 3% 0k/s;
+[I layer    ] perf: cpu 22% of a core (user 14%, kernel 8%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 423 syscalls/s, 0 COM calls/s, 107 lazy faults/s (818 ms/s in the handler); committed 1003 MiB, swap 48 MiB in the file, out 4.9 MiB/s, in 0.1 MiB/s
+[I layer    ] perf: thr xrl-named/1676 9% 0k/s;
 [I guest.out]   ok   every page written (evictions made room)
-[I layer    ] perf: cpu 3% of a core (user 0%, kernel 3%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 16 lazy faults/s (1030 ms/s in the handler); committed 1000 MiB, swap 295 MiB in the file, out 15.7 MiB/s, in 0.0 MiB/s
-[I layer    ] perf: thr xrl-named/5560 3% 0k/s;
-[I layer    ] perf: cpu 2% of a core (user 1%, kernel 2%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 82 lazy faults/s (961 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 21.4 MiB/s, in 21.8 MiB/s
-[I layer    ] perf: thr xrl-named/5560 2% 0k/s;
-[I layer    ] perf: cpu 5% of a core (user 1%, kernel 4%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 133 lazy faults/s (1035 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 18.9 MiB/s, in 19.3 MiB/s
-[I layer    ] perf: thr xrl-named/5560 5% 0k/s;
-[I layer    ] perf: cpu 20% of a core (user 1%, kernel 19%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 232 lazy faults/s (984 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 18.2 MiB/s, in 25.8 MiB/s
-[I layer    ] perf: thr xrl-named/5560 20% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea07d4 (host)
-[I layer    ] perf: cpu 48% of a core (user 0%, kernel 48%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 184 lazy faults/s (979 ms/s in the handler); committed 1002 MiB, swap 293 MiB in the file, out 10.7 MiB/s, in 22.6 MiB/s
-[I layer    ] perf: thr xrl-named/5560 48% 0k/s;
-[I guest.out]   ok   every page reads back its own data (swapped in on touch)
-[I layer    ] perf: cpu 55% of a core (user 2%, kernel 54%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 681 lazy faults/s (1016 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 7.8 MiB/s, in 34.6 MiB/s
-[I layer    ] perf: thr xrl-named/5560 55% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea0474 (host)
-[I layer    ] perf: cpu 51% of a core (user 1%, kernel 50%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 527 lazy faults/s (999 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 9.1 MiB/s, in 22.5 MiB/s
-[I layer    ] perf: thr xrl-named/5560 51% 0k/s;
-[I layer    ] perf: cpu 10% of a core (user 2%, kernel 8%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 719 lazy faults/s (982 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 21.6 MiB/s, in 32.2 MiB/s
-[I layer    ] perf: thr xrl-named/5560 10% 0k/s;
-[I guest.out]   ok   write() from swapped-out memory writes the right bytes
-[I layer    ] perf: cpu 7% of a core (user 2%, kernel 5%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 398 lazy faults/s (1010 ms/s in the handler); committed 1000 MiB, swap 295 MiB in the file, out 20.4 MiB/s, in 20.2 MiB/s
-[I layer    ] perf: thr xrl-named/5560 7% 0k/s;
-[I layer    ] perf: cpu 7% of a core (user 1%, kernel 6%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 469 lazy faults/s (983 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 20.1 MiB/s, in 20.9 MiB/s
-[I layer    ] perf: thr xrl-named/5560 7% 0k/s;
-[I layer    ] perf: cpu 3% of a core (user 1%, kernel 2%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 317 lazy faults/s (982 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 18.1 MiB/s, in 17.7 MiB/s
-[I layer    ] perf: thr xrl-named/5560 3% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea07d4 (host)
-[I layer    ] perf: cpu 46% of a core (user 1%, kernel 45%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 289 lazy faults/s (967 ms/s in the handler); committed 1002 MiB, swap 293 MiB in the file, out 10.2 MiB/s, in 12.9 MiB/s
-[I layer    ] perf: thr xrl-named/5560 46% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea0434 (host)
-[I layer    ] perf: cpu 66% of a core (user 0%, kernel 66%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 434 lazy faults/s (1059 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 3.5 MiB/s, in 19.7 MiB/s
-[I layer    ] perf: thr xrl-named/5560 66% 0k/s;
-[I guest.out]   ok   pages written after a read-back keep the new data through another eviction
-[I layer    ] perf: cpu 78% of a core (user 1%, kernel 78%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 180 lazy faults/s (230 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 4.7 MiB/s, in 9.7 MiB/s
-[I layer    ] perf: thr xrl-named/5560 78% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea07d4 (host)
-[I layer    ] perf: cpu 100% of a core (user 0%, kernel 100%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 0 lazy faults/s (0 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
-[I layer    ] perf: thr xrl-named/5560 100% 0k/s;
-[I layer    ] perf: cpu 15% of a core (user 1%, kernel 14%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 151 lazy faults/s (896 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 6.8 MiB/s, in 6.9 MiB/s
-[I layer    ] perf: thr xrl-named/5560 15% 0k/s;
 [I layer    ] perf: cpu 8% of a core (user 1%, kernel 7%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 342 lazy faults/s (994 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 15.3 MiB/s, in 15.3 MiB/s
-[I layer    ] perf: thr xrl-named/5560 8% 0k/s;
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 49 lazy faults/s (999 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 30.4 MiB/s, in 6.4 MiB/s
+[I layer    ] perf: thr xrl-named/1676 8% 0k/s;
+[I layer    ] perf: cpu 5% of a core (user 0%, kernel 5%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 142 lazy faults/s (984 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 30.1 MiB/s, in 29.8 MiB/s
+[I layer    ] perf: thr xrl-named/1676 5% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e00474 (host)
+[I layer    ] perf: cpu 21% of a core (user 1%, kernel 20%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 317 lazy faults/s (1004 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 28.3 MiB/s, in 36.3 MiB/s
+[I layer    ] perf: thr xrl-named/1676 21% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 85% of a core (user 0%, kernel 85%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 216 lazy faults/s (1010 ms/s in the handler); committed 1006 MiB, swap 288 MiB in the file, out 5.0 MiB/s, in 24.2 MiB/s
+[I layer    ] perf: thr xrl-named/1676 85% 0k/s;
+[I guest.out]   ok   every page reads back its own data (swapped in on touch)
+[I layer    ] perf: cpu 63% of a core (user 0%, kernel 62%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 946 lazy faults/s (990 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 11.0 MiB/s, in 41.1 MiB/s
+[I layer    ] perf: thr xrl-named/1676 63% 0k/s;
+[I layer    ] perf: cpu 11% of a core (user 1%, kernel 10%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 862 lazy faults/s (978 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 24.3 MiB/s, in 38.6 MiB/s
+[I layer    ] perf: thr xrl-named/1676 11% 0k/s;
+[I layer    ] perf: cpu 0% of a core (user 0%, kernel 0%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 13 lazy faults/s (1020 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 0.8 MiB/s, in 0.8 MiB/s
+[I layer    ] perf: thr
+[I guest.out]   ok   write() from swapped-out memory writes the right bytes
 [I layer    ] perf: cpu 7% of a core (user 1%, kernel 6%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 367 lazy faults/s (1004 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 23.3 MiB/s, in 24.2 MiB/s
-[I layer    ] perf: thr xrl-named/5560 7% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea07d4 (host)
-[I layer    ] perf: cpu 48% of a core (user 1%, kernel 47%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 190 lazy faults/s (996 ms/s in the handler); committed 1005 MiB, swap 290 MiB in the file, out 12.2 MiB/s, in 16.9 MiB/s
-[I layer    ] perf: thr xrl-named/5560 48% 0k/s;
-[I layer    ] perf: cpu 53% of a core (user 1%, kernel 52%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 234 lazy faults/s (870 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 11.1 MiB/s, in 26.7 MiB/s
-[I layer    ] perf: thr xrl-named/5560 53% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea07d4 (host)
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 554 lazy faults/s (973 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 27.7 MiB/s, in 27.4 MiB/s
+[I layer    ] perf: thr xrl-named/1676 7% 0k/s;
+[I layer    ] perf: cpu 8% of a core (user 1%, kernel 7%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 595 lazy faults/s (1005 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 28.2 MiB/s, in 28.2 MiB/s
+[I layer    ] perf: thr xrl-named/1676 8% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 51% of a core (user 1%, kernel 50%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 367 lazy faults/s (909 ms/s in the handler); committed 1002 MiB, swap 292 MiB in the file, out 15.0 MiB/s, in 17.7 MiB/s
+[I layer    ] perf: thr xrl-named/1676 51% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e00434 (host)
+[I layer    ] perf: cpu 68% of a core (user 1%, kernel 67%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 576 lazy faults/s (1100 ms/s in the handler); committed 1002 MiB, swap 293 MiB in the file, out 7.4 MiB/s, in 27.7 MiB/s
+[I layer    ] perf: thr xrl-named/1676 68% 0k/s;
+[I guest.out]   ok   pages written after a read-back keep the new data through another eviction
+[I layer    ] perf: cpu 97% of a core (user 0%, kernel 97%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 35 lazy faults/s (37 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 0.9 MiB/s, in 1.7 MiB/s
+[I layer    ] perf: thr xrl-named/1676 97% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8abd9dafb (host)
+[I layer    ] perf: cpu 44% of a core (user 0%, kernel 44%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 349 lazy faults/s (644 ms/s in the handler); committed 1006 MiB, swap 289 MiB in the file, out 15.3 MiB/s, in 15.6 MiB/s
+[I layer    ] perf: thr xrl-named/1676 44% 0k/s;
+[I layer    ] perf: cpu 8% of a core (user 1%, kernel 7%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 497 lazy faults/s (999 ms/s in the handler); committed 1001 MiB, swap 293 MiB in the file, out 29.3 MiB/s, in 29.3 MiB/s
+[I layer    ] perf: thr xrl-named/1676 8% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 60% of a core (user 1%, kernel 59%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 295 lazy faults/s (997 ms/s in the handler); committed 1006 MiB, swap 289 MiB in the file, out 13.1 MiB/s, in 25.6 MiB/s
+[I layer    ] perf: thr xrl-named/1676 60% 0k/s;
+[I layer    ] perf: cpu 65% of a core (user 0%, kernel 65%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 147 lazy faults/s (482 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 11.0 MiB/s, in 19.4 MiB/s
+[I layer    ] perf: thr xrl-named/1676 65% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
 [I layer    ] perf: cpu 100% of a core (user 0%, kernel 100%) over 10.0 s; 1 guest threads
 [I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 0 lazy faults/s (0 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
-[I layer    ] perf: thr xrl-named/5560 100% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea0474 (host)
-[I layer    ] perf: cpu 88% of a core (user 0%, kernel 87%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 57 lazy faults/s (151 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 2.0 MiB/s, in 2.3 MiB/s
-[I layer    ] perf: thr xrl-named/5560 88% 0k/s;
-[I layer    ] perf: cpu 9% of a core (user 1%, kernel 8%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 398 lazy faults/s (999 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 16.9 MiB/s, in 16.9 MiB/s
-[I layer    ] perf: thr xrl-named/5560 9% 0k/s;
-[I layer    ] perf: cpu 8% of a core (user 2%, kernel 6%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 534 lazy faults/s (1007 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 22.6 MiB/s, in 22.6 MiB/s
-[I layer    ] perf: thr xrl-named/5560 8% 0k/s;
-[I layer    ] perf: cpu 5% of a core (user 1%, kernel 4%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 500 lazy faults/s (998 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 20.9 MiB/s, in 20.9 MiB/s
-[I layer    ] perf: thr xrl-named/5560 5% 0k/s;
-[I layer    ] perf: cpu 7% of a core (user 2%, kernel 6%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 438 lazy faults/s (1019 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 20.6 MiB/s, in 21.0 MiB/s
-[I layer    ] perf: thr xrl-named/5560 7% 0k/s;
-[I layer    ] perf: cpu 5% of a core (user 0%, kernel 5%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 326 lazy faults/s (977 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 18.9 MiB/s, in 18.5 MiB/s
-[I layer    ] perf: thr xrl-named/5560 5% 0k/s;
-[I layer    ] perf: cpu 5% of a core (user 1%, kernel 4%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 264 lazy faults/s (1003 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 16.1 MiB/s, in 16.1 MiB/s
-[I layer    ] perf: thr xrl-named/5560 5% 0k/s;
-[I layer    ] perf: cpu 6% of a core (user 2%, kernel 5%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 479 lazy faults/s (1009 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 22.9 MiB/s, in 23.3 MiB/s
-[I layer    ] perf: thr xrl-named/5560 6% 0k/s;
-[I layer    ] perf: spin xrl-named/5560 rip 7ffb36ea0474 (host)
-[I layer    ] perf: cpu 34% of a core (user 1%, kernel 33%) over 10.0 s; 1 guest threads
-[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 487 lazy faults/s (1003 ms/s in the handler); committed 1004 MiB, swap 291 MiB in the file, out 12.3 MiB/s, in 25.8 MiB/s
-[I layer    ] perf: thr xrl-named/5560 34% 0k/s;
+[I layer    ] perf: thr xrl-named/1676 100% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 100% of a core (user 0%, kernel 100%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 0 lazy faults/s (0 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
+[I layer    ] perf: thr xrl-named/1676 100% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 100% of a core (user 0%, kernel 100%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 0 lazy faults/s (0 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
+[I layer    ] perf: thr xrl-named/1676 100% 0k/s;
+[I layer    ] perf: cpu 18% of a core (user 1%, kernel 17%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 184 lazy faults/s (947 ms/s in the handler); committed 1007 MiB, swap 288 MiB in the file, out 7.2 MiB/s, in 7.9 MiB/s
+[I layer    ] perf: thr xrl-named/1676 18% 0k/s;
+[I layer    ] perf: cpu 11% of a core (user 1%, kernel 10%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 625 lazy faults/s (981 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 27.0 MiB/s, in 26.6 MiB/s
+[I layer    ] perf: thr xrl-named/1676 11% 0k/s;
+[I layer    ] perf: cpu 6% of a core (user 0%, kernel 6%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 716 lazy faults/s (1013 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 29.4 MiB/s, in 29.8 MiB/s
+[I layer    ] perf: thr xrl-named/1676 6% 0k/s;
+[I layer    ] perf: cpu 7% of a core (user 1%, kernel 6%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 561 lazy faults/s (997 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 28.2 MiB/s, in 28.2 MiB/s
+[I layer    ] perf: thr xrl-named/1676 7% 0k/s;
+[I layer    ] perf: cpu 8% of a core (user 1%, kernel 7%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 462 lazy faults/s (1003 ms/s in the handler); committed 1001 MiB, swap 293 MiB in the file, out 28.2 MiB/s, in 27.6 MiB/s
+[I layer    ] perf: thr xrl-named/1676 8% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 25% of a core (user 1%, kernel 24%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 588 lazy faults/s (986 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 21.7 MiB/s, in 27.2 MiB/s
+[I layer    ] perf: thr xrl-named/1676 25% 0k/s;
+[I layer    ] perf: spin xrl-named/1676 rip 7ff8b8e007d4 (host)
+[I layer    ] perf: cpu 37% of a core (user 0%, kernel 36%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 577 lazy faults/s (992 ms/s in the handler); committed 1005 MiB, swap 290 MiB in the file, out 16.4 MiB/s, in 31.4 MiB/s
+[I layer    ] perf: thr xrl-named/1676 37% 0k/s;
 [I guest.out]   ok   mprotect read-only and back over swapped memory keeps the data
 [I guest.out]   ok   after munmap the address range is fresh zero memory
 [I guest.out] network (Winsock):
@@ -754,8 +741,8 @@
 [I guest.out]   ok   file syscalls run host Win32 code under a foreign guest TEB
 [I guest.out]   ok   mmap under a foreign guest TEB
 [I guest    ] downcall (host CRT + logging) under a foreign guest TEB
-[W layer    ] mem-fail[3] addr=2100000020 access=0 vma=NEAR [7ef48c5b0000,7ef48c5c0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
-[W layer    ] mem-fail[4] addr=2400000000 access=0 vma=NEAR [7ef48c5b0000,7ef48c5c0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail[3] addr=2100000020 access=0 vma=NEAR [7ef45e0a0000,7ef45e0b0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail[4] addr=2400000000 access=0 vma=NEAR [7ef45e0a0000,7ef45e0b0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
 [I guest.out]   ok   downcall through the op-table stub under a foreign guest TEB
 [I guest.out]   ok   guest TEB values survive syscalls and downcalls
 [I guest.out] TOTAL FAILS=0
@@ -763,52 +750,52 @@
 [I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 5 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
-[W layer    ] mem-fail[0] addr=ea46400000 access=0 vma=NEAR [7ff483dae000,7ff483daf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
-[W layer    ] mem-fail[1] addr=ea46400000 access=0 vma=NEAR [7ff483dae000,7ff483daf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[0] addr=b24d900000 access=0 vma=NEAR [7ff45589e000,7ff45589f000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[1] addr=b24d900000 access=0 vma=NEAR [7ff45589e000,7ff45589f000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
 [W layer    ] mem-fail[2] addr=1000 access=0 vma=NEAR [400000,401000) prot=1 lazy=0 committed=1 host(state=10000 prot=1)
-[W layer    ] mem-fail[3] addr=2100000020 access=0 vma=NEAR [7ef48c5b0000,7ef48c5c0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
-[W layer    ] mem-fail[4] addr=2400000000 access=0 vma=NEAR [7ef48c5b0000,7ef48c5c0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail[3] addr=2100000020 access=0 vma=NEAR [7ef45e0a0000,7ef45e0b0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail[4] addr=2400000000 access=0 vma=NEAR [7ef45e0a0000,7ef45e0b0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
 [W layer    ] mem-fail: full guest memory map (3340 bytes) follows:
-[W layer    ] MAP 00400000-00401000 r--p 00000000 00:00 1125899907841200                        /bin/guest.elf
-00401000-00419000 r-xp 00001000 00:00 1125899907841200                        /bin/guest.elf
-00419000-00426000 r--p 00019000 00:00 1125899907841200                        /bin/guest.elf
+[W layer    ] MAP 00400000-00401000 r--p 00000000 00:00 1125899907841166                        /bin/guest.elf
+00401000-00419000 r-xp 00001000 00:00 1125899907841166                        /bin/guest.elf
+00419000-00426000 r--p 00019000 00:00 1125899907841166                        /bin/guest.elf
 00426000-005b4000 rw-p 00000000 00:00 0 
 140000000-140010000 rw-p 00000000 00:00 0 
-7ef48c5b0000-7ef48c5c0000 rw-p 00000000 00:00 0                        [heap]
-7ff4836ed000-7ff4837ed000 rw-p 00000000 00:00 0 
-7ff4837ed000-7ff48382d000 rw-p 00000000 00:00 0 
-7ff48382d000-7ff48386d000 rw-p 00000000 00:00 0 
-7ff48386d000-7ff4838ad000 rw-p 00000000 00:00 0 
-7ff4838ad000-7ff4838ed000 rw-p 00000000 00:00 0 
-7ff4838ed000-7ff48392d000 rw-p 00000000 00:00 0 
-7ff48392d000-7ff48396d000 rw-p 00000000 00:00 0 
-7ff48396d000-7ff4839ad000 rw-p 00000000 00:00 0 
-7ff4839ad000-7ff4839ed000 rw-p 00000000 00:00 0 
-7ff4839ed000-7ff483a2d000 rw-p 00000000 00:00 0 
-7ff483a2d000-7ff483a6d000 rw-p 00000000 00:00 0 
-7ff483a6d000-7ff483aad000 rw-p 00000000 00:00 0 
-7ff483aad000-7ff483aed000 rw-p 00000000 00:00 0 
-7ff483aed000-7ff4
+7ef45e0a0000-7ef45e0b0000 rw-p 00000000 00:00 0                        [heap]
+7ff4551dd000-7ff4552dd000 rw-p 00000000 00:00 0 
+7ff4552dd000-7ff45531d000 rw-p 00000000 00:00 0 
+7ff45531d000-7ff45535d000 rw-p 00000000 00:00 0 
+7ff45535d000-7ff45539d000 rw-p 00000000 00:00 0 
+7ff45539d000-7ff4553dd000 rw-p 00000000 00:00 0 
+7ff4553dd000-7ff45541d000 rw-p 00000000 00:00 0 
+7ff45541d000-7ff45545d000 rw-p 00000000 00:00 0 
+7ff45545d000-7ff45549d000 rw-p 00000000 00:00 0 
+7ff45549d000-7ff4554dd000 rw-p 00000000 00:00 0 
+7ff4554dd000-7ff45551d000 rw-p 00000000 00:00 0 
+7ff45551d000-7ff45555d000 rw-p 00000000 00:00 0 
+7ff45555d000-7ff45559d000 rw-p 00000000 00:00 0 
+7ff45559d000-7ff4555dd000 rw-p 00000000 00:00 0 
+7ff4555dd000-7ff4
 [W layer    ] MAP 000 00:00 0 
-7ff483ce2000-7ff483ce3000 rw-p 00000000 00:00 0 
-7ff483ce3000-7ff483ce4000 rw-p 00000000 00:00 0 
-7ff483ce4000-7ff483ce5000 rw-p 00000000 00:00 0 
-7ff483ce5000-7ff483ce6000 rw-p 00000000 00:00 0 
-7ff483ce6000-7ff483ce7000 rw-p 00000000 00:00 0 
-7ff483ce7000-7ff483ce8000 rw-p 00000000 00:00 0 
-7ff483ce8000-7ff483ce9000 rw-p 00000000 00:00 0 
-7ff483ce9000-7ff483cea000 rw-p 00000000 00:00 0 
-7ff483cea000-7ff483ceb000 rw-p 00000000 00:00 0 
-7ff483ceb000-7ff483d2b000 rw-p 00000000 00:00 0 
-7ff483d2b000-7ff483d2c000 rw-p 00000000 00:00 0 
-7ff483d2c000-7ff483d6c000 rw-p 00000000 00:00 0 
-7ff483d6c000-7ff483d6d000 rw-p 00000000 00:00 0 
-7ff483d6d000-7ff483dad000 rw-p 00000000 00:00 0 
-7ff483dad000-7ff483dae000 rw-p 00000000 00:00 0 
-7ff483dae000-7ff483daf000 ---p 00000000 00:00 0                        [stack]
-7ff483daf000-7ff4845af000 rw-p 00000000 00:00 0                        [stack]
-7ff4845af000-7ff4845b0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
-7ff48c2b0000-7ff48c3b0000 rw-s 00000000 00:00 0                        /memfd:xrl-grow (deleted)
+7ff4557d2000-7ff4557d3000 rw-p 00000000 00:00 0 
+7ff4557d3000-7ff4557d4000 rw-p 00000000 00:00 0 
+7ff4557d4000-7ff4557d5000 rw-p 00000000 00:00 0 
+7ff4557d5000-7ff4557d6000 rw-p 00000000 00:00 0 
+7ff4557d6000-7ff4557d7000 rw-p 00000000 00:00 0 
+7ff4557d7000-7ff4557d8000 rw-p 00000000 00:00 0 
+7ff4557d8000-7ff4557d9000 rw-p 00000000 00:00 0 
+7ff4557d9000-7ff4557da000 rw-p 00000000 00:00 0 
+7ff4557da000-7ff4557db000 rw-p 00000000 00:00 0 
+7ff4557db000-7ff45581b000 rw-p 00000000 00:00 0 
+7ff45581b000-7ff45581c000 rw-p 00000000 00:00 0 
+7ff45581c000-7ff45585c000 rw-p 00000000 00:00 0 
+7ff45585c000-7ff45585d000 rw-p 00000000 00:00 0 
+7ff45585d000-7ff45589d000 rw-p 00000000 00:00 0 
+7ff45589d000-7ff45589e000 rw-p 00000000 00:00 0 
+7ff45589e000-7ff45589f000 ---p 00000000 00:00 0                        [stack]
+7ff45589f000-7ff45609f000 rw-p 00000000 00:00 0                        [stack]
+7ff45609f000-7ff4560a0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
+7ff45dda0000-7ff45dea0000 rw-s 00000000 00:00 0                        /memfd:xrl-grow (deleted)
 
 xrl_layer_boot returned 0
 exit 0
