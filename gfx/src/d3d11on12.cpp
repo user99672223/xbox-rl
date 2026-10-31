@@ -9,6 +9,7 @@
 #include "common.h"
 
 #include <atomic>
+#include <thread>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -42,6 +43,29 @@ HRESULT CreateD3D11On12Impl(ID3D12Device* dev12, ID3D12CommandQueue* q, ComPtr<I
     Log(LOG_INFO, "D3D11On12CreateDevice ok: ID3D11Device=%p ctx=%p chosen_fl=0x%X", dev.Get(), ctx.Get(),
         (unsigned)chosen);
     return S_OK;
+}
+
+// The game's device: a background check every 500 ms logs the moment it is removed and Windows' reason, once. A
+// game that does not check its creation calls crashes on the NULL resource of the first call after that (Rocket
+// League: CreateTexture2D -> DXGI_ERROR_DEVICE_REMOVED, then an access violation in its render thread).
+static void WatchRemoval(ComPtr<ID3D11Device> dev) {
+    std::thread([dev] {
+        LARGE_INTEGER f, t0, t; QueryPerformanceFrequency(&f); QueryPerformanceCounter(&t0);
+        for (;;) {
+            Sleep(500);
+            HRESULT r = dev->GetDeviceRemovedReason();
+            if (r == S_OK) continue;
+            QueryPerformanceCounter(&t);
+            const char* name = r == DXGI_ERROR_DEVICE_HUNG ? "DEVICE_HUNG (a command took too long)"
+                             : r == DXGI_ERROR_DEVICE_RESET ? "DEVICE_RESET (badly formed commands)"
+                             : r == DXGI_ERROR_DEVICE_REMOVED ? "DEVICE_REMOVED (the GPU went away / was reset)"
+                             : r == DXGI_ERROR_DRIVER_INTERNAL_ERROR ? "DRIVER_INTERNAL_ERROR"
+                             : r == DXGI_ERROR_INVALID_CALL ? "INVALID_CALL (the app misused the API)" : "?";
+            Log(LOG_ERROR, "d3d11: the game's device was removed: reason 0x%08lX %s (noticed %.1f s after its creation)",
+                (unsigned long)r, name, (double)(t.QuadPart - t0.QuadPart) / (double)f.QuadPart);
+            return;
+        }
+    }).detach();
 }
 
 HRESULT CreateNativeD3D11Impl(ComPtr<ID3D11Device>& dev, ComPtr<ID3D11DeviceContext>& ctx) {
@@ -323,6 +347,13 @@ xrl_status D3D11On12CreateOp(xrl_handle d3d12_device, xrl_handle d3d12_queue, xr
             G().preflight_done = true;
         }
         Log(LOG_INFO, "d3d11on12_create -> NATIVE device %p ctx %p (no D3D11On12, no D3D12 device)", nd, nc);
+        WatchRemoval(ComPtr<ID3D11Device>(nd));   // nd: ToHandle took nres->dev
+        // The host's keepalive presenter (its own D3D12 device on the window) stops now, not at the game's first
+        // swapchain: with both drawing, the console GPU hung (DXGI_ERROR_DEVICE_HUNG ~5 s after the swapchain; the
+        // keepalive's teardown "did not stop within 3 s" in 8 of 11 such crashes, 0 of 12 good runs; stopping it
+        // here: 0 of 3 hangs under the conditions that hung 3 of 3). Asking for the window stops it.
+        // XRL_KEEPALIVE_LATE=1: the old order.
+        { char v[4]; if (!(GetEnvironmentVariableA("XRL_KEEPALIVE_LATE", v, sizeof v) && v[0] == '1')) GetCoreWindow(); }
         return XRL_OK;
     }
 

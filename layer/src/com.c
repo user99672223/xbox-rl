@@ -352,6 +352,19 @@ void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
     InterlockedIncrement64(&xrl_com_calls);
     LONG64 n = 0;
     int i = hot_count(fn, ret, &n);
+    {   /* a host COM call that failed in a way a game may not check (a NULL resource later): log it, with its slot */
+        u32 hr = (u32)ret;
+        static volatile LONG nfail;
+        if ((hr == 0x8007000Eu || hr == 0x80070057u || hr == 0x887A0005u || hr == 0x887A0006u || hr == 0x887A0007u) &&
+            InterlockedIncrement(&nfail) <= 64) {
+            u64 vt = 0;
+            int s = slot_of(fn, &vt);
+            const img *m = NULL;
+            addr_kind(vt, &m);
+            LOGW("com: call failed hr=%08x: method %llx = slot %d of vtable %s+%llx, call %lld", hr, fn, s,
+                 m ? m->name : "heap", m ? vt - m->base : vt, (long long)n);
+        }
+    }
     if (i >= 0 && !g_scan_all) {
         u8 m = g_hot_scan[i];
         if (!m && is_qi(fn)) g_hot_scan[i] = m = 1;
