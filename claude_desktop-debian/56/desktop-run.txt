@@ -1,0 +1,48 @@
+=== shard core
+procs-test: exit 0 (TOTAL FAILS=0)
+probe 1 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
+probe 2 (m1): PASS exit   0    0s     - MiB  /usr/bin/ls -la /
+probe 3 (m1): PASS exit   0    0s     - MiB  /usr/bin/id
+probe 4 (m1): PASS exit   0    1s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
+probe 5 (m1): PASS exit   0    0s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
+probe 6 (m1): PASS exit   0    0s     - MiB  /usr/bin/ps aux
+probe 7 (m1): PASS exit   0    0s    13 MiB  /usr/bin/dpkg -l
+probe 8 (m1): PASS exit   0    1s     - MiB  /usr/bin/apt-get --version
+probe 9 (m1): PASS exit   0    0s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
+probe 10 (m2): FAIL exit 100    3s    51 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
+probe 11 (m2): FAIL exit 100    0s    29 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
+probe 12 (m2): FAIL exit 127    1s     - MiB  /usr/bin/hello
+probe 13 (m2): PASS exit   0    1s    31 MiB  /bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'
+probe 14 (m2): PASS exit   0    1s    34 MiB  XRL_SHARED_TEXT=0 /bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'
+--- syscalls answered ENOSYS (count, nr, name):
+     74 ENOSYS 334 rseq
+milestone 1 (bash, coreutils, ps, dpkg -l): PASS
+milestone 2 (apt-get update + install): FAIL (3 probe(s))
+exit 0
+=== shard x
+probe 15 (m3): PASS exit   0   11s    81 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
+probe 16 (m4): PASS exit   0   37s   339 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
+probe 20 (m6): PASS exit   0  125s   351 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
+--- syscalls answered ENOSYS (count, nr, name):
+     40 ENOSYS 334 rseq
+     20 ENOSYS 434 pidfd_open
+      4 ENOSYS 303 name_to_handle_at
+      4 ENOSYS 125 capget
+milestone 3 (Xvfb + xterm): PASS
+milestone 4 (XFCE session): PASS
+milestone 6 (TV: the session on /dev/fb0): PASS
+exit 0
+=== shard firefox
+probe 17 (m5): PASS exit   0   60s  1362 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 18 (m5s): PASS exit   0   57s  1611 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 19 (m5t): PASS exit   0   57s  1862 MiB  XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox
+--- syscalls answered ENOSYS (count, nr, name):
+     48 ENOSYS 334 rseq
+     30 ENOSYS 434 pidfd_open
+     30 ENOSYS 187 readahead
+      6 ENOSYS 303 name_to_handle_at
+      6 ENOSYS 125 capget
+milestone 5 (Firefox opens a local page): PASS
+milestone 5s (Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)): PASS
+milestone 5t (Firefox, every process with its own library copies (XRL_SHARED_TEXT=0)): PASS
+exit 0

@@ -10,9 +10,11 @@ probe 8 (m1): PASS exit   0    1s     - MiB  /usr/bin/apt-get --version
 probe 9 (m1): PASS exit   0    0s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
 probe 10 (m2): FAIL exit 100    3s    51 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
 probe 11 (m2): FAIL exit 100    0s    29 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
-probe 12 (m2): FAIL exit 127    0s     - MiB  /usr/bin/hello
+probe 12 (m2): FAIL exit 127    1s     - MiB  /usr/bin/hello
+probe 13 (m2): PASS exit   0    1s    31 MiB  /bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'
+probe 14 (m2): PASS exit   0    1s    34 MiB  XRL_SHARED_TEXT=0 /bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'
 --- syscalls answered ENOSYS (count, nr, name):
-     50 ENOSYS 334 rseq
+     74 ENOSYS 334 rseq
 milestone 1 (bash, coreutils, ps, dpkg -l): PASS
 milestone 2 (apt-get update + install): FAIL (3 probe(s))
 exit 0
