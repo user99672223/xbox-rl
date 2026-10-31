@@ -249,12 +249,39 @@ static slong put_addr(u64 uaddr, u64 ulen, const u8 *lx, u32 have)
     return 0;
 }
 
+static int net_diag(void);
+/* DIAG (XRL_NETDIAG=1): the Winsock handles our sockets hold. Windows reuses a handle number once it is closed; if a
+ * new socket gets a number one of ours still holds, something closed ours behind its back (its next call fails with
+ * WSAENOTSOCK) - the login flake's suspect. */
+#define LIVE_N 1024
+static SOCKET g_live[LIVE_N];
+static SRWLOCK g_live_lock = SRWLOCK_INIT;
+static void live_add(SOCKET s)
+{
+    AcquireSRWLockExclusive(&g_live_lock);
+    int fr = -1, dup = 0;
+    for (int i = 0; i < LIVE_N; i++) { if (g_live[i] == s) dup = 1; if (!g_live[i] && fr < 0) fr = i; }
+    if (!dup && fr >= 0) g_live[fr] = s;
+    ReleaseSRWLockExclusive(&g_live_lock);
+    xrl_thread *t = xrl_cur();
+    if (dup) LOGW("netdiag: CONFLICT: new socket %llu by tid %d: one of ours still holds that handle (closed behind its back)",
+                  (unsigned long long)s, t ? t->tid : -1);
+    else LOGW("netdiag: socket %llu by tid %d", (unsigned long long)s, t ? t->tid : -1);
+}
+static void live_del(SOCKET s)
+{
+    AcquireSRWLockExclusive(&g_live_lock);
+    for (int i = 0; i < LIVE_N; i++) if (g_live[i] == s) { g_live[i] = 0; break; }
+    ReleaseSRWLockExclusive(&g_live_lock);
+}
+
 /* ------------------------------------------------------------ socket()  */
 static slong new_netsock(SOCKET s, int domain, int type, int proto, int sockflags, int nonblock_inherit)
 {
     netsock *n = (netsock *)calloc(1, sizeof *n);
     if (!n) { closesocket(s); return -NE(ENOMEM); }
     n->s = s; n->domain = domain; n->type = type; n->proto = proto;
+    if (net_diag()) live_add(s);
     if (WSAEventSelect(s, g_net_ev, FD_READ | FD_WRITE | FD_ACCEPT | FD_CONNECT | FD_CLOSE | FD_OOB) == SOCKET_ERROR) {
         slong e = werr(); closesocket(s); free(n); return e;
     }
@@ -389,6 +416,7 @@ static slong net_send(xfile *f, netsock *n, u64 ubuf, u64 len, int flags, const 
             int r = to ? sendto(n->s, buf, (int)c, wflags, to, tolen) : send(n->s, buf, (int)c, wflags);
             if (r != SOCKET_ERROR) { sent = r; break; }
             int e = WSAGetLastError();
+            if (net_diag() && e != WSAEWOULDBLOCK) LOGW("netdiag: send sock=%llu len=%u -> err=%d", (unsigned long long)n->s, (unsigned)c, e);
             if (e == WSAEWOULDBLOCK) {
                 if (nonblock) { ret = done ? (slong)done : -NE(EAGAIN); stop = 1; break; }
                 slong s = wt_wait(&w, seen);
@@ -508,7 +536,14 @@ static void net_close(xfile *f)
     netsock *n = (netsock *)f->priv;
     if (n && net_diag()) { xrl_thread *t = xrl_cur();   /* DIAG: who really closes a socket */
         LOGW("netdiag: closesocket sock=%llu by tid %d task=%d connected=%d", (unsigned long long)n->s, t ? t->tid : -1, t && t->task ? 1 : 0, n->connected); }
-    if (n) { closesocket(n->s); free(n); }
+    if (n) {
+        int r = closesocket(n->s);
+        if (net_diag()) {
+            live_del(n->s);
+            if (r == SOCKET_ERROR) LOGW("netdiag: closesocket %llu failed: %d (already closed?)", (unsigned long long)n->s, WSAGetLastError());
+        }
+        free(n);
+    }
 }
 
 static const xfile_ops g_net_ops = { "socket", net_read, net_write, net_lseek, net_fstat, NULL, net_ioctl, NULL, NULL, net_poll, net_close, NULL };
@@ -723,6 +758,7 @@ static slong msg_send(xfile *f, netsock *n, u64 umsg, int flags)
             int r = to ? sendto(n->s, g, (int)total, (flags & L_MSG_OOB) ? MSG_OOB : 0, to, sl) : send(n->s, g, (int)total, (flags & L_MSG_OOB) ? MSG_OOB : 0);
             if (r != SOCKET_ERROR) { ret = r; break; }
             int e = WSAGetLastError();
+            if (net_diag() && e != WSAEWOULDBLOCK) LOGW("netdiag: sendmsg sock=%llu len=%u -> err=%d", (unsigned long long)n->s, (unsigned)total, e);
             if (e != WSAEWOULDBLOCK) { ret = -(slong)wsa_errno(e); break; }
             if (nonblock) { ret = -NE(EAGAIN); break; }
             slong s = wt_wait(&w, seen);
