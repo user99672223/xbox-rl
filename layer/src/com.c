@@ -225,8 +225,12 @@ typedef struct rc_ent { volatile u64 g; volatile u32 ok, tick; } rc_ent;
 static rc_ent g_rc[RC_N];
 volatile LONG64 xrl_com_probes, xrl_com_probe_misses, xrl_com_scans;   /* perf.c */
 
+static int g_probe_cache = -1;   /* XRL_COM_NO_PROBE_CACHE=1: read candidates under __try only (as before) */
+
 static int readable8(u64 a)
 {
+    if (g_probe_cache < 0) { char v[4]; g_probe_cache = !(GetEnvironmentVariableA("XRL_COM_NO_PROBE_CACHE", v, sizeof v) && v[0] == '1'); }
+    if (!g_probe_cache) return 1;
     u64 g = (a >> 12) + 1;   /* +1: 0 is an empty slot */
     rc_ent *e = &g_rc[(u32)((a >> 12) * 0x9E3779B1u) & (RC_N - 1)];
     u32 now = (u32)GetTickCount64();
@@ -494,7 +498,9 @@ void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
     found |= consider(ret) ? 1 : 0;   /* a returned interface pointer: handed out */
     /* Only a method that handed out an object of a new type is scanned always; one that was merely passed one (a
      * Set* call seeing a new resource type) goes back to the learned skip, as no new type comes out of it. */
-    if (i >= 0 && (found & 1) && g_hot_scan[i] != 1) {
+    static int promote_input = -1;   /* XRL_COM_PROMOTE_INPUT=1: an object passed in also makes a method scanned always (as before) */
+    if (promote_input < 0) { char v[4]; promote_input = GetEnvironmentVariableA("XRL_COM_PROMOTE_INPUT", v, sizeof v) && v[0] == '1'; }
+    if (i >= 0 && (found & (promote_input ? 3 : 1)) && g_hot_scan[i] != 1) {
         if (g_hot_scan[i] == 2) LOGW("com: method %llx handed out a new object type after %lld calls: scanning it always again", fn, (long long)n);
         g_hot_scan[i] = 1;
     }

@@ -58,13 +58,23 @@ private:
     int writing_ = -1;
     double last_wait_ms_ = 0;
     uint64_t seq_ = 0;
+    // XRL_PACE_LOCK=auto (default) | 60 | 120: without VRR only an even cadence looks smooth, so a game that cannot hold
+    // 120 (its own time per frame over ~8.6 ms) is held to 60: a flip on every second refresh only, and the game waits
+    // until the frame before its last one is on screen. Back to 120 below ~7.4 ms.
+    int lock_mode_ = 0;                      // 0 auto, 60, 120
+    std::atomic<bool> lock60_{false};
+    double work_ema_ = 0;                    // ms of the game's own time per frame (from Acquire's return to the next)
+    int64_t acq_ret_ = 0;
+    std::atomic<uint64_t> shown_{0};         // the newest frame number flipped
+    HANDLE shown_ev_ = nullptr;              // set on each flip
+    int64_t grid0_ = 0;                      // a flip time all flips are a multiple of 8.33 ms from (even/odd)
     std::atomic<bool> running_{false};
     bool normal_prio_ = false;
     std::atomic<int64_t> tick_{0};                    // QPC time of the latest 60 Hz window tick (estimated)
     std::thread presenter_, watcher_;
     int64_t qf_ = 0, f120_ = 0, early_ = 0;
     // stats (presenter thread), logged every 10 s
-    uint64_t st_flips_ = 0, st_new_ = 0, st_skipped_ = 0, st_late_copy_ = 0;
+    uint64_t st_flips_ = 0, st_new_ = 0, st_skipped_ = 0, st_late_copy_ = 0, st_odd_ = 0;
     int64_t st_t0_ = 0;
 };
 

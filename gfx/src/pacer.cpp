@@ -52,6 +52,15 @@ bool Pacer120::Start(ID3D11Device* game_dev, uint32_t w, uint32_t h, uint32_t dx
     D3D11_QUERY_DESC qd{D3D11_QUERY_EVENT, 0};
     if (FAILED(pdev_->CreateQuery(&qd, &copied_))) return false;
     seq_ = 0; writing_ = -1; reading_ = -1; prev_[0] = prev_[1] = -1; tick_ = 0;
+    {
+        char v[16] = "";
+        GetEnvironmentVariableA("XRL_PACE_LOCK", v, sizeof v);
+        lock_mode_ = !strcmp(v, "60") ? 60 : !strcmp(v, "120") ? 120 : 0;
+        lock60_ = lock_mode_ == 60;
+        if (!shown_ev_) shown_ev_ = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+        shown_ = 0; work_ema_ = 0; acq_ret_ = 0; grid0_ = 0;
+        Log(LOG_INFO, "pacer: cadence %s (XRL_PACE_LOCK)", lock_mode_ == 60 ? "60" : lock_mode_ == 120 ? "120" : "auto 60/120");
+    }
     st_flips_ = st_new_ = st_skipped_ = st_late_copy_ = 0; st_t0_ = Now();
     running_ = true;
     // XRL_PACE_DEBUG (bisecting): nothreads = no watcher/presenter (nothing reaches the screen); normalprio = both
@@ -117,6 +126,7 @@ void Pacer120::Present() {
         if (!tk) { Sleep(2); continue; }
         // the next flip time on the grid (tick + k * 8.333 ms - early) at least 2.5 ms away: room for the copy
         int64_t base = tk - early_, diff = Now() + qf_ * 5 / 2000 - base;
+        if (!grid0_) grid0_ = base;
         int64_t at = base + (diff <= 0 ? 0 : (diff + f120_ - 1) / f120_) * f120_;
         // Until 0.1 ms before the flip: copy each frame as soon as the GPU has finished it (the copy queues behind
         // whatever the GPU is doing, so it starts early), and a newer one over a copied one only while there is time for
@@ -154,12 +164,17 @@ void Pacer120::Present() {
         if (pending_seq) {
             st_late_copy_++;   // a copy still in flight: flipping now would show it half done; it goes up at a later slot
             WaitUntil(at);
+        } else if (copied_seq > shown_seq && lock60_.load() && ((at - grid0_ + f120_ / 2) / f120_) % 2) {
+            st_odd_++;   // at 60 only every second refresh flips: this one keeps the last frame up
+            WaitUntil(at);
         } else if (copied_seq > shown_seq) {
             {
                 WaitUntil(at);
                 HRESULT hr = host_->Present(0, DXGI_PRESENT_ALLOW_TEARING);
                 if (FAILED(hr)) { Log(LOG_ERROR, "pacer: Present 0x%08lX; pacing stops", (unsigned long)hr); running_ = false; break; }
                 shown_seq = copied_seq;
+                shown_ = shown_seq;
+                SetEvent(shown_ev_);
                 st_flips_++;
                 ComPtr<ID3D11Texture2D> b0;   // a native flip swapchain's buffer 0 is always the next one
                 hostbuf_.Reset();
@@ -172,16 +187,35 @@ void Pacer120::Present() {
         int64_t now = Now();
         if (now - st_t0_ >= qf_ * PerfSeconds()) {
             double secs = (double)(now - st_t0_) / (double)qf_;
-            Log(LOG_INFO, "perf: pacer %.1f flips/s (new frames %.1f/s), %.1f slots/s with no new frame, %llu copies late; a copy takes %.2f ms",
+            Log(LOG_INFO, "perf: pacer %.1f flips/s (new frames %.1f/s), %.1f slots/s with no new frame, %llu copies late; a copy takes %.2f ms; "
+                "cadence %s (game %.1f ms/frame), %llu odd slots held",
                 st_flips_ / secs, st_new_ / secs, st_skipped_ / secs, (unsigned long long)st_late_copy_,
-                (double)copy_est * 1000.0 / (double)qf_);
-            st_flips_ = st_new_ = st_skipped_ = st_late_copy_ = 0;
+                (double)copy_est * 1000.0 / (double)qf_, lock60_.load() ? "60" : "120", work_ema_, (unsigned long long)st_odd_);
+            st_flips_ = st_new_ = st_skipped_ = st_late_copy_ = st_odd_ = 0;
             st_t0_ = now;
         }
     }
 }
 
 ID3D11Texture2D* Pacer120::Acquire() {
+    {   // the game's own time for the frame it is presenting, and the 60/120 decision
+        const int64_t now = Now();
+        if (acq_ret_) {
+            double ms = (double)(now - acq_ret_) * 1000.0 / (double)qf_;
+            work_ema_ = work_ema_ ? work_ema_ + (ms - work_ema_) / 16.0 : ms;
+        }
+        if (!lock_mode_) {
+            bool l = lock60_.load(), n = l ? work_ema_ > 7.4 : work_ema_ > 8.6;
+            if (n != l) {
+                lock60_ = n;
+                static int said;
+                if (said++ < 100) Log(LOG_INFO, "pacer: cadence %s (the game's own time %.1f ms per frame)", n ? "60" : "120", work_ema_);
+            }
+        }
+        // at 60: hold the game to one frame waiting for its flip (the one before it must be on screen)
+        if (lock60_.load())
+            for (int i = 0; i < 4 && seq_ >= 1 && shown_.load() + 1 < seq_; i++) WaitForSingleObject(shown_ev_, 25);
+    }
     // at most two frames on the GPU: wait for the one before the last
     const int64_t w0 = Now();
     if (prev_[1] >= 0) WaitForSingleObject(slot_ev_[prev_[1]], 100);
@@ -195,6 +229,7 @@ ID3D11Texture2D* Pacer120::Acquire() {
         if (i != reading_.load() && i != newest_i) { writing_ = i; break; }
     }
     slot_value_[writing_] = 0;   // not ready until Submit
+    acq_ret_ = Now();
     return ring_g_[writing_].Get();
 }
 

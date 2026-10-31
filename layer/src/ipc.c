@@ -447,6 +447,18 @@ static int file_keys(xfile *f, const void **out)
     return -1;
 }
 
+/* A wait that includes a network socket re-checks every 20 ms: Winsock does not always signal again (WSAEventSelect
+ * re-arming; net.c's blocking calls sleep in slices for the same reason), and before keyed wake-ups the stream of
+ * unrelated wake-ups re-checked sockets all the time. Without this, TLS handshakes stalled until servers dropped them
+ * (RL's online login: SSL_ERROR_SYSCALL, then WSAENOTSOCK). */
+#define NET_SLICE_NS 20000000ll
+static int has_net(const void *const *keys, int n)
+{
+    if (n < 0) return 0;   /* woken by everything anyway */
+    for (int i = 0; i < n; i++) if (keys[i] && xrl_net_is_key(keys[i])) return 1;
+    return 0;
+}
+
 static u32 file_ready(xfile *f, u32 want)
 {
     if (!f->ops->poll) return want & (LX_POLLIN | LX_POLLOUT);
@@ -495,6 +507,7 @@ slong xrl_poll(u64 ufds, u64 nfds, s64 timeout_ns, u64 sigmask)
             if (now >= deadline) { ret = 0; break; }
             left = (s64)(deadline - now);
         }
+        if (has_net(keys, nk) && (left < 0 || left > NET_SLICE_NS)) left = NET_SLICE_NS;
         int w = xrl_io_wait_keys(seen, keys, nk, left);
         if (w < 0) { ret = -LX_EINTR; break; }
         /* non-fd waiters (files) are always ready, so only pipes/sockets/eventfds sleep here;
@@ -626,6 +639,7 @@ slong xrl_epoll_wait(int epfd, u64 uevents, int maxevents, int timeout_ms, int *
             if (now >= deadline) { ret = 0; break; }
             left = (s64)(deadline - now);
         }
+        if (has_net(keys, nk) && (left < 0 || left > NET_SLICE_NS)) left = NET_SLICE_NS;
         if (xrl_io_wait_keys(seen, keys, nk, left) < 0) { ret = -LX_EINTR; break; }
     }
     if (ret > 0 && xrl_ctu(uevents, out, (size_t)ret * sizeof *out)) ret = -LX_EFAULT;

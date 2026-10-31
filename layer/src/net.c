@@ -172,6 +172,7 @@ static const xfile_ops g_net_ops;
 
 static netsock *ns_of(xfile *f) { return f && f->ops == &g_net_ops ? (netsock *)f->priv : NULL; }
 const void *xrl_net_key(xfile *f) { return ns_of(f) ? (const void *)&g_net_ev : NULL; }
+int xrl_net_is_key(const void *k) { return k == (const void *)&g_net_ev; }
 
 /* The sentinel the syscall layer uses to try the pipe-based socketpair code next. */
 #define NOT_NET XRL_NOT_NET

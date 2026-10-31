@@ -534,6 +534,7 @@ void xrl_io_notify(void);                      /* something changed: wake every 
 void xrl_io_notify_key(const void *key);       /* the object `key` changed: wake its sleepers and the unkeyed ones */
 int  xrl_io_wait(LONG seen, s64 timeout_ns);   /* 1 woken, 0 timeout, -1 interrupted; woken by any change */
 int  xrl_io_wait_keys(LONG seen, const void *const *keys, int n, s64 timeout_ns);   /* only by changes to keys (n < 0: any) */
+int xrl_net_is_key(const void *k);             /* net.c: is this the sockets' key */
 const void *xrl_net_key(xfile *f);             /* net.c: the key a socket's changes are notified with, NULL: not a socket */
 
 /* net.c: AF_INET/AF_INET6 TCP+UDP over Winsock. Each returns XRL_NOT_NET when `fd` (or the
