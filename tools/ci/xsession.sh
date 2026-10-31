@@ -5,6 +5,7 @@
 #   xterm    an xterm (milestone 3)
 #   xfce     startxfce4 under dbus-launch (milestone 4)
 #   firefox  the XFCE session + Firefox showing a local page (milestone 5)
+#   plasma   KDE Plasma 6 (X11 session, KWin on Mesa llvmpipe) under dbus-run-session
 #   tv       the XFCE session shown on /dev/fb0 (the TV on the Xbox) through /usr/local/bin/xbridge (the X picture over
 #            MIT-SHM + DAMAGE, controller/keyboard/mouse from /dev/input/event* as XTest); fb0 is dumped to
 #            /tmp/xrl-fb0.raw (BGRX, the X screen's size) at the end
@@ -39,6 +40,11 @@ xterm)
     /usr/bin/xterm -geometry 80x20+40+40 -e /bin/bash -c 'echo hello from xterm; id; sleep 120' > /tmp/xrl-xterm.log 2>&1 &
     pids="$pids $!"
     wait_for 90 '\("xterm" "XTerm"\)'
+    ;;
+plasma)
+    /usr/bin/dbus-run-session /usr/bin/startplasma-x11 > /tmp/xrl-plasma.log 2>&1 &
+    pids="$pids $!"
+    wait_for 400 '"plasmashell"' && wait_for 200 '"(Desktop|plasmashell)".*1280x'
     ;;
 xfce|firefox|tv)
     if [ "$mode" = tv ]; then

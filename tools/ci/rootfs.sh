@@ -24,6 +24,17 @@ path-include /usr/share/doc/*/copyright
 path-exclude /usr/share/locale/*
 path-include /usr/share/locale/locale.alias
 EOF
+# Packages whose dependency set debootstrap's resolver cannot handle (KDE Plasma 6): apt installs them in the chroot,
+# only for the default list (tools/ci/rootfs-debian-apt.list).
+apt=$here/rootfs-debian-apt.list
+if [ -z "${ROOTFS_LIST:-}" ] && [ -f "$apt" ]; then
+    ap=$(grep -v '^#' "$apt" | tr -s ' \n' ' ')
+    mount -t proc proc "$r/proc"; trap 'umount "$r/proc" 2>/dev/null || true' EXIT
+    chroot "$r" apt-get update -qq
+    DEBIAN_FRONTEND=noninteractive chroot "$r" apt-get install -y -qq --no-install-recommends $ap > /dev/null
+    chroot "$r" apt-get clean
+    umount "$r/proc"; trap - EXIT
+fi
 find "$r/usr/share/man" "$r/usr/share/info" "$r/usr/share/locale" -mindepth 1 -maxdepth 1 ! -name locale.alias -exec rm -rf {} +
 find "$r/usr/share/doc" -mindepth 1 ! -name copyright ! -type d -delete
 rm -rf "$r"/var/cache/apt/archives/*.deb "$r"/var/lib/apt/lists/* "$r"/dev/*

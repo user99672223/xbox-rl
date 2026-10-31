@@ -32,6 +32,7 @@ list=(
     "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
     "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"
     "6|400|dumped the framebuffer|/bin/bash /tmp/xrl-xsession.sh tv"
+    "7|900|found /.*plasmashell.*1280x|/bin/bash /tmp/xrl-xsession.sh plasma"
 )
 # X sessions (milestones 3-5): tools/ci/xsession.sh in the guest; each saves /tmp/xrl-<mode>.xwd, which becomes
 # <out>/<mode>.png; a session probe passes only with its screenshot
