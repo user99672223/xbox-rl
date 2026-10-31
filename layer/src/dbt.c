@@ -227,9 +227,9 @@ static void emit_ud2(dimg *im, u64 pc, const char *why)
     e8(im, 0x0f); e8(im, 0x0b);
 }
 
-static int is_fs_unit(const x86i *in)
+static int is_seg_unit(const x86i *in, int seg)
 {
-    if (in->seg != 0x64) return 0;
+    if (in->seg != seg) return 0;
     if (in->map == 0 && in->opcode == 0x8d) return 0;
     if (in->has_modrm && (in->modrm >> 6) != 3) return 1;
     if (in->map == 0 && in->opcode >= 0xa0 && in->opcode <= 0xa3) return 1;
@@ -263,8 +263,14 @@ static int translate_trace(dimg *im, u64 pc)
         u64 next = pc + (u64)len;
         u8 b[640]; int n;
 
-        if (in.seg == 0x64 && is_fs_unit(&in)) {
+        if (is_seg_unit(&in, 0x64)) {
             if ((n = xrw_emit_fs(XRL_TP_GS_OFFSET, b, p, &in)) < 0) { emit_ud2(im, pc, "a %fs operand form"); return 0; }
+            emit(im, b, (size_t)n);
+            pc = next;
+            continue;
+        }
+        if (is_seg_unit(&in, 0x65) && xrl_gs_slot_off()) {   /* a guest GS base of its own (thread.c; never with XRL_FORK_TASKS) */
+            if ((n = xrw_emit_gs(xrl_gs_slot_off(), b, p, &in)) < 0) { emit_ud2(im, pc, "a %gs operand form"); return 0; }
             emit(im, b, (size_t)n);
             pc = next;
             continue;

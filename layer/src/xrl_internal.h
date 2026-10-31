@@ -171,6 +171,7 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
 slong xrl_do_exit(int code, int group);
 /* task.c: fork() and ptrace() for children that alternate with their parent (experiment) */
 int  xrl_fork_tasks_enabled(void);
+void xrl_teb_set_guest_qword(xrl_thread *t, u32 off, u64 v);   /* teb.c: what guest code sees at gs:[off] */
 u32  xrl_gs_slot_off(void);       /* %gs offset of the guest GS base slot (thread.c), 0: none */
 slong xrl_do_fork(void);
 int  xrl_task_pid(xrl_thread *t, int *ppid);             /* the task's pid (0: not a task) and its parent's */

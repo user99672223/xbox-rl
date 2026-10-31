@@ -134,6 +134,16 @@ int xrw_emit_syscall(uint8_t *out, uint64_t out_va, uint64_t slot)
     return e.n;
 }
 
+int xrw_emit_gs(uint64_t gs_slot_off, uint8_t *out, const uint8_t *ins, const x86i *in)
+{
+    eb e; e.n = 0;
+    xrw w; memset(&w, 0, sizeof w);
+    w.gs_slot_off = gs_slot_off;
+    if (in->seg != 0x65 || emit_fs(&e, &w, ins, in)) return -1;
+    memcpy(out, e.b, (size_t)e.n);
+    return e.n;
+}
+
 int xrw_emit_fs(uint64_t tp_gs_off, uint8_t *out, const uint8_t *ins, const x86i *in)
 {
     eb e; e.n = 0;

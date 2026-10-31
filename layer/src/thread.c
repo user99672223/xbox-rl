@@ -492,7 +492,7 @@ slong xrl_sys_arch_prctl(int code, u64 addr)
         u64 teb = __readgsqword(0x30);
         if (addr == teb) { t->guest_gs = addr; return 0; }
         u32 gso = xrl_gs_slot_off();
-        if (gso) { t->guest_gs = addr; __writegsqword(gso, addr); return 0; }   /* rewritten %gs operands use it */
+        if (gso) { t->guest_gs = addr; xrl_teb_set_guest_qword(t, gso, addr); return 0; }   /* rewritten %gs operands use it */
         if (addr == 0) { t->guest_gs = addr; return 0; }
         static volatile LONG warned;
         if (!InterlockedExchange(&warned, 1))

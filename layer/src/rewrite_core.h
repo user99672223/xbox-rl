@@ -80,5 +80,7 @@ uint64_t *xrw_eh_starts(const uint8_t *hdr, size_t hdr_len, uint64_t hdr_vaddr, 
 struct x86i;
 int xrw_emit_syscall(uint8_t *out, uint64_t out_va, uint64_t slot);
 int xrw_emit_fs(uint64_t tp_gs_off, uint8_t *out, const uint8_t *ins, const struct x86i *in);
+/* the same for a %gs operand: relative to the guest GS base slot at %gs:gs_slot_off */
+int xrw_emit_gs(uint64_t gs_slot_off, uint8_t *out, const uint8_t *ins, const struct x86i *in);
 
 #endif

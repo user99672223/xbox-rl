@@ -12,6 +12,7 @@
 #include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -181,6 +182,19 @@ int main(int argc, char **argv)
     ws = 0;
     CHECK(rc > 0 && waitpid((pid_t)rc, &ws, 0) == rc && WIFEXITED(ws) && WEXITSTATUS(ws) == 7 && fork_val == 1,
           "raw clone(SIGCHLD, stack 0) with a non-zero r9 forks");
+
+    /* a GS base of the program's own and %gs operands on it (Firefox's wasm2c sandboxes); on the layer the operands are
+     * rewritten against a TEB slot, which must hold the value in the guest's view of the TEB */
+    static uint64_t gsblk[4] = { 11, 22, 33, 44 };
+    uint64_t g1 = 0, g2 = 0, back = 0;
+    int sg = (int)syscall(SYS_arch_prctl, 0x1001 /* ARCH_SET_GS */, gsblk);
+    if (sg == 0) {
+        __asm__ volatile("mov %%gs:8, %0" : "=r"(g1));
+        __asm__ volatile("movq $55, %%gs:16\n mov %%gs:16, %0" : "=r"(g2) :: "memory");
+        syscall(SYS_arch_prctl, 0x1004 /* ARCH_GET_GS */, &back);
+        syscall(SYS_arch_prctl, 0x1001, 0);
+    }
+    CHECK(sg == 0 && g1 == 22 && g2 == 55 && gsblk[2] == 55 && back == (uint64_t)gsblk, "arch_prctl(SET_GS) + %gs loads and stores");
 
     printf("glibc_test: %d failure(s)\n", fails);
     return fails;
