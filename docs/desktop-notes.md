@@ -2,6 +2,20 @@
 
 Newest first.
 
+## 2026-10-31 (end of day) - mouse: GameInput sees it; state of the main session's branches
+
+- **USB mouse on the Xbox:** the console's own answers (branch `claude/xbox-input-probe`, host/src/input_probe.cpp):
+  MouseCapabilities present (2 buttons); device XvioMouseBus/xviomou (Xbox virtual mouse) enabled; NO CoreWindow
+  pointer events, NO MouseDevice moves, NO HID mice, NO raw input; **GameInput.dll loads, GameInputCreate succeeds
+  and a current mouse reading exists** (readings changed during the run). That build feeds GameInput's mouse deltas,
+  buttons and wheel into the guest mouse (REL + BTN_*): untested, the console needed a restart (a crashed instance
+  stuck). Declaring packageQuery or humaninterfacedevice made the app fail to start (0x8027025A): do not.
+- Branches from the main session: `claude/xbridge-cursor` (pointer drawn on fb0, xbridge at 0x10000000: merge),
+  `claude/xbox-input-probe` (on desktop-gpu c3da1bc), `claude/xbox-desktop-test` (desktop + RL work merge),
+  `claude/rl-instruments` (RL fixes; not in A/B yet: its render-crash fix is why the A+B RL gate crashed).
+- Open for A: Windows commit outside guest mappings (third TV run), Firefox prefs system-wide, Input Leap / KDE
+  Connect, default browser, wallpaper. For B: VA-API decode, Plasma's fork stall, overlays in the CI rootfs.
+
 ## 2026-10-31 (third TV run) - the app died of WINDOWS commit with only 1.5 GiB guest committed
 
 - Xbox, A+B build c3da1bc + the pointer bridge: XFCE + Application Finder + launching apps, at t=104 s the layer
