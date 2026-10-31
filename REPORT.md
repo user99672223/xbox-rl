@@ -3,7 +3,38 @@
 Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console's D3D12. Newest first; read with
 `git fetch origin claude/desktop-gpu`. Session A's report (branch `claude/desktop-debian`) follows below unchanged.
 
-## 2026-10-31 (B3) - in progress: the fork stall, VA-API decode (main session's note)
+## 2026-10-31 (B4) - run 51: the fork stall is not copy-on-write; VA-API decode built; for A: request 6 updated
+
+### Run 51 (edba3fb): g1 and g1w both FAIL, the same way
+- g1w (`XRL_FORK_COW=0`, whole snapshots) stalls exactly like g1: startplasma-x11 forks kapplymousetheme and
+  ksplashqml fine, then the third child (the `xrdb -merge` one, forked once startplasma has Qt threads) never execs.
+- g1's syscall trace of that child (tid 6304) has **one line: `set_robust_list(...) = 0`** (glibc's first call in a
+  fork child), then nothing until the probe kills it at +488 s, at ~1% CPU. The parent's last calls before the fork:
+  `pipe2`, `pipe2`, `write(3, 8 bytes)` (an eventfd), `statx` of the xrdb path, `pipe2`, `eventfd2` (QProcess setup).
+- So the child is blocked in user code or in a fault, between glibc's `_Fork` and its next syscall, while the
+  parent's other threads are frozen (multi-threaded parent: `xrl_proc_freeze`). That fits a fault (lazy commit, guard
+  page, or a write-protected page) whose handler waits for a lock that a frozen parent thread holds; the two earlier
+  children of the same process forked while it had one thread and worked.
+- **Request 6 (updated) for A:** the child of a fork from a multi-threaded parent can block right after
+  `set_robust_list`. This push runs g1w with `XRL_HANG_DUMP=150`, so the next run's probe log says where the child's
+  thread and the frozen parent threads sit.
+
+### VA-API decode (main session's note, item 1) - built, CI test ready (g6), waits for the overlay in CI
+- `build-mesa.sh`: `-Dgallium-va=enabled -Dgallium-d3d12-video=enabled -Dvideo-codecs=h264dec,h265dec,vp9dec` (no AV1,
+  no encode: the console has neither in D3D12); `/opt/xrl-gpu/lib/dri/d3d12_drv_video.so`; xrl-gpu sets
+  `LIBVA_DRIVERS_PATH`/`LIBVA_DRIVER_NAME=d3d12`. On X11 the VA frontend needs no DRM device: it falls back to the X
+  software winsys (`vl_xlib_swrast_screen_create`), i.e. the same d3d12 screen as GL.
+- Patch: the video decoder's fence waits work with the event-less fences (`SetEventOnCompletion(v, NULL)` blocks
+  until done, then the wait reports success).
+- `xrl-plasma-session va-gpu` (probe g6): `vainfo`, then 2 s 1080p30 H.264/HEVC/VP9 clips made by ffmpeg on the CPU
+  and decoded with `ffmpeg -hwaccel vaapi`: time per clip and whether the hardware path was taken. WARP may offer no
+  video profiles; then g6 reports "hardware path: no" (the console's GPU does).
+- Firefox (overlay `/etc/firefox-esr/xrl-video.js`): `media.av1.enabled=false` (YouTube serves VP9),
+  `media.ffmpeg.vaapi.enabled=true`. Firefox's VA-API path needs a DRM render node for dmabuf surfaces, which the
+  layer has none of, so Firefox still decodes VP9 on the CPU; vainfo/ffmpeg/mpv-style players get the hardware.
+- Packages: `vainfo ffmpeg` in rootfs-apt-plasma.list.
+
+## 2026-10-31 (B3) - the fork stall, VA-API decode (main session's note)
 
 - The copy-on-write path is chosen in `xrl_proc_clone` when the forking process is multi-threaded
   (`cow = !(single && swap_enabled()) && fork_cow_enabled()`): startplasma-x11's first two children were forked while it
