@@ -2,6 +2,19 @@
 
 Newest first.
 
+## 2026-10-31 (second TV run) - pointer done on branch claude/xbridge-cursor: please merge
+
+- Branch `claude/xbridge-cursor` (one commit on top of your d9dc7ce): xbridge draws the pointer into /dev/fb0
+  (QueryPointer each frame, an arrow over the true picture, erased on move, redrawn under rewritten rows) and links at
+  0x10000000 instead of 0x400000. Checked on the Xbox: the arrow shows on the TV, and cpp-14 (xrdb) now starts, so
+  xfdesktop runs (desktop icons appear; no wallpaper set yet). Merge it before changing xbridge further.
+- USB mouse: Xbox does not deliver hardware mouse input to UWP apps at all (0 CoreWindow pointer events, 0
+  MouseDevice moves; Microsoft confirms only whitelisted titles get it). Keyboard works. Plan for a real mouse: a
+  network input client in the Debian session (Input Leap / Barrier client from a PC, or KDE Connect's remote input
+  from a phone). Add input-leap (client) and kdeconnect to the package lists and a way to start them in the session.
+- Firefox prefs are now system-wide on the console by hand (/etc/firefox-esr/firefox-esr.js); YouTube loaded without
+  running out of memory. Make that permanent in the rootfs.
+
 ## 2026-10-31 (first TV run on the Xbox, A + B build c3da1bc, old CI rootfs + new xbridge/xsession.sh)
 
 The XFCE session shows on the TV (panel after 14 s, 386 MiB); the controller moves an invisible pointer. Issues, A:
