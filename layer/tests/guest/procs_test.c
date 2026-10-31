@@ -232,6 +232,19 @@ static void run_role(int argc, char **argv)
         w = wait4_(pid, &st, 0, 0);
         exit_(w == pid && st == (4 << 8) ? 0 : 3);
     }
+    if (seq(role, "daemon")) {   /* a daemon start: fork; the child starts a thread at once and runs on; the parent only exits */
+        long pid = fork_();
+        if (pid == 0) {
+            u8 *stk = mmap_anon(256 * 1024);
+            struct tls *t = mmap_anon(4096); t->self = t;
+            long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+            ctid_[2] = -1;
+            if (xclone(thr_futex, stk + 256 * 1024 - 64, flags, 0, (void *)&ctid_[2], t, (void *)&ctid_[2]) <= 0) exit_(98);
+            msleep(300);
+            exit_(0);
+        }
+        exit_(pid > 0 ? 0 : 1);
+    }
     if (seq(role, "interleave")) {   /* a forked child that blocks lets the parent run; each keeps its own memory */
         int p[2]; pipe2_(p, 0);
         int st;
@@ -664,6 +677,12 @@ static void driver(void)
         pid = spawn(av2);
         w = wait_for(pid, &st, 15000);
         CHECKV(w == pid && st == 0, "forked child blocks, parent runs and writes first, each keeps its memory", st);
+        /* Firefox's crashhelper: the parent of a child that went multi-threaded right after the fork still gets to exit */
+        char *av3[] = { g_self, "daemon", 0 };
+        pid = spawn(av3);
+        w = wait_for(pid, &st, 5000);
+        CHECKV(w == pid && st == 0, "daemon start: the child starts a thread at once, its parent still exits", st);
+        wait_for(-1, &st, 3000);   /* the orphan, reparented to us */
     }
     CHECK(wait4_(-1, &st, 1, 0) == -10, "no children left at the end");
     outn("TOTAL FAILS", fails);

@@ -23,8 +23,8 @@ list=(
     "1|120|guest.out\] USER +PID|/usr/bin/ps aux"
     "1|120|guest.out\] ii +bash |/usr/bin/dpkg -l"
     "1|120|guest.out\] apt [0-9]|/usr/bin/apt-get --version"
-    "2|600|guest.out\] Reading package lists|/usr/bin/apt-get update"
-    "2|600|guest.out\] Setting up hello|/usr/bin/apt-get install -y --no-install-recommends hello"
+    "2|600|guest.out\] Reading package lists|XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get update"
+    "2|600|guest.out\] Setting up hello|XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello"
     "2|60|guest.out\] Hello, world!|/usr/bin/hello"
     "3|240|\\(\"xterm\" \"XTerm\"\\)|/bin/bash /tmp/xrl-xsession.sh xterm"
     "4|600|found /\"\\(Desktop|XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=xfdesktop XRL_TRACE_MAX=6000 /bin/bash /tmp/xrl-xsession.sh xfce"
@@ -37,6 +37,11 @@ cp tools/ci/xsession.sh "$rootu/tmp/xrl-xsession.sh"
 # the guest's environment (layer/tests/test_host.c build_envp): a root login's
 export XRL_ENV_XRL_SESSION_KILLALL=1 XRL_ENV_HOME=/root XRL_ENV_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
        XRL_ENV_DEBIAN_FRONTEND=noninteractive XRL_ENV_LANG=C.UTF-8 XRL_ENV_TERM=dumb
+# the layer's own process tests (fork groups, exec, wait: proc.c), which the guest suite does not run
+if [ -f layer/tests/guest/out/procs_test.elf ]; then
+    XRL_TIMEOUT=300 sh layer/tests/procs-test.sh > "$out/procs-test.txt" 2>&1
+    echo "procs-test: exit $? ($(grep -ao 'TOTAL FAILS=[0-9]*' "$out/procs-test.txt" | tail -1))"
+fi
 n=0
 declare -A fails seen
 for e in "${list[@]}"; do

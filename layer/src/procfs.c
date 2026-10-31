@@ -693,7 +693,10 @@ static slong mf_fstat(xfile *f, lx_stat *st)
 }
 static u32 mf_poll(xfile *f, u32 ev) { (void)f; return ev & (LX_POLLIN | LX_POLLOUT); }
 static void mf_close(xfile *f) { memfile *m = (memfile *)f->priv; if (m) { free(m->data); free(m); } }
-static const xfile_ops g_mf_ops = { "procfile", mf_read, mf_write, mf_lseek, mf_fstat, NULL, NULL, NULL, NULL, mf_poll, mf_close, mf_read };
+/* a /proc file's readiness never changes: EPOLLET reports it once (libmount watches /proc/self/mountinfo with EPOLLIN|EPOLLET;
+ * without this every wake-up in the layer was a "mount table changed" and GLib programs re-read it in a loop) */
+static u32 mf_edge(xfile *f) { (void)f; return 0; }
+static const xfile_ops g_mf_ops = { "procfile", mf_read, mf_write, mf_lseek, mf_fstat, NULL, NULL, NULL, NULL, mf_poll, mf_close, mf_read, mf_edge };
 
 /* directory listing object */
 typedef struct pdirent { char name[128]; int type; } pdirent;

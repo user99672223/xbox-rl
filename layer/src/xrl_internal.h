@@ -303,6 +303,7 @@ void  xrl_proc_thaw(xrl_proc *p);
 void  xrl_proc_park(xrl_thread *t);             /* syscall return: a frozen or stopped process waits here */
 int   xrl_swap_block(void);                     /* about to block in the layer: let another fork-group member run (1: released) */
 void  xrl_swap_resume(void);                    /* the wait is over: get the address space back */
+void  xrl_swap_yield(void);                     /* about to start a first thread: let waiting fork-group members run first */
 void  xrl_proc_exec_done(xrl_proc *p);          /* execve loaded the new image: release a vfork parent */
 void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its own (in place when it is the only user) */
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */

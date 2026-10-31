@@ -2341,6 +2341,16 @@ static void test_epoll_et(void)
     sc3(1, pf[1], "y", 1);
     CHECK(sc4(232, ep, &evo, 1, 500) == 1, "ET pipe: drained and refilled -> event");
     sc1(3, ep); sc1(3, sp[0]); sc1(3, sp[1]); sc1(3, pf[0]); sc1(3, pf[1]);
+    /* a /proc file is always readable: ET reports it once, then never, however busy the rest of the system is (libmount's
+     * mount-table monitor on /proc/self/mountinfo) */
+    ep = sc1(291, 0);
+    long mi = sc3(2, "/proc/self/mountinfo", 0, 0);
+    sc2(293, pf, 04000);
+    sc4(233, ep, 1, mi, &ev);
+    CHECK(sc4(232, ep, &evo, 1, 0) == 1, "ET /proc file: reported once");
+    sc3(1, pf[1], "z", 1); sc3(0, pf[0], b, 16);   /* layer I/O elsewhere */
+    CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET /proc file: not again after unrelated I/O");
+    sc1(3, ep); sc1(3, mi); sc1(3, pf[0]); sc1(3, pf[1]);
 }
 
 /* ---- regressions found by review: control buffer sizes, WAITALL + bad iovec, shm sizes, pty mode switch, memfd seals --- */

@@ -205,6 +205,7 @@ typedef struct swapgrp {
     SRWLOCK lock;
     CONDITION_VARIABLE cv;
     xrl_proc *holder;     /* runs guest code now; NULL: nobody (everyone is blocked or waiting) */
+    int waiting;          /* members waiting for the baton in swap_acquire */
     xrl_proc *image;      /* whose memory is in the address space */
     int image_valid;      /* 0: that process left, the memory is leftovers */
 } swapgrp;
@@ -233,10 +234,12 @@ static void swap_in(swapgrp *g, xrl_proc *p)   /* p is the holder; the lock is n
 static void swap_acquire(swapgrp *g, xrl_proc *p, xrl_thread *t)
 {
     AcquireSRWLockExclusive(&g->lock);
+    g->waiting++;
     while (g->holder && g->holder != p) {
         if (p->dying || (t && t->exec_kill)) break;   /* being killed: do not wait for anybody */
         SleepConditionVariableSRW(&g->cv, &g->lock, 50, 0);
     }
+    g->waiting--;
     if (!g->holder) g->holder = p;
     int mine = g->holder == p;
     ReleaseSRWLockExclusive(&g->lock);
@@ -262,6 +265,29 @@ void xrl_swap_resume(void)
 {
     xrl_thread *t = xrl_cur();
     if (t && t->proc && t->proc->grp) swap_acquire(t->proc->grp, t->proc, t);
+}
+
+/* The holder is about to start its first thread: from then on it never lets go of the baton (a thread that blocks
+ * cannot stop its siblings), so a member waiting for it now would wait for good. The usual case is a daemon start:
+ * fork, the parent only exits, the child starts threads (Firefox's crashhelper; Firefox waits for that parent).
+ * Let the waiting members run first, until they block, exec or end, then take the baton back. */
+void xrl_swap_yield(void)
+{
+    xrl_thread *t = xrl_cur();
+    if (!t || !t->proc || !t->proc->grp) return;
+    xrl_proc *p = t->proc;
+    swapgrp *g = p->grp;
+    if (p->nthreads - p->ndaemons != 1) return;
+    AcquireSRWLockExclusive(&g->lock);
+    int others = g->holder == p && g->waiting > 0;
+    if (others) {
+        g->holder = NULL;
+        WakeAllConditionVariable(&g->cv);
+        /* until one of them has it (or none came: they may have been woken for another reason) */
+        for (int i = 0; i < 40 && !g->holder; i++) SleepConditionVariableSRW(&g->cv, &g->lock, 5, 0);
+    }
+    ReleaseSRWLockExclusive(&g->lock);
+    if (others) swap_acquire(g, p, t);
 }
 
 /* p ends or execs: it leaves the group. */
