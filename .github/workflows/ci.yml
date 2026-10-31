@@ -34,7 +34,7 @@ concurrency:
 jobs:
   linux:
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
       - name: test guests
@@ -60,9 +60,30 @@ jobs:
       - name: rootfs
         if: steps.rk.outputs.want == '1' && steps.rc.outputs.cache-hit != 'true'
         run: sudo bash tools/ci/rootfs.sh rootfs.tar.gz
+      # the GPU session's overlays (its files, when the branch has them): Mesa d3d12/Dozen in /opt/xrl-gpu (cached by
+      # its sources and the ABI header; the first build takes a while) and the Plasma look + session script
+      - uses: actions/cache@v4
+        if: steps.rk.outputs.want == '1' && hashFiles('desktop/gpu/build-mesa.sh') != ''
+        id: gc
+        with: { path: xrl-gpu.tar.gz, key: "xrl-gpu-${{ hashFiles('desktop/gpu/**', 'include/xrl_abi.h') }}" }
+      - name: GPU overlay (Mesa)
+        if: steps.rk.outputs.want == '1' && hashFiles('desktop/gpu/build-mesa.sh') != '' && steps.gc.outputs.cache-hit != 'true'
+        run: bash desktop/gpu/build-mesa.sh xrl-gpu.tar.gz
+      - name: rootfs for the probes (with the overlays, if any)
+        if: steps.rk.outputs.want == '1'
+        run: |
+          mkdir -p art
+          if [ -f desktop/merge-rootfs.sh ]; then
+            ov=
+            if [ -f desktop/build-overlay.sh ]; then bash desktop/build-overlay.sh xrl-desktop.tar.gz && ov="$ov xrl-desktop.tar.gz"; fi
+            [ -s xrl-gpu.tar.gz ] && ov="$ov xrl-gpu.tar.gz"
+            sudo bash desktop/merge-rootfs.sh rootfs.tar.gz art/rootfs.tar.gz $ov   # the cached rootfs stays as it is
+          else
+            cp rootfs.tar.gz art/rootfs.tar.gz
+          fi
       - uses: actions/upload-artifact@v4
         if: steps.rk.outputs.want == '1'
-        with: { name: rootfs, path: rootfs.tar.gz, retention-days: 3, compression-level: 0 }
+        with: { name: rootfs, path: art/rootfs.tar.gz, retention-days: 3, compression-level: 0 }
 
   build:
     runs-on: windows-2022

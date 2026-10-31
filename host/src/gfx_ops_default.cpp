@@ -88,6 +88,14 @@ xrl_status op_d3d12_create_device(xrl_handle* out) {
             if (!(d.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)) break;
             adapter.Reset();
         }
+        // XRL_GFX_WARP=1: the WARP software adapter (a CI runner has no GPU; the console never sets it)
+        char warp[4] = "";
+        if (GetEnvironmentVariableA("XRL_GFX_WARP", warp, sizeof warp) && warp[0] == '1') {
+            ComPtr<IDXGIFactory4> f4;
+            ComPtr<IDXGIAdapter1> wa;
+            if (SUCCEEDED(g_factory.As(&f4)) && SUCCEEDED(f4->EnumWarpAdapter(IID_PPV_ARGS(&wa)))) { adapter = wa; XLOGI("gfx", "XRL_GFX_WARP=1: the WARP adapter"); }
+            else XLOGW("gfx", "XRL_GFX_WARP=1 but no WARP adapter");
+        }
         ComPtr<ID3D12Device> dev;
         // FL 11_0 is the console's AppContainer cap (decisions.md); do not ask for more.
         hr = D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&dev));

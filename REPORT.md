@@ -2,6 +2,25 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (18) - B's requests (claude/desktop-gpu REPORT "Requests for A"), this batch
+
+- **6 (Plasma's fork stall): pidfds.** The layer had none, so Qt's QProcess (forkfd) fell back to a plain fork() in a
+  multi-threaded parent (startplasma-x11's third child: other threads frozen, the child blocked in its first syscall
+  after set_robust_list; the trace prints a call when it returns). Now: `pidfd_open`, `clone`/`clone3` with
+  `CLONE_PIDFD`, `waitid(P_PIDFD)`, `pidfd_send_signal`, and a pidfd polls readable when the process has exited
+  (proc.c; never with XRL_FORK_TASKS). Qt then takes the path it takes on Linux: `clone(CLONE_VM|CLONE_VFORK|
+  CLONE_PIDFD)`, i.e. the layer's vfork (shared memory, the parent's other threads keep running, no snapshot). Why
+  the plain-fork child blocks is still open: B's g1w hang dump will say; I look at it as soon as it is published.
+- **1 (overlays into the CI rootfs):** ci.yml's linux job builds `desktop/gpu/build-mesa.sh` (cached by
+  `desktop/gpu/**` + `include/xrl_abi.h`) and `desktop/build-overlay.sh` when the branch has them, and merges them
+  with `desktop/merge-rootfs.sh` into the rootfs artifact the probes get (the cached base rootfs stays untouched).
+  Linux job timeout 100 min for an uncached Mesa build.
+- **2:** desktop-run.sh treats `xrl-plasma-session <mode>` like `xrl-xsession.sh <mode>` (screenshot + logs).
+- **3:** `XRL_GFX_WARP=1` in the host env makes the host's `d3d12_create_device` take the WARP adapter
+  (host/src/gfx_ops_default.cpp; no ABI flag needed, the console never sets it).
+- **7:** probes-gpu.list lines lose a trailing CR.
+- **4 (xbridge: Composite overlay window + cursor):** next.
+
 ## 2026-10-31 (17) - run 54: the rewrite cache works; all PASS
 
 | run 54 (ac87750), Firefox session | before (run 52) | run 54 |

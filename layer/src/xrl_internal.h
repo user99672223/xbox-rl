@@ -322,6 +322,9 @@ void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its ow
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */
 slong xrl_proc_signal(xrl_proc *p, int sig, int from_kill);
 slong xrl_sys_kill(int pid, int sig);
+slong xrl_pidfd_new(xrl_proc *p, int nonblock);                /* proc.c: pidfds (CLONE_PIDFD, pidfd_open) */
+slong xrl_sys_pidfd_open(int pid, unsigned flags);
+slong xrl_sys_pidfd_send_signal(int fd, int sig, u64 info, unsigned flags);
 slong xrl_sys_wait4(int pid, u64 ustatus, int options, u64 urusage);
 slong xrl_sys_waitid(int idtype, int id, u64 uinfo, int options, u64 urusage);
 slong xrl_sys_setpgid(int pid, int pgid);

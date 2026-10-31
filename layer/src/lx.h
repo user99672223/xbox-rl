@@ -247,6 +247,9 @@ typedef int64_t  slong;   /* the Linux 'long' (MSVC's long is 32-bit!) */
 #define NR_rseq 334
 #define NR_close_range 436
 #define NR_clone3 435
+#define NR_pidfd_send_signal 424
+#define NR_pidfd_open 434
+#define LX_CLONE_PIDFD 0x00001000
 #define NR_faccessat2 439
 #define NR_epoll_pwait2 441
 #define NR_futex_waitv 449

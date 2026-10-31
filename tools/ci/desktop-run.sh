@@ -47,7 +47,7 @@ list=(
 # ('#' comments); their milestone field is free text (g1, g2...): it names the group in the verdict lines
 nmain=${#list[@]}
 if [ -f tools/ci/probes-gpu.list ]; then
-    while IFS= read -r l; do [[ -z $l || $l == \#* ]] || list+=("$l"); done < tools/ci/probes-gpu.list
+    while IFS= read -r l; do l=${l%$'\r'}; [[ -z $l || $l == \#* ]] || list+=("$l"); done < tools/ci/probes-gpu.list
 fi
 # XRL_MILESTONES="1 2 g1" (or "gpu": all of probes-gpu.list): run only these milestones' probes (a CI shard); probe numbers stay those of the full list,
 # so the shards' logs never collide; a second probe of the same X session mode names its screenshot and logs <mode>-<probe number>. XRL_PROCS_TEST=0: skip the process tests (another shard runs them)
@@ -80,7 +80,9 @@ for e in "${list[@]}"; do
     seen[$m]=1
     log="$out/probe-$n.txt"
     echo "\$ $p" > "$log"
-    shot=; [[ $p == *xrl-xsession.sh* ]] && { shot=${p##* }; rm -f "$rootu/tmp/xrl-$shot.xwd"; }
+    # an X session (xsession.sh <mode>, or the GPU session's xrl-plasma-session <mode>): its last word names the
+    # screenshot /tmp/xrl-<mode>.xwd, and its logs are /tmp/xrl-*.log
+    shot=; [[ $p == *xrl-xsession.sh* || $p == *xrl-plasma-session* ]] && { shot=${p##* }; rm -f "$rootu/tmp/xrl-$shot.xwd"; }
     s0=$SECONDS
     envs=; while [[ $p =~ ^([A-Z_]+=[^ ]*)\ (.*)$ ]]; do envs="$envs ${BASH_REMATCH[1]}"; p=${BASH_REMATCH[2]}; done   # VAR=v ...: for the host
     tag=$shot; [ -n "$shot" ] && [ -n "${shots[$shot]:-}" ] && tag=$shot-$n; [ -n "$shot" ] && shots[$shot]=1

@@ -770,7 +770,26 @@ SYS(msync) { UNUSED6; return xrl_mem_msync((u64)a1, (u64)a2, (int)a3); }
 SYS(mincore) { UNUSED6; return xrl_mem_mincore((u64)a1, (u64)a2, (u64)a3); }
 
 /* ============================================================== threads */
-SYS(clone) { UNUSED6; return xrl_do_clone((u64)a1, (u64)a2, (u64)a3, (u64)a4, (u64)a5, (u64)a6); }
+/* CLONE_PIDFD (proc.c pidfds; not with XRL_FORK_TASKS): the child is made without it, then the parent's pidfd goes
+ * to *where. The child does not run through here (it starts at the syscall's return with rax 0). */
+static slong clone_pidfd(slong pid, u64 where)
+{
+    if (pid <= 0) return pid;
+    xrl_proc *p = xrl_proc_by_pid((int)pid);
+    slong fd = p ? xrl_pidfd_new(p, 0) : -LX_ESRCH;
+    if (p) xrl_proc_put(p);
+    if (fd >= 0) { s32 v = (s32)fd; xrl_ctu(where, &v, 4); }
+    return pid;
+}
+SYS(clone)
+{
+    UNUSED6;
+    if ((a1 & LX_CLONE_PIDFD) && !xrl_fork_tasks_enabled()) {   /* clone(): the pidfd goes where parent_tid points */
+        if ((a1 & (LX_CLONE_THREAD | LX_CLONE_PARENT_SETTID)) || !a3) return -LX_EINVAL;
+        return clone_pidfd(xrl_do_clone((u64)a1 & ~(u64)LX_CLONE_PIDFD, (u64)a2, 0, (u64)a4, (u64)a5, (u64)a6), (u64)a3);
+    }
+    return xrl_do_clone((u64)a1, (u64)a2, (u64)a3, (u64)a4, (u64)a5, (u64)a6);
+}
 SYS(clone3)
 {
     UNUSED6;
@@ -779,8 +798,14 @@ SYS(clone3)
     memset(&ca, 0, sizeof ca);
     if (xrl_cfu(&ca, (u64)a1, 64)) return -LX_EFAULT;
     u64 sp = ca.stack ? ca.stack + ca.stack_size : 0;
+    if ((ca.flags & LX_CLONE_PIDFD) && !xrl_fork_tasks_enabled()) {
+        if ((ca.flags & LX_CLONE_THREAD) || !ca.pidfd) return -LX_EINVAL;
+        return clone_pidfd(xrl_do_clone((ca.flags & ~(u64)LX_CLONE_PIDFD) | (ca.exit_signal & 0xff), sp, ca.parent_tid, ca.child_tid, ca.tls, 0), ca.pidfd);
+    }
     return xrl_do_clone(ca.flags | (ca.exit_signal & 0xff), sp, ca.parent_tid, ca.child_tid, ca.tls, 0);
 }
+SYS(pidfd_open) { UNUSED6; return xrl_fork_tasks_enabled() ? -LX_ENOSYS : xrl_sys_pidfd_open((int)a1, (unsigned)a2); }
+SYS(pidfd_send_signal) { UNUSED6; return xrl_fork_tasks_enabled() ? -LX_ENOSYS : xrl_sys_pidfd_send_signal((int)a1, (int)a2, (u64)a3, (unsigned)a4); }
 /* fork / vfork: a new process (proc.c); the child "returns" from this call with 0 */
 SYS(fork) { UNUSED6; return xrl_do_clone(LX_SIGCHLD, 0, 0, 0, 0, 0); }
 SYS(vfork) { UNUSED6; return xrl_do_clone(LX_CLONE_VM | LX_CLONE_VFORK | LX_SIGCHLD, 0, 0, 0, 0, 0); }
@@ -954,7 +979,7 @@ static const sysfn g_tab[XRL_NR_MAX] = {
     T(NR_rt_sigreturn, rt_sigreturn), T(NR_rt_sigsuspend, rt_sigsuspend), T(NR_rt_sigtimedwait, rt_sigtimedwait),
     T(NR_rt_sigpending, rt_sigpending), T(NR_sigaltstack, sigaltstack), T(NR_tgkill, tgkill), T(NR_tkill, tkill),
     T(NR_kill, kill), T(NR_exit, exit), T(NR_exit_group, exit_group), T(NR_pause, pause),
-    T(101, ptrace), T(NR_fork, fork), T(NR_vfork, vfork), T(NR_execve, execve), T(NR_wait4, wait4), T(NR_waitid, waitid),
+    T(101, ptrace), T(NR_fork, fork), T(NR_vfork, vfork), T(NR_execve, execve), T(NR_wait4, wait4), T(NR_waitid, waitid), T(NR_pidfd_open, pidfd_open), T(NR_pidfd_send_signal, pidfd_send_signal),
     /* memory */
     T(NR_mmap, mmap), T(NR_munmap, munmap), T(NR_mprotect, mprotect), T(NR_mremap, mremap), T(NR_brk, brk),
     T(NR_madvise, madvise), T(NR_msync, msync), T(NR_mincore, mincore),

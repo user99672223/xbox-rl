@@ -848,8 +848,75 @@ slong xrl_sys_wait4(int pid, u64 ustatus, int options, u64 urusage)
     return r;
 }
 
+/* ---------------------------------------------------------------- pidfd
+ * pidfd_open, clone/clone3 CLONE_PIDFD, waitid(P_PIDFD), pidfd_send_signal. Qt's QProcess (forkfd) starts its
+ * children with clone(CLONE_VM | CLONE_VFORK | CLONE_PIDFD) when pidfds work, and with a plain fork() otherwise;
+ * the vfork form shares the parent's memory (no snapshot, the parent's other threads keep running), as on Linux.
+ * A pidfd holds the process (a reference): poll says POLLIN once it has exited. Not with XRL_FORK_TASKS. */
+static u32 pidfd_poll(xfile *f, u32 want)
+{
+    xrl_proc *p = (xrl_proc *)f->priv;
+    return (p && p->state == XP_ZOMBIE ? LX_POLLIN : 0) & want;
+}
+static slong pidfd_read(xfile *f, void *b, u64 n, s64 off) { (void)f; (void)b; (void)n; (void)off; return -LX_EINVAL; }
+static slong pidfd_fstat(xfile *f, lx_stat *st) { (void)f; xrl_stat_synth(st, 0600, 0x7100, 0); return 0; }
+static void pidfd_close(xfile *f) { if (f->priv) xrl_proc_put((xrl_proc *)f->priv); f->priv = NULL; }
+static const xfile_ops g_pidfd_ops = { "pidfd", pidfd_read, NULL, NULL, pidfd_fstat, NULL, NULL, NULL, NULL, pidfd_poll, pidfd_close, NULL };
+
+/* a new pidfd for process p (takes its own reference) */
+slong xrl_pidfd_new(xrl_proc *p, int nonblock)
+{
+    xfile *f = xfile_new(&g_pidfd_ops, LX_O_RDWR | (nonblock ? LX_O_NONBLOCK : 0));
+    if (!f) return -LX_ENOMEM;
+    xrl_proc_ref(p);
+    f->priv = p;
+    f->gpath = _strdup("anon_inode:[pidfd]");
+    int fd = xrl_fd_install(f, 1, 0);   /* pidfds are always close-on-exec */
+    xfile_unref(f);
+    return fd;
+}
+/* the process behind a pidfd (a reference), or NULL with *err */
+static xrl_proc *pidfd_proc(int fd, slong *err)
+{
+    xfile *f = xrl_fd_get(fd);
+    if (!f) { *err = -LX_EBADF; return NULL; }
+    xrl_proc *p = f->ops == &g_pidfd_ops ? (xrl_proc *)f->priv : NULL;
+    if (p) xrl_proc_ref(p); else *err = -LX_EINVAL;
+    xfile_unref(f);
+    return p;
+}
+slong xrl_sys_pidfd_open(int pid, unsigned flags)
+{
+    if (flags & ~LX_O_NONBLOCK) return -LX_EINVAL;
+    if (pid <= 0) return -LX_EINVAL;
+    xrl_proc *p = xrl_proc_by_pid(pid);
+    if (!p) return -LX_ESRCH;
+    slong r = xrl_pidfd_new(p, (flags & LX_O_NONBLOCK) != 0);
+    xrl_proc_put(p);
+    return r;
+}
+slong xrl_sys_pidfd_send_signal(int fd, int sig, u64 info, unsigned flags)
+{
+    (void)info;
+    if (flags) return -LX_EINVAL;
+    slong err = 0;
+    xrl_proc *p = pidfd_proc(fd, &err);
+    if (!p) return err;
+    int pid = p->pid, gone = p->state == XP_ZOMBIE;
+    xrl_proc_put(p);
+    if (gone) return -LX_ESRCH;
+    return xrl_sys_kill(pid, sig);
+}
+
 slong xrl_sys_waitid(int idtype, int id, u64 uinfo, int options, u64 urusage)
 {
+    if (idtype == 3 /* P_PIDFD */ && !xrl_fork_tasks_enabled()) {   /* a pidfd: wait for that (child) process */
+        slong err = 0;
+        xrl_proc *p = pidfd_proc(id, &err);
+        if (!p) return err;
+        idtype = LX_P_PID; id = p->pid;
+        xrl_proc_put(p);
+    }
     if (idtype != LX_P_ALL && idtype != LX_P_PID && idtype != LX_P_PGID) return -LX_EINVAL;
     if (!(options & (LX_WEXITED | LX_WSTOPPED | LX_WCONTINUED))) return -LX_EINVAL;
     int st = 0, cd = 0, uid = 0;
