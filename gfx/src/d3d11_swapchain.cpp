@@ -383,6 +383,9 @@ private:
         if (last_present_) {
             int64_t gap = q0.QuadPart - last_present_;
             if (gap > win_max_gap_) win_max_gap_ = gap;
+            /* every frame gap over 50 ms with its time, to line hitches up with other periodic work (at most 3000) */
+            static int hitches;
+            if (gap * 20 > qf_ && hitches < 3000) { hitches++; Log(LOG_INFO, "hitch: %.1f ms between presents", gap * 1000.0 / qf_); }
         }
         last_present_ = q0.QuadPart;
         win_frames_++;
