@@ -144,6 +144,15 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-31 (later) — Debian desktop milestones 1-5 pass in CI (run 39).** Branch `claude/desktop-debian`.
+  - **Firefox needed:** a guest GS base (TEB slot + `%gs` rewriting; wasm2c sandboxes), trampoline pools within rel32
+    of their code (else every site is an int3 trap and the trap table overflows), fork-group yield before a first
+    thread (crashhelper), replay of other threads' copies made during a fork snapshot, restore never undoing the
+    restoring process's own mappings, and a fork-snapshot cap above its writable memory (`XRL_FORK_SNAPSHOT_MB`).
+  - **Process lesson:** each CI cycle is ~30 min; batch every fix and diagnostic into one push, read every layer
+    warning of a failing probe first (the vfork fallback warning was in the log for several runs), and compile-check
+    locally before pushing (MinGW `-fsyntax-only` against a baseline of main).
+
 - **2026-10-31 — Debian desktop on the layer: what the X session and Firefox needed.** Branch `claude/desktop-debian`.
   - **Fork groups and memory ownership.** A snapshot-forked child runs on its parent's memory until it execs (proc.c).
     Three rules came out of apt-get and Firefox: (1) a child's munmap before its exec keeps the range (PROT_NONE,

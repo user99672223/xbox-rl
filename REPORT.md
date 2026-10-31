@@ -2,6 +2,47 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (5) - ALL FIVE MILESTONES PASS (CI run 39, 6f0b5bd)
+
+| Milestone | CI run 39 |
+|---|---|
+| 1 bash, coreutils, ps, dpkg -l | PASS |
+| 2 apt-get update + install hello | PASS (has failed intermittently before: see "Known gaps") |
+| 3 Xvfb + xterm (`xterm.png`) | PASS |
+| 4 XFCE session (`xfce.png`) | PASS (no desktop icons, see below) |
+| 5 Firefox opens a local page (`firefox.png`) | PASS: window "xbox-rl page - Mozilla Firefox" after 64 s, page rendered |
+
+The last Firefox blocker: its parent has more writable memory than the fork-snapshot cap (`XRL_FORK_SNAPSHOT_MB`,
+default 256); the layer then falls back to vfork semantics and a content-process child's pre-exec writes stayed in
+the parent ("stack smashing detected" on its IPC Launch thread). CI runs with `XRL_FORK_SNAPSHOT_MB=2048`.
+
+### What to run on the Xbox (main session)
+Desktop app config for these: uid 0, the rootfs from `tools/ci/rootfs.sh` + `tools/ci/rootfs-debian.list` unpacked
+with `tools/xrl-rootfs-unpack.py`, `tools/ci/xsession.sh` copied to `/tmp/xrl-xsession.sh`, budget 4096 MiB (the app's
+default), and the host env `XRL_FORK_SNAPSHOT_MB=2048` (Firefox). Guest env as in `tools/ci/desktop-run.sh`
+(HOME=/root, PATH with sbin, XRL_SESSION_KILLALL=1 when the script is the init process).
+1. `/bin/bash -c 'echo $(( 6 * 7 )) | cat'`, `apt-get update`, `apt-get install -y hello`, `hello`.
+2. `/bin/bash /tmp/xrl-xsession.sh xterm`, then `xfce`, then `firefox` (Xvfb; screenshots in /tmp/xrl-<mode>.xwd).
+3. After that: the same session on Xorg with /dev/fb0 instead of Xvfb, so it shows on the TV (not done here).
+Console-specific risks: memory (the Firefox session peaks ~2.2 GB committed plus snapshot copies during forks),
+`SetFileInformationByHandle(FileRenameInfoEx)` under AppContainer, TlsAlloc giving an index < 64 for the guest GS slot.
+
+### Known gaps
+- apt's `store` method intermittently gets EBADF reading its .xz (`lzma_read: Read error (9)`), or had its memory
+  overwritten (runs 10-37, several causes fixed; the last runs pass). The CI probe now traces `store` to catch it.
+- XFCE desktop icons (Home / File System) not drawn; GTK never loads the icon theme for the desktop view.
+- Fork snapshots copy all writable memory of the parent (Firefox: hundreds of MiB per content process launch). A
+  copy-on-write snapshot (only pages the child touches) would cut that; worth it before the console.
+- 19 small libraries in Firefox's session still get trampoline pools out of rel32 reach (int3 traps) because
+  Firefox's reservations fill the address space near them.
+
+### Shared-code summary for the RL + EAC check
+Everything new is off with XRL_FORK_TASKS, or only adds an ownership check: mem.c (snapshot registry, restore
+ownership, creator pid, find_near, owner/range queries), proc.c (yield, late writes, file re-map), thread.c +
+teb.c (guest GS slot), rewrite.c / rewrite_core.c / dbt.c (%gs, pool placement and names, trap sweep), signal.c
+(foreign-write refusal, abort backtrace), util.c (copy diagnostics, late-write record), ipc.c / procfs.c (EPOLLET),
+perf.c (spin sampling threshold), syscall.c (statx dev, cur_nr). `include/xrl_abi.h` unchanged.
+
 ## 2026-10-31 (4) - milestones 1-4 PASS (CI run 30, 3c39252); 5: Firefox runs, no page yet
 
 ### Status
