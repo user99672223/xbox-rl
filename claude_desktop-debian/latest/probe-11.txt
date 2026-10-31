@@ -3,57 +3,13 @@ $ /usr/bin/hello
 [I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
 [I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
 [I layer    ] rng: seeded from system RNG
-[I layer    ] mem: arena [7ef45a540000,7ff45a540000) 1048576 MiB VA, brk <= 7ef49a540000, commit budget 4096 MiB, granularity 65536
+[I layer    ] mem: arena [7ef4a7710000,7ff4a7710000) 1048576 MiB VA, brk <= 7ef4e7710000, commit budget 4096 MiB, granularity 65536
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
 [I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
-[I layer    ] vfs: modes and owners on: 1454 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: modes and owners on: 1451 entries from .xrl-meta (default owner 0:0)
 [I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
-[I layer    ] rewrite: /usr/bin/hello: 0 syscall + 29 %fs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1168 bytes at 7ff452535000
-[I layer    ] elf: loaded /usr/bin/hello type=DYN bias=7ff452536000 span=[7ff452536000,7ff452540000) entry=7ff4525385b0
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4524fb000
-[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4524fd000 span=[7ff4524fd000,7ff452535000) entry=7ff45251a2c0
-[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
-[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000001EC18ABB8C0)
-[I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff4524fad30
-[I layer    ] boot: guest main thread tid=5708 entry=7ff45251a2c0 sp=7ff4524fad30
-[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.078 us
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff451ac8000
-[W layer    ] ENOSYS 334 rseq (a1=7ff451ac5680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
-[I guest.out] Hello, world!
-[I layer    ] boot: FS-base re-arm faults handled: 0
-[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
-[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
-[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
-[W layer    ] mem-fail: full guest memory map (4050 bytes) follows:
-[W layer    ] MAP 7ef45a540000-7ef45a561000 rw-p 00000000 00:00 0                        [heap]
-7ff451a5d000-7ff451ab7000 r--p 00000000 00:00 281474976714197                        /usr/lib/locale/C.utf8/LC_CTYPE
-7ff451ab7000-7ff451ab8000 r--p 00000000 00:00 281474976714199                        /usr/lib/locale/C.utf8/LC_NUMERIC
-7ff451ab8000-7ff451ab9000 r--p 00000000 00:00 281474976714203                        /usr/lib/locale/C.utf8/LC_TIME
-7ff451ab9000-7ff451aba000 r--p 00000000 00:00 281474976714196                        /usr/lib/locale/C.utf8/LC_COLLATE
-7ff451aba000-7ff451abb000 r--p 00000000 00:00 281474976714207                        /usr/lib/locale/C.utf8/LC_MONETARY
-7ff451abb000-7ff451abc000 r--p 00000000 00:00 281474976714206                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
-7ff451abc000-7ff451abd000 r--p 00000000 00:00 281474976714195                        /usr/lib/locale/C.utf8/LC_PAPER
-7ff451abd000-7ff451abe000 r--p 00000000 00:00 281474976714198                        /usr/lib/locale/C.utf8/LC_NAME
-7ff451abe000-7ff451ac5000 r--s 00000000 00:00 28147497671
-[W layer    ] MAP 00 281474976712480                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ff451ce7000-7ff451cf4000 rw-p 00000000 00:00 0 
-7ff451cf4000-7ff451cf6000 rw-p 00000000 00:00 0 
-7ff451cf6000-7ff451cf7000 r--p 00000000 00:00 281474976714204                        /usr/lib/locale/C.utf8/LC_ADDRESS
-7ff451cf7000-7ff451cf8000 r--p 00000000 00:00 281474976714202                        /usr/lib/locale/C.utf8/LC_TELEPHONE
-7ff451cf8000-7ff451cf9000 r--p 00000000 00:00 281474976714200                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
-7ff451cf9000-7ff451cfa000 r--p 00000000 00:00 281474976714201                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
-7ff451cfa000-7ff451cfb000 ---p 00000000 00:00 0                        [stack]
-7ff451cfb000-7ff4524fb000 rw-p 00000000 00:00 0                        [stack]
-7ff4524fb000-7ff4524fd000 r-xp 00000000 00:00 0 
-7ff4524fd000-7ff4524fe000 r--p 00000000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
-7ff4524fe000-7ff452526000 r-xp 00001000 00:00 281474976712308                        /usr/l
-[W layer    ] MAP f45253e000-7ff45253f000 r--p 00007000 00:00 281474976726338                        /usr/bin/hello
-7ff45253f000-7ff452540000 rw-p 00008000 00:00 281474976726338                        /usr/bin/hello
-7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
-7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
-ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
-
-xrl_layer_boot returned 0
-exit 0
+[E layer    ] elf: cannot open /usr/bin/hello (-2)
+[E layer    ] boot: failed to load /usr/bin/hello
+xrl_layer_boot returned -1
+exit 127

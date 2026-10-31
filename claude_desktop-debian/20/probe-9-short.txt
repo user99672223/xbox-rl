@@ -1,0 +1,31 @@
+[W layer    ] ENOSYS 334 rseq (a1=7ff4dab1c6a0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d9c74ba0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d8f336a0 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d8f336a0 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[I guest.out] Get:1 http://deb.debian.org/debian trixie InRelease [140 kB]
+[I guest.out] Get:2 http://deb.debian.org/debian trixie/main amd64 Packages [9678 kB]
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d19db6a0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[W layer    ] mem-fail[0] addr=7ff4d73c9000 access=1 vma=COVERS [7ff4d73c9000,7ff4d73cb000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[1] addr=7ff4d73ca000 access=1 vma=COVERS [7ff4d73c9000,7ff4d73cb000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[2] addr=7ff4d73cb000 access=1 vma=COVERS [7ff4d73cb000,7ff4d73cc000) prot=1 lazy=0 committed=1 host(state=1000 prot=2)
+[W layer    ] mem-fail[3] addr=7ff4d73cc000 access=1 vma=COVERS [7ff4d73cc000,7ff4d73f4000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[4] addr=7ff4d73cd000 access=1 vma=COVERS [7ff4d73cc000,7ff4d73f4000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[W layer    ] mem-fail[5] addr=7ff4d73ce000 access=1 vma=COVERS [7ff4d73cc000,7ff4d73f4000) prot=5 lazy=0 committed=1 host(state=1000 prot=20)
+[E layer    ] === UNHANDLED GUEST FAULT tid 1100 code c000001d rip 00007ff4d73c9bb2 addr 0000000000000000 (0) rsp 00007ff4d73b8448 teb-stack [00007ff4d7376000,00007ff4d73c7000) ===
+[E layer    ] ILLEGAL_INSTRUCTION (0xc000001d) at rip=00007ff4d73c9bb2  fault_addr=0000000000000000 (-)
+[E layer    ] rax=00007ff4d73b8480 rbx=00007ff4d2b6b15c rcx=0000000000000009 rdx=00007ff4d2b6abf1
+[E layer    ] rsi=00007ff4d2b6b15c rdi=00007ff4d2bbfaf8 rbp=00007ff4d73b8478 rsp=00007ff4d73b8448
+[E layer    ] r8 =00007ff4d2b6abf1 r9 =0000000000000000 r10=0000000000000000 r11=00007ff4d73b84f8
+[E layer    ] r12=0000000000000001 r13=00007ff4d73b8640 r14=00007ff4d73b85f0 r15=0000000000000058
+[E layer    ] fs_base(guest tp)=00007ff4d19db900 fsbase_now=0000000000000000 eflags=00010282
+[E layer    ] code @rip: 61 6e 64 72 6f 69 64 2d 6c 69 62 6c
+[E layer    ] [rsp+00] 00007ff4d2a56166
+[E layer    ] [rsp+08] 000000000000000d
+[E layer    ] [rsp+10] 00007ff4d2b6b15c
+[E layer    ] [rsp+18] 00007ff4d73b8478
+[E layer    ] [rsp+20] 00007ff4d299de8b
+[E layer    ] [rsp+28] 00007ff4d2c23d60
+[E layer    ] [rsp+30] 0000000000000190
+[E layer    ] [rsp+38] 0000003000000010
+[E layer    ] rip vma: 7ff4d73c9000-7ff4d73cb000 r-xp 00000000 00:00 0 
+exit 139
