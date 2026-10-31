@@ -520,6 +520,7 @@ static BOOL CALLBACK proc_init(PINIT_ONCE io, PVOID prm, PVOID *ctx)
     padd("/proc/sys/kernel/hostname", K_FILE, g_hostname);
     padd("/proc/sys/kernel/pid_max", K_FILE, g_pidmax);
     padd("/proc/sys/kernel/randomize_va_space", K_FILE, g_zero);
+    padd("/proc/sys/kernel/tainted", K_FILE, g_zero);
     padd("/proc/sys/kernel/random", K_DIR, NULL);
     padd("/proc/sys/kernel/random/boot_id", K_FILE, g_bootid);
     padd("/proc/sys/vm", K_DIR, NULL);

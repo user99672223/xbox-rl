@@ -42,6 +42,8 @@ jobs:
       - name: one tree (the unpacker takes one tarball into an empty directory)
         run: |
           mkdir comb && sudo tar -C comb -xzf rootfs.tar.gz && sudo tar -C comb -xzf ltp.tar.gz
+          # a real kernel's .config (the runner's Ubuntu kernel) for LTP's tst_kconfig checks (ltp-run.sh: KCONFIG_PATH)
+          sudo cp /boot/config-$(uname -r) comb/opt/ltp/kconfig || true
           sudo tar -C comb --numeric-owner -czf tree.tar.gz . && du -h tree.tar.gz
       - uses: actions/upload-artifact@v4
         with:
@@ -78,7 +80,7 @@ jobs:
                  XRL_ENV_HOME=/root XRL_ENV_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin XRL_ENV_LANG=C.UTF-8
           timeout 13000 layer/build/desktop/xrl_test_host.exe "$(cygpath -w "$r")" /bin/bash /opt/ltp/ltp-run.sh "$FILTER" > ci-out/host.txt 2>&1
           echo "test host exit $?" >> ci-out/host.txt
-          cp "$r/tmp/ltp-results.txt" "$r/tmp/ltp-fails.txt" ci-out/ 2>/dev/null
+          cp "$r/tmp/ltp-results.txt" "$r/tmp/ltp-fails.txt" "$r/tmp/ltp-tconf.txt" ci-out/ 2>/dev/null
           tail -c 1500000 ci-out/host.txt > ci-out/host-tail.txt; rm ci-out/host.txt
           f=ci-out/ltp-results.txt
           {
@@ -88,6 +90,8 @@ jobs:
             echo "timed out (rc=124): $(grep -c ' rc=124 ' $f)"
             echo "missing binary: $(grep -c ' MISSING' $f)"
             echo "failed or broken: $(grep -vc ' rc=0 \| rc=32 \| rc=124 \| MISSING' $f)"
+            echo "--- why tests are not applicable (count, first TCONF line, numbers folded):"
+            sed 's/^[^ ]* //; s/[0-9]\+/N/g' ci-out/ltp-tconf.txt 2> /dev/null | sort | uniq -c | sort -rn | head -40
             echo "--- ENOSYS answered by the layer (count, nr, name):"
             grep -ao "ENOSYS [0-9]* [a-z0-9_]*" ci-out/host-tail.txt | sort | uniq -c | sort -rn | head -40
           } > ci-out/summary.txt
