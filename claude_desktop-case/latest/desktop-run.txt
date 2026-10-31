@@ -1,0 +1,17 @@
+probe 1 (m1): PASS exit   0  /bin/bash -c 'echo hello from bash; uname -a'
+probe 2 (m1): PASS exit   0  /usr/bin/ls -la /
+probe 3 (m1): PASS exit   0  /usr/bin/id
+probe 4 (m1): PASS exit   0  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
+probe 5 (m1): PASS exit   0  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
+probe 6 (m1): PASS exit   0  /usr/bin/ps aux
+probe 7 (m1): PASS exit   0  /usr/bin/dpkg -l
+probe 8 (m1): PASS exit   0  /usr/bin/apt-get --version
+probe 9 (m2): PASS exit   0  /usr/bin/apt-get update
+probe 10 (m2): PASS exit   0  /usr/bin/apt-get install -y --no-install-recommends hello
+probe 11 (m2): PASS exit   0  /usr/bin/hello
+--- syscalls answered ENOSYS (count, nr, name):
+     28 ENOSYS 334 rseq
+      4 ENOSYS 277 sync_file_range
+milestone 1 (bash, coreutils, ps, dpkg -l): PASS
+milestone 2 (apt-get update + install): PASS
+exit 0
