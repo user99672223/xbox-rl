@@ -199,6 +199,14 @@ static DWORD WINAPI perf_thread(LPVOID p)
                          com > last_com ? (double)(at - last_after) * 1e6 / (double)qf.QuadPart / (double)(com - last_com) : 0.0);
             last_after = at;
         }
+        {   /* com.c's argument scan: pointers checked, and how many needed a VirtualQuery */
+            extern volatile LONG64 xrl_com_probes, xrl_com_probe_misses, xrl_com_scans;
+            static u64 lp, lm, ls;
+            u64 np = (u64)xrl_com_probes, nmi = (u64)xrl_com_probe_misses, ns = (u64)xrl_com_scans;
+            LOGI("perf: com scan %.0f calls/s scanned, %.0f pointer checks/s, %.0f/s needed a VirtualQuery", (double)(ns - ls) / secs,
+                 (double)(np - lp) / secs, (double)(nmi - lm) / secs);
+            lp = np; lm = nmi; ls = ns;
+        }
         {   /* every I/O state change wakes every thread asleep in poll/read/...: how many per second */
             extern volatile LONG64 xrl_io_notifies, xrl_io_woken;
             extern volatile LONG xrl_io_sleepers;

@@ -216,13 +216,39 @@ static int hook_vtable(u64 vt)
 
 static int g_trace = -1;   /* XRL_COM_TRACE=1: log every candidate object */
 
+/* Can 8 bytes at `a` be read without a fault? The scan reads every plausible argument; most are not pointers, and
+ * each fault went through the exception dispatcher, the layer's handler (a VMA lookup and a VirtualQuery) and then
+ * our __except: about a tenth of the render thread's time in RL. One VirtualQuery per 4 KiB page, remembered:
+ * "readable" until the slot is reused, "not readable" for a second (a heap may grow there and hold new objects). */
+#define RC_N 16384
+typedef struct rc_ent { volatile u64 g; volatile u32 ok, tick; } rc_ent;
+static rc_ent g_rc[RC_N];
+volatile LONG64 xrl_com_probes, xrl_com_probe_misses, xrl_com_scans;   /* perf.c */
+
+static int readable8(u64 a)
+{
+    u64 g = (a >> 12) + 1;   /* +1: 0 is an empty slot */
+    rc_ent *e = &g_rc[(u32)((a >> 12) * 0x9E3779B1u) & (RC_N - 1)];
+    u32 now = (u32)GetTickCount64();
+    xrl_com_probes++;   /* (not atomic: a statistic) */
+    if (e->g == g && (e->ok || now - e->tick < 1000) && ((a & 0xfff) <= 0xff8)) return (int)e->ok;
+    xrl_com_probe_misses++;
+    MEMORY_BASIC_INFORMATION mbi;
+    const DWORD rd = PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
+    if (!VirtualQuery((void *)a, &mbi, sizeof mbi)) return 0;
+    int ok = mbi.State == MEM_COMMIT && (mbi.Protect & rd) && !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS));
+    u64 lo = a & ~0xfffull, hi = lo + 0x1000, rlo = (u64)mbi.BaseAddress, rhi = rlo + mbi.RegionSize;
+    if (rlo <= lo && rhi >= hi) { e->g = 0; e->ok = (u32)ok; e->tick = now; e->g = g; }   /* the whole page alike */
+    return ok && a + 8 <= rhi;
+}
+
 /* Is `obj` a host COM object? Hook its vtable if so (1: this call hooked a new one). */
 static int consider_object(u64 obj)
 {
-    if (!plausible(obj)) return 0;
+    if (!plausible(obj) || !readable8(obj)) return 0;
     u64 vt = *(volatile u64 *)obj;
     if (g_trace < 0) { char v[4]; g_trace = GetEnvironmentVariableA("XRL_COM_TRACE", v, sizeof v) && v[0] == '1'; }
-    if (!plausible(vt)) return 0;
+    if (!plausible(vt) || !readable8(vt) || !readable8(vt + 16)) return 0;
     if (vt_known(vt) && is_stub(*(volatile u64 *)vt)) return 0;
     /* Where the vtable lives: an image's .rdata (or .text, some images merge them), or
      * host heap (D3D11 builds per-device dispatch tables for its context objects).
@@ -241,13 +267,15 @@ static int consider_object(u64 obj)
     return hook_vtable(vt);
 }
 
+/* 1 if a newly hooked vtable came from what `v` points to (an out-parameter: the call handed out an object), 2 if
+ * from `v` itself (an object passed in: its type was new, but this method did not make it) */
 static int consider(u64 v)
 {
     int r = 0;
-    if (!plausible(v)) return 0;
-    __try {
-        r |= consider_object(*(volatile u64 *)v);   /* v = &out_interface_pointer */
-        r |= consider_object(v);                    /* v = an interface pointer itself */
+    if (!plausible(v) || !readable8(v)) return 0;
+    __try {   /* (readable8 can be stale: a fault is still caught) */
+        r |= consider_object(*(volatile u64 *)v);       /* v = &out_interface_pointer */
+        r |= consider_object(v) ? 2 : 0;                /* v = an interface pointer itself */
     } __except (EXCEPTION_EXECUTE_HANDLER) {
     }
     return r;
@@ -354,8 +382,12 @@ static __declspec(thread) int t_nfr, t_frover;
 static __declspec(thread) LONG64 t_fr_last;
 static LONG64 g_qf;
 
+static int g_frames = -1;   /* XRL_FRAMES=1: the per-frame method table (a QPC per COM call) */
+
 static void frame_note(u64 fn)
 {
+    if (g_frames < 0) { char v[4]; g_frames = GetEnvironmentVariableA("XRL_FRAMES", v, sizeof v) && v[0] == '1'; }
+    if (!g_frames) return;
     LARGE_INTEGER q; QueryPerformanceCounter(&q);
     if (!g_qf) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_qf = f.QuadPart; }
     LONG64 dt = t_fr_last ? q.QuadPart - t_fr_last : 0;
@@ -395,8 +427,9 @@ void xrl_com_frame_end(double gap_ms, double wait_ms)
 {
     static volatile LONG nlog;
     static LONG64 last_base;
-    if (!t_fr) return;
+    if (!g_qf) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_qf = f.QuadPart; }
     frame_split();
+    if (!t_fr) return;
     LARGE_INTEGER q; QueryPerformanceCounter(&q);
     double tail = t_fr_last ? (q.QuadPart - t_fr_last) * 1000.0 / g_qf : 0;   /* after the last call: the game, then Present */
     t_fr_last = q.QuadPart;
@@ -455,10 +488,13 @@ void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
         if (!m && n > SCAN_LEARN) g_hot_scan[i] = m = 2;
         if (m == 2 && (n % SCAN_RECHECK)) goto done;
     }
+    xrl_com_scans++;
     int found = xrl_com_scan(regs, 4);
     found |= xrl_com_scan(stack_args, 12);
-    found |= consider(ret);
-    if (i >= 0 && found && g_hot_scan[i] != 1) {
+    found |= consider(ret) ? 1 : 0;   /* a returned interface pointer: handed out */
+    /* Only a method that handed out an object of a new type is scanned always; one that was merely passed one (a
+     * Set* call seeing a new resource type) goes back to the learned skip, as no new type comes out of it. */
+    if (i >= 0 && (found & 1) && g_hot_scan[i] != 1) {
         if (g_hot_scan[i] == 2) LOGW("com: method %llx handed out a new object type after %lld calls: scanning it always again", fn, (long long)n);
         g_hot_scan[i] = 1;
     }
