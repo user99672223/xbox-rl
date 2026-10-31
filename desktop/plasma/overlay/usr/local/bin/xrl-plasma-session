@@ -32,6 +32,9 @@ export KWIN_X11_REFRESH_RATE=60000 KWIN_X11_FORCE_SOFTWARE_VSYNC=1 KWIN_USE_BUFF
 # known issues). XRL_COMPOSITE=0|1 overrides.
 comp=${XRL_COMPOSITE:-$gpu}
 [ "$comp" = 1 ] || export KWIN_COMPOSE=N
+# autostart entries the console session leaves out (accessibility daemon, global-menu and XEmbed proxies, polkit
+# agent, Baloo, session restore): Hidden=true copies in /etc/xdg/xrl-plasma, which comes first in the config path
+export XDG_CONFIG_DIRS=/etc/xdg/xrl-plasma:${XDG_CONFIG_DIRS:-/etc/xdg}
 # no crash dialogs (drkonqi): a crashing process ends and the log says where
 export KDE_DEBUG=1 QT_LOGGING_RULES=${QT_LOGGING_RULES:-"*.debug=false;kwin_*.warning=true"}
 mkdir -p "$XDG_RUNTIME_DIR" && chmod 700 "$XDG_RUNTIME_DIR"

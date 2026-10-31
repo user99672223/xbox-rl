@@ -32,6 +32,15 @@ Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console
   `rootfs-apt-plasma.list` + `libvulkan1 vulkan-tools`.
 - The shim now refuses the test host's stub op table (no `get_adapter_info`: its "device" is a fake handle).
 
+### Plasma memory trim (local reference, 1920x1080, llvmpipe, Konsole open)
+- Left out of the console session (Hidden=true copies in `/etc/xdg/xrl-plasma/autostart`, first in
+  XDG_CONFIG_DIRS only for `xrl-plasma-session`): kaccess, gmenudbusmenuproxy, xembedsniproxy, the polkit agent,
+  Baloo, session restore; kded6 modules off (`/etc/xdg/kded5rc`/`kded6rc`): automounter, device notifications,
+  donation/free-space/OOM notices, geotimezone, touchpad, remote notifier, file search, appmenu.
+- **PSS 678 -> 647 MiB, 25 -> 21 processes (RSS sum 1537 -> 1368 MiB), desktop up 22 -> 19 s.** On the layer each
+  process also commits its own rewritten library copies, so fewer processes should count for more there.
+  Largest now: plasmashell 447, kwin_x11 156, konsole 143, kded6 141, ksmserver 122 MiB RSS.
+
 ### Requests for A (new)
 6. **Fork without exec on the copy-on-write snapshot path** (above): startplasma-x11 -> QProcess (Qt 6.8: clone
    with CLONE_VM|CLONE_VFORK|CLONE_PIDFD and a child stack, glibc may show it as a fork) -> child never execs.
