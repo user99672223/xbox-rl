@@ -3,6 +3,22 @@
 Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console's D3D12. Newest first; read with
 `git fetch origin claude/desktop-gpu`. Session A's report (branch `claude/desktop-debian`) follows below unchanged.
 
+## 2026-10-31 (B5) - run 58: the stalled fork child waits on a guest futex; probe g1s (no fork groups)
+
+- g1w's hang dump (`XRL_HANG_DUMP=150`, three dumps, identical): the child of startplasma-x11's third fork
+  (tid 1700) sits in a syscall the whole time: `xrl_rawsys` -> futex wait (`wait_addr_raw` -> `WaitOnAddress`), its
+  guest rsp 0xE0 above the parent's. Its only traced syscall, `set_robust_list`, is glibc's first call in a fork child;
+  the trace prints a call when it returns, so the futex it is stuck in never showed. The parent: the forking thread
+  (tid 5548) waits for the child's exec (vfork event), its other thread `QDBusConnection` (tid 2520) is frozen inside
+  a syscall with SIGCHLD pending (sigpend 0x10000). Memory lock free, loader lock free.
+- So: right after the fork the child blocks on a guest lock (futex). Both snapshot kinds do it (g1, g1w). Different
+  from the two earlier forks of the same process: those were made while it had one thread, so it joined a **fork
+  group** (baton), and the third fork, now multi-threaded, is a plain synchronous snapshot fork from a process that
+  is still a fork-group member. This push adds **g1s = the same with `XRL_FORK_SWAP=0`** (no fork groups): if it
+  passes, the stall is the combination "fork-group member forks while multi-threaded".
+- **For A (request 6):** the hang dump above, probe-20.txt of run 58 (lines ~3270-3560, 6250, 9034). Repro: g1 /
+  `xsession.sh plasma`.
+
 ## 2026-10-31 (B4) - run 51: the fork stall is not copy-on-write; VA-API decode built; for A: request 6 updated
 
 ### Run 51 (edba3fb): g1 and g1w both FAIL, the same way
