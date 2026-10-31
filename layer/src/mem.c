@@ -871,17 +871,50 @@ static u64 img_place(u64 len)
 }
 /* rewrite.c: where the trampoline pool of code at `code` goes (cap bytes), the same offset below its image in
  * every process; 0 = anywhere */
+static int img_in_room(u64 a, u64 e)   /* [a, e) overlaps the pool room of an image that is still mapped */
+{
+    for (int j = 0; j < g_nimgs; j++) {
+        if (a >= g_imgs[j].start || e <= g_imgs[j].start - g_imgs[j].room) continue;
+        size_t vi = vma_lower(g_imgs[j].start);
+        if (vi < g_n && g_v[vi].start == g_imgs[j].start) return 1;
+    }
+    return 0;
+}
 u64 xrl_mem_pool_slot(u64 code, u64 cap)
 {
-    u64 r = 0;
+    u64 r = 0, c = ALIGN_UP(cap, GRAN);
     AcquireSRWLockShared(&g_lock);
-    if (g_shtx == 1)
+    if (g_shtx == 1 && code >= g_img_base && code < g_img_end) {
         for (int j = g_nimgs - 1; j >= 0; j--)
             if (code >= g_imgs[j].start && code < g_imgs[j].end) {
-                u64 c = ALIGN_UP(cap, GRAN);
-                if (c <= g_imgs[j].room && range_free(g_imgs[j].start - c, g_imgs[j].start)) r = g_imgs[j].start - c;
+                u64 a = g_imgs[j].start - c;
+                if (c <= g_imgs[j].room && range_free(a, g_imgs[j].start)) r = a;
+                else {
+                    static volatile LONG warned;
+                    size_t vi = vma_lower(a);
+                    if (InterlockedIncrement(&warned) <= 8)
+                        LOGW("img: pool slot [%llx,%llx) for code %llx (room %llu KiB, pool %llu KiB) is taken by [%llx,%llx) %s (pid %d)", a,
+                             g_imgs[j].start, code, g_imgs[j].room >> 10, c >> 10, vi < g_n ? g_v[vi].start : 0, vi < g_n ? g_v[vi].end : 0,
+                             vi < g_n ? g_v[vi].name : "", vi < g_n ? g_v[vi].cpid : 0);
+                }
                 break;
             }
+        /* else any gap of the image region within reach of the code, outside the other images' pool rooms (this
+         * copy's code then differs from the shared one and stays private, but no site becomes a trap) */
+        u64 lo = code > (3ull << 29) ? code - (3ull << 29) : 0, hi = code + (3ull << 29), bestd = ~0ull;
+        if (lo < g_img_base) lo = g_img_base;
+        if (hi > g_img_end) hi = g_img_end;
+        u64 gap = lo;
+        for (size_t i = vma_lower(lo); !r && gap < hi; i++) {
+            u64 end = i < g_n && g_v[i].start < hi ? g_v[i].start : hi;
+            for (u64 a = ALIGN_UP(gap, GRAN); a + c <= ALIGN_DOWN(end, GRAN); a += GRAN * 16) {
+                u64 d = a > code ? a - code : code - a;
+                if (d < bestd && !img_in_room(a, a + c)) { bestd = d; r = a; break; }
+            }
+            if (i >= g_n || g_v[i].start >= hi) break;
+            gap = g_v[i].end;
+        }
+    }
     ReleaseSRWLockShared(&g_lock);
     return r;
 }
