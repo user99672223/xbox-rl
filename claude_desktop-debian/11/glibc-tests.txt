@@ -1,0 +1,284 @@
+== glibc_test XRL_DBT=0
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/glibc_test, 1 args, 3 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4a98d0000,7ff4a98d0000) 1048576 MiB VA, brk <= 7ef4e98d0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.zZKfNQr7JE (4 symlinks)
+[I layer    ] rewrite: /bin/glibc_test: 210 syscall + 1273 %fs sites (2 in place, 1474 jumps, 3 traps, 516 neighbours moved), pool 67971 bytes at 7ff4a17dc000
+[I layer    ] elf: loaded /bin/glibc_test type=DYN bias=7ff4a17ed000 span=[7ff4a17ed000,7ff4a18d0000) entry=7ff4a17f6b20
+[W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001DA82873100)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4a17dbdc0
+[I layer    ] boot: guest main thread tid=5400 entry=7ff4a17f6b20 sp=7ff4a17dbdc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef4a98d0de0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I guest.out] glibc_test: glibc 2.39, argc=1 argv[0]=/bin/glibc_test
+[I guest.out]   ok   main-thread TLS (__thread, local-exec)
+[I guest.out]   ok   errno via %fs after a failing open
+[I guest.out]   ok   stack protector canary (%fs:0x28)
+[I guest.out]   ok   malloc 8 MiB
+[I guest.out]   ok   write all of it
+[I guest.out]   ok   many small allocations
+[I guest.out]   ok   raw syscall(SYS_getpid) == getpid()
+[I guest.out]   ok   raw syscall(SYS_gettid)
+[I guest.out]   (raw write)
+[I guest.out]   ok   raw syscall(SYS_write)
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   4 threads: private TLS, errno and condvar hand-off
+[I guest.out]   ok   main thread's TLS untouched by the others
+[I guest.out]   ok   fopen /tmp
+[I guest.out]   ok   stdio write/read 1000 lines
+[I guest.out]   ok   stat size
+[I guest.out]   ok   unlink
+[I guest.out]   ok   nanosleep 20 ms
+[W layer    ] proc maps: 1710 bytes, first 400: 7ef4a98d0000-7ef4a98d1000 rw-p 00000000 00:00 0                        [heap]
+7ef4a98d1000-7ef4a98f2000 rw-p 00000000 00:00 0                        [heap]
+7ef4a98f2000-7ef4a9913000 rw-p 00000000 00:00 0                        [heap]
+7ef4a9913000-7ef4a9934000 rw-p 00000000 00:00 0                        [heap]
+7ff49efd7000-7ff49efd8000 ---p 00000000 00:00 0                        [stack]
+7ff49efd8
+[W layer    ] proc maps tail: ...41793                        /bin/glibc_test
+7ff4a1894000-7ff4a18c0000 r--p 000a7000 00:00 3096224744741793                        /bin/glibc_test
+7ff4a18c0000-7ff4a18c5000 r--p 000d3000 00:00 3096224744741793                        /bin/glibc_test
+7ff4a18c5000-7ff4a18c7000 rw-p 000d8000 00:00 3096224744741793                        /bin/glibc_test
+7ff4a18c7000-7ff4a18d0000 rw-p 00000000 00:00 0 
+
+[W layer    ] proc maps check: libc=1 ld=0 stack=1 vdso=0
+[I guest.out]   ok   /proc/self/maps readable
+[I guest.out]   ok   uname says Linux
+[I guest.out]   ok   getenv HOME
+[I guest.out]   ok   qsort
+[I guest.out]   ok   memset/memcpy/strlen/memcmp over many sizes (IFUNC-selected variants)
+[I guest.out]   ok   setjmp/longjmp
+[I guest.out]   ok   deep recursion on the stack
+[I guest.out]   ok   pipe
+[I layer    ] fork: pid 8144 -> child 3504, snapshot of the parent's writable memory taken in 3.35 ms
+[I layer    ] fork: pid 8144 -> new process 3504 (flags 0x1200011)
+[I layer    ] proc 3504 ended (wait status 0x2a00)
+[I guest.out]   ok   fork + waitpid: the child's exit status
+[I guest.out]   ok   fork: own pid, getppid, private memory
+[I layer    ] fork: pid 8144 -> child 6448, snapshot of the parent's writable memory taken in 1.03 ms
+[I layer    ] fork: pid 8144 -> new process 6448 (flags 0x11)
+[I layer    ] proc 6448 ended (wait status 0x700)
+[I guest.out]   ok   raw clone(SIGCHLD, stack 0) with a non-zero r9 forks
+[I guest.out] glibc_test: 0 failure(s)
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (1962 bytes) follows:
+[W layer    ] MAP 7ef4a98d0000-7ef4a98d1000 rw-p 00000000 00:00 0                        [heap]
+7ef4a98d1000-7ef4a98f2000 rw-p 00000000 00:00 0                        [heap]
+7ef4a98f2000-7ef4a9913000 rw-p 00000000 00:00 0                        [heap]
+7ef4a9913000-7ef4a9934000 rw-p 00000000 00:00 0                        [heap]
+7ff49efd7000-7ff49efd8000 ---p 00000000 00:00 0                        [stack]
+7ff49efd8000-7ff49f7d8000 rw-p 00000000 00:00 0                        [stack]
+7ff49f7d8000-7ff49f7d9000 ---p 00000000 00:00 0                        [stack]
+7ff49f7d9000-7ff49ffd9000 rw-p 00000000 00:00 0                        [stack]
+7ff49ffd9000-7ff49ffda000 ---p 00000000 00:00 0                        [stack]
+7ff49ffda000-7ff4a07da000 rw-p 00000000 00:00 0                        [stack]
+7ff4a07da000-7ff4a07db000 ---p 00000000 00:00 0                        [stack]
+7ff4a07db000-7ff4a0fdb000 rw-p 00000000 00:00 0                        [stack]
+7ff4a0fdb000-7ff4a0fdc000 ---p 00000000 00:00 0                        [stack]
+7ff4a0fdc000-7ff4a17dc000 rw-p 00000000 00:00 0                        [
+[W layer    ] MAP 00-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
+
+xrl_layer_boot returned 0
+exit 0
+== glibc_test XRL_DBT=1
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/glibc_test, 1 args, 3 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef466ce0000,7ff466ce0000) 1048576 MiB VA, brk <= 7ef4a6ce0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.sU9ZtpqD2a (4 symlinks)
+[I layer    ] dbt: /bin/glibc_test: 647168 bytes at 7ff45ec06000 are translated, not executed (cache 5056 KiB at 7ff45f0b0000); the image's bytes are untouched
+[I layer    ] elf: loaded /bin/glibc_test type=DYN bias=7ff45ebfd000 span=[7ff45ebfd000,7ff45ece0000) entry=7ff45ec06b20
+[W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001E3C77B3D40)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff45ebfcdc0
+[I layer    ] boot: guest main thread tid=7052 entry=7ff45ec06b20 sp=7ff45ebfcdc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef466ce0de0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I guest.out] glibc_test: glibc 2.39, argc=1 argv[0]=/bin/glibc_test
+[I guest.out]   ok   main-thread TLS (__thread, local-exec)
+[I guest.out]   ok   errno via %fs after a failing open
+[I guest.out]   ok   stack protector canary (%fs:0x28)
+[I guest.out]   ok   malloc 8 MiB
+[I guest.out]   ok   write all of it
+[I guest.out]   ok   many small allocations
+[I guest.out]   ok   raw syscall(SYS_getpid) == getpid()
+[I guest.out]   ok   raw syscall(SYS_gettid)
+[I guest.out]   (raw write)
+[I guest.out]   ok   raw syscall(SYS_write)
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   pthread_create
+[I guest.out]   ok   4 threads: private TLS, errno and condvar hand-off
+[I guest.out]   ok   main thread's TLS untouched by the others
+[I guest.out]   ok   fopen /tmp
+[I guest.out]   ok   stdio write/read 1000 lines
+[I guest.out]   ok   stat size
+[I guest.out]   ok   unlink
+[I guest.out]   ok   nanosleep 20 ms
+[W layer    ] proc maps: 1710 bytes, first 400: 7ef466ce0000-7ef466ce1000 rw-p 00000000 00:00 0                        [heap]
+7ef466ce1000-7ef466d02000 rw-p 00000000 00:00 0                        [heap]
+7ef466d02000-7ef466d23000 rw-p 00000000 00:00 0                        [heap]
+7ef466d23000-7ef466d44000 rw-p 00000000 00:00 0                        [heap]
+7ff45c3f8000-7ff45c3f9000 ---p 00000000 00:00 0                        [stack]
+7ff45c3f9
+[W layer    ] proc maps tail: ...5eca4000-7ff45ecd0000 r--p 000a7000 00:00 3377699721452449                        /bin/glibc_test
+7ff45ecd0000-7ff45ecd5000 r--p 000d3000 00:00 3377699721452449                        /bin/glibc_test
+7ff45ecd5000-7ff45ecd7000 rw-p 000d8000 00:00 3377699721452449                        /bin/glibc_test
+7ff45ecd7000-7ff45ece0000 rw-p 00000000 00:00 0 
+7ff45f0b0000-7ff45f5a0000 rwxp 00000000 00:00 0 
+
+[W layer    ] proc maps check: libc=1 ld=0 stack=1 vdso=0
+[I guest.out]   ok   /proc/self/maps readable
+[I guest.out]   ok   uname says Linux
+[I guest.out]   ok   getenv HOME
+[I guest.out]   ok   qsort
+[I guest.out]   ok   memset/memcpy/strlen/memcmp over many sizes (IFUNC-selected variants)
+[I guest.out]   ok   setjmp/longjmp
+[I guest.out]   ok   deep recursion on the stack
+[I guest.out]   ok   pipe
+[I layer    ] fork: pid 7476 -> child 6036, snapshot of the parent's writable memory taken in 3.94 ms
+[I layer    ] fork: pid 7476 -> new process 6036 (flags 0x1200011)
+[I layer    ] proc 6036 ended (wait status 0x2a00)
+[I guest.out]   ok   fork + waitpid: the child's exit status
+[I guest.out]   ok   fork: own pid, getppid, private memory
+[I layer    ] fork: pid 7476 -> child 5324, snapshot of the parent's writable memory taken in 1.67 ms
+[I layer    ] fork: pid 7476 -> new process 5324 (flags 0x11)
+[I layer    ] proc 5324 ended (wait status 0x700)
+[I guest.out]   ok   raw clone(SIGCHLD, stack 0) with a non-zero r9 forks
+[I guest.out] glibc_test: 0 failure(s)
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (1962 bytes) follows:
+[W layer    ] MAP 7ef466ce0000-7ef466ce1000 rw-p 00000000 00:00 0                        [heap]
+7ef466ce1000-7ef466d02000 rw-p 00000000 00:00 0                        [heap]
+7ef466d02000-7ef466d23000 rw-p 00000000 00:00 0                        [heap]
+7ef466d23000-7ef466d44000 rw-p 00000000 00:00 0                        [heap]
+7ff45c3f8000-7ff45c3f9000 ---p 00000000 00:00 0                        [stack]
+7ff45c3f9000-7ff45cbf9000 rw-p 00000000 00:00 0                        [stack]
+7ff45cbf9000-7ff45cbfa000 ---p 00000000 00:00 0                        [stack]
+7ff45cbfa000-7ff45d3fa000 rw-p 00000000 00:00 0                        [stack]
+7ff45d3fa000-7ff45d3fb000 ---p 00000000 00:00 0                        [stack]
+7ff45d3fb000-7ff45dbfb000 rw-p 00000000 00:00 0                        [stack]
+7ff45dbfb000-7ff45dbfc000 ---p 00000000 00:00 0                        [stack]
+7ff45dbfc000-7ff45e3fc000 rw-p 00000000 00:00 0                        [stack]
+7ff45e3fc000-7ff45e3fd000 ---p 00000000 00:00 0                        [stack]
+7ff45e3fd000-7ff45ebfd000 rw-p 00000000 00:00 0                        [
+[W layer    ] MAP 00-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
+
+xrl_layer_boot returned 0
+exit 0
+== cxx_test XRL_DBT=0
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/cxx_test, 1 args, 3 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef405190000,7ff405190000) 1048576 MiB VA, brk <= 7ef445190000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.5zS2JZGg1T (4 symlinks)
+[I layer    ] rewrite: /bin/cxx_test: 115 syscall + 1228 %fs sites (0 in place, 1337 jumps, 3 traps, 335 neighbours moved), pool 60768 bytes at 7ff3fd09f000
+[I layer    ] elf: loaded /bin/cxx_test type=DYN bias=7ff3fd0ae000 span=[7ff3fd0ae000,7ff3fd190000) entry=7ff3fd0b9930
+[W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001C197ADC500)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff3fd09edc0
+[I layer    ] boot: guest main thread tid=4928 entry=7ff3fd0b9930 sp=7ff3fd09edc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef405190ce0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I guest.out] cxx_test
+[I guest.out]   ok   exception thrown 6 frames deep and caught
+[I guest.out]   ok   destructor ran while unwinding
+[I guest.out]   ok   100 more throws
+[I guest.out]   ok   virtual calls
+[I guest.out]   ok   std::function
+[I guest.out]   ok   std::vector<std::string>
+[I guest.out]   ok   backtrace() walks the stack
+[I guest.out]   ok   library exception (out_of_range)
+[I guest.out] cxx_test: 0 failure(s)
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (1242 bytes) follows:
+[W layer    ] MAP 7ef405190000-7ef405191000 rw-p 00000000 00:00 0                        [heap]
+7ef405191000-7ef4051b2000 rw-p 00000000 00:00 0                        [heap]
+7ef4051b2000-7ef4051c5000 rw-p 00000000 00:00 0                        [heap]
+7ff3fc89e000-7ff3fc89f000 ---p 00000000 00:00 0                        [stack]
+7ff3fc89f000-7ff3fd09f000 rw-p 00000000 00:00 0                        [stack]
+7ff3fd09f000-7ff3fd0ae000 rwxp 00000000 00:00 0 
+7ff3fd0ae000-7ff3fd0b8000 r--p 00000000 00:00 3659174698163105                        /bin/cxx_test
+7ff3fd0b8000-7ff3fd151000 r-xp 0000a000 00:00 3659174698163105                        /bin/cxx_test
+7ff3fd151000-7ff3fd182000 r--p 000a3000 00:00 3659174698163105                        /bin/cxx_test
+7ff3fd182000-7ff3fd188000 r--p 000d4000 00:00 3659174698163105                        /bin/cxx_test
+7ff3fd188000-7ff3fd18a000 rw-p 000da000 00:00 3659174698163105                        /bin/cxx_test
+7ff3fd18a000-7ff3fd190000 rw-p 00000000 00:00 0 
+7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
+7ffff7fc5000-7ffff7fc7000
+xrl_layer_boot returned 0
+exit 0
+== cxx_test XRL_DBT=1
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/cxx_test, 1 args, 3 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef464560000,7ff464560000) 1048576 MiB VA, brk <= 7ef4a4560000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.MEzJZnQBdL (4 symlinks)
+[I layer    ] dbt: /bin/cxx_test: 626688 bytes at 7ff45c488000 are translated, not executed (cache 4896 KiB at 7ff45c930000); the image's bytes are untouched
+[I layer    ] elf: loaded /bin/cxx_test type=DYN bias=7ff45c47e000 span=[7ff45c47e000,7ff45c560000) entry=7ff45c489930
+[W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
+[I layer    ] guestctx: 16 SysV stubs generated for host op tables (ctx=000001613ED42880)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff45c47ddc0
+[I layer    ] boot: guest main thread tid=7380 entry=7ff45c489930 sp=7ff45c47ddc0
+[W layer    ] ENOSYS 334 rseq (a1=7ef464560ce0 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I guest.out] cxx_test
+[I guest.out]   ok   exception thrown 6 frames deep and caught
+[I guest.out]   ok   destructor ran while unwinding
+[I guest.out]   ok   100 more throws
+[I guest.out]   ok   virtual calls
+[I guest.out]   ok   std::function
+[I guest.out]   ok   std::vector<std::string>
+[I guest.out]   ok   backtrace() walks the stack
+[I guest.out]   ok   library exception (out_of_range)
+[I guest.out] cxx_test: 0 failure(s)
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (1242 bytes) follows:
+[W layer    ] MAP 7ef464560000-7ef464561000 rw-p 00000000 00:00 0                        [heap]
+7ef464561000-7ef464582000 rw-p 00000000 00:00 0                        [heap]
+7ef464582000-7ef464595000 rw-p 00000000 00:00 0                        [heap]
+7ff45bc7d000-7ff45bc7e000 ---p 00000000 00:00 0                        [stack]
+7ff45bc7e000-7ff45c47e000 rw-p 00000000 00:00 0                        [stack]
+7ff45c47e000-7ff45c488000 r--p 00000000 00:00 3940649674873761                        /bin/cxx_test
+7ff45c488000-7ff45c521000 r-xp 0000a000 00:00 3940649674873761                        /bin/cxx_test
+7ff45c521000-7ff45c552000 r--p 000a3000 00:00 3940649674873761                        /bin/cxx_test
+7ff45c552000-7ff45c558000 r--p 000d4000 00:00 3940649674873761                        /bin/cxx_test
+7ff45c558000-7ff45c55a000 rw-p 000da000 00:00 3940649674873761                        /bin/cxx_test
+7ff45c55a000-7ff45c560000 rw-p 00000000 00:00 0 
+7ff45c930000-7ff45cdf8000 rwxp 00000000 00:00 0 
+7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
+7ffff7fc5000-7ffff7fc7000
+xrl_layer_boot returned 0
+exit 0
