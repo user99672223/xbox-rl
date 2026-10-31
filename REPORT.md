@@ -2,6 +2,18 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (14) - run 50: Firefox session 1303 MiB with shared library pages; now the CI default
+
+| run 50 (22ca28f), peak committed | |
+|---|---|
+| m5 Firefox session, lazy stacks | 2026 MiB |
+| m5s + stacks committed whole | 2073 MiB |
+| **m5t lazy stacks + shared library pages** | **1303 MiB** (start of the day: 4084 MiB) |
+
+2662 views map 693 MiB of library pages held once in 216 MiB of sections; private file mappings 231 MiB; no copy
+differed from its shared one. All PASS. This batch makes `XRL_SHARED_TEXT=1` the CI default (every probe runs on it;
+5t now checks `XRL_SHARED_TEXT=0`) and gives each image's pool room more slack (libGLdispatch's pool did not fit).
+
 ## 2026-10-31 (13) - shared library pages work: Firefox session 1469 MiB with XRL_SHARED_TEXT=1 (run 49)
 
 | run 49 (50d68fc), peak committed | |

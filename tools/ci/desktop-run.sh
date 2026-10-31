@@ -11,13 +11,14 @@ host=layer/build/desktop/xrl_test_host.exe
 # XRL_PROFILE=1: the perf lines name each busy thread's most frequent syscalls (busy loops, stalls)
 # XRL_FORK_SNAPSHOT_MB: a fork of a process with more writable memory than this falls back to vfork semantics (the
 # child's writes stay in the parent); Firefox's parent has more than the 256 MiB default
-# XRL_LAZY_STACKS=1: thread stacks commit on demand (mem.c); probe 5s checks the old path
-export XRL_LAZY_STACKS=1 XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 XRL_PROFILE=1 XRL_FORK_SNAPSHOT_MB=2048
+# XRL_LAZY_STACKS=1: thread stacks commit on demand; XRL_SHARED_TEXT=1: library pages shared between processes
+# (mem.c); probes 5s and 5t check the old paths
+export XRL_LAZY_STACKS=1 XRL_SHARED_TEXT=1 XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 XRL_PROFILE=1 XRL_FORK_SNAPSHOT_MB=2048
 # One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line, which
 # may start with VAR=value words for the test host (layer switches such as XRL_TRACE). A milestone
 # passes when all its probes do; earlier milestones stay in the list as regression checks.
 declare -A names
-names=([5s]="Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)" [5t]="Firefox, shared library pages (XRL_SHARED_TEXT=1)" [1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page" [6]="TV: the session on /dev/fb0")
+names=([5s]="Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)" [5t]="Firefox, every process with its own library copies (XRL_SHARED_TEXT=0)" [1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page" [6]="TV: the session on /dev/fb0")
 list=(
     "1|120|guest.out\] hello from bash|/bin/bash -c 'echo hello from bash; uname -a'"
     "1|120|guest.out\] d.* usr$|/usr/bin/ls -la /"
@@ -35,7 +36,7 @@ list=(
     "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
     "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"
     "5s|900|\"xbox-rl page .*Mozilla Firefox\"|XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox"
-    "5t|900|\"xbox-rl page .*Mozilla Firefox\"|XRL_SHARED_TEXT=1 /bin/bash /tmp/xrl-xsession.sh firefox"
+    "5t|900|\"xbox-rl page .*Mozilla Firefox\"|XRL_SHARED_TEXT=0 /bin/bash /tmp/xrl-xsession.sh firefox"
     "6|400|bridge done: .*pad events=[1-9].*dumped the framebuffer|XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv"
 )
 # tools/ci/probes-gpu.list (the GPU/Plasma session's file, docs: REPORT.md): more probes in the same format, one per line

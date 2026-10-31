@@ -848,7 +848,7 @@ static void img_init(void)
  * its trampoline pool; 0 = not here */
 static u64 img_place(u64 len)
 {
-    u64 room = ALIGN_UP(len / 4 + GRAN, GRAN), need = ALIGN_UP(len, GRAN) + room;
+    u64 room = ALIGN_UP(len / 2 + 4 * GRAN, GRAN), need = ALIGN_UP(len, GRAN) + room;   /* VA only: generous */
     u64 cand = ALIGN_DOWN(g_img_end - need, GRAN);
     for (int guard = 0; ; guard++) {
         if (cand < g_img_base || guard > 100000) return 0;
