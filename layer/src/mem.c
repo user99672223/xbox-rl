@@ -2485,8 +2485,18 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
             } else if (cur_owner == mm && cur_prot != sv->prot) xrl_mem_mprotect(gs, ge - gs, sv->prot);
             a = ge;
         }
-        if (snap_writable_private(sv)) {
-            if (!sv->committed) each_region(sv->start, sv->end, op_zero_committed, NULL);   /* lazy: pages the child touched first read as zero again */
+        if (snap_writable_private(sv) && !sv->committed) {   /* lazy: pages the child touched first read as zero again ... */
+            u64 za = sv->start;
+            while (za < sv->end) {   /* ... in what is still this mm's (the range may hold another process's memory now) */
+                AcquireSRWLockShared(&g_lock);
+                size_t k = vma_lower(za);
+                int mine = k < g_n && g_v[k].start <= za && g_v[k].owner == mm;
+                u64 zb = k < g_n ? (g_v[k].start > za ? g_v[k].start : g_v[k].end) : sv->end;
+                ReleaseSRWLockShared(&g_lock);
+                if (zb > sv->end) zb = sv->end;
+                if (mine) each_region(za, zb, op_zero_committed, NULL);
+                za = zb;
+            }
         }
     }
     if (lost) LOGW("fork: the child unmapped %d range(s) of the parent that could not be put back (file mappings)", lost);
