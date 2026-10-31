@@ -1517,7 +1517,7 @@ static u32 cur_mm(void)
 }
 u32 xrl_mm_new(void) { return (u32)InterlockedIncrement(&g_next_mm); }
 u32 xrl_mem_cur_mm(void) { return cur_mm(); }
-int xrl_mem_lock_held(void) { return t_mem_locked; }
+int xrl_mem_locked_here(void) { return t_mem_locked; }
 /* nothing is mapped in [a, a+len) and an mmap hint there would be taken (inside the arena, above the mmap floor) */
 int xrl_mem_range_free(u64 a, u64 len)
 {

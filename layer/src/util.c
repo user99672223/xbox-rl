@@ -49,7 +49,7 @@ int xrl_cfu(void *dst, u64 usrc, size_t n)
  * text that is not theirs); name the writer. Logged, not refused: shared segments may be owned by another mm. */
 static void foreign_check(u64 udst, size_t n)
 {
-    if (xrl_fork_tasks_enabled() || xrl_mem_lock_held()) return;
+    if (xrl_fork_tasks_enabled() || xrl_mem_locked_here()) return;
     u32 o = xrl_mem_owner(udst), me = xrl_mem_cur_mm();
     if (!o || o == me) return;
     static volatile LONG cnt;

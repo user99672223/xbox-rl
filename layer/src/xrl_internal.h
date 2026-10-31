@@ -408,7 +408,7 @@ int  xrl_mem_is_mapped(u64 addr);
 u32  xrl_mem_owner(u64 addr);     /* the mm (address space) that maps addr, 0: none */
 u32  xrl_mem_cur_mm(void);
 int  xrl_mem_range_free(u64 a, u64 len);
-int  xrl_mem_lock_held(void);
+int  xrl_mem_locked_here(void);   /* this thread holds g_lock (mem.c t_mem_locked) */
 int  xrl_mem_page_writable(u64 addr);
 int  xrl_mem_writewatch_allow(u64 addr);   /* task.c: cap the fork stack snapshot at the writable stack end */
 void xrl_mem_interp_rw_reset(void);          /* RELRO-safe: keep the interpreter's RW PT_LOAD writable */
