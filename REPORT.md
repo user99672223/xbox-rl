@@ -2,6 +2,33 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (3) - milestones 1-4 PASS (CI run 19, a172083); 5 in progress
+
+### Status
+1-3. PASS. 2 is fixed again: the apt corruption was the layer's fork snapshots (below).
+4. PASS. `xfdesktop` no longer spins. Still no desktop icons (Home / File System): GTK never loads the icon theme
+   for the desktop view; not chased further (the panel and desktop are there, the milestone's pass line).
+5. Firefox now starts, runs its crashhelper and glxtest and starts a content process, then everything idles with no
+   window. Next run logs Firefox IPC (`MOZ_LOG`) and keeps short per-probe logs (the long ones hit the 2 MB cap).
+
+### Layer changes since the last report (proc.c fork path, epoll and /proc only; nothing on XRL_FORK_TASKS)
+- **Fork snapshots own their address ranges (mem.c).** A registry of live fork snapshots per mm: while one is live,
+  a mapping it covers is not freed by munmap or mremap (shrink/move) but made PROT_NONE; the restore gives it its
+  protection back. Snapshot restore writes and zeroes only ranges its mm still owns. This was apt's corruption:
+  apt-get's fork children (before exec) freed parts of apt-get's memory, the exec'd methods mapped there, apt-get
+  wrote into them (stack smashing, text in code, EBADF, zeroed stacks).
+- **Fork groups (proc.c):** a member about to start its first thread lets waiting members run first
+  (`xrl_swap_yield`): Firefox's crashhelper (fork, child starts threads, parent exits) used to hang Firefox.
+- **epoll (ipc.c, procfs.c):** EPOLLET on a /proc file reports once; the epoll fd itself polls readable for an
+  EPOLLET entry only when epoll_wait would report it. GLib's libmount monitor made xfdesktop spin on both.
+- **rewrite.c (not with XRL_FORK_TASKS):** trampoline pools are read+exec once written.
+- Tests: guest suite (EPOLLET on /proc, epoll fd poll), procs_test (daemon start, fork child unmap + exec), run in
+  CI by desktop-run.sh (`procs-test.txt`, TOTAL FAILS=0).
+
+### For the main session
+- The RL + EAC check should include mem.c (snapshot registry, `unmap_keep_locked`: it only acts while a proc.c fork
+  snapshot is live, which XRL_FORK_TASKS never makes) and ipc.c's `ep_poll` (EPOLLET entries only).
+
 ## 2026-10-31 (2) - milestones 3 and 4 PASS, 5 in progress, 2 regressed (intermittent)
 
 ### Milestone status (CI runs 9-11)
