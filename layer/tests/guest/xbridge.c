@@ -2,11 +2,13 @@
  * xbridge.c - the display bridge between an X server and the layer's /dev/fb0 and /dev/input/event*.
  * Freestanding guest (build: build.sh -> out/xbridge.elf); no libc, no Xlib: it speaks the X11 wire protocol itself.
  *
- *   xbridge.elf --xwd <file> [--tcp <ip:port> | --unix <path>] [--seconds N] [--verify]
+ *   xbridge.elf (--x | --xwd <file>) [--tcp <ip:port> | --unix <path>] [--seconds N] [--verify] [--dump <file>]
  *
- *   screen  : <file> is the screen of an Xvfb started with -fbdir (XWD format, 32 bpp, little-endian BGRX). The bridge
- *             polls it about 30 times a second and writes the rows that changed to /dev/fb0, which the host shows in the
- *             window; it first sets the framebuffer to the X screen's size.
+ *   screen  : --x: over the X protocol. MIT-SHM ShmGetImage into a SysV segment (GetImage when the server has no
+ *             MIT-SHM), only the rows the DAMAGE extension reports changed (the whole screen ~3 times a second when
+ *             there is no DAMAGE); x11vnc does the same. --xwd <file>: the screen file of an Xvfb started with -fbdir
+ *             (XWD, 32 bpp BGRX), polled. Either way about 30 times a second the changed rows go to /dev/fb0, which
+ *             the host shows (the Xbox app on the TV); the framebuffer first takes the X screen's size.
  *   input   : /dev/input/event0 (keyboard), event1 (mouse), event2 (absolute pointer) become XTest FakeInput requests
  *             on the X connection: key codes are evdev's + 8, BTN_LEFT/MIDDLE/RIGHT -> buttons 1/2/3, wheels -> 4..7,
  *             ABS_X/ABS_Y -> a warp to the point, REL_X/REL_Y -> relative motion. (Opening event2 keeps the host cursor
@@ -18,7 +20,7 @@
  * The X server is reached over TCP (Xvfb -listen tcp -ac; the layer's AF_INET) or a unix socket (needs AF_UNIX in the
  * layer). Everything is one thread: poll on the input devices and the X socket with a 16 ms timeout, a screen poll between.
  */
-typedef unsigned long u64; typedef long s64; typedef unsigned int u32; typedef int s32; typedef unsigned char u8; typedef unsigned short u16;
+typedef unsigned long u64; typedef long s64; typedef unsigned int u32; typedef int s32; typedef unsigned char u8; typedef unsigned short u16; typedef short s16;
 typedef long (*xsc_t)(long, long, long, long, long, long, long);
 xsc_t xsc;
 #define AT_XRL_SYSCALL 0x5801
@@ -49,6 +51,10 @@ static void outn(const char *label, long v)
 static void die(const char *msg, long v) { out("xbridge: "); outn(msg, v); sc1(231, 1); for (;;) {} }
 
 __asm__(".text\n.globl _start\n_start:\n  xor %ebp,%ebp\n  mov %rsp,%rdi\n  and $-16,%rsp\n  call cstart\n  ud2\n");
+/* outside the layer (a test on Linux itself): the syscall instruction, same argument order as the layer's entry */
+long native_sc(long n, long a, long b, long c, long d, long e, long f);
+__asm__(".text\n.globl native_sc\nnative_sc:\n  mov %rdi,%rax\n  mov %rsi,%rdi\n  mov %rdx,%rsi\n  mov %rcx,%rdx\n"
+        "  mov %r8,%r10\n  mov %r9,%r8\n  mov 8(%rsp),%r9\n  syscall\n  ret\n");
 
 static u64 mono_ns(void) { long ts[2]; sc2(228, 1, ts); return (u64)ts[0] * 1000000000ull + (u64)ts[1]; }
 static void *mmap_anon(u64 len) { return (void *)sc(9, 0, len, 3, 0x22, -1, 0); }
@@ -71,7 +77,7 @@ struct pollfd { int fd; short events, revents; };
 /* ---- the X connection ---------------------------------------------------------------- */
 static int xfd = -1;
 static u32 xtest_major;
-static u32 root_w, root_h, root_id;
+static u32 root_w, root_h, root_id, id_base;
 static int nreq;
 
 static int xsend(const void *b, long n)
@@ -107,7 +113,7 @@ static void x_connect_tcp(const char *spec)   /* a.b.c.d:port */
     u8 sa[16]; memset(sa, 0, 16);
     sa[0] = 2; sa[2] = (u8)(port >> 8); sa[3] = (u8)port; sa[4] = (u8)a[0]; sa[5] = (u8)a[1]; sa[6] = (u8)a[2]; sa[7] = (u8)a[3];
     long r = sc3(42, xfd, sa, 16);
-    if (r < 0) die("connect to the X server failed", r);
+    if (r < 0) { sc1(3, xfd); xfd = -1; }   /* not up yet: the caller retries */
 }
 static void x_connect_unix(const char *path)
 {
@@ -117,7 +123,7 @@ static void x_connect_unix(const char *path)
     sa[0] = 1;
     for (int i = 0; path[i] && i < 107; i++) sa[2 + i] = (u8)path[i];
     long r = sc3(42, xfd, sa, 2 + slen(path) + 1);
-    if (r < 0) die("connect to the X server failed", r);
+    if (r < 0) { sc1(3, xfd); xfd = -1; }   /* not up yet: the caller retries */
 }
 
 static void x_handshake(void)
@@ -133,9 +139,26 @@ static void x_handshake(void)
     if (n > sizeof body || xread_full(body, n)) die("handshake: reply", n);
     u32 vlen = le16(body + 16), nfmt = body[21];
     u32 off = 32 + ((vlen + 3) & ~3u) + nfmt * 8;
+    id_base = le32(body + 4);
     root_id = le32(body + off);
     root_w = le16(body + off + 20); root_h = le16(body + off + 22);
     outn("X root width", root_w); outn("X root height", root_h);
+}
+
+/* QueryExtension: 1 if present; major opcode and first event code out */
+static int x_query_ext(const char *name, u32 *major, u32 *first_event)
+{
+    u8 q[40]; memset(q, 0, sizeof q);
+    u32 n = (u32)slen(name), len = 2 + ((n + 3) >> 2);
+    q[0] = 98; put16(q + 2, len); put16(q + 4, n);
+    memcpy(q + 8, name, n);
+    if (xsend(q, len * 4)) die("QueryExtension: send", 0);
+    u8 r[32];
+    if (xread_full(r, 32)) die("QueryExtension: reply", 0);
+    if (r[0] != 1 || !r[8]) return 0;
+    *major = r[9];
+    if (first_event) *first_event = r[10];
+    return 1;
 }
 
 static void x_query_xtest(void)
@@ -166,16 +189,47 @@ static void x_fake(u32 type, u32 detail, int rx, int ry)   /* XTestFakeInput */
     nreq++;
 }
 
-/* drain whatever the server sends (errors/events we did not ask for) so its buffer never fills */
+/* what the server sends: 32-byte events and errors, replies with 4*length more bytes. DAMAGE events grow the damaged
+ * bounding box; a reply is handed to the caller that waits for it (x_next with want_reply) */
+static u32 damage_ev = 0x100;   /* DAMAGE's DamageNotify code (first_event), 0x100: none */
+static int dmg_x0 = 1 << 30, dmg_y0 = 1 << 30, dmg_x1 = -1, dmg_y1 = -1;
+static u64 x_errors;
+static int x_next(u8 *ev32, u8 *extra, u32 extra_cap, u32 *extra_len)   /* 0 ok, -1 connection gone */
+{
+    if (xread_full(ev32, 32)) return -1;
+    if (extra_len) *extra_len = 0;
+    if (ev32[0] == 1) {   /* a reply: its data follows */
+        u32 n = le32(ev32 + 4) * 4;
+        if (extra && n <= extra_cap) { if (xread_full(extra, n)) return -1; if (extra_len) *extra_len = n; }
+        else { static u8 sink[4096]; while (n) { u32 c = n < sizeof sink ? n : sizeof sink; if (xread_full(sink, c)) return -1; n -= c; } }
+    } else if (ev32[0] == 0) {
+        if (++x_errors <= 8) { out("xbridge: X error code "); outn("", ev32[1]); outn("  major", ev32[10]); outn("  minor", le16(ev32 + 8)); }
+    } else if ((ev32[0] & 0x7f) == damage_ev) {   /* DamageNotify: area at 16 (BoundingBox level) */
+        int x = (int)(s16)le16(ev32 + 16), y = (int)(s16)le16(ev32 + 18), w = (int)le16(ev32 + 20), h = (int)le16(ev32 + 22);
+        if (x < dmg_x0) dmg_x0 = x;
+        if (y < dmg_y0) dmg_y0 = y;
+        if (x + w > dmg_x1) dmg_x1 = x + w;
+        if (y + h > dmg_y1) dmg_y1 = y + h;
+    }
+    return 0;
+}
+/* drain whatever is buffered (events, errors) so the server's output never fills */
 static void x_drain(void)
 {
-    u8 b[512];
+    u8 b[32];
     for (;;) {
         struct pollfd pf = { xfd, 1, 0 };
         if (sc3(7, &pf, 1, 0) <= 0 || !(pf.revents & 1)) return;
-        long r = sc3(0, xfd, b, sizeof b);
-        if (r <= 0) return;
-        if (b[0] == 0) { out("xbridge: X error code "); outn("", b[1]); }
+        if (x_next(b, 0, 0, 0)) return;
+    }
+}
+/* wait for the reply to the request just sent, handling events on the way; its data goes to extra */
+static int x_reply(u8 *r32, u8 *extra, u32 cap, u32 *len)
+{
+    for (;;) {
+        if (x_next(r32, extra, cap, len)) return -1;
+        if (r32[0] == 1) return 0;
+        if (r32[0] == 0) return -1;   /* the error for our request */
     }
 }
 
@@ -217,12 +271,18 @@ static int xwd_open(const char *path)
     return 0;
 }
 
+static const char *fb_path = "/dev/fb0";
 static void fb_setup(void)
 {
-    fb = (int)sc3(2, "/dev/fb0", 2, 0);
-    if (fb < 0) die("open /dev/fb0", fb);
+    fb = (int)sc3(2, fb_path, 0102, 0644);   /* O_RDWR|O_CREAT: --fb <file> on a plain file (a test outside the layer) */
+    if (fb < 0) die("open the framebuffer", fb);
     u32 var[40];
-    sc3(16, fb, FBIOGET_VSCREENINFO, var);
+    if (sc3(16, fb, FBIOGET_VSCREENINFO, var) < 0) {   /* not a framebuffer: a file of the X screen's size */
+        fb_w = xw_w; fb_h = xw_h; fb_line = xw_w * 4;
+        sc2(77, fb, (u64)fb_line * fb_h);   /* ftruncate */
+        outn("fb (file) width", fb_w); outn("fb (file) height", fb_h);
+        return;
+    }
     if (var[0] != xw_w || var[1] != xw_h) {   /* the X screen's size becomes the framebuffer's */
         var[0] = var[2] = xw_w; var[1] = var[3] = xw_h; var[4] = var[5] = 0;
         long r = sc3(16, fb, FBIOPUT_VSCREENINFO, var);
@@ -267,6 +327,116 @@ static void screen_poll(void)
     frames++;
 }
 
+/* ---- the screen over the X protocol (--x) ------------------------------------------------- */
+static u32 shm_major, dmg_major, shm_seg, dmg_id;
+static u8 *shm_buf;
+static int use_shm, use_damage;
+static u64 bytes_fetched;
+
+static void xscreen_setup(void)
+{
+    xw_w = root_w; xw_h = root_h; xw_line = root_w * 4;
+    u32 ev = 0;
+    if (x_query_ext("MIT-SHM", &shm_major, 0)) {
+        long id = sc3(29, 0, (u64)xw_line * xw_h, 01000 | 0777);   /* shmget(IPC_PRIVATE, IPC_CREAT|0777) */
+        long a = id >= 0 ? sc3(30, id, 0, 0) : -1;                  /* shmat */
+        if (id >= 0 && a > 0x10000) {
+            shm_buf = (u8 *)a;
+            shm_seg = id_base | 1;
+            u8 q[16]; memset(q, 0, sizeof q);
+            q[0] = (u8)shm_major; q[1] = 1; put16(q + 2, 4);          /* ShmAttach(seg, shmid, read-only 0) */
+            put32(q + 4, shm_seg); put32(q + 8, (u32)id);
+            if (!xsend(q, 16)) { nreq++; use_shm = 1; }
+            sc3(31, id, 0, 0);   /* shmctl(IPC_RMID): gone once both detach */
+        } else outn("MIT-SHM: shared memory refused, GetImage instead", id >= 0 ? a : id);
+    }
+    if (x_query_ext("DAMAGE", &dmg_major, &ev)) {
+        u8 q[12]; memset(q, 0, sizeof q);
+        q[0] = (u8)dmg_major; q[1] = 0; put16(q + 2, 3); put32(q + 4, 1); put32(q + 8, 1);   /* DamageQueryVersion 1.1 */
+        u8 r[32];
+        if (!xsend(q, 12) && !x_reply(r, 0, 0, 0)) {
+            damage_ev = ev;
+            dmg_id = id_base | 2;
+            u8 c[16]; memset(c, 0, sizeof c);
+            c[0] = (u8)dmg_major; c[1] = 1; put16(c + 2, 4);              /* DamageCreate(damage, root, BoundingBox) */
+            put32(c + 4, dmg_id); put32(c + 8, root_id); c[12] = 2;
+            if (!xsend(c, 16)) { nreq++; use_damage = 1; }
+        }
+    }
+    outn("screen over X: MIT-SHM", use_shm); outn("screen over X: DAMAGE", use_damage);
+    dmg_x0 = 0; dmg_y0 = 0; dmg_x1 = (int)xw_w; dmg_y1 = (int)xw_h;   /* the first frame is all of it */
+}
+
+/* rows y0..y1 of the root window into cur (rows of xw_line bytes): 0 ok */
+static int xscreen_fetch(u32 y0, u32 y1)
+{
+    u32 h = y1 - y0;
+    if (use_shm) {
+        u8 q[32]; memset(q, 0, sizeof q);
+        q[0] = (u8)shm_major; q[1] = 4; put16(q + 2, 8);   /* ShmGetImage(root, 0, y0, w, h, ~0, ZPixmap, seg, offset) */
+        put32(q + 4, root_id); put16(q + 8, 0); put16(q + 10, y0); put16(q + 12, xw_w); put16(q + 14, h);
+        put32(q + 16, 0xffffffffu); q[20] = 2; put32(q + 24, shm_seg); put32(q + 28, y0 * xw_line);
+        u8 r[32];
+        if (xsend(q, 32) || x_reply(r, 0, 0, 0)) return -1;
+        nreq++;
+        memcpy(cur + (u64)y0 * xw_line, shm_buf + (u64)y0 * xw_line, (u64)h * xw_line);
+    } else {
+        for (u32 y = y0; y < y1;) {   /* GetImage in bands of up to 64 rows (a reply is length * 4 bytes) */
+            u32 n = y1 - y < 64 ? y1 - y : 64;
+            u8 q[20]; memset(q, 0, sizeof q);
+            q[0] = 73; q[1] = 2; put16(q + 2, 5);
+            put32(q + 4, root_id); put16(q + 8, 0); put16(q + 10, y); put16(q + 12, xw_w); put16(q + 14, n);
+            put32(q + 16, 0xffffffffu);
+            u8 r[32]; u32 len = 0;
+            if (xsend(q, 20) || x_reply(r, cur + (u64)y * xw_line, n * xw_line, &len)) return -1;
+            nreq++;
+            y += n;
+        }
+    }
+    bytes_fetched += (u64)h * xw_line;
+    return 0;
+}
+
+/* one frame: fetch what DAMAGE says changed (everything every ~0.3 s without DAMAGE), write the changed rows */
+static void xscreen_poll(void)
+{
+    static u32 tick;
+    u32 y0, y1;
+    if (use_damage) {
+        if (dmg_y1 <= dmg_y0) return;
+        y0 = dmg_y0 < 0 ? 0 : (u32)dmg_y0; y1 = dmg_y1 > (int)xw_h ? xw_h : (u32)dmg_y1;
+        dmg_x0 = dmg_y0 = 1 << 30; dmg_x1 = dmg_y1 = -1;
+        u8 q[16]; memset(q, 0, sizeof q);
+        q[0] = (u8)dmg_major; q[1] = 3; put16(q + 2, 4); put32(q + 4, dmg_id);   /* DamageSubtract(damage, None, None) */
+        if (xsend(q, 16)) return;
+        nreq++;
+    } else {
+        if (tick++ % 10) return;
+        y0 = 0; y1 = xw_h;
+    }
+    if (y1 <= y0 || xscreen_fetch(y0, y1)) return;
+    u32 w = xw_w < fb_w ? xw_w : fb_w, yl = y1 < fb_h ? y1 : fb_h;
+    for (u32 y = y0; y < yl;) {   /* runs of rows that differ from what fb0 has */
+        const u64 *a = (const u64 *)(cur + (u64)y * xw_line), *b = (const u64 *)(prev + (u64)y * xw_line);
+        int diff = 0;
+        for (u32 i = 0; i < w / 2; i++) if (a[i] != b[i]) { diff = 1; break; }
+        if (!diff) { y++; continue; }
+        u32 e = y + 1;
+        for (; e < yl; e++) {
+            const u64 *c = (const u64 *)(cur + (u64)e * xw_line), *d = (const u64 *)(prev + (u64)e * xw_line);
+            int df = 0;
+            for (u32 i = 0; i < w / 2; i++) if (c[i] != d[i]) { df = 1; break; }
+            if (!df) break;
+        }
+        if (xw_line == fb_line && w * 4 == fb_line) sc4(18, fb, cur + (u64)y * xw_line, (u64)(e - y) * xw_line, (u64)y * fb_line);
+        else for (u32 yy = y; yy < e; yy++) sc4(18, fb, cur + (u64)yy * xw_line, (u64)w * 4, (u64)yy * fb_line);
+        memcpy(prev + (u64)y * xw_line, cur + (u64)y * xw_line, (u64)(e - y) * xw_line);
+        rows_sent += e - y;
+        y = e;
+    }
+    frames++;
+}
+
 /* ---- input ------------------------------------------------------------------------------ */
 static u32 abs_x, abs_y;
 static int rel_dx, rel_dy, have_abs, have_rel;
@@ -307,9 +477,9 @@ void cstart(u64 *sp)
     while (*p) p++;
     p++;
     for (; p[0]; p += 2) if (p[0] == AT_XRL_SYSCALL) xsc = (xsc_t)p[1];
-    if (!xsc) { __asm__ volatile("ud2"); }
+    if (!xsc) xsc = native_sc;
     const char *xwd_path = 0, *tcp = 0, *unixp = 0;
-    int seconds = 30, verify = 0, rel = 0;
+    int seconds = 30, verify = 0, rel = 0, xscreen = 0, noinput = 0;
     const char *dump = 0;
     for (long i = 1; i < argc; i++) {
         const char *a = (const char *)sp[1 + i];
@@ -321,29 +491,44 @@ void cstart(u64 *sp)
         else if (streq(a, "--verify")) verify = 1;
         else if (streq(a, "--rel")) rel = 1;
         else if (streq(a, "--dump")) { dump = nx; i++; }
+        else if (streq(a, "--x")) xscreen = 1;
+        else if (streq(a, "--fb")) { fb_path = nx; i++; }
+        else if (streq(a, "--no-input")) noinput = 1;
     }
-    if (!xwd_path) die("usage: xbridge --xwd <Xvfb_screen0 copy> [--tcp ip:port | --unix path] [--seconds N] [--verify] [--rel]", 0);
+    if (!xwd_path && !xscreen) die("usage: xbridge (--x | --xwd <Xvfb_screen0>) [--tcp ip:port | --unix path] [--seconds N] [--verify] [--rel] [--dump file]", 0);
+    if (xscreen && !tcp && !unixp) die("--x needs --unix or --tcp", 0);
     out("xbridge start\n");
 
-    int tries = 0, orr;
-    while ((orr = xwd_open(xwd_path)) != 0 && ++tries < 100) { long ts[2] = { 0, 100000000 }; sc2(35, ts, 0); }   /* a copier may be rewriting it */
-    if (orr) die("cannot read the XWD screen file", orr);
-    outn("XWD width", xw_w); outn("XWD height", xw_h);
+    int kfd = -1, mfd = -1, afd = -1;
+    if (tcp || unixp) {
+        int ct = 0;   /* the server may still be starting */
+        for (;;) {
+            if (tcp) x_connect_tcp(tcp); else x_connect_unix(unixp);
+            if (xfd >= 0) break;
+            if (++ct > 100) die("no X server", 0);
+            long ts[2] = { 0, 200000000 }; sc2(35, ts, 0);
+        }
+        x_handshake();
+        x_query_xtest();
+    }
+    if (xscreen) xscreen_setup();
+    else {
+        int tries = 0, orr;
+        while ((orr = xwd_open(xwd_path)) != 0 && ++tries < 100) { long ts[2] = { 0, 100000000 }; sc2(35, ts, 0); }   /* a copier may be rewriting it */
+        if (orr) die("cannot read the XWD screen file", orr);
+        outn("XWD width", xw_w); outn("XWD height", xw_h);
+    }
     fb_setup();
     cur = mmap_anon((u64)xw_line * xw_h); prev = mmap_anon((u64)xw_line * xw_h);
     if ((u64)cur < 0x10000 || (u64)prev < 0x10000) die("out of memory", 0);
 
-    int kfd = -1, mfd = -1, afd = -1;
-    if (tcp || unixp) {
-        if (tcp) x_connect_tcp(tcp); else x_connect_unix(unixp);
-        x_handshake();
-        x_query_xtest();
+    if ((tcp || unixp) && !noinput) {
         kfd = (int)sc3(2, "/dev/input/event0", 0x800, 0);
         afd = (int)sc3(2, "/dev/input/event2", 0x800, 0);
         if (rel) mfd = (int)sc3(2, "/dev/input/event1", 0x800, 0);
         if (kfd < 0 || afd < 0) die("cannot open the evdev devices", kfd < 0 ? kfd : afd);
         sc3(72, xfd, 4, 0x800);   /* fcntl(F_SETFL, O_NONBLOCK) */
-    } else out("no X server given: screen only\n");
+    } else if (!tcp && !unixp) out("no X server given: screen only\n");
     out("input-ready\n");   /* the test harness starts its clock here */
 
     u64 t0 = mono_ns(), next_screen = 0;
@@ -364,9 +549,10 @@ void cstart(u64 *sp)
         }
         if (xfd >= 0) x_drain();
         u64 now = mono_ns();
-        if (now >= next_screen) { screen_poll(); next_screen = now + 33000000ull; }
+        if (now >= next_screen) { if (xscreen) xscreen_poll(); else screen_poll(); next_screen = now + 33000000ull; }
     }
-    outn("screen polls", (long)frames); outn("rows written", (long)rows_sent); outn("input requests", nreq);
+    outn("screen frames", (long)frames); outn("rows written", (long)rows_sent); outn("X requests", nreq);
+    if (xscreen) outn("KiB fetched from the X server", (long)(bytes_fetched >> 10));
     if (verify && xfd >= 0) {
         x_query_pointer();
     }

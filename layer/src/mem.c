@@ -1288,6 +1288,7 @@ static u64 evict_batch(u32 *v, int n)
 }
 
 static volatile LONG g_cow_live;   /* copy-on-write fork snapshots with protected pages: the clock must not touch them */
+static int cow_save_page(u64 pg);
 static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
 {
     if (g_cow_live) return 0;
@@ -1993,6 +1994,8 @@ slong xrl_mem_populate(u64 addr, u64 len)
     if (!len || t_mem_locked) return 0;
     u64 end = ALIGN_UP(addr + len, LX_PAGE);
     addr = ALIGN_DOWN(addr, LX_PAGE);
+    /* a buffer Windows itself will write into (ReadFile...) fails rather than faults on a copy-on-write page */
+    if (g_cow_live) for (u64 p = addr; p < end; p += LX_PAGE) cow_save_page(p);
     slong r = 0;
     AcquireSRWLockExclusive(&g_lock);
     for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < end && !r; i++) {
@@ -2686,12 +2689,20 @@ xrl_msnap *xrl_mem_snapshot_cow(u32 mm)
         k++;
         if (snap_writable_private(v)) {
             swap_restore(v->start, v->end);   /* evicted or probed spans back first: a probed page would come back writable */
-            if (each_region(v->start, v->end, op_cow_protect, sn)) fail = 1;
+            /* a stack is copied whole: Windows pushes exception records onto the thread's stack (here the guest's,
+             * the fork child runs on it), and a read-only one cannot take the very fault that would save it */
+            if (!strcmp(v->name, "[stack]")) { snapctx c = { sn, 0 }; each_region(v->start, v->end, op_snap_ranges, &c); if (c.fail) fail = 1; }
+            else if (each_region(v->start, v->end, op_cow_protect, sn)) fail = 1;
         }
     }
     sn->nv = k;
     brkwin *b = brk_of(mm, 0);
     if (b) { sn->has_brk = 1; sn->brk_cur = b->cur; }
+    if (!fail && sn->dlen) {   /* the stacks' bytes, now, while nothing runs on them */
+        sn->data = (u8 *)malloc(sn->dlen);
+        if (!sn->data) fail = 1;
+        else { sn->dcap = sn->dlen; for (size_t i = 0; i < sn->nr; i++) memcpy(sn->data + sn->rg[i].off, (const void *)sn->rg[i].s, (size_t)(sn->rg[i].e - sn->rg[i].s)); }
+    }
     ReleaseSRWLockExclusive(&g_lock);
     if (fail) { xrl_mem_snap_free(sn); return NULL; }
     xrl_heapcheck("cow snapshot taken");
@@ -2699,11 +2710,9 @@ xrl_msnap *xrl_mem_snapshot_cow(u32 mm)
 }
 u64 xrl_mem_snap_cow_bytes(const xrl_msnap *sn, u64 *saved) { if (saved) *saved = sn->dlen; return sn->cow_bytes; }
 
-/* signal.c: a write fault. 1 if it was a first write to a copy-on-write page (saved; the write retries) */
-int xrl_mem_cow_fault(u64 addr, int access)
+/* The page at pg as it was, saved once, then writable again. 1 if pg is a copy-on-write page (saved now or before). */
+static int cow_save_page(u64 pg)
 {
-    if (access != 1 || !g_cow_live) return 0;
-    u64 pg = addr & ~(u64)(LX_PAGE - 1);
     int ok = 0;
     AcquireSRWLockExclusive(&g_cow_lock);
     for (size_t i = 0; i < g_ncow; i++) {
@@ -2733,6 +2742,13 @@ int xrl_mem_cow_fault(u64 addr, int access)
     }
     ReleaseSRWLockExclusive(&g_cow_lock);
     return ok;
+}
+
+/* signal.c: a write fault. 1 if it was a first write to a copy-on-write page (saved; the write retries) */
+int xrl_mem_cow_fault(u64 addr, int access)
+{
+    if (access != 1 || !g_cow_live) return 0;
+    return cow_save_page(addr & ~(u64)(LX_PAGE - 1));
 }
 
 /* the snapshot's pages get their protection back (restore or drop) */

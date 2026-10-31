@@ -15,7 +15,7 @@ export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 X
 # One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line, which
 # may start with VAR=value words for the test host (layer switches such as XRL_TRACE). A milestone
 # passes when all its probes do; earlier milestones stay in the list as regression checks.
-names=([1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page")
+names=([1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page" [6]="TV: the session on /dev/fb0")
 list=(
     "1|120|guest.out\] hello from bash|/bin/bash -c 'echo hello from bash; uname -a'"
     "1|120|guest.out\] d.* usr$|/usr/bin/ls -la /"
@@ -31,10 +31,16 @@ list=(
     "3|240|\\(\"xterm\" \"XTerm\"\\)|/bin/bash /tmp/xrl-xsession.sh xterm"
     "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
     "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"
+    "6|400|dumped the framebuffer|/bin/bash /tmp/xrl-xsession.sh tv"
 )
 # X sessions (milestones 3-5): tools/ci/xsession.sh in the guest; each saves /tmp/xrl-<mode>.xwd, which becomes
 # <out>/<mode>.png; a session probe passes only with its screenshot
 cp tools/ci/xsession.sh "$rootu/tmp/xrl-xsession.sh"
+# the X -> /dev/fb0 bridge (layer/tests/guest/xbridge.c), executable in the rootfs's mode table
+if [ -f layer/tests/guest/out/xbridge.elf ]; then
+    mkdir -p "$rootu/usr/local/bin" && cp layer/tests/guest/out/xbridge.elf "$rootu/usr/local/bin/xbridge"
+    grep -q "^/usr/local/bin/xbridge	" "$rootu/.xrl-meta" 2>/dev/null || printf '/usr/local/bin/xbridge\t755\t0\t0\n' >> "$rootu/.xrl-meta"
+fi
 [ $# -gt 0 ] && { list=("0|1500|.|$*"); names=([0]="command"); }
 # the guest's environment (layer/tests/test_host.c build_envp): a root login's
 export XRL_ENV_XRL_SESSION_KILLALL=1 XRL_ENV_HOME=/root XRL_ENV_PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
@@ -67,6 +73,10 @@ for e in "${list[@]}"; do
         for f in "$rootu"/tmp/xrl-*.log; do [ -f "$f" ] && cp "$f" "$out/$shot-$(basename "$f")"; done
         if [ -s "$rootu/tmp/xrl-$shot.xwd" ]; then
             cp "$rootu/tmp/xrl-$shot.xwd" "$out/$shot.xwd"
+            if [ "$shot" = tv ]; then   # what the bridge put on /dev/fb0
+                if [ -s "$rootu/tmp/xrl-fb0.raw" ]; then python -I tools/raw2png.py "$rootu/tmp/xrl-fb0.raw" 1280 720 "$out/tv-fb0.png" >> "$log" 2>&1 || v=FAIL
+                else echo "no fb0 dump" >> "$log"; v=FAIL; fi
+            fi
             python -I tools/xwd2png.py "$out/$shot.xwd" "$out/$shot.png" >> "$log" 2>&1 || v=FAIL
             rm -f "$out/$shot.xwd"
         else
