@@ -158,6 +158,7 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
     if (eh.phentsize != sizeof(RPhdr) || eh.phnum == 0 || eh.phnum > 128) return;
 
     AcquireSRWLockExclusive(&g_rw_lock);
+    LARGE_INTEGER q0, qf; QueryPerformanceCounter(&q0); QueryPerformanceFrequency(&qf);
     const char *name = f->gpath ? f->gpath : "?";
     RPhdr *ph = (RPhdr *)malloc(eh.phnum * sizeof(RPhdr));
     crange *rg = NULL; int nrg = 0;
@@ -282,8 +283,10 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
         for (size_t i = 0; i < w.ntraps; i++) trap_add(w.traps[i].site, w.traps[i].stub);
         if (!g_rw_veh) g_rw_veh = AddVectoredExceptionHandler(1, rw_veh);
     }
-    LOGI("rewrite: %s: %u syscall + %u %%fs + %u %%gs sites (%u in place, %u jumps, %u traps, %u neighbours moved), pool %zu bytes at %llx%s",
-         name, w.st.syscalls, w.st.fs_sites, w.st.gs_sites, w.st.inplace, w.st.jumps, w.st.traps, w.st.moved, w.pool_used, (u64)pool, ok ? "" : " [INCOMPLETE]");
+    LARGE_INTEGER q1; QueryPerformanceCounter(&q1);
+    LOGI("rewrite: %s: %u syscall + %u %%fs + %u %%gs sites (%u in place, %u jumps, %u traps, %u neighbours moved), pool %zu bytes at %llx%s in %.1f ms",
+         name, w.st.syscalls, w.st.fs_sites, w.st.gs_sites, w.st.inplace, w.st.jumps, w.st.traps, w.st.moved, w.pool_used, (u64)pool, ok ? "" : " [INCOMPLETE]",
+         (double)(q1.QuadPart - q0.QuadPart) * 1000.0 / (double)qf.QuadPart);
     if (w.st.unsupported || w.st.decode_fail || w.st.legacy_sys)
         LOGW("rewrite: %s: %u unsupported site(s), %u undecodable region(s), %u sysenter/int80 left alone", name, w.st.unsupported, w.st.decode_fail, w.st.legacy_sys);
     free(w.traps);

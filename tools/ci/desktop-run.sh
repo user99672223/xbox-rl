@@ -32,6 +32,8 @@ list=(
     "2|600|guest.out\] Reading package lists|XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update"
     "2|600|guest.out\] Setting up hello|XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello"
     "2|60|guest.out\] Hello, world!|/usr/bin/hello"
+    "2|300|guest.out\] +8 [0-9]+$|/bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'"
+    "2|300|guest.out\] +8 [0-9]+$|XRL_SHARED_TEXT=0 /bin/bash -c 'for i in 1 2 3 4 5 6 7 8; do dpkg-deb --fsys-tarfile /var/cache/apt/archives/hello_*.deb | wc -c; done | sort | uniq -c'"
     "3|240|\\(\"xterm\" \"XTerm\"\\)|/bin/bash /tmp/xrl-xsession.sh xterm"
     "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
     "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"

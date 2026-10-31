@@ -2,6 +2,21 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (15) - run 51: shared library pages everywhere; apt's xz error came back once
+
+| run 51 (add9b2f), peak committed | before today | run 51 |
+|---|---|---|
+| m4 XFCE session | 1106 MiB | **343 MiB** |
+| m5 Firefox session | 4084 MiB | **1369 MiB** |
+| m6 TV session | 1377 MiB | **353 MiB** |
+| m5t Firefox, XRL_SHARED_TEXT=0 | - | 1838 MiB |
+
+m2 failed: `apt-get update`'s store method got `lzma_read: Read error (9)` on Translation-en.xz. The trace shows
+no failing syscall: 9 is LZMA_DATA_ERROR (the decoder rejected the stream right after the first 64 KiB read),
+not EBADF as "Known gaps" said. It is the old intermittent failure (runs 10-37), but its return in the first run
+with shared library pages everywhere needs numbers: this batch adds a probe that decompresses hello's .deb (xz)
+8 times through liblzma, with and without shared pages, and times every rewrite (for item 3, speed).
+
 ## 2026-10-31 (14) - run 50: Firefox session 1303 MiB with shared library pages; now the CI default
 
 | run 50 (22ca28f), peak committed | |
