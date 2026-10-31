@@ -741,7 +741,6 @@ SYS(munmap)
         u64 end = addr + ((len + 4095) & ~4095ull);
         if (sp >= addr && sp < end) { t->defer_unmap_addr = addr; t->defer_unmap_len = len; return 0; }
     }
-    if (xrl_proc_fork_snapshotted()) return xrl_mem_hide(addr, len);   /* a fork child before its exec: proc.c */
     slong r = xrl_mem_munmap(addr, len);
     if (!r) xrl_dbt_unmapped(addr, len);       /* dbt.c: generated code */
     return r;

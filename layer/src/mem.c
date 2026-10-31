@@ -440,6 +440,60 @@ static slong vma_unmap_range(u64 s, u64 e, int release_granules)
     return 0;
 }
 
+/* Fork snapshots (xrl_mem_snapshot, proc.c) of an mm that are still live: a mapping that existed when one was taken
+ * is still that process's memory in the snapshot, so freeing its address range (munmap, mremap moving or shrinking
+ * it) would let another process map there while the snapshot's owner still writes to it (apt-get's methods). Such a
+ * range is kept, PROT_NONE, until the snapshot is restored or dropped. */
+typedef struct snapreg { u32 mm; int n; u64 mark; } snapreg;
+static snapreg g_sreg[64];
+static int g_nsreg;
+static SRWLOCK g_sreg_lock = SRWLOCK_INIT;   /* taken after g_lock */
+
+static void sreg_add(u32 mm, u64 mark, int d)
+{
+    AcquireSRWLockExclusive(&g_sreg_lock);
+    int k = -1;
+    for (int i = 0; i < g_nsreg; i++) if (g_sreg[i].mm == mm) k = i;
+    if (k < 0 && d > 0 && g_nsreg < (int)ARRAY_LEN(g_sreg)) { k = g_nsreg++; g_sreg[k].mm = mm; g_sreg[k].n = 0; g_sreg[k].mark = 0; }
+    if (k >= 0) {
+        g_sreg[k].n += d;
+        if (d > 0 && mark > g_sreg[k].mark) g_sreg[k].mark = mark;
+        if (g_sreg[k].n <= 0) g_sreg[k] = g_sreg[--g_nsreg];
+    }
+    ReleaseSRWLockExclusive(&g_sreg_lock);
+}
+
+static int sreg_keeps(const vma *v)
+{
+    int keep = 0;
+    AcquireSRWLockShared(&g_sreg_lock);
+    for (int i = 0; i < g_nsreg; i++) if (g_sreg[i].mm == v->owner && v->mid <= g_sreg[i].mark) keep = 1;
+    ReleaseSRWLockShared(&g_sreg_lock);
+    return keep;
+}
+
+/* vma_unmap_range for what the guest gives back: what a live fork snapshot covers stays (PROT_NONE). Lock held. */
+static slong unmap_keep_locked(u64 s, u64 e)
+{
+    if (!g_nsreg) return vma_unmap_range(s, e, 1);
+    if (vma_split(s) || vma_split(e)) return -LX_ENOMEM;
+    size_t i = vma_lower(s);
+    while (i < g_n && g_v[i].start < e) {
+        vma *v = &g_v[i];
+        if (sreg_keeps(v)) {
+            if (v->prot != LX_PROT_NONE && (v->committed || v->lazy)) win_protect(v->start, v->end, LX_PROT_NONE);
+            v->prot = LX_PROT_NONE;
+            i++;
+        } else {
+            u64 b = v->end;
+            slong r = vma_unmap_range(v->start, b, 1);
+            if (r) return r;
+            i = vma_lower(b);
+        }
+    }
+    return 0;
+}
+
 /* [s,e) overlaps a VMA owned by an mm other than `mm` (g_lock held) */
 static int range_foreign(u64 s, u64 e, u32 mm, u32 *owner_out)
 {
@@ -1597,28 +1651,6 @@ out:
     return res;
 }
 
-/* munmap for a process whose memory is also in another process's fork snapshot (proc.c xrl_proc_fork_snapshotted):
- * the pieces of [addr, addr+len) this mm maps become PROT_NONE but stay its own, contents kept, so nobody else can
- * map there; the snapshot's restore gives them their protections back. */
-slong xrl_mem_hide(u64 addr, u64 len)
-{
-    if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
-    len = ALIGN_UP(len, LX_PAGE);
-    if (addr + len < addr) return -LX_EINVAL;
-    u64 pc[64][2]; int n = 0;
-    u32 mm = cur_mm();
-    AcquireSRWLockShared(&g_lock);
-    for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < addr + len && n < 64; i++) {
-        if (g_v[i].owner != mm || g_v[i].prot == LX_PROT_NONE) continue;
-        pc[n][0] = g_v[i].start > addr ? g_v[i].start : addr;
-        pc[n][1] = g_v[i].end < addr + len ? g_v[i].end : addr + len;
-        n++;
-    }
-    ReleaseSRWLockShared(&g_lock);
-    for (int i = 0; i < n; i++) xrl_mem_mprotect(pc[i][0], pc[i][1] - pc[i][0], LX_PROT_NONE);
-    return 0;
-}
-
 slong xrl_mem_munmap(u64 addr, u64 len)
 {
     if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
@@ -1627,7 +1659,7 @@ slong xrl_mem_munmap(u64 addr, u64 len)
     slong sr = xrl_shm_munmap(addr, len);   /* inside a shared segment: only the attachment goes away (shm.c) */
     if (sr != XRL_NOT_NET) return sr;
     AcquireSRWLockExclusive(&g_lock);
-    slong r = vma_unmap_range(addr, addr + len, 1);
+    slong r = unmap_keep_locked(addr, addr + len);
     ReleaseSRWLockExclusive(&g_lock);
     return r;
 }
@@ -1757,7 +1789,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
 
     if (!(flags & LX_MREMAP_FIXED) && new_len == old_len) { res = (slong)old_addr; goto out; }
     if (!(flags & LX_MREMAP_FIXED) && new_len < old_len) {
-        res = vma_unmap_range(old_addr + new_len, old_addr + old_len, 1);
+        res = unmap_keep_locked(old_addr + new_len, old_addr + old_len);
         if (!res) res = (slong)old_addr;
         goto out;
     }
@@ -1805,7 +1837,7 @@ slong xrl_mem_mremap(u64 old_addr, u64 old_len, u64 new_len, int flags, u64 new_
             AcquireSRWLockExclusive(&g_lock);
             if (pr) { res = pr; goto out; }
         }
-        if (!(flags & LX_MREMAP_DONTUNMAP)) vma_unmap_range(old_addr, old_addr + old_len, 1);
+        if (!(flags & LX_MREMAP_DONTUNMAP)) unmap_keep_locked(old_addr, old_addr + old_len);
         res = (slong)target;
     }
 out:
@@ -2377,6 +2409,7 @@ struct xrl_msnap {
     snaprange *rg; size_t nr, cap_rg;
     u8 *data; size_t dlen;
     int has_brk;
+    int registered;   /* counted in g_sreg */
 };
 
 typedef struct snapctx { struct xrl_msnap *s; int fail; } snapctx;
@@ -2407,6 +2440,8 @@ xrl_msnap *xrl_mem_snapshot(u32 mm, u64 cap_bytes)
     snapctx c = { sn, 0 };
     AcquireSRWLockShared(&g_lock);
     sn->mid_mark = g_next_mid;
+    sreg_add(mm, sn->mid_mark, 1);
+    sn->registered = 1;
     for (size_t i = 0; i < g_n; i++) if (g_v[i].owner == mm) sn->nv++;
     sn->v = (vma *)malloc((sn->nv + 1) * sizeof(vma));
     if (sn->v) {
@@ -2530,5 +2565,6 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
 void xrl_mem_snap_free(xrl_msnap *sn)
 {
     if (!sn) return;
+    if (sn->registered) sreg_add(sn->mm, 0, -1);
     free(sn->v); free(sn->rg); free(sn->data); free(sn);
 }
