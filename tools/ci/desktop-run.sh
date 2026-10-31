@@ -9,7 +9,9 @@ root=$(cygpath -w "$1"); rootu=$1; out=$2; shift 2
 host=layer/build/desktop/xrl_test_host.exe
 # XRL_TEST_BUDGET_MB: the guest's commit budget, as the Xbox app gives it (host/src/xrl_host.h guest_mem_budget)
 # XRL_PROFILE=1: the perf lines name each busy thread's most frequent syscalls (busy loops, stalls)
-export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 XRL_PROFILE=1
+# XRL_FORK_SNAPSHOT_MB: a fork of a process with more writable memory than this falls back to vfork semantics (the
+# child's writes stay in the parent); Firefox's parent has more than the 256 MiB default
+export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 XRL_PROFILE=1 XRL_FORK_SNAPSHOT_MB=2048
 # One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line, which
 # may start with VAR=value words for the test host (layer switches such as XRL_TRACE). A milestone
 # passes when all its probes do; earlier milestones stay in the list as regression checks.
