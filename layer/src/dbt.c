@@ -492,6 +492,12 @@ static dbt_fault_rec g_fwatch;
 static volatile LONG g_fwatch_set;
 static u64 g_fwatch_rip = 1;   /* 1: not read yet; 0: off */
 static u64 g_fwatch_addr;      /* its access address */
+static void fwatch_init(void)  /* from the attach calls (normal context), before the faults it watches for */
+{
+    if (g_fwatch_rip != 1) return;
+    char v[24];
+    g_fwatch_rip = GetEnvironmentVariableA("XRL_FAULT_RIP", v, sizeof v) ? _strtoui64(v, NULL, 16) : 0;
+}
 static volatile LONG g_nfcap;    /* number of real (error-severity) faults seen */
 static volatile LONG g_nskip;    /* benign exceptions skipped (OutputDebugString etc.) */
 static void dbt_log_escape(PEXCEPTION_POINTERS ep, int why)
@@ -520,12 +526,10 @@ static void dbt_log_escape(PEXCEPTION_POINTERS ep, int why)
         for (u32 k = 0; k < avail; k++) f->b[k] = b[k];
         f->nb = (u8)avail;
     }
-    if (g_fwatch_rip == 1) {
-        char v[24];
-        g_fwatch_rip = GetEnvironmentVariableA("XRL_FAULT_RIP", v, sizeof v) ? _strtoui64(v, NULL, 16) : 0;
-    }
     CONTEXT *c = ep->ContextRecord;
-    if (c && g_fwatch_rip && f->rip == g_fwatch_rip && !InterlockedExchange(&g_fwatch_set, 1)) {
+    /* g_fwatch_rip is read outside the handler (fwatch_init): no environment access in exception context, where
+     * the guest's TEB view may be live (doing it here got the exec-host child killed ~0.5 s in) */
+    if (c && g_fwatch_rip > 1 && f->rip == g_fwatch_rip && !InterlockedExchange(&g_fwatch_set, 1)) {
         g_fwatch = *f;
         g_fwatch_addr = f->addr;
         u64 g[16] = { c->Rax,c->Rbx,c->Rcx,c->Rdx,c->Rsi,c->Rdi,c->Rbp,c->Rsp,
@@ -758,6 +762,7 @@ int xrl_dbt_wanted_file(const char *gpath)
  * exceptions need). `[addr, addr+len)` is a mapped executable section, readable now. */
 void xrl_dbt_attach_pe(const char *name, u64 addr, u64 len)
 {
+    fwatch_init();
     if (img_of(addr)) return;     /* already translated */
     u32 npg = (u32)((len + LX_PAGE - 1) / LX_PAGE);
     u8 *mark = (u8 *)calloc(npg ? npg : 1, 1);
@@ -850,6 +855,7 @@ void xrl_dbt_attach_exec(u64 addr, u64 len)
 /* The mapping [addr, addr+len) of `name` becomes translated code. */
 int xrl_dbt_attach(const char *name, u64 addr, u64 len)
 {
+    fwatch_init();
     int rc = -1;
     AcquireSRWLockExclusive(&g_lock);
     int slot = g_nimg;

@@ -30,6 +30,8 @@ namespace xrl {
 // reaches "301 loaded". Must be requested while foreground; the session is kept alive (static).
 void request_extended_execution() {
     using namespace winrt::Windows::ApplicationModel::ExtendedExecution;
+    // XRL_NO_EXTEXEC=1: do not ask (tests whether the request itself gets the app backgrounded)
+    { char v[4]; if (GetEnvironmentVariableA("XRL_NO_EXTEXEC", v, sizeof v) && v[0] == '1') { XLOGW("host", "extended execution: not requested (XRL_NO_EXTEXEC)"); return; } }
     try {
         static ExtendedExecutionSession s{ nullptr };
         s = ExtendedExecutionSession();
