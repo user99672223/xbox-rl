@@ -141,12 +141,15 @@ void Pacer120::Present() {
                     copy_est = d > copy_est ? d : copy_est - copy_est / 16 + d / 16;
                 }
             }
-            if (!pending_seq && (copied_seq == shown_seq || limit - Now() > copy_est + margin)) {
+            // a newer frame over a copied one that is not up yet: only at 120 (at 60 each frame is shown, in order)
+            if (!pending_seq && (copied_seq == shown_seq || (!lock60_.load() && limit - Now() > copy_est + margin))) {
                 // the newest slot whose frame the GPU has finished and that is newer than the copied one
                 int best = -1;
+                const bool fifo = lock60_.load();   // at 60 every frame is shown, in order (vsync); at 120 the newest
                 for (int i = 0; i < kSlots; i++) {
                     uint64_t v = slot_value_[i].load(), s = slot_seq_[i].load();
-                    if (v && s > copied_seq && WaitForSingleObject(slot_ev_[i], 0) == WAIT_OBJECT_0 && (best < 0 || s > slot_seq_[best].load())) best = i;
+                    if (v && s > copied_seq && WaitForSingleObject(slot_ev_[i], 0) == WAIT_OBJECT_0 &&
+                        (best < 0 || (fifo ? s < slot_seq_[best].load() : s > slot_seq_[best].load()))) best = i;
                 }
                 if (best >= 0) {
                     reading_ = best;
@@ -212,9 +215,10 @@ ID3D11Texture2D* Pacer120::Acquire() {
                 if (said++ < 100) Log(LOG_INFO, "pacer: cadence %s (the game's own time %.1f ms per frame)", n ? "60" : "120", work_ema_);
             }
         }
-        // at 60: hold the game to one frame waiting for its flip (the one before it must be on screen)
+        // at 60 (vsync): the game waits until every frame but the one it just submitted is on screen, so it can never run
+        // ahead of the display (each frame is shown once, in order: shown_ moves one frame per flip)
         if (lock60_.load())
-            for (int i = 0; i < 4 && seq_ >= 1 && shown_.load() + 1 < seq_; i++) WaitForSingleObject(shown_ev_, 25);
+            for (int i = 0; i < 8 && seq_ >= 1 && shown_.load() + 1 < seq_; i++) WaitForSingleObject(shown_ev_, 25);
     }
     // at most two frames on the GPU: wait for the one before the last
     const int64_t w0 = Now();

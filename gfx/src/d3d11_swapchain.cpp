@@ -381,6 +381,7 @@ private:
 
     // Frame pacing numbers, logged every 10 s: frames per second, the average and the worst time
     // between two Presents, and the time this Present (copy + host Present) took.
+    int64_t last_dur_ = 0;   // how long the previous Present took (Pace's hitch line)
     void Pace(LARGE_INTEGER q0, UINT sync) {
         LARGE_INTEGER q1; QueryPerformanceCounter(&q1);
         if (!qf_) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); qf_ = f.QuadPart; }
@@ -388,10 +389,16 @@ private:
         if (last_present_) {
             int64_t gap = q0.QuadPart - last_present_;
             if (gap > win_max_gap_) win_max_gap_ = gap;
-            /* every frame gap over 50 ms with its time, to line hitches up with other periodic work (at most 3000) */
+            /* every frame gap over 50 ms with its time, to line hitches up with other periodic work (at most 3000), and how
+             * much of it was the previous Present itself (the host swapchain / compositor) rather than the game */
             static int hitches;
-            if (gap * 20 > qf_ && hitches < 3000) { hitches++; Log(LOG_INFO, "hitch: %.1f ms between presents", gap * 1000.0 / qf_); }
+            if (gap * 20 > qf_ && hitches < 3000) {
+                hitches++;
+                Log(LOG_INFO, "hitch: %.1f ms between presents, %.1f ms of it in the previous Present", gap * 1000.0 / qf_,
+                    last_dur_ * 1000.0 / qf_);
+            }
         }
+        last_dur_ = q1.QuadPart - q0.QuadPart;
         xrl_com_frame_end(last_present_ ? (q0.QuadPart - last_present_) * 1000.0 / qf_ : 0, pacer_.Running() ? pacer_.last_wait_ms() : 0);
         last_present_ = q0.QuadPart;
         win_frames_++;

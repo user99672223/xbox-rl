@@ -65,7 +65,7 @@ static u64 ft64(FILETIME f) { return ((u64)f.dwHighDateTime << 32) | f.dwLowDate
  * code (the console's startup stall): where. Registers are taken with the thread suspended for
  * a moment (under the thread list's shared lock); its stack is read afterwards with
  * after a VirtualQuery (only what is committed and readable). */
-typedef struct pf_spin { int tid; char name[16]; u64 rip, rsp; } pf_spin;
+typedef struct pf_spin { int tid; char name[16]; u64 rip, rsp, pend, mask; int in_sys, guest_live, sig_jump, gctx; } pf_spin;
 static int spin_sample(xrl_thread *t, pf_spin *s)
 {
     if (SuspendThread(t->handle) == (DWORD)-1) return 0;
@@ -76,6 +76,9 @@ static int spin_sample(xrl_thread *t, pf_spin *s)
     ResumeThread(t->handle);
     if (!ok) return 0;
     s->tid = t->tid; s->rip = c.Rip; s->rsp = c.Rsp;
+    /* why a signal (Wine's SIGUSR1 for a system APC, e.g. an async read's completion) might not get into it */
+    s->pend = t->sigpending; s->mask = t->sigmask; s->in_sys = t->in_sys; s->guest_live = t->teb_guest_live;
+    s->sig_jump = t->sig_jump != 0; s->gctx = xrl_mem_guest_ctx(c.Rip, c.Rsp);
     memcpy(s->name, t->name, sizeof s->name);
     s->name[sizeof s->name - 1] = 0;
     return 1;
@@ -91,6 +94,10 @@ static void spin_report(const pf_spin *s)
         len += snprintf(line + len, sizeof line - len, " (host)");
     xrl_guest_bt(s->rsp, line + len, (int)sizeof line - len, 8);
     LOGI("%s", line);
+    char st[300];
+    xrl_sig_stats(st, sizeof st);
+    LOGI("perf: spin %s/%d signal state: pending %llx blocked %llx, in_sys %d, guest view %d, sig_jump %d, guest ctx %d; %s",
+         s->name, s->tid, s->pend, s->mask, s->in_sys, s->guest_live, s->sig_jump, s->gctx, st);
 }
 
 /* Return addresses into guest code on the top of a guest stack (a scan, not an unwind: a stale one may show up) */
