@@ -204,6 +204,31 @@ static void dump(double secs, u64 tick_cyc, u64 own_cyc)
                  b ? b + 1 : w.mod, w.off, sym, w.kind == 1 ? " (translated)" : "");
         }
     }
+    for (int t = 0; t < ntop && t < 2; t++) {   /* the two busiest threads by module: game code vs Wine vs ours vs D3D */
+        static s_mod tm[64];
+        int ntm = 0;
+        u64 tw = 0;
+        for (int i = 0; i < no; i++) {
+            s_ent *e = &g_tab[order[i]];
+            if (e->thr != top_thr[t]) continue;
+            s_where w; where_of(e->rip, &w);
+            const char *b = strrchr(w.mod, '/');
+            const char *name = b ? b + 1 : w.mod;
+            int m = 0;
+            while (m < ntm && strcmp(tm[m].name, name)) m++;
+            if (m == ntm && ntm < 64) { strcpy_s(tm[ntm].name, sizeof tm[ntm].name, name); tm[ntm].w = 0; ntm++; }
+            if (m < ntm) tm[m].w += e->w;
+            tw += e->w;
+        }
+        char line[900]; int len = snprintf(line, sizeof line, "sample: thread %s by module:", g_thr_name[top_thr[t]]);
+        for (int k = 0; k < ntm && k < 10 && len < (int)sizeof line - 120; k++) {
+            int b = k;
+            for (int j = k + 1; j < ntm; j++) if (tm[j].w > tm[b].w) b = j;
+            s_mod x = tm[k]; tm[k] = tm[b]; tm[b] = x;
+            len += snprintf(line + len, sizeof line - len, " %.1f%% %s;", 100.0 * (double)tm[k].w / (double)(tw + 1), tm[k].name);
+        }
+        LOGI("%s", line);
+    }
     /* the hottest addresses: sort a top 40 out of the entries */
     for (int k = 0; k < 40 && k < no; k++) {
         int b = k;

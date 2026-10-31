@@ -89,26 +89,35 @@ static void spin_report(const pf_spin *s)
         len += snprintf(line + len, sizeof line - len, " (%s+0x%llx)", nm[0] ? nm : "anon", off);
     else
         len += snprintf(line + len, sizeof line - len, " (host)");
-    /* return addresses into guest code on the top of its stack */
-    u64 stk[256];
+    xrl_guest_bt(s->rsp, line + len, (int)sizeof line - len, 8);
+    LOGI("%s", line);
+}
+
+/* Return addresses into guest code on the top of a guest stack (a scan, not an unwind: a stale one may show up) */
+int xrl_guest_bt(u64 rsp, char *out, int n, int max)
+{
+    char nm[96];
+    u64 off = 0, stk[512];
     SIZE_T got = 0;
     MEMORY_BASIC_INFORMATION mbi;
-    if (VirtualQuery((void *)s->rsp, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
+    int len = 0;
+    if (n > 0) out[0] = 0;
+    if (VirtualQuery((void *)rsp, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT &&
         (mbi.Protect & (PAGE_READWRITE | PAGE_READONLY | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE)) &&
         !(mbi.Protect & PAGE_GUARD)) {
         u64 end = (u64)mbi.BaseAddress + mbi.RegionSize;
-        got = end - s->rsp < sizeof stk ? (SIZE_T)(end - s->rsp) : sizeof stk;
-        memcpy(stk, (void *)s->rsp, got);
+        got = end - rsp < sizeof stk ? (SIZE_T)(end - rsp) : sizeof stk;
+        memcpy(stk, (void *)rsp, got);
     }
     int shown = 0;
-    for (size_t i = 0; i < got / 8 && shown < 8 && len < (int)sizeof line - 120; i++) {
+    for (size_t i = 0; i < got / 8 && shown < max && len < n - 120; i++) {
         if (stk[i] < 0x10000 || xrl_mem_is_exec(stk[i]) != 1) continue;
         if (xrl_mem_name_of(stk[i], nm, sizeof nm, &off) != 1) continue;
         const char *b = strrchr(nm, '/');
-        len += snprintf(line + len, sizeof line - len, " <- %llx %s+0x%llx", stk[i], b ? b + 1 : nm, off);
+        len += snprintf(out + len, n - len, " <- %llx %s+0x%llx", stk[i], b ? b + 1 : (nm[0] ? nm : "anon"), off);
         shown++;
     }
-    LOGI("%s", line);
+    return len;
 }
 
 static const pf_prev *prev_of(int tid)

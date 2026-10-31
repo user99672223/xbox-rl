@@ -28,10 +28,25 @@ volatile LONG64 xrl_io_notifies, xrl_io_woken;   /* perf.c: notifies, and sleepe
  * anything else (n < 0) and a change of unknown scope (xrl_io_notify) still go to all. The epoch stays: a sleeper
  * registers, then re-checks it, so a change between its readiness check and its sleep is never lost.
  * XRL_IO_KEYED=0: the old wake-all. */
-typedef struct io_sleeper { volatile LONG word; const void *const *keys; int n; struct io_sleeper *next; } io_sleeper;
+typedef struct io_sleeper { volatile LONG word, spinning; const void *const *keys; int n; struct io_sleeper *next; } io_sleeper;
 static SRWLOCK g_sl_lock = SRWLOCK_INIT;
 static io_sleeper *g_sl;
 static int g_keyed = -1;
+
+/* XRL_IO_SPIN_US: a sleeper first spins this long. A Wine server request is a pipe write, the server thread waking,
+ * and a reply waking the requester: two OS wake-ups of ~40 us each on the console, while the server's work is a few
+ * us. A sleeper that is still spinning when its change comes needs no wake-up at all (its notifier skips the
+ * syscall). */
+static LONG64 g_spin_qpc = -1;
+static LONG64 spin_qpc(void)
+{
+    if (g_spin_qpc < 0) {
+        char v[16]; LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+        u64 us = GetEnvironmentVariableA("XRL_IO_SPIN_US", v, sizeof v) ? strtoull(v, NULL, 10) : 0;
+        g_spin_qpc = (LONG64)(us * (u64)f.QuadPart / 1000000ull);
+    }
+    return g_spin_qpc;
+}
 
 static int keyed(void)
 {
@@ -55,7 +70,7 @@ void xrl_io_notify_key(const void *key)
     for (io_sleeper *s = g_sl; s; s = s->next) {
         int hit = !key || s->n < 0;
         for (int i = 0; !hit && i < s->n; i++) hit = s->keys[i] == key;
-        if (hit && !InterlockedExchange(&s->word, 1)) { WakeByAddressSingle((PVOID)&s->word); woken++; }
+        if (hit && !InterlockedExchange(&s->word, 1)) { if (!s->spinning) WakeByAddressSingle((PVOID)&s->word); woken++; }
     }
     ReleaseSRWLockShared(&g_sl_lock);
     if (woken) InterlockedAdd64(&xrl_io_woken, woken);
@@ -76,13 +91,25 @@ int xrl_io_wait_keys(LONG seen, const void *const *keys, int n, s64 timeout_ns)
         r = xrl_wait_addr((volatile void *)&xrl_io_epoch, &seen, sizeof seen, ns);
         InterlockedDecrement(&xrl_io_sleepers);
     } else {
-        io_sleeper s = { 0, keys, keys ? n : -1, NULL };
+        io_sleeper s = { 0, 0, keys, keys ? n : -1, NULL };
+        LONG64 spin = spin_qpc();
+        if (spin) s.spinning = 1;
         AcquireSRWLockExclusive(&g_sl_lock);
         s.next = g_sl; g_sl = &s;
         ReleaseSRWLockExclusive(&g_sl_lock);
         InterlockedIncrement(&xrl_io_sleepers);
         r = 1;
-        if (xrl_io_epoch == seen) { LONG z = 0; r = xrl_wait_addr(&s.word, &z, sizeof z, ns); }
+        if (spin && xrl_io_epoch == seen) {   /* spin first (a notifier seeing `spinning` sets word and skips the wake) */
+            LARGE_INTEGER q0, q; QueryPerformanceCounter(&q0);
+            LARGE_INTEGER f; QueryPerformanceFrequency(&f);
+            if (ns != ~0ull && (u64)spin > ns * (u64)f.QuadPart / 1000000000ull) spin = (LONG64)(ns * (u64)f.QuadPart / 1000000000ull);
+            for (int i = 0; !s.word; i++) {
+                YieldProcessor();
+                if ((i & 31) == 31) { QueryPerformanceCounter(&q); if (q.QuadPart - q0.QuadPart > spin) break; }
+            }
+            InterlockedExchange(&s.spinning, 0);   /* from here a notifier wakes us; a full barrier before word is read */
+        }
+        if (!s.word && xrl_io_epoch == seen) { LONG z = 0; r = xrl_wait_addr(&s.word, &z, sizeof z, ns); }
         InterlockedDecrement(&xrl_io_sleepers);
         AcquireSRWLockExclusive(&g_sl_lock);
         for (io_sleeper **pp = &g_sl; *pp; pp = &(*pp)->next) if (*pp == &s) { *pp = s.next; break; }
@@ -228,6 +255,15 @@ static slong pipe_write(xfile *f, const void *b, u64 n, s64 o)
         if (on && n >= 64 && h[0] < XRL_SRVREQ_MAX && h[1] < (1u << 20) && h[2] < (1u << 20) && (t = xrl_cur())) {
             if (!t->srvreq) t->srvreq = (u32 *)calloc(XRL_SRVREQ_MAX, sizeof(u32));
             if (t->srvreq) t->srvreq[h[0]]++;
+            /* XRL_SRVREQ_BT=<code>: the guest code behind that request, its first 4 per thread (40 a run) */
+            static int bt = -2;
+            static volatile LONG nbt;
+            if (bt == -2) { char v[8]; bt = GetEnvironmentVariableA("XRL_SRVREQ_BT", v, sizeof v) ? atoi(v) : -1; }
+            if ((int)h[0] == bt && t->srvreq && t->srvreq[h[0]] <= 4 && InterlockedIncrement(&nbt) <= 40) {
+                char line[1500];
+                xrl_guest_bt(t->frame, line, (int)sizeof line, 18);
+                LOGI("srvreq: %s/%d request %u from%s", t->name, t->tid, h[0], line);
+            }
         }
     }
     slong r = pb_write(f, e->tx, b, n, NULL);

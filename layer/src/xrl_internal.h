@@ -96,9 +96,9 @@ struct xrl_thread {
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
     volatile int cur_nr;   /* the outermost syscall being run (sample.c's stall snapshot), -1: none */
-    u32 *srvreq;   /* XRL_SRVREQ_MAX entries */
+    u32 *srvreq;            /* XRL_SRVREQ: Wine server requests written, by request code (XRL_SRVREQ_MAX entries; ipc.c, perf.c) */
     u64 host_t0;            /* TSC when the thread last entered the host (teb.c), for com.c's call time */
-    u64 com_tsc, sys_tsc;   /* TSC ticks spent in host COM calls / in syscalls (outermost), com.c's frame split */           /* XRL_SRVREQ: Wine server requests written, by request code (ipc.c, perf.c) */
+    u64 com_tsc, sys_tsc;   /* TSC ticks spent in host COM calls / in syscalls (outermost), com.c's frame split */
     u64  nsys;             /* syscalls made (perf.c); written by this thread only */
     u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;
@@ -650,7 +650,8 @@ void  xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in);
 int   xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off);
 int  xrl_mem_vma_of(u64 a, char *name, size_t n, u64 *off);   /* mem.c: the mapping containing a (sample.c) */
 void xrl_sample_start(void);
-void xrl_mem_lock_owner(u32 *tid, u64 *held_us);   /* mem.c: who holds the memory lock, for how long (0: nobody) */   /* sample.c: XRL_SAMPLE=<hz> sampling profiler */
+void xrl_mem_lock_owner(u32 *tid, u64 *held_us);
+int  xrl_guest_bt(u64 rsp, char *out, int n, int max);   /* perf.c: " <- addr module+off" for return addresses above rsp */   /* mem.c: who holds the memory lock, for how long (0: nobody) */   /* sample.c: XRL_SAMPLE=<hz> sampling profiler */
 void xrl_mem_breakdown(void);  /* mem.c: committed memory by guest mapping vs the partition, to the log */
 int   xrl_mem_is_exec(u64 a);
 int   xrl_mem_lock_held(void);

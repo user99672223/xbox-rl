@@ -1,0 +1,33 @@
+diff --git a/dlls/win32u/message.c b/dlls/win32u/message.c
+index 0359823..c484919 100644
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -3415,7 +3415,27 @@ static inline void check_for_driver_events(void)
+     if (get_user_thread_info()->last_driver_time != get_driver_check_time())
+     {
+         flush_window_surfaces( FALSE );
+-        process_driver_events( QS_ALLINPUT, 0, 0 );
++        /* xbox-rl: not process_driver_events( QS_ALLINPUT, 0, 0 ): its result is not used here, and setting the queue
++         * masks to 0/0 on every PeekMessage made the following peek_message miss its shared-memory check (its masks
++         * differ), so each PeekMessage cost a set_queue_mask and a get_message request. The masks are only sent when
++         * driver events were drained, as there. */
++        if (check_internal_bits( QS_DRIVER ) && user_driver->pProcessEvents( QS_ALLINPUT ))
++        {
++            SERVER_START_REQ( set_queue_mask )
++            {
++                req->poll_events = TRUE;
++                req->wake_mask = 0;
++                req->changed_mask = 0;
++                wine_server_call( req );
++            }
++            SERVER_END_REQ;
++        }
++        if (check_internal_bits( QS_HARDWARE ))
++        {
++            struct peek_message_filter filter = {.internal = TRUE};
++            MSG msg;
++            peek_message( &msg, &filter );
++        }
+         get_user_thread_info()->last_driver_time = get_driver_check_time();
+     }
+ }
