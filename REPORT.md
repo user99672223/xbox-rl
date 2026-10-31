@@ -136,6 +136,23 @@ stand-in device).
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (13) - shared library pages work: Firefox session 1469 MiB with XRL_SHARED_TEXT=1 (run 49)
+
+| run 49 (50d68fc), peak committed | |
+|---|---|
+| m5 Firefox session (default: lazy stacks) | 2048 MiB |
+| m5s stacks committed whole | 2085 MiB |
+| **m5t + shared library pages (XRL_SHARED_TEXT=1)** | **1469 MiB** |
+
+At the peak 1521 section views map 484 MiB of library pages that are held once in 162 MiB of sections; private file
+mappings fall from ~1100 to 429 MiB. All milestones PASS, procs-test 0 fails, UWP flavour compiles.
+Still private: copies whose trampoline pool missed its fixed slot (another image had been placed in that image's
+pool room: placement now keeps clear of live images' rooms), each image's first segment (symbols, relocations:
+shared from this batch on), writable data.
+For the Xbox: `XRL_SHARED_TEXT=1` in the host env (with `XRL_LAZY_STACKS=1`). It needs VirtualAlloc2FromApp,
+MapViewOfFile3FromApp, UnmapViewOfFile2, CreateFileMappingFromApp, MapViewOfFileFromApp (logs "img: ... off" and
+runs without it if one is missing) and a 64 GiB VA reservation below the arena.
+
 ## 2026-10-31 (12) - 1b shared library pages: first version in CI (XRL_SHARED_TEXT=1, probe 5t)
 
 - Run 46: m6 with the controller PASS (`pad events=10`: the 5 scripted presses), Firefox session 1967 MiB.

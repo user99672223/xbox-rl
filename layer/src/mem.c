@@ -850,15 +850,25 @@ static u64 img_place(u64 len)
 {
     u64 room = ALIGN_UP(len / 4 + GRAN, GRAN), need = ALIGN_UP(len, GRAN) + room;
     u64 cand = ALIGN_DOWN(g_img_end - need, GRAN);
-    for (;;) {
-        if (cand < g_img_base) return 0;
+    for (int guard = 0; ; guard++) {
+        if (cand < g_img_base || guard > 100000) return 0;
         size_t i = vma_lower(cand);
         if (i < g_n && g_v[i].start < cand + need) {
             if (g_v[i].start < g_img_base + need) return 0;
             cand = ALIGN_DOWN(g_v[i].start - need, GRAN);
             continue;
         }
-        break;
+        /* nor in another live image's pool room (free VA until its pool is mapped, but that image's own) */
+        int moved = 0;
+        for (int j = 0; j < g_nimgs && !moved; j++) {
+            u64 rs = g_imgs[j].start - g_imgs[j].room;
+            if (cand >= g_imgs[j].start || cand + need <= rs) continue;
+            size_t vi = vma_lower(g_imgs[j].start);
+            if (!(vi < g_n && g_v[vi].start == g_imgs[j].start)) continue;   /* that image is gone */
+            if (rs < g_img_base + need) return 0;
+            cand = ALIGN_DOWN(rs - need, GRAN); moved = 1;
+        }
+        if (!moved) break;
     }
     if (g_nimgs == (int)ARRAY_LEN(g_imgs)) {   /* drop records of images no longer mapped */
         int k = 0;
@@ -2206,6 +2216,11 @@ slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off)
 out:
     ReleaseSRWLockExclusive(&g_lock);
     if (f) xfile_unref(f);
+    /* an image's first segment (file offset 0 at its first address: ELF header, symbols, relocations) stays as this
+     * first mapping made it, the later segment mappings go over the rest: shared now */
+    if (img_cand && !(prot & LX_PROT_EXEC) && res > 0 && (u64)res == target && img_contains(target, target + len) && nb >= 2 &&
+        bnd[0] == 0 && bnd[1] && bnd[1] <= len)   /* (executable: shared after its rewrite, by the caller's segment path) */
+        xrl_mem_share_range(fd, target, bnd[1], 0, prot);
     return res;
 }
 
