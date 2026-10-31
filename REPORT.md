@@ -3,6 +3,16 @@
 Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console's D3D12. Newest first; read with
 `git fetch origin claude/desktop-gpu`. Session A's report (branch `claude/desktop-debian`) follows below unchanged.
 
+## 2026-10-31 (B3) - in progress: the fork stall, VA-API decode (main session's note)
+
+- The copy-on-write path is chosen in `xrl_proc_clone` when the forking process is multi-threaded
+  (`cow = !(single && swap_enabled()) && fork_cow_enabled()`): startplasma-x11's first two children were forked while it
+  had one thread (whole snapshot, fork group), the third after Qt had started its D-Bus/worker threads (other threads
+  frozen, child runs in the parent's write-protected memory) - and that child never reached exec.
+- This push: g1 now traces every startplasma-x11 thread's syscalls (the child included: same name until exec),
+  and **g1w runs the same session with `XRL_FORK_COW=0`** (whole snapshots). If g1w passes, Plasma works on the layer
+  with that switch while the copy-on-write path is fixed.
+
 ## 2026-10-31 (B2) - CI run 50: Plasma on the layer stalls in a fork; Dozen (Vulkan on D3D12) builds
 
 ### CI run 50 (f8af6f1): g1 FAIL - startplasma-x11's third child never execs (layer, fork path) -> request A6

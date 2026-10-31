@@ -2,7 +2,8 @@
 # tools/ci/desktop-run.sh in the CI's gpu shard. Same format as its list:
 #   milestone label|timeout (s)|pattern its output must match (grep -E, no '|')|command line
 # The command line may start with VAR=value words for the test host; XRL_ENV_<NAME>=v becomes the guest's NAME=v.
-# g1: Plasma through xsession.sh (packages from rootfs-apt-plasma.list only).
+# g1: Plasma through xsession.sh (packages from rootfs-apt-plasma.list only); traces startplasma-x11's syscalls (the
+#   copy-on-write fork stall of run 50). g1w: the same with whole fork snapshots (XRL_FORK_COW=0).
 # g2-g5: /usr/local/bin/xrl-plasma-session from the desktop overlay (desktop/build-overlay.sh: theme, wallpaper,
 #   dock, session script) and /opt/xrl-gpu (desktop/gpu/build-mesa.sh); they need the overlays merged into the CI
 #   rootfs (REPORT.md, Requests for A). Its last word names the screenshot /tmp/xrl-<word>.xwd and the logs
@@ -11,7 +12,8 @@
 #   g3 OpenGL on D3D12 through Mesa d3d12: glxinfo + glxgears (WARP on the CI runner: XRL_GFX_WARP=1)
 #   g4 Plasma with KWin compositing on D3D12
 #   g5 Vulkan on D3D12 through Dozen: vulkaninfo + vkcube 300 frames
-g1|900|found /.*plasmashell.*1280x|/bin/bash /tmp/xrl-xsession.sh plasma
+g1|900|found /.*plasmashell.*1280x|XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=startplasma XRL_TRACE_MAX=20000 /bin/bash /tmp/xrl-xsession.sh plasma
+g1w|900|found /.*plasmashell.*1280x|XRL_FORK_COW=0 /bin/bash /tmp/xrl-xsession.sh plasma
 g2|900|session up \(compositing: false\)|XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma
 g3|300|OpenGL renderer string: D3D12|XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 XRL_ENV_XRL_D3D12_DEBUG=1 /bin/bash /usr/local/bin/xrl-plasma-session glx-gpu
 g4|900|glxinfo in session: OpenGL renderer string: D3D12|XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma-gpu
