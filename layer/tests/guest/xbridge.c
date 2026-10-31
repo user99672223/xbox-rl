@@ -399,12 +399,13 @@ static int xscreen_fetch(u32 y0, u32 y1)
 }
 
 /* one frame: fetch what DAMAGE says changed (everything every ~0.3 s without DAMAGE), write the changed rows */
+static void cursor_update(u32 y0, u32 y1);
 static void xscreen_poll(void)
 {
     static u32 tick;
     u32 y0, y1;
     if (use_damage) {
-        if (dmg_y1 <= dmg_y0) return;
+        if (dmg_y1 <= dmg_y0) { cursor_update(0, 0); return; }
         y0 = dmg_y0 < 0 ? 0 : (u32)dmg_y0; y1 = dmg_y1 > (int)xw_h ? xw_h : (u32)dmg_y1;
         dmg_x0 = dmg_y0 = 1 << 30; dmg_x1 = dmg_y1 = -1;
         u8 q[16]; memset(q, 0, sizeof q);
@@ -412,7 +413,7 @@ static void xscreen_poll(void)
         if (xsend(q, 16)) return;
         nreq++;
     } else {
-        if (tick++ % 10) return;
+        if (tick++ % 10) { cursor_update(0, 0); return; }
         y0 = 0; y1 = xw_h;
     }
     if (y1 <= y0 || xscreen_fetch(y0, y1)) return;
@@ -436,6 +437,78 @@ static void xscreen_poll(void)
         y = e;
     }
     frames++;
+    cursor_update(y0, yl);
+}
+
+/* ---- the pointer --------------------------------------------------------------------------
+ * No GetImage includes the cursor (the X server draws it into the framebuffer of a real screen only), so on the TV the
+ * pointer was invisible. Each frame (--x) the bridge asks where it is (QueryPointer) and draws an arrow there into
+ * /dev/fb0, over the true picture it keeps in prev; the pixels under the old spot are put back when it moves, and the
+ * arrow is redrawn when a frame rewrote rows under it. */
+#define CUR_W 12
+#define CUR_H 17
+static const char *const arrow[CUR_H] = {
+    "X           ", "XX          ", "X.X         ", "X..X        ", "X...X       ", "X....X      ",
+    "X.....X     ", "X......X    ", "X.......X   ", "X........X  ", "X.....XXXXX ", "X..X..X     ",
+    "X.X X..X    ", "XX  X..X    ", "X    X..X   ", "     X..X   ", "      XX    ",
+};
+static int cur_x = -1, cur_y = -1;   /* where the arrow is drawn now (-1: nowhere) */
+static u64 cursor_draws;
+
+static int x_pointer_xy(int *x, int *y)   /* QueryPointer on the root: 0 ok */
+{
+    u8 q[8]; memset(q, 0, sizeof q);
+    q[0] = 38; put16(q + 2, 2); put32(q + 4, root_id);
+    u8 r[32];
+    if (xsend(q, 8) || x_reply(r, 0, 0, 0)) return -1;
+    nreq++;
+    *x = (int)(short)le16(r + 16); *y = (int)(short)le16(r + 18);
+    return 0;
+}
+
+/* the true picture (prev) back into fb0 for the arrow's box at (x, y) */
+static void cursor_erase(int x, int y)
+{
+    for (int r = 0; r < CUR_H; r++) {
+        int yy = y + r;
+        if (yy < 0 || yy >= (int)fb_h || yy >= (int)xw_h) continue;
+        int x0 = x < 0 ? 0 : x, x1 = x + CUR_W > (int)fb_w ? (int)fb_w : x + CUR_W;
+        if (x1 > (int)xw_w) x1 = (int)xw_w;
+        if (x1 <= x0) continue;
+        sc4(18, fb, prev + (u64)yy * xw_line + (u64)x0 * 4, (u64)(x1 - x0) * 4, (u64)yy * fb_line + (u64)x0 * 4);
+    }
+}
+
+static void cursor_draw(int x, int y)
+{
+    u32 line[CUR_W];
+    for (int r = 0; r < CUR_H; r++) {
+        int yy = y + r;
+        if (yy < 0 || yy >= (int)fb_h || yy >= (int)xw_h) continue;
+        int x0 = x < 0 ? 0 : x, x1 = x + CUR_W > (int)fb_w ? (int)fb_w : x + CUR_W;
+        if (x1 > (int)xw_w) x1 = (int)xw_w;
+        if (x1 <= x0) continue;
+        const u32 *src = (const u32 *)(prev + (u64)yy * xw_line);
+        for (int xx = x0; xx < x1; xx++) {
+            char c = arrow[r][xx - x];
+            line[xx - x0] = c == 'X' ? 0x00000000u : c == '.' ? 0x00ffffffu : src[xx];
+        }
+        sc4(18, fb, line, (u64)(x1 - x0) * 4, (u64)yy * fb_line + (u64)x0 * 4);
+    }
+    cursor_draws++;
+}
+
+/* after a frame: rows y0..y1 of fb0 were rewritten from the true picture (y1 <= y0: none) */
+static void cursor_update(u32 y0, u32 y1)
+{
+    int x, y;
+    if (x_pointer_xy(&x, &y)) return;
+    int under = cur_y >= 0 && y1 > y0 && (int)y0 < cur_y + CUR_H && (int)y1 > cur_y;   /* the frame drew over it */
+    if (x == cur_x && y == cur_y && !under) return;
+    if (cur_x >= 0 && !under) cursor_erase(cur_x, cur_y);
+    else if (cur_x >= 0 && (cur_x != x || cur_y != y)) cursor_erase(cur_x, cur_y);
+    cursor_draw(x, y);
+    cur_x = x; cur_y = y;
 }
 
 /* ---- input ------------------------------------------------------------------------------ */
@@ -617,6 +690,7 @@ void cstart(u64 *sp)
     }
     outn("pad events", pad_events);
     outn("screen frames", (long)frames); outn("rows written", (long)rows_sent); outn("X requests", nreq);
+    outn("cursor draws", (long)cursor_draws);
     if (xscreen) outn("KiB fetched from the X server", (long)(bytes_fetched >> 10));
     if (verify && xfd >= 0) {
         x_query_pointer();
