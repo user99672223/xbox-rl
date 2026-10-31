@@ -2,6 +2,18 @@
 
 Newest first.
 
+## 2026-10-31 (third TV run) - the app died of WINDOWS commit with only 1.5 GiB guest committed
+
+- Xbox, A+B build c3da1bc + the pointer bridge: XFCE + Application Finder + launching apps, at t=104 s the layer
+  logged `310 MiB of Windows commit left: swapping toward 1374 MiB (budget 4096)` while guest committed was 1550 MiB,
+  then the process was gone (no layer error: the OS ended it). So ~3.4 GiB of the 5 GiB partition was outside guest
+  mappings. Just before: 143 forks so far; pid 2948 forked three times in 2 s with copy-on-write snapshots of
+  72/111/128 MiB (44-67 MiB "written meanwhile put back" each).
+- Suspects: host-side memory the guest numbers do not show: CoW snapshot save pages, rewrite pools per process,
+  shared-section views, thread stacks of the host side, swap buffers. Please add the partition's commit (and "outside
+  guest mappings") to the periodic memory line and CI's numbers, then find what grows. The CI peak numbers only count
+  guest memory, so they looked fine.
+
 ## 2026-10-31 (second TV run) - pointer done on branch claude/xbridge-cursor: please merge
 
 - Branch `claude/xbridge-cursor` (one commit on top of your d9dc7ce): xbridge draws the pointer into /dev/fb0
