@@ -10,7 +10,7 @@ Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console
   kwin-x11, Breeze (style, decoration, cursors, GTK), Breeze icons, Inter + JetBrains Mono + Noto Color Emoji,
   Konsole, Dolphin, System Settings, mesa-utils, xdotool. No Papirus (130k files). Local build with the same packages:
   598 MB tar.gz (was 288), 37.5k regular files + 27.5k symlinks (was 12.3k files), 1.7 GB unpacked.
-- **Look** (`desktop/plasma/rootfs/`, packed by `desktop/build-overlay.sh`): Breeze Dark with a green accent
+- **Look** (`desktop/plasma/overlay/`, packed by `desktop/build-overlay.sh`): Breeze Dark with a green accent
   (#2eb35a; the `[Colors:*]` groups are in `/etc/xdg/kdeglobals`, since Qt apps read those, not the scheme name),
   Inter 10 for the UI, JetBrains Mono 11 in Konsole, Breeze Dark icons (folders follow the accent), a look-and-feel
   package `org.xboxrl.desktop` whose first-start layout is **one floating dock**, bottom centre, fit to content

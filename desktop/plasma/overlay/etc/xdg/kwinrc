@@ -1,0 +1,37 @@
+# KWin (X11) for the xbox-rl desktop: OpenGL compositing (llvmpipe, or D3D12 through /opt/xrl-gpu), Breeze
+# decorations, no effects that need a fast GPU unless the session turns them on (xrl-plasma-session).
+[Compositing]
+Enabled=true
+Backend=OpenGL
+GLCore=false
+AllowTearing=false
+LatencyPolicy=Medium
+WindowsBlockCompositing=true
+
+[org.kde.kdecoration2]
+library=org.kde.breeze
+theme=Breeze
+ButtonsOnLeft=
+ButtonsOnRight=IAX
+BorderSize=Normal
+
+[Windows]
+Placement=Centered
+BorderlessMaximizedWindows=false
+
+[Plugins]
+# blur and background contrast redraw what is behind every translucent panel: costly on a CPU renderer
+blurEnabled=false
+contrastEnabled=false
+slidingpopupsEnabled=true
+kwin4_effect_scaleEnabled=true
+wobblywindowsEnabled=false
+
+[Effect-overview]
+BorderActivate=9
+
+[TabBox]
+LayoutName=thumbnail_grid
+
+[Xwayland]
+Scale=1
