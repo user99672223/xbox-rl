@@ -1597,6 +1597,28 @@ out:
     return res;
 }
 
+/* munmap for a process whose memory is also in another process's fork snapshot (proc.c xrl_proc_fork_snapshotted):
+ * the pieces of [addr, addr+len) this mm maps become PROT_NONE but stay its own, contents kept, so nobody else can
+ * map there; the snapshot's restore gives them their protections back. */
+slong xrl_mem_hide(u64 addr, u64 len)
+{
+    if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
+    len = ALIGN_UP(len, LX_PAGE);
+    if (addr + len < addr) return -LX_EINVAL;
+    u64 pc[64][2]; int n = 0;
+    u32 mm = cur_mm();
+    AcquireSRWLockShared(&g_lock);
+    for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < addr + len && n < 64; i++) {
+        if (g_v[i].owner != mm || g_v[i].prot == LX_PROT_NONE) continue;
+        pc[n][0] = g_v[i].start > addr ? g_v[i].start : addr;
+        pc[n][1] = g_v[i].end < addr + len ? g_v[i].end : addr + len;
+        n++;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    for (int i = 0; i < n; i++) xrl_mem_mprotect(pc[i][0], pc[i][1] - pc[i][0], LX_PROT_NONE);
+    return 0;
+}
+
 slong xrl_mem_munmap(u64 addr, u64 len)
 {
     if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
