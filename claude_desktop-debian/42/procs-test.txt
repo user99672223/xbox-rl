@@ -1,0 +1,552 @@
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/procs_test.elf, 2 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef45ab10000,7ff45ab10000) 1048576 MiB VA, brk <= 7ef49ab10000, commit budget 4096 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.ujiz9SMxer (4 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff452b10000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff452b07000 span=[7ff452b07000,7ff452b10000) entry=7ff452b080bb
+[W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000001D748E9E7D0)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff452b06d10
+[I layer    ] boot: guest main thread tid=5000 entry=7ff452b080bb sp=7ff452b06d10
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.059 us
+[I guest.out] procs_test driver
+[I guest.out] fork/exec/wait:
+[I layer    ] fork: pid 3700 -> child 8076, snapshot of the parent's writable memory taken in 4.02 ms
+[I layer    ] fork: pid 3700 -> new process 8076 (flags 0x11)
+[I layer    ] exec: pid 8076 tid 8076 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 8076 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I guest.out]   ok   fork returns the child's pid in the parent
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522e0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522fd000 span=[7ff4522fd000,7ff452306000) entry=7ff4522fe0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 2756 entry 7ff4522fe0bb
+[I layer    ] proc 8076 ended (wait status 0x700)
+[I guest.out]   ok   wait4 returns that pid with exit status 7
+[I guest.out]   ok   wait4 with no children left -> -ECHILD
+[I layer    ] fork: pid 3700 -> child 6908, snapshot of the parent's writable memory taken in 1.55 ms
+[I layer    ] fork: pid 3700 -> new process 6908 (flags 0x11)
+[I layer    ] exec: pid 6908 tid 6908 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 6908 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522e0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522fd000 span=[7ff4522fd000,7ff452306000) entry=7ff4522fe0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 6920 entry 7ff4522fe0bb
+[I layer    ] proc 6908 ended (wait status 0x0)
+[I guest.out]   ok   exit codes 0, 1, 200 come back in the wait status
+[I layer    ] fork: pid 3700 -> child 5724, snapshot of the parent's writable memory taken in 1.58 ms
+[I layer    ] fork: pid 3700 -> new process 5724 (flags 0x11)
+[I layer    ] exec: pid 5724 tid 5724 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 5724 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522e0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522fd000 span=[7ff4522fd000,7ff452306000) entry=7ff4522fe0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5616 entry 7ff4522fe0bb
+[I layer    ] proc 5724 ended (wait status 0x100)
+[I guest.out]   ok   exit codes 0, 1, 200 come back in the wait status
+[I layer    ] fork: pid 3700 -> child 5104, snapshot of the parent's writable memory taken in 1.69 ms
+[I layer    ] fork: pid 3700 -> new process 5104 (flags 0x11)
+[I layer    ] exec: pid 5104 tid 5104 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 5104 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522e0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522fd000 span=[7ff4522fd000,7ff452306000) entry=7ff4522fe0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 6712 entry 7ff4522fe0bb
+[I layer    ] proc 5104 ended (wait status 0xc800)
+[I guest.out]   ok   exit codes 0, 1, 200 come back in the wait status
+[I layer    ] fork: pid 3700 -> child 7128, snapshot of the parent's writable memory taken in 1.50 ms
+[I layer    ] fork: pid 3700 -> new process 7128 (flags 0x11)
+[I layer    ] exec: pid 7128 tid 7128 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 7128 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522e0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522fd000 span=[7ff4522fd000,7ff452306000) entry=7ff4522fe0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 3828 entry 7ff4522fe0bb
+[I layer    ] proc 7128 ended (wait status 0x300)
+[I guest.out]   ok   waitid(WNOWAIT) reports the exit and leaves the zombie
+[I guest.out]   ok   /proc/<pid>/status of the zombie says State Z
+[I guest.out]   ok   the zombie is reaped by wait4
+[I layer    ] fork: pid 3700 -> child 3040, snapshot of the parent's writable memory taken in 1.60 ms
+[I layer    ] fork: pid 3700 -> new process 3040 (flags 0x11)
+[I layer    ] exec: pid 3040 tid 3040 -> /bin/procs_test.elf (4 args, 7 env)
+[I layer    ] exec: pid 3040 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522e0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522fd000 span=[7ff4522fd000,7ff452306000) entry=7ff4522fe0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5220 entry 7ff4522fe0bb
+[I layer    ] proc 3040 ended (wait status 0x0)
+[I guest.out]   ok   getpid/getppid/getpgid/getsid in the child are the right ones
+[I guest.out] fork without exec (memory isolation):
+[I layer    ] fork: pid 3700 -> child 1912, snapshot of the parent's writable memory taken in 1.63 ms
+[I layer    ] fork: pid 3700 -> new process 1912 (flags 0x11)
+[I layer    ] proc 1912 ended (wait status 0x0)
+[I guest.out]   ok   the child saw its own writes
+[I guest.out]   ok   the parent's .data is untouched
+[I guest.out]   ok   the parent's mmap memory is untouched
+[I guest.out]   ok   the parent's stack frame is untouched
+[I guest.out]   ok   a mapping the child unmapped is back with its contents
+[I layer    ] fork: pid 3700 -> child 2964, snapshot of the parent's writable memory taken in 1.54 ms
+[I layer    ] fork: pid 3700 -> new process 2964 (flags 0x11)
+[I layer    ] proc 2964 ended (wait status 0x0)
+[I layer    ] fork: pid 3700 -> child 1076, snapshot of the parent's writable memory taken in 1.53 ms
+[I layer    ] fork: pid 3700 -> new process 1076 (flags 0x11)
+[I layer    ] proc 1076 ended (wait status 0x100)
+[I layer    ] fork: pid 3700 -> child 5448, snapshot of the parent's writable memory taken in 1.51 ms
+[I layer    ] fork: pid 3700 -> new process 5448 (flags 0x11)
+[I layer    ] proc 5448 ended (wait status 0x200)
+[I layer    ] fork: pid 3700 -> child 3192, snapshot of the parent's writable memory taken in 1.48 ms
+[I layer    ] fork: pid 3700 -> new process 3192 (flags 0x11)
+[I layer    ] proc 3192 ended (wait status 0x300)
+[I layer    ] fork: pid 3700 -> child 3152, snapshot of the parent's writable memory taken in 1.54 ms
+[I layer    ] fork: pid 3700 -> new process 3152 (flags 0x11)
+[I layer    ] proc 3152 ended (wait status 0x400)
+[I layer    ] fork: pid 3700 -> child 3212, snapshot of the parent's writable memory taken in 1.50 ms
+[I layer    ] fork: pid 3700 -> new process 3212 (flags 0x11)
+[I layer    ] proc 3212 ended (wait status 0x500)
+[I layer    ] fork: pid 3700 -> child 1064, snapshot of the parent's writable memory taken in 1.49 ms
+[I layer    ] fork: pid 3700 -> new process 1064 (flags 0x11)
+[I layer    ] proc 1064 ended (wait status 0x600)
+[I layer    ] fork: pid 3700 -> child 7668, snapshot of the parent's writable memory taken in 1.52 ms
+[I layer    ] fork: pid 3700 -> new process 7668 (flags 0x11)
+[I layer    ] proc 7668 ended (wait status 0x700)
+[I layer    ] fork: pid 3700 -> child 988, snapshot of the parent's writable memory taken in 1.48 ms
+[I layer    ] fork: pid 3700 -> new process 988 (flags 0x11)
+[I layer    ] proc 988 ended (wait status 0x800)
+[I layer    ] fork: pid 3700 -> child 1568, snapshot of the parent's writable memory taken in 1.53 ms
+[I layer    ] fork: pid 3700 -> new process 1568 (flags 0x11)
+[I layer    ] proc 1568 ended (wait status 0x900)
+[I layer    ] fork: pid 3700 -> child 6020, snapshot of the parent's writable memory taken in 1.49 ms
+[I layer    ] fork: pid 3700 -> new process 6020 (flags 0x11)
+[I layer    ] proc 6020 ended (wait status 0xa00)
+[I layer    ] fork: pid 3700 -> child 1412, snapshot of the parent's writable memory taken in 1.51 ms
+[I layer    ] fork: pid 3700 -> new process 1412 (flags 0x11)
+[I layer    ] proc 1412 ended (wait status 0xb00)
+[I layer    ] fork: pid 3700 -> child 5508, snapshot of the parent's writable memory taken in 1.54 ms
+[I layer    ] fork: pid 3700 -> new process 5508 (flags 0x11)
+[I layer    ] proc 5508 ended (wait status 0xc00)
+[I layer    ] fork: pid 3700 -> child 8136, snapshot of the parent's writable memory taken in 1.50 ms
+[I layer    ] fork: pid 3700 -> new process 8136 (flags 0x11)
+[I layer    ] proc 8136 ended (wait status 0xd00)
+[I layer    ] fork: pid 3700 -> child 1780, snapshot of the parent's writable memory taken in 1.53 ms
+[I layer    ] fork: pid 3700 -> new process 1780 (flags 0x11)
+[I layer    ] proc 1780 ended (wait status 0xe00)
+[I layer    ] fork: pid 3700 -> child 4372, snapshot of the parent's writable memory taken in 1.58 ms
+[I layer    ] fork: pid 3700 -> new process 4372 (flags 0x11)
+[I layer    ] proc 4372 ended (wait status 0xf00)
+[I layer    ] fork: pid 3700 -> child 4380, snapshot of the parent's writable memory taken in 1.50 ms
+[I layer    ] fork: pid 3700 -> new process 4380 (flags 0x11)
+[I layer    ] proc 4380 ended (wait status 0x1000)
+[I layer    ] fork: pid 3700 -> child 860, snapshot of the parent's writable memory taken in 1.52 ms
+[I layer    ] fork: pid 3700 -> new process 860 (flags 0x11)
+[I layer    ] proc 860 ended (wait status 0x1100)
+[I layer    ] fork: pid 3700 -> child 4376, snapshot of the parent's writable memory taken in 1.53 ms
+[I layer    ] fork: pid 3700 -> new process 4376 (flags 0x11)
+[I layer    ] proc 4376 ended (wait status 0x1200)
+[I layer    ] fork: pid 3700 -> child 2600, snapshot of the parent's writable memory taken in 1.50 ms
+[I layer    ] fork: pid 3700 -> new process 2600 (flags 0x11)
+[I layer    ] proc 2600 ended (wait status 0x1300)
+[I guest.out]   ok   20 forked children that only exit: statuses right, parent memory untouched
+[I guest.out] vfork:
+[I layer    ] vfork: pid 3700 -> new process 7828 (flags 0x4111, shared mm)
+[I layer    ] proc 7828 ended (wait status 0x300)
+[I guest.out]   ok   vfork child exits with 3
+[I guest.out]   ok   what a vfork child writes the parent sees
+[I layer    ] vfork: pid 3700 -> new process 1060 (flags 0x4111, shared mm)
+[I layer    ] exec: pid 1060 tid 1060 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 1060 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 1956 entry 7ff4522de0bb
+[I layer    ] proc 1060 ended (wait status 0x400)
+[I guest.out]   ok   vfork + execve
+[I guest.out] pipes:
+[I layer    ] fork: pid 3700 -> child 3200, snapshot of the parent's writable memory taken in 1.72 ms
+[I layer    ] fork: pid 3700 -> new process 3200 (flags 0x11)
+[I layer    ] proc 3200 ended (wait status 0x0)
+[I guest.out]   ok   the forked child's write arrives
+[I guest.out]   ok   EOF once the child has exited and the parent closed its write end
+[I layer    ] fork: pid 3700 -> child 7772, snapshot of the parent's writable memory taken in 1.57 ms
+[I layer    ] fork: pid 3700 -> new process 7772 (flags 0x11)
+[I layer    ] exec: pid 7772 tid 7772 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 7772 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5548 entry 7ff4522de0bb
+[I layer    ] proc 7772 ended (wait status 0x0)
+[I guest.out]   ok   an fd inherited across fork+exec works
+[I layer    ] fork: pid 3700 -> child 2016, snapshot of the parent's writable memory taken in 1.71 ms
+[I layer    ] fork: pid 3700 -> new process 2016 (flags 0x11)
+[I layer    ] exec: pid 2016 tid 2016 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 2016 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7824 entry 7ff4522de0bb
+[I layer    ] proc 2016 ended (wait status 0x0)
+[I layer    ] fork: pid 3700 -> child 7792, snapshot of the parent's writable memory taken in 1.52 ms
+[I layer    ] fork: pid 3700 -> new process 7792 (flags 0x11)
+[I layer    ] exec: pid 7792 tid 7792 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 7792 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7780 entry 7ff4522de0bb
+[I layer    ] proc 7792 ended (wait status 0x0)
+[I layer    ] fork: pid 3700 -> child 7620, snapshot of the parent's writable memory taken in 1.69 ms
+[I layer    ] fork: pid 3700 -> new process 7620 (flags 0x11)
+[I layer    ] exec: pid 7620 tid 7620 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 7620 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7784 entry 7ff4522de0bb
+[I layer    ] proc 7620 ended (wait status 0x0)
+[I guest.out]   ok   pipeline of 3 processes (dup2 + exec): gen | upper | collect, all exit 0
+[I guest.out] CLOEXEC:
+[I layer    ] fork: pid 3700 -> child 7888, snapshot of the parent's writable memory taken in 1.61 ms
+[I layer    ] fork: pid 3700 -> new process 7888 (flags 0x11)
+[I layer    ] exec: pid 7888 tid 7888 -> /bin/procs_test.elf (4 args, 7 env)
+[I layer    ] exec: pid 7888 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7840 entry 7ff4522de0bb
+[I layer    ] proc 7888 ended (wait status 0x0)
+[I guest.out]   ok   O_CLOEXEC fd closed at execve, plain fd kept
+[I guest.out]   ok   ...and the plain fd's pipe carried the child's byte
+[I guest.out]   ok   the parent's O_CLOEXEC flag is still set in the parent
+[I guest.out] signals:
+[I layer    ] fork: pid 3700 -> child 7804, snapshot of the parent's writable memory taken in 1.68 ms
+[I layer    ] fork: pid 3700 -> new process 7804 (flags 0x11)
+[I layer    ] exec: pid 7804 tid 7804 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 7804 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5064 entry 7ff4522de0bb
+[I guest.out]   ok   wait4(WNOHANG) on a running child -> 0
+[I guest.out]   ok   /proc/<pid>/cmdline of the child
+[I guest.out]   ok   /proc/<pid>/status says it is sleeping
+[I guest.out]   ok   kill(pid, 0) finds it
+[I layer    ] signal 15 to tid 5064 with the default action: terminating process 7804
+[I layer    ] proc 7804 ended (wait status 0xf)
+[I guest.out]   ok   kill(pid, SIGTERM)
+[I guest.out]   ok   the child died of SIGTERM (status 15)
+[I guest.out]   ok   kill of a reaped pid -> -ESRCH
+[I layer    ] fork: pid 3700 -> child 7856, snapshot of the parent's writable memory taken in 1.55 ms
+[I layer    ] fork: pid 3700 -> new process 7856 (flags 0x11)
+[I layer    ] exec: pid 7856 tid 7856 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 7856 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7884 entry 7ff4522de0bb
+[I layer    ] proc 7856 ended (wait status 0x0)
+[I guest.out]   ok   SIGUSR1 sent by another process runs the child's handler
+[I layer    ] fork: pid 3700 -> child 7860, snapshot of the parent's writable memory taken in 1.67 ms
+[I layer    ] fork: pid 3700 -> new process 7860 (flags 0x11)
+[I layer    ] exec: pid 7860 tid 7860 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 7860 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7864 entry 7ff4522de0bb
+[I layer    ] proc 7860 ended (wait status 0x0)
+[I guest.out]   ok   SIGCHLD reaches the parent's handler when a child ends
+[I layer    ] fork: pid 3700 -> child 7768, snapshot of the parent's writable memory taken in 1.53 ms
+[I layer    ] fork: pid 3700 -> new process 7768 (flags 0x11)
+[I layer    ] exec: pid 7768 tid 7768 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 7768 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7776 entry 7ff4522de0bb
+[I guest.out]   ok   SIGSTOP: wait4(WUNTRACED) reports the stop
+[I guest.out]   ok   SIGCONT: wait4(WCONTINUED) reports the continue
+[I layer    ] signal 9 to tid 7776 with the default action: terminating process 7768
+[I layer    ] proc 7768 ended (wait status 0x9)
+[I guest.out]   ok   SIGKILL ends it (status 9)
+[I guest.out] groups and sessions:
+[I layer    ] fork: pid 3700 -> child 2552, snapshot of the parent's writable memory taken in 1.32 ms
+[I layer    ] fork: pid 3700 -> new process 2552 (flags 0x11)
+[I layer    ] exec: pid 2552 tid 2552 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 2552 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 3020 entry 7ff4522de0bb
+[I layer    ] fork: pid 3700 -> child 3832, snapshot of the parent's writable memory taken in 1.55 ms
+[I layer    ] fork: pid 3700 -> new process 3832 (flags 0x11)
+[I layer    ] exec: pid 3832 tid 3832 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 3832 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 16 MiB -> 16 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff451aa0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522d4000 span=[7ff4522d4000,7ff4522dd000) entry=7ff4522d50bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 3792 entry 7ff4522d50bb
+[I guest.out]   ok   setpgid(0, 0) in the child: getpgid(child) == child
+[I layer    ] signal 15 to tid 3792 with the default action: terminating process 3832
+[I layer    ] proc 3832 ended (wait status 0xf)
+[I layer    ] signal 15 to tid 3020 with the default action: terminating process 2552
+[I layer    ] proc 2552 ended (wait status 0xf)
+[I guest.out]   ok   kill(-pgid, SIGTERM)
+[I guest.out]   ok   both members of the group died of SIGTERM
+[I layer    ] fork: pid 3700 -> child 5124, snapshot of the parent's writable memory taken in 1.56 ms
+[I layer    ] fork: pid 3700 -> new process 5124 (flags 0x11)
+[I layer    ] exec: pid 5124 tid 5124 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 5124 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5968 entry 7ff4522de0bb
+[I layer    ] proc 5124 ended (wait status 0x0)
+[I guest.out]   ok   setsid: new session, leader of its group, a second setsid fails
+[I guest.out] orphans, threads, address spaces:
+[I layer    ] fork: pid 3700 -> child 3188, snapshot of the parent's writable memory taken in 1.52 ms
+[I layer    ] fork: pid 3700 -> new process 3188 (flags 0x11)
+[I layer    ] exec: pid 3188 tid 3188 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 3188 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 1968 entry 7ff4522de0bb
+[I layer    ] fork: pid 3188 -> child 2344, snapshot of the parent's writable memory taken in 3.73 ms
+[I layer    ] fork: pid 3188 -> new process 2344 (flags 0x11)
+[I layer    ] exec: pid 2344 tid 2344 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 2344 leaves address space 21 (2 user(s))
+[I layer    ] exec: guest memory committed 16 MiB -> 16 MiB after releasing the old image
+[I layer    ] proc 3188 ended (wait status 0x0)
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff451aa0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522d4000 span=[7ff4522d4000,7ff4522dd000) entry=7ff4522d50bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 1972 entry 7ff4522d50bb
+[I layer    ] proc 2344 ended (wait status 0x0)
+[I guest.out]   ok   an orphan is reparented to the init process (its getppid is the init's pid)
+[I guest.out]   ok   ...which can wait4 for it
+[I layer    ] fork: pid 3700 -> child 7964, snapshot of the parent's writable memory taken in 1.60 ms
+[I layer    ] fork: pid 3700 -> new process 7964 (flags 0x11)
+[I layer    ] exec: pid 7964 tid 7964 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 7964 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5080 entry 7ff4522de0bb
+[I layer    ] proc 7964 ended (wait status 0x900)
+[I guest.out]   ok   exit_group of a process with several threads ends it with the status
+[I layer    ] fork: pid 3700 -> child 3488, snapshot of the parent's writable memory taken in 1.26 ms
+[I layer    ] fork: pid 3700 -> new process 3488 (flags 0x11)
+[I layer    ] exec: pid 3488 tid 3488 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 3488 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 4668 entry 7ff4522de0bb
+[I layer    ] fork: pid 3700 -> child 5116, snapshot of the parent's writable memory taken in 1.46 ms
+[I layer    ] fork: pid 3700 -> new process 5116 (flags 0x11)
+[I layer    ] exec: pid 5116 tid 5116 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 5116 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 16 MiB -> 16 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff451aa0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522d4000 span=[7ff4522d4000,7ff4522dd000) entry=7ff4522d50bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 6148 entry 7ff4522d50bb
+[W layer    ] proc maps: 679 bytes, first 400: 7ff451abf000-7ff451ac0000 ---p 00000000 00:00 0                        [stack]
+7ff451ac0000-7ff4522c0000 rw-p 00000000 00:00 0                        [stack]
+7ff4522c0000-7ff4522c1000 r-xp 00000000 00:00 0                        [xrl-pool procs_test.elf]
+7ff4522dd000-7ff4522de000 r--p 00000000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522de000-7ff4522e2000 r-xp 00001000
+[W layer    ] proc maps tail: ...0 r--p 00000000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522de000-7ff4522e2000 r-xp 00001000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522e2000-7ff4522e4000 r--p 00005000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522e4000-7ff4522e6000 rw-p 00006000 00:00 1125899907863726                        /bin/procs_test.elf
+
+[W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
+[W layer    ] proc maps: 679 bytes, first 400: 7ff45129f000-7ff4512a0000 ---p 00000000 00:00 0                        [stack]
+7ff4512a0000-7ff451aa0000 rw-p 00000000 00:00 0                        [stack]
+7ff451aa0000-7ff451aa1000 r-xp 00000000 00:00 0                        [xrl-pool procs_test.elf]
+7ff4522d4000-7ff4522d5000 r--p 00000000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522d5000-7ff4522d9000 r-xp 00001000
+[W layer    ] proc maps tail: ...0 r--p 00000000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522d5000-7ff4522d9000 r-xp 00001000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522d9000-7ff4522db000 r--p 00005000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff4522db000-7ff4522dd000 rw-p 00006000 00:00 1125899907863726                        /bin/procs_test.elf
+
+[W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
+[W layer    ] proc maps: 777 bytes, first 400: 7ff4522e6000-7ff4522f6000 rw-p 00000000 00:00 0 
+7ff4522f6000-7ff452306000 rw-p 00000000 00:00 0 
+7ff452306000-7ff452307000 ---p 00000000 00:00 0                        [stack]
+7ff452307000-7ff452b07000 rw-p 00000000 00:00 0                        [stack]
+7ff452b07000-7ff452b08000 r--p 00000000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b08000-7ff452b0c000 r-xp 0000100
+[W layer    ] proc maps tail: ...f452b0c000 r-xp 00001000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b0c000-7ff452b0e000 r--p 00005000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b0e000-7ff452b10000 rw-p 00006000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b10000-7ff452b11000 r-xp 00000000 00:00 0                        [xrl-pool procs_test.elf]
+
+[W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
+[I guest.out]   ok   three processes of the same PIE program load at three different bases
+[I guest.out]   ok   /proc/<pid>/maps lists that process's own mappings
+[I layer    ] signal 9 to tid 4668 with the default action: terminating process 3488
+[I layer    ] proc 3488 ended (wait status 0x9)
+[I layer    ] signal 9 to tid 6148 with the default action: terminating process 5116
+[I layer    ] proc 5116 ended (wait status 0x9)
+[I layer    ] fork: pid 3700 -> child 640, snapshot of the parent's writable memory taken in 1.57 ms
+[I layer    ] fork: pid 3700 -> new process 640 (flags 0x11)
+[I layer    ] exec: pid 640 tid 640 -> /bin/procs_nopie.elf (2 args, 7 env)
+[I layer    ] exec: pid 640 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[W layer    ] rewrite: /bin/procs_nopie.elf: trampoline pool 7ff4522e5000 is far from the code (401000): every site becomes a trap
+[I layer    ] rewrite: /bin/procs_nopie.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 0 jumps, 5 traps, 0 neighbours moved), pool 241 bytes at 7ff4522e5000
+[I layer    ] elf: loaded /bin/procs_nopie.elf type=EXEC bias=0 span=[400000,408000) entry=4010bb
+[I layer    ] exec: /bin/procs_nopie.elf running, main thread tid 7200 entry 4010bb
+[I layer    ] fork: pid 3700 -> child 2832, snapshot of the parent's writable memory taken in 1.25 ms
+[I layer    ] fork: pid 3700 -> new process 2832 (flags 0x11)
+[E layer    ] exec: /bin/procs_nopie.elf is not position independent and needs [400000,408000), which address-space 26 (another live process) uses: -ENOMEM (run it as the only process, or build it as PIE)
+[I layer    ] proc 2832 ended (wait status 0x2a00)
+[I guest.out]   ok   a second copy of a non-PIE program while the first lives: execve -> -ENOMEM
+[I layer    ] signal 9 to tid 7200 with the default action: terminating process 640
+[I layer    ] proc 640 ended (wait status 0x9)
+[I layer    ] fork: pid 3700 -> child 7236, snapshot of the parent's writable memory taken in 1.60 ms
+[I layer    ] fork: pid 3700 -> new process 7236 (flags 0x11)
+[I layer    ] exec: pid 7236 tid 7236 -> /bin/procs_nopie.elf (3 args, 7 env)
+[I layer    ] exec: pid 7236 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[W layer    ] rewrite: /bin/procs_nopie.elf: trampoline pool 7ff4522e5000 is far from the code (401000): every site becomes a trap
+[I layer    ] rewrite: /bin/procs_nopie.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 0 jumps, 5 traps, 0 neighbours moved), pool 241 bytes at 7ff4522e5000
+[I layer    ] elf: loaded /bin/procs_nopie.elf type=EXEC bias=0 span=[400000,408000) entry=4010bb
+[I layer    ] exec: /bin/procs_nopie.elf running, main thread tid 2444 entry 4010bb
+[I layer    ] proc 7236 ended (wait status 0x600)
+[I guest.out]   ok   ...and it runs again once the first is gone
+[I guest.out] pipes, SIGPIPE, parent-death signal:
+[I layer    ] fork: pid 3700 -> child 7952, snapshot of the parent's writable memory taken in 1.57 ms
+[I layer    ] fork: pid 3700 -> new process 7952 (flags 0x11)
+[I layer    ] exec: pid 7952 tid 7952 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 7952 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 3248 entry 7ff4522de0bb
+[I layer    ] signal 13 to tid 3248 with the default action: terminating process 7952
+[I layer    ] proc 7952 ended (wait status 0xd)
+[I guest.out]   ok   write to a pipe with no reader kills the writer with SIGPIPE
+[I layer    ] fork: pid 3700 -> child 1004, snapshot of the parent's writable memory taken in 1.58 ms
+[I layer    ] fork: pid 3700 -> new process 1004 (flags 0x11)
+[I layer    ] exec: pid 1004 tid 1004 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 1004 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 2928 entry 7ff4522de0bb
+[I layer    ] proc 1004 ended (wait status 0x0)
+[I guest.out]   ok   ...and with SIGPIPE ignored the write returns -EPIPE
+[I layer    ] fork: pid 3700 -> child 5756, snapshot of the parent's writable memory taken in 1.64 ms
+[I layer    ] fork: pid 3700 -> new process 5756 (flags 0x11)
+[I layer    ] exec: pid 5756 tid 5756 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 5756 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7024 entry 7ff4522de0bb
+[I layer    ] fork: pid 5756 -> child 6936, snapshot of the parent's writable memory taken in 3.79 ms
+[I layer    ] fork: pid 5756 -> new process 6936 (flags 0x11)
+[I layer    ] exec: pid 6936 tid 6936 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 6936 leaves address space 30 (2 user(s))
+[I layer    ] exec: guest memory committed 16 MiB -> 16 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff451aa0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522d4000 span=[7ff4522d4000,7ff4522dd000) entry=7ff4522d50bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7028 entry 7ff4522d50bb
+[I layer    ] proc 5756 ended (wait status 0x0)
+[I layer    ] signal 10 to tid 7028 with the default action: terminating process 6936
+[I guest.out]   ok   the parent ends normally
+[I layer    ] proc 6936 ended (wait status 0xa)
+[I guest.out]   ok   PR_SET_PDEATHSIG: the orphan got SIGUSR1 when its parent ended (and is the init's child now)
+[W layer    ] clone: namespace flags 0x20000000 refused (-EPERM)
+[I guest.out]   ok   clone with namespace flags -> -EPERM
+[I guest.out] fork from a threaded process, interleaved parent and child:
+[I layer    ] fork: pid 3700 -> child 4764, snapshot of the parent's writable memory taken in 1.59 ms
+[I layer    ] fork: pid 3700 -> new process 4764 (flags 0x11)
+[I layer    ] exec: pid 4764 tid 4764 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 4764 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 3216 entry 7ff4522de0bb
+[I layer    ] fork: pid 4764 -> child 948, copy-on-write snapshot (0 MiB write-protected) in 4.05 ms
+[I layer    ] fork: pid 4764 -> new process 948 (flags 0x11)
+[I layer    ] proc 948 ended (wait status 0x0)
+[I layer    ] fork: pid 4764: child 948 done; 8196 KiB of 0 MiB written meanwhile put back
+[I layer    ] fork: pid 4764 -> child 956, copy-on-write snapshot (0 MiB write-protected) in 1.63 ms
+[I layer    ] fork: pid 4764 -> new process 956 (flags 0x11)
+[I layer    ] exec: pid 956 tid 956 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 956 leaves address space 32 (2 user(s))
+[I layer    ] exec: guest memory committed 16 MiB -> 16 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff452b20000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522d2000 span=[7ff4522d2000,7ff4522db000) entry=7ff4522d30bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 7480 entry 7ff4522d30bb
+[I layer    ] fork: pid 4764: child 956 done; 8192 KiB of 0 MiB written meanwhile put back
+[I layer    ] proc 956 ended (wait status 0x400)
+[I layer    ] proc 4764 ended (wait status 0x0)
+[I guest.out]   ok   a multi-threaded process forks (no exec, exec) and its threads keep running
+[I layer    ] fork: pid 3700 -> child 5108, snapshot of the parent's writable memory taken in 1.72 ms
+[I layer    ] fork: pid 3700 -> new process 5108 (flags 0x11)
+[I layer    ] exec: pid 5108 tid 5108 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 5108 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522c0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522dd000 span=[7ff4522dd000,7ff4522e6000) entry=7ff4522de0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 3232 entry 7ff4522de0bb
+[I layer    ] fork: pid 5108 -> child 4564, snapshot of the parent's writable memory taken in 4.09 ms
+[I layer    ] fork: pid 5108 -> new process 4564 (flags 0x11)
+[I layer    ] proc 4564 ended (wait status 0x0)
+[I layer    ] proc 5108 ended (wait status 0x0)
+[I guest.out]   ok   forked child blocks, parent runs and writes first, each keeps its memory
+[I layer    ] fork: pid 3700 -> child 5036, snapshot of the parent's writable memory taken in 1.66 ms
+[I layer    ] fork: pid 3700 -> new process 5036 (flags 0x11)
+[I layer    ] exec: pid 5036 tid 5036 -> /bin/procs_test.elf (3 args, 7 env)
+[I layer    ] exec: pid 5036 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522b0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522cd000 span=[7ff4522cd000,7ff4522d6000) entry=7ff4522ce0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5040 entry 7ff4522ce0bb
+[I layer    ] proc 5036 ended (wait status 0x0)
+[I guest.out]   ok   fork child unmaps parent memory and execs: the new program cannot map there
+[I guest.out]   ok   ...and the parent's data there is intact
+[I layer    ] fork: pid 3700 -> child 4568, snapshot of the parent's writable memory taken in 1.14 ms
+[I layer    ] fork: pid 3700 -> new process 4568 (flags 0x11)
+[I layer    ] exec: pid 4568 tid 4568 -> /bin/procs_test.elf (2 args, 7 env)
+[I layer    ] exec: pid 4568 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 8 MiB -> 8 MiB after releasing the old image
+[I layer    ] rewrite: /bin/procs_test.elf: 5 syscall + 0 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 10 neighbours moved), pool 246 bytes at 7ff4522b0000
+[I layer    ] elf: loaded /bin/procs_test.elf type=DYN bias=7ff4522cd000 span=[7ff4522cd000,7ff4522d6000) entry=7ff4522ce0bb
+[I layer    ] exec: /bin/procs_test.elf running, main thread tid 5112 entry 7ff4522ce0bb
+[I layer    ] fork: pid 4568 -> child 4276, snapshot of the parent's writable memory taken in 3.39 ms
+[I layer    ] fork: pid 4568 -> new process 4276 (flags 0x11)
+[I layer    ] proc 4568 ended (wait status 0x0)
+[I guest.out]   ok   daemon start: the child starts a thread at once, its parent still exits
+[I layer    ] proc 4276 ended (wait status 0x0)
+[I guest.out]   ok   no children left at the end
+[I guest.out] TOTAL FAILS=0
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (1078 bytes) follows:
+[W layer    ] MAP 7ff4522d6000-7ff4522e6000 rw-p 00000000 00:00 0 
+7ff4522e6000-7ff4522f6000 rw-p 00000000 00:00 0 
+7ff4522f6000-7ff452306000 rw-p 00000000 00:00 0 
+7ff452306000-7ff452307000 ---p 00000000 00:00 0                        [stack]
+7ff452307000-7ff452b07000 rw-p 00000000 00:00 0                        [stack]
+7ff452b07000-7ff452b08000 r--p 00000000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b08000-7ff452b0c000 r-xp 00001000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b0c000-7ff452b0e000 r--p 00005000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b0e000-7ff452b10000 rw-p 00006000 00:00 1125899907863726                        /bin/procs_test.elf
+7ff452b10000-7ff452b11000 r-xp 00000000 00:00 0                        [xrl-pool procs_test.elf]
+7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
+7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
+
+xrl_layer_boot returned 0
