@@ -221,6 +221,10 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
     }
     *(u64 *)pool = (u64)(uintptr_t)&xrl_rawsys;
     FlushInstructionCache(GetCurrentProcess(), pool, cap);
+    /* nothing writes a pool after this: read+exec, so a stray write (another guest process's, in the shared address
+     * space) faults at the writer instead of turning trampolines into data. Not with XRL_FORK_TASKS (Rocket League
+     * through EAC keeps its pools as they always were). */
+    if (!xrl_fork_tasks_enabled()) xrl_mem_mprotect((u64)pool, cap, LX_PROT_READ | LX_PROT_EXEC);
     if (w.ntraps) {
         for (size_t i = 0; i < w.ntraps; i++) trap_add(w.traps[i].site, w.traps[i].stub);
         if (!g_rw_veh) g_rw_veh = AddVectoredExceptionHandler(1, rw_veh);

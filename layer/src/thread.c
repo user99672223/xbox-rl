@@ -316,6 +316,7 @@ slong xrl_do_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u64 
         return xrl_do_fork();
     if (!(flags & LX_CLONE_THREAD)) return xrl_proc_clone(flags, child_stack, ptid, ctid, tls, resume_pc);
     if (!(flags & LX_CLONE_VM)) return -LX_EINVAL;
+    xrl_swap_yield();   /* a fork-group member (proc.c) going multi-threaded */
     xrl_thread *t = NULL;
     slong r = xrl_thread_clone_prepare(p, p->proc, flags, child_stack, tls, resume_pc, &t);
     if (r) return r;

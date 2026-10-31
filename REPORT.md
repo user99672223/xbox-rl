@@ -2,6 +2,103 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (2) - milestones 3 and 4 PASS, 5 in progress, 2 regressed (intermittent)
+
+### Milestone status (CI runs 9-11)
+1. PASS.
+2. **Intermittent FAIL since run 10** (passed runs 7 and 9): `apt-get update`'s second `store` method process dies
+   with its memory overwritten by another process's data: run 10 "stack smashing detected", run 11 a jump into its
+   ld.so trampoline pool that held apt index text. Up to the crash the logs of passing and failing runs are
+   identical (apt starts each method twice and SIGINTs the first; the second loads at the same addresses). Being
+   chased, see "Shared-code changes" below. The 1024 -> 4096 MiB budget change coincides but no swap or commit
+   activity shows in those runs.
+3. **PASS** (run 9 onwards): `xterm.png` in ci-results matches the real-Linux screenshot pixel for pixel in content
+   ("hello from xterm", uid=0(root)).
+4. **PASS** (panel, dock, desktop window; `xfce.png`). Difference from real Linux: no desktop icons (Home, File
+   System): `xfdesktop` spins at 70-100k syscalls/s (clock_gettime, read, write, readlink, getuid, getgid) instead
+   of ~600/s. Next run traces it.
+5. FAIL so far. Run 9: the test host's 1024 MiB commit budget ran out (whole session + Firefox) and the host
+   crashed -> CI now uses the Xbox app's 4096 MiB (`XRL_TEST_BUDGET_MB=4096`; peak seen since: ~1.6 GB). Runs 10-11:
+   Firefox's main process starts (and its crashhelper) but never maps a window in 300 s and prints nothing; next run
+   traces it.
+
+### Shared-code changes since the last report (all outside the XRL_FORK_TASKS path unless said)
+- `src/syscall.c` statx: `stx_dev_major/minor` split like glibc's `major()/minor()` (makedev of them == stat's
+  st_dev; it was `dev >> 8, dev & 0xff`), and `stx_rdev` filled. Shared, but only makes statx agree with stat.
+  Guest suite: `statx dev/ino == stat's`, `statx rdev == stat's (/dev/null 1:3)`.
+- `src/mem.c` `xrl_mem_snap_restore` (proc.c fork path only): bytes are restored only into ranges still owned by
+  the parent's mm, and skipped bytes are logged (a fork child can unmap parent memory before its exec, and the
+  exec'd program may map there).
+- `src/rewrite.c` (not with XRL_FORK_TASKS): a trampoline pool becomes read+exec after it is written, so a stray
+  write faults at the writer instead of corrupting code.
+- `src/systrace.c` (diagnostic only): `XRL_TRACE_COMM=<thread-name prefix>`, `XRL_TRACE_MAX=<lines>`.
+- `tools/xrl-rootfs-unpack.py`: case collisions: symlinks never collide (they are in .xrl-symlinks), directories
+  merge, files: second skipped.
+
+### For the main session
+- Your note said the Xbox RL + EAC run waits for the console; nothing new needed from you for milestones 3-4 in CI.
+  When convenient on the Xbox (desktop app config, uid 0, the rootfs from `tools/ci/rootfs.sh` with this list):
+  `/bin/bash /tmp/xrl-xsession.sh xterm` with `tools/ci/xsession.sh` copied to `/tmp/xrl-xsession.sh` (it needs no
+  screen: Xvfb), then `xfce` - and Xorg/fb0 instead of Xvfb is the step after that (not started).
+
+## 2026-10-31 (1) - milestones 3-5 started
+
+Merged main (glibc tests in CI, keep-going rule). Read the 2026-10-31 note: thanks for the review.
+
+### What is in this push
+- `tools/ci/rootfs-debian.list`: + `xvfb xterm x11-utils x11-apps xauth xfonts-base` (m3), `xfce4 dbus dbus-x11
+  xfce4-terminal` (m4), `firefox-esr` (m5). Preinstalled at rootfs build time (cached) rather than with apt inside
+  the layer each run: milestone 2 already proves apt in the layer, and this keeps the X milestones independent of
+  the network. Tarball 31 -> 288 MB, unpacked 857 MB / 12.3k files.
+- Case collisions in that tree: 4. `/usr/bin/Thunar` is a symlink to `thunar` (symlinks live in .xrl-symlinks, no host
+  name, so no clash - the unpacker no longer counts them); perl's `Pod`/`pod` and `Sys`/`sys` are directories with no
+  clashing files inside (merged); `/usr/include/X11/bitmaps/stipple` skipped. So no VFS case work is needed yet.
+- `tools/ci/xsession.sh` (new): one guest-side script, modes `xterm` | `xfce` | `firefox`: Xvfb :0 1280x720x24, then
+  xterm / `dbus-launch startxfce4` / that + `firefox-esr file:///tmp/xrl-page/index.html`; waits for the windows
+  in `xwininfo -root -tree`, saves `xwd`, prints the background programs' logs, and on the layer ends with
+  `kill -9 -1` (it is the init process there) so leftover daemons don't keep the test host alive.
+- `tools/ci/desktop-run.sh`: probes 12-14 (m3, m4, m5) run it; the screenshot becomes `<out>/<mode>.png`
+  (`xterm.png`, `xfce.png`, `firefox.png` in ci-results); a session probe needs its screenshot to pass. Probe lines
+  now show the seconds each probe took.
+- **`.github/workflows/ci.yml` (your file):** desktop-run timeout 1500 -> 4200 s and the windows job 90 -> 150 min,
+  because the three session probes may take up to 240 + 600 + 900 s. Nothing else touched; change the numbers as
+  you like when merging.
+
+### Reference (real Linux chroot of the same rootfs, strace -f, same script)
+- m3: xterm window `("xterm" "XTerm")` 484x264, screenshot shows its text. m4: xfce4-panel, xfdesktop (Home / File
+  System icons), dock; 10 s. m5: `"xbox-rl page — Mozilla Firefox": ("Navigator" "firefox-esr")`, page rendered; 12 s.
+- Syscalls they use that the layer lacks: rseq (deliberate), capget, pidfd_open (glib falls back to SIGCHLD),
+  readahead and seccomp (Firefox sandbox; it already copes with no user namespaces: "CanCreateUserNamespace()
+  clone() failure: EPERM" appears on real Linux in a chroot too). clone3 -> ENOSYS from rawsys (glibc falls back).
+
+## 2026-10-30 (6) - milestones 1 and 2 PASS
+
+### Milestone status (CI run 7, f30d437)
+1. bash, coreutils, ps, dpkg -l: **PASS**.
+2. `apt-get update` + `apt-get install -y --no-install-recommends hello` + `hello`: **PASS**. Output matches the
+   real-Linux reference line for line (Get/Fetched, Unpacking, Setting up hello, "Hello, world!"). Guest suite
+   TOTAL FAILS=0.
+3. - 5. not started. Next: Xvfb + xterm (needs `xvfb xterm x11-utils x11-apps` in `tools/ci/rootfs-debian.list`).
+
+### Layer changes on this branch (all in REPORT entries below; decisions in docs/decisions.md)
+- `asm/rawsys.asm`: raw `clone` with no new stack = fork (glibc). XRL_FORK_TASKS path unchanged.
+- `src/mem.c`: an in-place mremap extension stays part of the old mapping.
+- `src/vfs.c`: rename with POSIX semantics (replaces an open target); lstat of a table symlink takes its owner from
+  `.xrl-meta`.
+- `include/xrl_abi.h`: not touched.
+
+### For the main session (laptop / Xbox)
+- Please run the RL + EAC check on this branch: the rename change (vfs.c) and the mremap change (mem.c) are shared
+  code. rawsys.asm only changes clone with stack=0, which XRL_FORK_TASKS sends to xrl_do_fork before looking at it.
+- On the Xbox, with the Debian rootfs (`tools/ci/rootfs.sh` output unpacked with `tools/xrl-rootfs-unpack.py`) as
+  the vfs root, uid 0, and the guest env from `tools/ci/desktop-run.sh` (HOME=/root, PATH with sbin,
+  DEBIAN_FRONTEND=noninteractive):
+  1. `/bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'` -> `42`, `278`
+  2. `/usr/bin/apt-get update` then `/usr/bin/apt-get install -y --no-install-recommends hello` then
+     `/usr/bin/hello` -> `Hello, world!` (needs the console's network; nothing on screen yet).
+  Things that could differ on the console: `SetFileInformationByHandle(FileRenameInfoEx)` under AppContainer (if it
+  is refused, dpkg fails with "error installing new file '/var/lib/dpkg/status'"), and outbound HTTP from the app.
+
 ## 2026-10-30 (5)
 
 ### Milestone status

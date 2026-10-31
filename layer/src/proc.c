@@ -205,6 +205,8 @@ typedef struct swapgrp {
     SRWLOCK lock;
     CONDITION_VARIABLE cv;
     xrl_proc *holder;     /* runs guest code now; NULL: nobody (everyone is blocked or waiting) */
+    int waiting;          /* members waiting for the baton in swap_acquire */
+    int members;          /* processes in the group (xrl_proc_fork_snapshotted) */
     xrl_proc *image;      /* whose memory is in the address space */
     int image_valid;      /* 0: that process left, the memory is leftovers */
 } swapgrp;
@@ -233,10 +235,12 @@ static void swap_in(swapgrp *g, xrl_proc *p)   /* p is the holder; the lock is n
 static void swap_acquire(swapgrp *g, xrl_proc *p, xrl_thread *t)
 {
     AcquireSRWLockExclusive(&g->lock);
+    g->waiting++;
     while (g->holder && g->holder != p) {
         if (p->dying || (t && t->exec_kill)) break;   /* being killed: do not wait for anybody */
         SleepConditionVariableSRW(&g->cv, &g->lock, 50, 0);
     }
+    g->waiting--;
     if (!g->holder) g->holder = p;
     int mine = g->holder == p;
     ReleaseSRWLockExclusive(&g->lock);
@@ -264,6 +268,41 @@ void xrl_swap_resume(void)
     if (t && t->proc && t->proc->grp) swap_acquire(t->proc->grp, t->proc, t);
 }
 
+/* The holder is about to start its first thread: from then on it never lets go of the baton (a thread that blocks
+ * cannot stop its siblings), so a member waiting for it now would wait for good. The usual case is a daemon start:
+ * fork, the parent only exits, the child starts threads (Firefox's crashhelper; Firefox waits for that parent).
+ * Let the waiting members run first, until they block, exec or end, then take the baton back. */
+void xrl_swap_yield(void)
+{
+    xrl_thread *t = xrl_cur();
+    if (!t || !t->proc || !t->proc->grp) return;
+    xrl_proc *p = t->proc;
+    swapgrp *g = p->grp;
+    if (p->nthreads - p->ndaemons != 1) return;
+    AcquireSRWLockExclusive(&g->lock);
+    int others = g->holder == p && g->waiting > 0;
+    if (others) {
+        g->holder = NULL;
+        WakeAllConditionVariable(&g->cv);
+        /* until one of them has it (or none came: they may have been woken for another reason) */
+        for (int i = 0; i < 40 && !g->holder; i++) SleepConditionVariableSRW(&g->cv, &g->lock, 5, 0);
+    }
+    ReleaseSRWLockExclusive(&g->lock);
+    if (others) swap_acquire(g, p, t);
+}
+
+/* The caller's memory is also another process's (saved) memory: a fork child before its exec (np->snap, or a fork
+ * group with other members). Its munmap must then not give the address range back: another process could map there
+ * and the other member, which still uses that range, would write into it (apt-get's methods). */
+int xrl_proc_fork_snapshotted(void)
+{
+    xrl_thread *t = xrl_cur();
+    xrl_proc *p = t ? t->proc : NULL;
+    if (!p) return 0;
+    if (p->snap) return 1;
+    return p->grp && p->grp->members > 1;
+}
+
 /* p ends or execs: it leaves the group. */
 static void swap_leave(xrl_proc *p)
 {
@@ -272,6 +311,7 @@ static void swap_leave(xrl_proc *p)
     AcquireSRWLockExclusive(&g->lock);
     if (g->holder == p) g->holder = NULL;
     if (g->image == p) g->image_valid = 0;
+    g->members--;
     p->grp = NULL;
     WakeAllConditionVariable(&g->cv);
     ReleaseSRWLockExclusive(&g->lock);
@@ -341,8 +381,9 @@ slong xrl_proc_clone(u64 flags, u64 child_stack, u64 ptid, u64 ctid, u64 tls, u6
                 }
                 grp = pp->mm->grp;
                 AcquireSRWLockExclusive(&grp->lock);
-                if (!pp->grp) { pp->grp = grp; if (!grp->holder) { grp->holder = pp; grp->image = pp; grp->image_valid = 1; } }
+                if (!pp->grp) { pp->grp = grp; grp->members++; if (!grp->holder) { grp->holder = pp; grp->image = pp; grp->image_valid = 1; } }
                 np->grp = grp;
+                grp->members++;
                 xrl_mem_snap_free(pp->saved);
                 pp->saved = np->snap; np->snap = NULL;
                 grp->holder = np; grp->image = np; grp->image_valid = 1;

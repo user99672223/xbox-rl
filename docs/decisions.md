@@ -144,6 +144,19 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- **2026-10-31 — Debian desktop on the layer: what the X session and Firefox needed.** Branch `claude/desktop-debian`.
+  - **Fork groups and memory ownership.** A snapshot-forked child runs on its parent's memory until it execs (proc.c).
+    Three rules came out of apt-get and Firefox: (1) a child's munmap before its exec keeps the range (PROT_NONE,
+    same mm) so no exec'd program can map where the parent's data still lives; (2) a snapshot restore writes only into
+    ranges its mm still owns; (3) a member about to start its first thread first lets waiting members run
+    (`xrl_swap_yield`), else a daemon start (fork, child starts threads, parent exits) never lets the parent exit.
+    All proc.c-path only; XRL_FORK_TASKS forks never form groups.
+  - **EPOLLET on files whose readiness never changes reports once.** `/proc` files have a constant edge counter;
+    every layer wake-up used to count as an edge, and libmount's mountinfo monitor made GLib programs spin.
+  - **Rewrite pools are read+exec once written** (not with XRL_FORK_TASKS): stray writes fault at the writer.
+  - **CI runs the X milestones with the Xbox app's budget** (`XRL_TEST_BUDGET_MB=4096`); the session + Firefox does
+    not fit the test host's 1024 MiB default. The rootfs preinstalls the X/XFCE/Firefox packages.
+
 - **2026-10-30 — A Debian 13 (glibc) userland on the layer: first fixes.** Branch `claude/desktop-debian`
   (docs/desktop-brief.md; progress in that branch's `REPORT.md`).
   - **Case collisions are skipped, not fatal.** `tools/xrl-rootfs-unpack.py` keeps the first of two names that differ

@@ -392,7 +392,11 @@ SYS(statx)
     x.stx_mtime.tv_sec = st.st_mtim.tv_sec; x.stx_mtime.tv_nsec = (u32)st.st_mtim.tv_nsec;
     x.stx_ctime.tv_sec = st.st_ctim.tv_sec; x.stx_ctime.tv_nsec = (u32)st.st_ctim.tv_nsec;
     x.stx_btime = x.stx_ctime;
-    x.stx_dev_major = (u32)(st.st_dev >> 8); x.stx_dev_minor = (u32)(st.st_dev & 0xff);
+    /* glibc's major()/minor() split, so makedev(major, minor) gives back stat's st_dev / st_rdev */
+    x.stx_dev_major = (u32)(((st.st_dev >> 8) & 0xfff) | ((st.st_dev >> 32) & ~0xfffull));
+    x.stx_dev_minor = (u32)((st.st_dev & 0xff) | ((st.st_dev >> 12) & ~0xffull));
+    x.stx_rdev_major = (u32)(((st.st_rdev >> 8) & 0xfff) | ((st.st_rdev >> 32) & ~0xfffull));
+    x.stx_rdev_minor = (u32)((st.st_rdev & 0xff) | ((st.st_rdev >> 12) & ~0xffull));
     return xrl_ctu((u64)a5, &x, sizeof x);
 }
 
@@ -737,6 +741,7 @@ SYS(munmap)
         u64 end = addr + ((len + 4095) & ~4095ull);
         if (sp >= addr && sp < end) { t->defer_unmap_addr = addr; t->defer_unmap_len = len; return 0; }
     }
+    if (xrl_proc_fork_snapshotted()) return xrl_mem_hide(addr, len);   /* a fork child before its exec: proc.c */
     slong r = xrl_mem_munmap(addr, len);
     if (!r) xrl_dbt_unmapped(addr, len);       /* dbt.c: generated code */
     return r;

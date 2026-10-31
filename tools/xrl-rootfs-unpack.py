@@ -13,7 +13,9 @@ cannot hold in two tables at the root of the tree:
 
 Hard links become copies. Names Windows cannot represent are stored as U+F0xx (vfs.c comp_to_host).
 Device nodes and fifos are skipped (the layer synthesises /dev). The host file system is case-insensitive: of two
-names that differ only in case, the first in the tarball is kept and the second is skipped (and listed).
+files that differ only in case, the first in the tarball is kept and the second is skipped (and listed); two such
+directories become one (their contents merge); a symlink takes no host name (it lives in .xrl-symlinks), so it never
+collides (Debian's /usr/bin/Thunar -> thunar).
 
   python -I tools/xrl-rootfs-unpack.py alpine-minirootfs.tar.gz C:\\xrl-work\\alpine\\rootfs
 """
@@ -60,11 +62,15 @@ def main():
             if g == '/':
                 continue
             low = g.lower()
-            if low in seen and seen[low] != g:
-                print('case collision: %s skipped, %s kept (the host file system is case-insensitive)' % (g, seen[low]))
+            if not m.issym() and low in seen and seen[low][0] != g:
+                if m.isdir() and seen[low][1]:
+                    print('case collision: directory %s merged into %s' % (g, seen[low][0]))
+                    continue
+                print('case collision: %s skipped, %s kept (the host file system is case-insensitive)' % (g, seen[low][0]))
                 skipped.append(g)
                 continue
-            seen[low] = g
+            if not m.issym():
+                seen[low] = (g, m.isdir())
             hp = host_path(root, g)
             if m.isdir():
                 os.makedirs(hp, exist_ok=True)

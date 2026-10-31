@@ -303,6 +303,8 @@ void  xrl_proc_thaw(xrl_proc *p);
 void  xrl_proc_park(xrl_thread *t);             /* syscall return: a frozen or stopped process waits here */
 int   xrl_swap_block(void);                     /* about to block in the layer: let another fork-group member run (1: released) */
 void  xrl_swap_resume(void);                    /* the wait is over: get the address space back */
+int   xrl_proc_fork_snapshotted(void);          /* the caller's memory is part of another process's fork snapshot */
+void  xrl_swap_yield(void);                     /* about to start a first thread: let waiting fork-group members run first */
 void  xrl_proc_exec_done(xrl_proc *p);          /* execve loaded the new image: release a vfork parent */
 void  xrl_proc_exec_mm(xrl_proc *p);            /* execve: p gets a mm of its own (in place when it is the only user) */
 slong xrl_proc_fatal_signal(xrl_proc *p, int sig, xrl_thread *self);   /* default action: terminate */
@@ -386,6 +388,7 @@ int  xrl_mem_init(u64 budget);
 slong xrl_mem_mmap(u64 addr, u64 len, int prot, int flags, int fd, s64 off);
 slong xrl_mem_munmap(u64 addr, u64 len);
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot);
+slong xrl_mem_hide(u64 addr, u64 len);     /* munmap that keeps the range: PROT_NONE, still this mm's (fork snapshots) */
 void  xrl_mem_rename_range(u64 lo, u64 hi, const char *new_name);
 void  xrl_boot_apply_dynfix(void);
 int   xrl_mem_sync_shared_page(u64 addr, u64 len);

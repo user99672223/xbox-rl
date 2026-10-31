@@ -1597,6 +1597,28 @@ out:
     return res;
 }
 
+/* munmap for a process whose memory is also in another process's fork snapshot (proc.c xrl_proc_fork_snapshotted):
+ * the pieces of [addr, addr+len) this mm maps become PROT_NONE but stay its own, contents kept, so nobody else can
+ * map there; the snapshot's restore gives them their protections back. */
+slong xrl_mem_hide(u64 addr, u64 len)
+{
+    if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
+    len = ALIGN_UP(len, LX_PAGE);
+    if (addr + len < addr) return -LX_EINVAL;
+    u64 pc[64][2]; int n = 0;
+    u32 mm = cur_mm();
+    AcquireSRWLockShared(&g_lock);
+    for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < addr + len && n < 64; i++) {
+        if (g_v[i].owner != mm || g_v[i].prot == LX_PROT_NONE) continue;
+        pc[n][0] = g_v[i].start > addr ? g_v[i].start : addr;
+        pc[n][1] = g_v[i].end < addr + len ? g_v[i].end : addr + len;
+        n++;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    for (int i = 0; i < n; i++) xrl_mem_mprotect(pc[i][0], pc[i][1] - pc[i][0], LX_PROT_NONE);
+    return 0;
+}
+
 slong xrl_mem_munmap(u64 addr, u64 len)
 {
     if ((addr & (LX_PAGE - 1)) || !len) return -LX_EINVAL;
@@ -2532,13 +2554,39 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
             } else if (cur_owner == mm && cur_prot != sv->prot) xrl_mem_mprotect(gs, ge - gs, sv->prot);
             a = ge;
         }
-        if (snap_writable_private(sv)) {
-            if (!sv->committed) each_region(sv->start, sv->end, op_zero_committed, NULL);   /* lazy: pages the child touched first read as zero again */
+        if (snap_writable_private(sv) && !sv->committed) {   /* lazy: pages the child touched first read as zero again ... */
+            u64 za = sv->start;
+            while (za < sv->end) {   /* ... in what is still this mm's (the range may hold another process's memory now) */
+                AcquireSRWLockShared(&g_lock);
+                size_t k = vma_lower(za);
+                int mine = k < g_n && g_v[k].start <= za && g_v[k].owner == mm;
+                u64 zb = k < g_n ? (g_v[k].start > za ? g_v[k].start : g_v[k].end) : sv->end;
+                ReleaseSRWLockShared(&g_lock);
+                if (zb > sv->end) zb = sv->end;
+                if (mine) each_region(za, zb, op_zero_committed, NULL);
+                za = zb;
+            }
         }
     }
     if (lost) LOGW("fork: the child unmapped %d range(s) of the parent that could not be put back (file mappings)", lost);
-    /* 4. the bytes */
-    for (size_t i = 0; i < sn->nr; i++) memcpy((void *)sn->rg[i].s, sn->data + sn->rg[i].off, (size_t)(sn->rg[i].e - sn->rg[i].s));
+    /* 4. the bytes, only where the address space is still this process's: a range the child unmapped before its exec
+     * can hold another process's mappings by now (the exec'd program's stack: "stack smashing detected" there) */
+    size_t skipped = 0;
+    for (size_t i = 0; i < sn->nr; i++) {
+        u64 a = sn->rg[i].s, e = sn->rg[i].e;
+        while (a < e) {
+            AcquireSRWLockShared(&g_lock);
+            size_t k = vma_lower(a);
+            int mine = k < g_n && g_v[k].start <= a && g_v[k].owner == mm;
+            u64 b = k < g_n ? (g_v[k].start > a ? g_v[k].start : g_v[k].end) : e;
+            ReleaseSRWLockShared(&g_lock);
+            if (b > e) b = e;
+            if (mine) memcpy((void *)a, sn->data + sn->rg[i].off + (a - sn->rg[i].s), (size_t)(b - a));
+            else skipped += (size_t)(b - a);
+            a = b;
+        }
+    }
+    if (skipped) LOGW("fork: %zu bytes of process memory not restored: that address range belongs to another process now", skipped);
     if (sn->has_brk) {
         AcquireSRWLockExclusive(&g_lock);
         brkwin *b = brk_of(mm, 0);

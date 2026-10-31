@@ -232,6 +232,24 @@ static void run_role(int argc, char **argv)
         w = wait4_(pid, &st, 0, 0);
         exit_(w == pid && st == (4 << 8) ? 0 : 3);
     }
+    if (seq(role, "squat")) {   /* argv[2]: an address; map 64 KiB exactly there if it is free: exit 1 if we could */
+        u64 a = (u64)atol_(argv[2]);
+        long r = sc(9, a, 65536, 3, 0x22 | 0x100000 /* FIXED_NOREPLACE */, -1, 0);
+        exit_(r == (long)a ? 1 : 0);
+    }
+    if (seq(role, "daemon")) {   /* a daemon start: fork; the child starts a thread at once and runs on; the parent only exits */
+        long pid = fork_();
+        if (pid == 0) {
+            u8 *stk = mmap_anon(256 * 1024);
+            struct tls *t = mmap_anon(4096); t->self = t;
+            long flags = 0x100 | 0x200 | 0x400 | 0x800 | 0x10000 | 0x40000 | 0x80000 | 0x200000 | 0x100000;
+            ctid_[2] = -1;
+            if (xclone(thr_futex, stk + 256 * 1024 - 64, flags, 0, (void *)&ctid_[2], t, (void *)&ctid_[2]) <= 0) exit_(98);
+            msleep(300);
+            exit_(0);
+        }
+        exit_(pid > 0 ? 0 : 1);
+    }
     if (seq(role, "interleave")) {   /* a forked child that blocks lets the parent run; each keeps its own memory */
         int p[2]; pipe2_(p, 0);
         int st;
@@ -664,6 +682,23 @@ static void driver(void)
         pid = spawn(av2);
         w = wait_for(pid, &st, 15000);
         CHECKV(w == pid && st == 0, "forked child blocks, parent runs and writes first, each keeps its memory", st);
+        /* a fork child unmaps some of the (copied) parent memory, then execs: the new program must not get that address
+         * range, the parent still uses it (apt-get's methods had their code overwritten by apt-get's data) */
+        u8 *r = mmap_anon(65536);
+        memset(r, 0x5a, 65536);
+        char as[24]; ltoa_((long)r, as);
+        char *av4[] = { g_self, "squat", as, 0 };
+        pid = fork_();
+        if (pid == 0) { sc2(11, r, 65536); execve_(g_self, av4, g_envp); exit_(127); }
+        w = wait_for(pid, &st, 5000);
+        CHECKV(w == pid && st == 0, "fork child unmaps parent memory and execs: the new program cannot map there", st);
+        CHECK(r[0] == 0x5a && r[65535] == 0x5a, "...and the parent's data there is intact");
+        /* Firefox's crashhelper: the parent of a child that went multi-threaded right after the fork still gets to exit */
+        char *av3[] = { g_self, "daemon", 0 };
+        pid = spawn(av3);
+        w = wait_for(pid, &st, 5000);
+        CHECKV(w == pid && st == 0, "daemon start: the child starts a thread at once, its parent still exits", st);
+        wait_for(-1, &st, 3000);   /* the orphan, reparented to us */
     }
     CHECK(wait4_(-1, &st, 1, 0) == -10, "no children left at the end");
     outn("TOTAL FAILS", fails);
