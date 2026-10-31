@@ -144,6 +144,13 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- 2026-10-31 (desktop) Firefox session under 2 GiB (1989 MiB, was 4084) without shared sections: fewer Firefox
+  processes (prefs), no Mesa in GTK/xfwm4, lazy thread stacks. Measured that placeholders split at 4 KiB and read-only
+  section views cost no per-view commit, so shared library text (1b) is feasible: planned as read-only views of a
+  per-library pagefile section holding the rewritten text, the trampoline pool at a fixed offset below each image
+  (so rewritten text is identical in every process), in a separate placeholder region (the arena stays as it is),
+  behind a switch and never with XRL_FORK_TASKS.
+
 - 2026-10-31 (desktop) Thread stacks grow on demand behind `XRL_LAZY_STACKS=1` (off by default; never with
   XRL_FORK_TASKS). Copy-on-write fork snapshots did not move Firefox's peak (4084 vs 4078 MiB); every thread's 8 MiB
   stack committed at clone time is the next suspect. A guard page 256 KiB above the committed end makes the VEH

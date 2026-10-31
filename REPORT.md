@@ -2,6 +2,35 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (10) - MEMORY GOAL MET IN CI: Firefox session 1989 MiB, clean teardown (run 45, 1990f68)
+
+| peak committed | run 41 (before) | run 45 |
+|---|---|---|
+| m4 XFCE session | 1106 MiB | **585 MiB** |
+| m5 XFCE + Firefox page | 4084 MiB | **1989 MiB** |
+| m5s same, stacks committed whole | - | 2068 MiB |
+| m6 TV (XFCE + xbridge on fb0) | 1377 MiB | **608 MiB** |
+
+All milestones PASS, procs-test TOTAL FAILS=0. Teardown: the session is killed at the end of the probe, 0 lazy
+commits refused, the host exits 0. Fork snapshots: 15 copy-on-write forks, 9.2 ms each on average.
+The steps and what each one saved (Firefox session): copy-on-write snapshots (no change to the peak: they were not
+it), Firefox prefs (13 -> 4 processes: -1230 MiB), thread stacks on demand (-190 MiB), xfwm4 without compositor
+(-450 MiB with the other prefs of that batch), `GDK_GL=disable` (-220 MiB: no Mesa in any GTK process).
+What remains at the peak: 817 MiB private file mappings (libxul 156 MiB per Firefox process), anonymous memory,
+stacks. Shared file sections (1b) are next: the probe below says they can work.
+
+**For the Xbox run (main session):** host env `XRL_LAZY_STACKS=1` (new, off by default; never active with
+XRL_FORK_TASKS) and `XRL_FORK_SNAPSHOT_MB=2048` as before; take `tools/ci/xsession.sh` from this branch (Firefox
+prefs, xfwm4 config written to $HOME/.config/xfce4 on first run, `GDK_GL=disable`). TV: `xsession.sh tv` as in (6).
+
+**Placeholder probe (CI, Windows Server 2022, `XRL_PROBE_PLACEHOLDERS=1`):** VirtualAlloc2 / MapViewOfFile3 /
+UnmapViewOfFile2 present (FromApp variants); a placeholder splits at 4 KiB; a section view maps at a 4 KiB-aligned
+address with a 4 KiB section offset; a private 4 KiB allocation replaces a 4 KiB piece; a view goes back to a
+placeholder. A read-only 64 MiB view of a pagefile section costs +132 KiB of commit (page tables): the section's
+commit is charged once, not per view. A copy-on-write (EXECUTE_WRITECOPY) view was refused: the design uses
+read-only views only and copies a page range into private memory when the guest makes it writable. Worth running the
+same probe on the console (`XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true`, lines "placeholder probe:").
+
 ## 2026-10-31 (9) - CI run 44 (bf482c3): Firefox session 2208 MiB (was 4084), all PASS
 
 | peak committed | run 41 | run 44 |
