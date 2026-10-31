@@ -1,0 +1,790 @@
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/guest.elf, 2 args, 3 env, budget=1024 MiB
+[I layer    ] threads: FSGSBASE usable (cpuid=1); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (patched guests) + wrfsbase (unpatched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4649c0000,7ff4649c0000) 1048576 MiB VA, brk <= 7ef4a49c0000, commit budget 1024 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: root=C:\Users\RUNNER~1\AppData\Local\Temp\tmp.Hx5VAT7HTT (4 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[W layer    ] rewrite: /bin/guest.elf: trampoline pool 7ff45c9bf000 is far from the code (401000): every site becomes a trap
+[E layer    ] rewrite: /bin/guest.elf: cannot make code writable
+[I layer    ] rewrite: /bin/guest.elf: 0 syscall + 0 %fs + 0 %gs sites (0 in place, 0 jumps, 0 traps, 0 neighbours moved), pool 0 bytes at 7ff45c9bf000 [INCOMPLETE]
+[I layer    ] elf: loaded /bin/guest.elf type=EXEC bias=0 span=[400000,5b4000) entry=401062
+[W layer    ] boot: no interpreter loaded (EAC libc fixup skipped)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000015415BB60A0)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff45c9bedc0
+[I layer    ] boot: guest main thread tid=1484 entry=401062 sp=7ff45c9bedc0
+[I guest.out] xrl guest test start
+[I guest.out] argc=2
+[I guest.out] misc:
+[I guest.out]   ok   uname
+[I guest.out]   ok   clock_gettime(REALTIME)
+[I guest.out]   ok   gettid
+[I guest.out]   ok   arch_prctl(GET_FS)
+[I guest.out]   ok   arch_prctl(SET_GS) then GET_GS
+[I guest.out]   ok   arch_prctl(XRL_GET_HOST_TEB)
+[W layer    ] futex: unsupported op 999 (cmd 615) uaddr=0
+[I guest.out]   ok   unknown futex op -> -ENOSYS
+[W layer    ] ENOSYS 999 unknown (a1=0 a2=0 a3=0) hit #1
+[I guest.out]   ok   unknown syscall 999 -> -ENOSYS
+[I guest.out]   ok   write(bad fd) -> -EBADF
+[I guest.out]   ok   sched_getaffinity
+[I guest.out]   ok   auxv present
+[I guest.out]   ok   AT_XRL_CTX magic
+[W layer    ] mem-fail[0] addr=1327500000 access=0 vma=NEAR [7ff45c1be000,7ff45c1bf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[I guest.out]   ok   downcall gfx.d3d12_create_device (host Win64 fn via SysV stub)
+[I guest.out]   ok   downcall with 7 args (stack-passed args marshalled)
+[host] gfx release(77)
+[W layer    ] mem-fail[1] addr=1327500000 access=0 vma=NEAR [7ff45c1be000,7ff45c1bf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[I guest    ] log via host stub
+[I guest.out] memory:
+[I guest.out]   ok   red zone: an 8 MiB lazily committed mapping
+[I guest.out]   ok   the 128-byte red zone below rsp survives first-touch faults (64 faults, as on Linux)
+[W layer    ] proc maps: 619 bytes, first 400: 00400000-00401000 r--p 00000000 00:00 3096224744837933                        /bin/guest.elf
+00401000-00419000 r-xp 00001000 00:00 3096224744837933                        /bin/guest.elf
+00419000-00426000 r--p 00019000 00:00 3096224744837933                        /bin/guest.elf
+00426000-005b4000 rw-p 00000000 00:00 0 
+7ff45c1bd000-7ff45c1be000 rw-p 00000000 00:00 0 
+7ff45c1be000-7ff45c1bf000 ---p 
+[W layer    ] proc maps tail: ...0:00 3096224744837933                        /bin/guest.elf
+00426000-005b4000 rw-p 00000000 00:00 0 
+7ff45c1bd000-7ff45c1be000 rw-p 00000000 00:00 0 
+7ff45c1be000-7ff45c1bf000 ---p 00000000 00:00 0                        [stack]
+7ff45c1bf000-7ff45c9bf000 rw-p 00000000 00:00 0                        [stack]
+7ff45c9bf000-7ff45c9c0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
+
+[W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
+[I guest.out]   ok   maps: the highest mapping
+[I guest.out]   ok   MAP_FIXED_NOREPLACE 16 MiB above the highest mapping gets that address (free, as on Linux)
+[I guest.out]   ok   MAP_FIXED_NOREPLACE over the highest mapping -> -EEXIST
+[I guest.out]   ok   hint test: a scratch mapping
+[I guest.out]   ok   mmap hint at a free page inside the mmap area gets that address (as on Linux)
+[I guest.out]   ok   mmap hint at a busy page gets another address, nothing replaced
+[I guest.out]   ok   mmap anon 1MiB
+[I guest.out]   ok   anon memory usable
+[I guest.out]   ok   mprotect -> PROT_READ
+[I guest.out]   ok   mprotect -> RW
+[W layer    ] mmap-lo: [140000000,140010000) prot=3 lazy=0 committed=1
+[I guest.out]   ok   MAP_FIXED at 0x140000000 (PE image base)
+[I guest.out]   ok   fixed mapping writable
+[I guest.out]   ok   PROT_NONE reserve
+[I guest.out]   ok   mprotect reserved -> RW (commit)
+[I guest.out]   ok   committed page usable
+[I guest.out]   ok   mremap grow+move preserves data
+[I guest.out]   ok   munmap
+[I guest.out]   ok   mmap 4 MiB, keep the first 1 MiB
+[I guest.out]   ok   mremap grows in place twice (the second over the first's extension)
+[I guest.out]   ok   then grows by moving, data kept
+[I guest.out]   ok   brk grow
+[I guest.out]   ok   madvise(DONTNEED)
+[I guest.out]   ok   DONTNEED zeroes pages
+[I layer    ] mem: swap file C:\Users\RUNNER~1\AppData\Local\Temp\xrl-swap-5572.bin (XPRESS-compressed)
+[W layer    ] mem: commit budget exhausted: 8 MiB committed + 2097152 KiB requested > 1024 MiB
+[I guest.out]   ok   mmap(MAP_POPULATE) beyond guest_mem_budget -> -ENOMEM
+[I guest.out]   ok   64 MiB anonymous mmap (lazy)
+[I guest.out]   ok   lazy pages commit on first touch, zero-filled
+[I guest.out]   ok   munmap lazy mapping
+[I guest.out] file/VFS:
+[I guest.out]   ok   openat(O_CREAT|O_RDWR)
+[I guest.out]   ok   write
+[I guest.out]   ok   pread64
+[I guest.out]   ok   lseek(SET)
+[I guest.out]   ok   read
+[I guest.out]   ok   fstat size=11 S_ISREG
+[I guest.out]   ok   close
+[I guest.out]   ok   open missing -> -ENOENT
+[I guest.out]   ok   mkdir
+[I guest.out]   ok   rename into subdir
+[I guest.out]   ok   open directory
+[I guest.out]   ok   getdents64 lists moved.txt
+[I guest.out]   ok   access
+[I guest.out]   ok   unlink
+[I guest.out]   ok   rmdir
+[I guest.out]   ok   rename over a file that is open
+[I guest.out]   ok   the open fd still reads the replaced file
+[I guest.out]   ok   the path opens the new file
+[I guest.out]   ok   statx dev/ino == stat's
+[I guest.out]   ok   statx rdev == stat's (/dev/null 1:3)
+[I guest.out]   ok   symlink
+[I guest.out]   ok   readlink
+[I guest.out]   ok   open through symlink
+[I guest.out]   ok   symlink next to a file differing only in case
+[I guest.out]   ok   readlink of the lower-case link
+[I guest.out]   ok   the upper-case name is still the file
+[I guest.out]   ok   open through the link reads the file
+[I guest.out]   ok   /dev/zero
+[I guest.out]   ok   /dev/urandom differs between reads
+[I guest.out]   ok   getrandom
+[W layer    ] proc maps: 838 bytes, first 400: 00400000-00401000 r--p 00000000 00:00 3096224744837933                        /bin/guest.elf
+00401000-00419000 r-xp 00001000 00:00 3096224744837933                        /bin/guest.elf
+00419000-00426000 r--p 00019000 00:00 3096224744837933                        /bin/guest.elf
+00426000-005b4000 rw-p 00000000 00:00 0 
+140000000-140010000 rw-p 00000000 00:00 0 
+7ef4649c0000-7ef4649d0000 rw-p 000000
+[W layer    ] proc maps tail: ...p]
+7ff45bfbd000-7ff45bfc1000 rw-p 00000000 00:00 0 
+7ff45bfc1000-7ff45c0bd000 ---p 00000000 00:00 0 
+7ff45c1bd000-7ff45c1be000 rw-p 00000000 00:00 0 
+7ff45c1be000-7ff45c1bf000 ---p 00000000 00:00 0                        [stack]
+7ff45c1bf000-7ff45c9bf000 rw-p 00000000 00:00 0                        [stack]
+7ff45c9bf000-7ff45c9c0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
+
+[W layer    ] proc maps check: libc=0 ld=0 stack=1 vdso=0
+[I guest.out]   ok   /proc/self/maps readable
+[I guest.out]   ok   readlink /proc/self/exe
+[I guest.out]   ok   write /proc/self/task/<tid>/comm names the thread
+[I guest.out]   ok   /dev/null
+[I guest.out]   ok   pipe2
+[I guest.out]   ok   pipe write
+[I guest.out]   ok   poll POLLIN on pipe
+[I guest.out]   ok   pipe read
+[I guest.out]   ok   fcntl GETFL
+[I guest.out]   ok   dup
+[I guest.out]   ok   eventfd2 write/read
+[I guest.out]   ok   epoll_wait
+[I guest.out]   ok   socketpair
+[I guest.out]   ok   sendmsg SCM_RIGHTS
+[I guest.out]   ok   recvmsg receives fd
+[I guest.out]   ok   received fd is a live duplicate of the pipe write end
+[I guest.out]   ok   read /proc/cpuinfo
+[I guest.out]   ok   cpuinfo vendor_id = CPUID vendor
+[I guest.out]   ok   cpuinfo cpu family = CPUID family
+[I guest.out]   ok   cpuinfo has a flags line
+[I guest.out]   ok   flag sse2 matches CPUID
+[I guest.out]   ok   flag fsgsbase matches CPUID (hidden on the console)
+[I guest.out]   ok   flag hypervisor matches CPUID
+[I guest.out]   ok   flag rdrand matches CPUID
+[I guest.out]   ok   one cpuinfo entry per CPU in the affinity mask
+[I guest.out]   ok   /proc/self/status is the full kernel layout
+[I guest.out]   ok   status has every field a 6.x kernel prints, in order
+[I guest.out]   ok   status Tgid is getpid()
+[I guest.out]   ok   status fields in kernel order
+[I guest.out]   ok   SigCgt has the caught signal (SIGUSR2)
+[I guest.out]   ok   SigIgn has the ignored signal (SIGUSR1)
+[I guest.out]   ok   /proc/self/task/<tid>/status is a status file
+[I guest.out]   ok   /proc/1/comm readable
+[I guest.out]   ok   /proc/1/status describes an init
+[I guest.out]   ok   /proc/1/cmdline readable
+[I guest.out]   ok   /proc/1/stat
+[I guest.out]   ok   /proc/1/environ: EACCES
+[I guest.out]   ok   /proc/1/maps: EACCES
+[I guest.out]   ok   readlink /proc/1/exe: EACCES
+[I guest.out]   ok   a process that does not exist: ENOENT
+[I guest.out]   ok   /proc/mounts lists the filesystems the layer provides
+[I guest.out]   ok   /proc/self/cgroup
+[I guest.out]   ok   /proc/version carries uname's version string
+[I guest.out]   ok   prlimit64 NOFILE read
+[I guest.out]   ok   prlimit64 lowers the soft NOFILE limit
+[I guest.out]   ok   ... and it reads back
+[I guest.out]   ok   getrlimit sees it too
+[I guest.out]   ok   soft above hard: EINVAL
+[I guest.out]   ok   raising the hard limit: EPERM
+[I guest.out]   ok   setrlimit lowers the soft limit
+[I guest.out]   ok   /proc/self/limits follows the limit table
+[I guest.out]   ok   bad resource: EINVAL
+[I guest.out]   skip fork/ptrace tasks (XRL_FORK_TASKS=1 not set)
+[I guest.out]   skip exec in a forked task (XRL_FORK_TASKS=1 not set)
+[W layer    ] write memfd: fd=18 off=-1 n=10 wrote=10 first16: 6d 65 6d 66 64 2d 64 61 74 61 00 74 72 61 63 65
+[I guest.out]   skip traced exec (XRL_FORK_TASKS=1 not set)
+[I guest.out]   skip inject call (XRL_FORK_TASKS=1 not set)
+[I guest.out] threads/futex/FS base:
+[I guest.out]   ok   6 threads cloned (CLONE_SETTLS|PARENT_SETTID|CHILD_CLEARTID)
+[I guest.out]   ok   all threads started (futex wake from threads reached waiters)
+[I guest.out]   ok   nanosleep(300ms) within bounds
+[I guest.out]   ok   thread pointer (TP slot) stable across preemption
+[I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
+[I guest.out]   ok   thread pointer (TP slot) stable across preemption
+[I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
+[I guest.out]   ok   thread pointer (TP slot) stable across preemption
+[I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
+[I guest.out]   ok   thread pointer (TP slot) stable across preemption
+[I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
+[I guest.out]   ok   thread pointer (TP slot) stable across preemption
+[I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
+[I guest.out]   ok   thread pointer (TP slot) stable across preemption
+[I guest.out]   ok   PARENT_SETTID + CHILD_CLEARTID
+[I guest.out] futex pingpong round trips/s=2286498
+[I guest.out]   ok   futex ping-pong 2000 round trips
+[I guest.out]   ok   futex wait timeout -> -ETIMEDOUT after >=20ms
+[I guest.out]   ok   futex wait value mismatch -> -EAGAIN
+[I guest.out]   ok   futex wake with no waiters -> 0
+[I guest.out] network (Winsock):
+[I layer    ] net: Winsock 2.2 up (TCP/UDP over IPv4/IPv6)
+[I guest.out]   ok   TCP: socket+bind(127.0.0.1:0)+listen+getsockname
+[I guest.out]   ok   non-blocking connect -> -EINPROGRESS (or 0)
+[I guest.out]   ok   poll(POLLOUT) reports the connect complete
+[I guest.out]   ok   getsockopt(SO_ERROR) == 0 after connect
+[I guest.out]   ok   accept returns the client's address
+[I guest.out]   ok   getsockname(client) == getpeername(server)
+[I guest.out]   ok   write() on a socket sends
+[I guest.out]   ok   read() on a socket (blocking) receives
+[I guest.out]   ok   sendto(NULL addr) on a connected socket
+[I guest.out]   ok   poll(POLLIN) wakes when data arrives
+[I guest.out]   ok   recvfrom on the non-blocking client
+[I guest.out]   ok   recv on an empty non-blocking socket -> -EAGAIN
+[I guest.out]   ok   fstat: S_ISSOCK
+[I guest.out]   ok   writev on a socket
+[I guest.out]   ok   readv on a socket
+[I guest.out]   ok   shutdown(SHUT_WR)
+[I guest.out]   ok   peer reads EOF (0) after shutdown(SHUT_WR)
+[I guest.out]   ok   poll(POLLIN) is true at EOF
+[I guest.out]   ok   the other direction still works
+[I guest.out]   ok   dup'ed socket survives closing the original
+[I guest.out]   ok   SO_REUSEADDR round trip
+[I guest.out]   ok   TCP_NODELAY round trip
+[I guest.out]   ok   SO_TYPE == SOCK_STREAM
+[I guest.out]   ok   SO_RCVBUF > 0
+[I guest.out]   ok   unknown option -> -ENOPROTOOPT
+[I guest.out]   ok   client thread started
+[I guest.out]   ok   blocking accept waits for the connection
+[I guest.out]   ok   blocking read gets the greeting
+[I guest.out]   ok   blocking read returns 0 when the peer closes
+[I guest.out]   ok   client thread connected and exited
+[I guest.out]   ok   poll(POLLIN, 80 ms) on an idle socket times out
+[I guest.out]   ok   epoll_ctl(ADD, listening socket)
+[I guest.out]   ok   epoll_wait: the listener is readable when a connection is pending
+[I guest.out]   ok   epoll_ctl(ADD, accepted socket)
+[I guest.out]   ok   epoll_wait: the accepted socket is readable after the peer sends
+[I guest.out]   ok   blocking connect
+[I guest.out]   ok   sender thread started
+[I guest.out] bulk bytes received=3145728
+[I guest.out]   ok   3 MiB arrived in order and ended with EOF through blocking send/recv
+[I guest.out]   ok   connect(0.0.0.0:port) reaches the loopback listener (Linux behaviour)
+[I guest.out] connection-refused latency ms=0
+[I guest.out]   ok   connect to a closed port -> ECONNREFUSED (poll error + SO_ERROR)
+[I guest.out]   ok   setsockopt(SO_RCVTIMEO)
+[I guest.out]   ok   blocking recv honours SO_RCVTIMEO (-EAGAIN after ~70 ms)
+[I guest.out]   ok   UDP: socket+bind
+[I guest.out]   ok   UDP: getsockname
+[I guest.out]   ok   UDP: sendto
+[I guest.out]   ok   UDP: poll(POLLIN) after a datagram
+[I guest.out]   ok   UDP: MSG_PEEK leaves the datagram queued
+[I guest.out]   ok   UDP: recvfrom returns the data and the sender's address
+[I guest.out]   ok   UDP: sendmsg gathers two iovecs into one datagram
+[I guest.out]   ok   UDP: recvmsg truncates with MSG_TRUNC and reports the sender
+[I guest.out]   ok   UDP: connect + write
+[I guest.out]   ok   UDP: the connected sender's datagram arrives
+[I guest.out]   ok   SO_TYPE == SOCK_DGRAM
+[I guest.out]   ok   IPv6: bind(::1) + listen + getsockname
+[I guest.out]   ok   IPv6: connect(::1)
+[I guest.out]   ok   IPv6: data both ways
+[I guest.out]   ok   bind on a pipe -> -ENOTSOCK
+[I guest.out]   ok   socket(AF_UNIX): bad type -> -ESOCKTNOSUPPORT, bad protocol -> -EPROTONOSUPPORT
+[I guest.out]   ok   socket(AF_INET, SOCK_RAW) -> -EPERM
+[I guest.out] AF_UNIX sockets:
+[I guest.out]   ok   socketpair(SOCK_STREAM)
+[I guest.out]   ok   stream: two writes
+[I guest.out]   ok   stream: one read returns both (bytes merge)
+[I guest.out]   ok   SO_PEERCRED: the creator (pid, uid)
+[I guest.out]   ok   SO_TYPE == SOCK_STREAM
+[I guest.out]   ok   poll: writable, nothing to read
+[I guest.out]   ok   fstat: S_ISSOCK
+[I guest.out]   ok   poll after the peer closed: POLLIN|POLLHUP
+[I guest.out]   ok   read after the peer closed: EOF
+[I guest.out]   ok   write after the peer closed: -EPIPE
+[I guest.out]   ok   shutdown(SHUT_WR)
+[I guest.out]   ok   peer reads the data, then EOF
+[I guest.out]   ok   the other direction still works
+[I guest.out]   ok   dgram: a read returns one datagram
+[I guest.out]   ok   dgram: writev of two iovecs
+[I guest.out]   ok   dgram: the writev was ONE datagram (readv gets all 5)
+[I guest.out]   ok   dgram: a short buffer truncates and sets MSG_TRUNC
+[I guest.out]   ok   dgram: the truncated rest is gone (-EAGAIN with MSG_DONTWAIT)
+[I guest.out]   ok   MSG_PEEK leaves the datagram queued
+[I guest.out]   ok   MSG_DONTWAIT on an empty queue -> -EAGAIN
+[I guest.out]   ok   socketpair(SOCK_SEQPACKET)
+[I guest.out]   ok   seqpacket: records stay separate
+[I guest.out]   ok   seqpacket: EOF after the peer closed
+[I guest.out]   ok   bind(/tmp/xrl_unix_test.sock)
+[I guest.out]   ok   stat of the path: S_ISSOCK
+[I guest.out]   ok   open() of a socket file -> -ENXIO
+[I guest.out]   ok   bind to a taken path -> -EADDRINUSE
+[I guest.out]   ok   bind twice -> -EINVAL
+[I guest.out]   ok   getsockname returns the bound path
+[I guest.out]   ok   listen
+[I guest.out]   ok   getdents lists it as DT_SOCK
+[I guest.out]   ok   poll(POLLIN) on the listener wakes when a client connects
+[I guest.out]   ok   accept: the client is unnamed (address length 2)
+[I guest.out]   ok   blocking read gets what the client thread wrote
+[I guest.out]   ok   accepted socket's name is the listener's path
+[I guest.out]   ok   SO_PEERCRED on the accepted socket: the connector
+[I guest.out]   ok   write back
+[I guest.out]   ok   the client thread read 'pong'
+[I guest.out]   ok   accept on a non-blocking listener with nothing pending -> -EAGAIN
+[I guest.out]   ok   non-blocking connect to a listener completes at once
+[I guest.out]   ok   backlog 0 queues one connection; a second one is refused for now (-EAGAIN)
+[I guest.out]   ok   connect on a connected socket -> -EISCONN
+[I guest.out]   ok   accept the first
+[I guest.out]   ok   now the second connects
+[I guest.out]   ok   connect to a socket file nobody listens on -> -ECONNREFUSED
+[I guest.out]   ok   unlink removes the socket file
+[I guest.out]   ok   connect to a missing path -> -ENOENT
+[I guest.out]   ok   connect to a regular file -> -ECONNREFUSED
+[I guest.out]   ok   bind onto a regular file -> -EADDRINUSE
+[I guest.out]   ok   bind in a missing directory -> -ENOENT
+[I guest.out]   ok   connect after the listener closed -> -ECONNREFUSED (node still there)
+[I guest.out]   ok   bind+listen on an abstract name
+[I guest.out]   ok   the same abstract name for a datagram socket is a different socket
+[I guest.out]   ok   same name, same type -> -EADDRINUSE
+[I guest.out]   ok   connect to the abstract name
+[I guest.out]   ok   data through an abstract socket
+[I guest.out]   ok   getpeername of the connector shows the abstract name
+[I guest.out]   ok   the name is gone once its socket closed
+[I guest.out]   ok   bind with just the family autobinds
+[I guest.out]   ok   autobound name: abstract, 5 hex digits
+[I guest.out]   ok   sendto(path) from an autobound datagram socket
+[I guest.out]   ok   recvfrom reports the sender's (autobound) address
+[I guest.out]   ok   send without a destination -> -ENOTCONN
+[I guest.out]   ok   connect() sets the default destination; write works
+[I guest.out]   ok   an unbound sender has no address
+[I guest.out]   ok   connect(AF_UNSPEC) dissolves the destination
+[I guest.out]   ok   ...so a write fails with -ENOTCONN again
+[I guest.out]   ok   sendmsg(SCM_RIGHTS)
+[I guest.out]   ok   recvmsg: the fd arrives
+[I guest.out]   ok   the received fd is the pipe's write end
+[I guest.out]   ok   a stream read stops at each chunk that carries fds
+[I guest.out]   ok   no room for the control message: MSG_CTRUNC
+[I guest.out]   ok   SCM_RIGHTS with a bad fd -> -EBADF
+[I guest.out]   ok   setsockopt(SO_PASSCRED)
+[I guest.out]   ok   SCM_CREDENTIALS: the sender's pid/uid/gid
+[I guest.out]   ok   sendmsg with our own credentials
+[I guest.out]   ok   ...but not somebody else's -> -EPERM
+[I guest.out]   ok   epoll: nothing readable yet
+[I guest.out]   ok   epoll: EPOLLIN once data is queued
+[I guest.out]   ok   ioctl(FIONREAD)
+[I guest.out]   ok   2 MiB streamed between two threads (the sender blocks on a full queue), every byte intact
+[I guest.out]   ok   ...and shutdown(SHUT_WR) gave the reader its EOF
+[I guest.out]   ok   connect/listen on a pipe -> -ENOTSOCK
+[I guest.out] edge-triggered epoll:
+[I guest.out]   ok   ET: a socket with nothing to read is quiet
+[I guest.out]   ok   ET: data arrives -> one event
+[I guest.out]   ok   ET: not reported again while nothing new came
+[I guest.out]   ok   (drain it)
+[I guest.out]   ok   ET: drained and refilled between two waits is a new edge (the lost-wake-up an X server hit)
+[I guest.out]   ok   ET: two more writes before the wait are still one report
+[I guest.out]   ok   ET pipe: data -> event
+[I guest.out]   ok   ET pipe: drained and refilled -> event
+[I guest.out]   ok   ET /proc file: reported once
+[I guest.out]   ok   ET /proc file: not again after unrelated I/O
+[I guest.out]   ok   ...and the epoll fd itself does not poll readable for it
+[I guest.out] shared memory:
+[I guest.out]   ok   shmget(IPC_PRIVATE, 100000)
+[I guest.out]   ok   IPC_STAT: size as asked, no attaches, mode 0600
+[I guest.out]   ok   shmat(NULL) -> a page-aligned address
+[I guest.out]   ok   a new segment reads as zeros
+[I guest.out]   ok   a second attach shows the same pages
+[I guest.out]   ok   nattch == 2, lpid is us
+[I guest.out]   ok   shmdt
+[I guest.out]   ok   nattch == 1
+[I guest.out]   ok   IPC_RMID with one attach left
+[I guest.out]   ok   the segment lives on while attached
+[I guest.out]   ok   last shmdt destroys it
+[I guest.out]   ok   shmat of a destroyed id -> -EINVAL
+[I guest.out]   ok   shmdt of a non-attach -> -EINVAL
+[I guest.out]   ok   shmat of an id that never existed -> -EINVAL
+[I guest.out]   ok   shmget with a key: the same segment again
+[I guest.out]   ok   IPC_CREAT|IPC_EXCL on an existing key -> -EEXIST
+[I guest.out]   ok   asking for a bigger size than it has -> -EINVAL
+[I guest.out]   ok   an unknown key without IPC_CREAT -> -ENOENT
+[I guest.out]   ok   creating with size 0 -> -EINVAL
+[I guest.out]   ok   after IPC_RMID the key is free
+[W layer    ] ftruncate memfd: fd=31 size=16384
+[I guest.out]   ok   memfd_create + ftruncate(16 KiB)
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff4648c0000 len=16384 file_size=16384 shared=1 r=140687635644416
+[I guest.out]   ok   mmap(MAP_SHARED) of the memfd
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=4096 addr=7ff4648c1000 len=8192 file_size=16384 shared=1 r=140687635648512
+[I guest.out]   ok   a mapping at offset 4096 is the same pages (sees the write at 5000)
+[I guest.out]   ok   and a write through it shows in the first mapping
+[W layer    ] close memfd: fd=31 gpath=/memfd:xrl-shm (deleted)
+[I guest.out]   ok   close(fd) leaves the mappings usable
+[I guest.out]   ok   munmap of the second mapping keeps the first
+[I guest.out]   ok   munmap of the first
+[W layer    ] ftruncate memfd: fd=31 size=8192
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff4647c0000 len=8192 file_size=8192 shared=1 r=140687634595840
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff4647c0000 len=8192 file_size=8192 shared=1 r=140687634595840
+[I guest.out]   ok   unmap and map again: the data is still there (fd open)
+[I guest.out]   ok   no seals yet
+[I guest.out]   ok   F_ADD_SEALS(SHRINK|GROW)
+[I guest.out]   ok   ftruncate smaller or bigger -> -EPERM
+[W layer    ] ftruncate memfd: fd=31 size=8192
+[I guest.out]   ok   ftruncate to the same size is fine
+[I guest.out]   ok   F_SEAL_WRITE: write() -> -EPERM
+[I guest.out]   ok   F_SEAL_SEAL: no more seals -> -EPERM
+[I guest.out]   ok   a memfd without MFD_ALLOW_SEALING: adding -> -EPERM, GET shows F_SEAL_SEAL
+[I guest.out]   ok   memfd_create with an unknown flag -> -EINVAL
+[I guest.out]   ok   F_GET_SEALS on a regular file -> -EINVAL
+[W layer    ] close memfd: fd=31 gpath=/memfd:xrl-keep (deleted)
+[W layer    ] close memfd: fd=32 gpath=/memfd:xrl-nosealing (deleted)
+[I guest.out]   ok   /dev/shm file: two mappings, one set of pages
+[I guest.out]   ok   after the last munmap the file holds what was written
+[I guest.out]   ok   a regular file's shared mapping is its own copy (not shm.c's)
+[I guest.out] pseudo-terminals:
+[I guest.out]   ok   open /dev/ptmx
+[I guest.out]   ok   TIOCGPTN
+[I guest.out]   ok   opening a locked slave -> -EIO
+[I guest.out]   ok   TIOCSPTLCK(0): unlockpt
+[I guest.out]   ok   stat /dev/pts/N: a character device, major 136
+[I guest.out]   ok   open the slave
+[I guest.out]   ok   TIOCGWINSZ on the slave (isatty)
+[I guest.out]   ok   TIOCSWINSZ on the master
+[I guest.out]   ok   the slave sees the size
+[I guest.out]   ok   default termios: ICANON|ECHO, ONLCR, ^C ^D
+[I guest.out]   ok   the master types 'hel'
+[I guest.out]   ok   the slave sees nothing yet (no newline): -EAGAIN
+[I guest.out]   ok   echo of the typed characters
+[I guest.out]   ok   '\r' became '\n' (ICRNL); the whole line is readable now
+[I guest.out]   ok   echo of 'lo' and the newline as CR LF
+[I guest.out]   ok   VERASE edits the line
+[I guest.out]   ok   two lines are two reads
+[I guest.out]   ok   ^D on an empty line: the slave reads 0 (EOF)
+[I guest.out]   ok   ...once
+[I guest.out]   ok   ^D after text delivers the text without a newline
+[I guest.out]   ok   the slave writes
+[I guest.out]   ok   the master reads it with ONLCR (CR LF)
+[I guest.out]   ok   TCSETS: raw
+[I guest.out]   ok   raw: bytes arrive at once, untranslated, ^C is a byte
+[I guest.out]   ok   raw without ECHO: no echo
+[I guest.out]   ok   raw without OPOST: no CR added
+[I guest.out]   ok   poll: slave has nothing to read
+[I guest.out]   ok   poll: POLLIN once a byte arrives
+[I guest.out]   ok   FIONREAD on the slave
+[I guest.out]   ok   VMIN=4 with 2 bytes queued: a non-blocking read -> -EAGAIN
+[I guest.out]   ok   ...and 4 bytes are delivered together
+[I guest.out]   ok   ^C is echoed as ^C and the typed-ahead line is discarded
+[I guest.out]   ok   (the line discipline is clean after it)
+[I guest.out]   ok   (echo of the last newline is still readable)
+[I guest.out]   ok   master read after the last slave closed -> -EIO
+[I guest.out]   ok   poll(master): POLLHUP
+[I guest.out]   ok   a second pty gets another number
+[I guest.out]   ok   slave read after the master closed: EOF
+[I guest.out]   ok   slave write after the master closed: -EIO
+[I guest.out]   ok   after both closed the pty is gone: open -> -ENOENT
+[I guest.out] timers and file copying:
+[I guest.out]   ok   timerfd_create(MONOTONIC, NONBLOCK)
+[I guest.out]   ok   read of an unarmed timerfd -> -EAGAIN
+[I guest.out]   ok   timerfd_settime(50 ms one-shot)
+[I guest.out]   ok   timerfd_gettime: the time left, no interval
+[I guest.out]   ok   poll: not yet
+[I guest.out]   ok   poll(POLLIN) wakes when it expires
+[I guest.out]   ok   ...after about 50 ms
+[I guest.out]   ok   read -> 1 expiration
+[I guest.out]   ok   ...and it is consumed (a one-shot does not repeat)
+[I guest.out]   ok   an interval timer counts the expirations it missed (130 ms / 20 ms)
+[I guest.out]   ok   epoll_wait wakes on the timerfd
+[I guest.out]   ok   settime(0) disarms and returns the old setting
+[I guest.out]   ok   a disarmed timer stays quiet
+[I guest.out]   ok   TFD_TIMER_ABSTIME on the monotonic clock
+[I guest.out]   ok   timerfd calls on a bad fd / a non-timerfd
+[I guest.out]   ok   setitimer(ITIMER_REAL, 30 ms)
+[I guest.out]   ok   getitimer: time left
+[I guest.out]   ok   SIGALRM ran the handler once (one-shot)
+[I guest.out]   ok   alarm(5): nothing was pending
+[I guest.out]   ok   alarm(0) returns the 5 seconds that were left (rounded up)
+[I guest.out]   ok   inotify_init1
+[I guest.out]   ok   inotify_add_watch(/tmp) -> a watch number
+[I guest.out]   ok   ...of a missing path -> -ENOENT
+[I guest.out]   ok   read: no events -> -EAGAIN
+[I guest.out]   ok   poll: never readable
+[I guest.out]   ok   inotify_rm_watch
+[I guest.out]   ok   copy_file_range with both offsets: moves them
+[I guest.out]   ok   ...and the bytes landed at offset 2
+[I guest.out]   ok   copy_file_range without offsets moves the file positions
+[I guest.out]   ok   sendfile with an offset pointer
+[I guest.out]   ok   splice from a pipe to a pipe
+[I guest.out]   ok   splice with an offset on a pipe end -> -ESPIPE
+[I guest.out] review regressions:
+[I guest.out]   ok   recvmsg with a 20-byte control buffer: fd delivered, controllen 20, no write past it
+[I guest.out]   ok   MSG_WAITALL with an unwritable iovec -> -EFAULT (no spin)
+[I guest.out]   ok   shmget(existing, bigger than asked but within the page) -> -EINVAL
+[I guest.out]   ok   raw -> canonical: typed-ahead bytes are readable at once as one line
+[W layer    ] ftruncate memfd: fd=37 size=4096
+[W layer    ] write memfd: fd=37 off=4095 n=1 wrote=1 first16: 78 00 47 00 31 32 33 34 35 00 20 20 6f 6b 20 20
+[I guest.out]   ok   F_SEAL_GROW: a write inside the file works, one past its end -> -EPERM
+[W layer    ] ftruncate memfd: fd=37 size=4096
+[I guest.out]   ok   F_SEAL_WRITE does not forbid a same-size ftruncate
+[W layer    ] close memfd: fd=37 gpath=/memfd:xrl-seals (deleted)
+[W layer    ] ftruncate memfd: fd=37 size=4096
+[I guest.out]   ok   F_SEAL_FUTURE_WRITE: write() -> -EPERM
+[W layer    ] close memfd: fd=37 gpath=/memfd:xrl-fw (deleted)
+[I guest.out] review regressions (2):
+[I guest.out]   ok   send(MSG_DONTWAIT) on a full blocking stream socket -> -EAGAIN instead of blocking
+[W layer    ] ftruncate memfd: fd=31 size=4096
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff4646c0000 len=4096 file_size=4096 shared=1 r=140687633547264
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=-4096 addr=0 len=4096 file_size=4096 shared=1 r=-22
+[I guest.out]   ok   mmap(MAP_SHARED, memfd, negative offset) -> -EINVAL
+[W layer    ] ftruncate memfd: fd=31 size=1048576
+[W layer    ] mmap memfd: fd=31 prot=3 flags=1 off=0 addr=7ff4646c0000 len=1048576 file_size=1048576 shared=1 r=140687633547264
+[I guest.out]   ok   growing the memfd and mapping it larger works (same pages, headroom)
+[W layer    ] mmap memfd: fd=31 prot=3 flags=11 off=0 addr=0 len=4096 file_size=1048576 shared=1 r=-22
+[I guest.out]   ok   MAP_FIXED over a shared region -> -EINVAL (the pages are shared with others)
+[W layer    ] close memfd: fd=31 gpath=/memfd:xrl-grow (deleted)
+[I guest.out]   ok   a /dev/shm file unlinked and recreated is a new object, not the old pages
+[I guest.out]   ok   open(/dev/pts/N, O_RDONLY) stays read-only (F_GETFL)
+[I guest.out] ntsync:
+[I guest.out]   ok   open /dev/ntsync
+[I guest.out]   ok   create semaphore, event, mutex
+[I guest.out]   ok   wait-any on unsignaled objects times out (-ETIMEDOUT)
+[I guest.out]   ok   semaphore release returns previous count
+[I guest.out]   ok   wait-any takes the semaphore (index 0)
+[I guest.out]   ok   release past max -> -EOVERFLOW
+[I guest.out]   ok   event set by another thread wakes the waiter
+[I guest.out]   ok   auto-reset event is reset by the wait
+[I guest.out]   ok   mutex acquired twice by owner 7
+[I guest.out]   ok   owner 8 cannot take it
+[I guest.out]   ok   unlock by non-owner -> -EPERM
+[I guest.out]   ok   unlock returns previous recursion count
+[I guest.out]   ok   kill by owner
+[I guest.out]   ok   next acquire reports abandonment (-EOWNERDEAD)
+[I guest.out]   ok   wait-all blocks while one object is unsignaled
+[I guest.out]   ok   wait-all succeeds once all are signaled
+[I guest.out]   ok   manual event stays signaled
+[I guest.out] signals:
+[I guest.out]   ok   tgkill(self): the handler runs before the syscall returns
+[I guest.out]   ok   siginfo: SI_TKILL from our own pid
+[I guest.out]   ok   the signal is blocked inside its handler
+[I guest.out]   ok   ucontext has the interrupted rip and an fpstate
+[I guest.out]   ok   rt_sigreturn restores the mask and the frame
+[I guest.out]   ok   a blocked signal stays pending
+[I guest.out]   ok   unblocking delivers the pending signal
+[I guest.out]   ok   async: the handler ran on the spinning thread
+[I guest.out]   ok   async: every register (GPRs, xmm0/7/15) intact after the handler
+[I guest.out]   ok   SA_RESTART: the handler ran and the futex wait was restarted
+[I guest.out]   ok   ...and it returns 0 when woken
+[I guest.out]   ok   no SA_RESTART: the futex wait returns -EINTR
+[I guest.out]   ok   nanosleep: -EINTR with the remaining time
+[W layer    ] mem-fail[2] addr=1000 access=0 vma=NEAR [400000,401000) prot=1 lazy=0 committed=1 host(state=10000 prot=1)
+[I guest.out]   ok   SIGSEGV: si_addr, SEGV_MAPERR, trap 14; handler skips the load
+[I guest.out]   ok   SA_ONSTACK: the handler runs on the sigaltstack
+[I guest.out] swap:
+[I guest.out]   ok   mmap 1.25 GiB (more than the 1 GiB budget)
+[I layer    ] mem: committed 256 MiB (high-water)
+[I layer    ] mem: committed 512 MiB (high-water)
+[I layer    ] mem: committed 768 MiB (high-water)
+[I layer    ] perf: cpu 31% of a core (user 13%, kernel 18%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 430 syscalls/s, 0 COM calls/s, 126 lazy faults/s (815 ms/s in the handler); committed 1007 MiB, swap 233 MiB in the file, out 23.4 MiB/s, in 0.1 MiB/s
+[I layer    ] perf: thr xrl-named/1484 19% 0k/s;
+[I guest.out]   ok   every page written (evictions made room)
+[I layer    ] perf: cpu 10% of a core (user 1%, kernel 9%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 99 lazy faults/s (996 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 32.0 MiB/s, in 26.6 MiB/s
+[I layer    ] perf: thr xrl-named/1484 10% 0k/s;
+[I layer    ] perf: cpu 19% of a core (user 1%, kernel 17%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 284 lazy faults/s (985 ms/s in the handler); committed 1000 MiB, swap 294 MiB in the file, out 29.3 MiB/s, in 31.4 MiB/s
+[I layer    ] perf: thr xrl-named/1484 19% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e07d4 (host)
+[I layer    ] perf: cpu 59% of a core (user 1%, kernel 58%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 242 lazy faults/s (971 ms/s in the handler); committed 1002 MiB, swap 293 MiB in the file, out 14.0 MiB/s, in 30.6 MiB/s
+[I layer    ] perf: thr xrl-named/1484 59% 0k/s;
+[I guest.out]   ok   every page reads back its own data (swapped in on touch)
+[I layer    ] perf: cpu 75% of a core (user 1%, kernel 74%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 719 lazy faults/s (1039 ms/s in the handler); committed 1004 MiB, swap 291 MiB in the file, out 8.5 MiB/s, in 36.3 MiB/s
+[I layer    ] perf: thr xrl-named/1484 75% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e0474 (host)
+[I layer    ] perf: cpu 62% of a core (user 0%, kernel 62%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 475 lazy faults/s (928 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 7.8 MiB/s, in 20.1 MiB/s
+[I layer    ] perf: thr xrl-named/1484 62% 0k/s;
+[I layer    ] perf: cpu 11% of a core (user 1%, kernel 10%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 707 lazy faults/s (1037 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 20.9 MiB/s, in 32.2 MiB/s
+[I layer    ] perf: thr xrl-named/1484 11% 0k/s;
+[I guest.out]   ok   write() from swapped-out memory writes the right bytes
+[I layer    ] perf: cpu 8% of a core (user 1%, kernel 7%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 515 lazy faults/s (998 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 25.6 MiB/s, in 25.8 MiB/s
+[I layer    ] perf: thr xrl-named/1484 8% 0k/s;
+[I layer    ] perf: cpu 11% of a core (user 2%, kernel 9%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 420 lazy faults/s (999 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 18.5 MiB/s, in 18.5 MiB/s
+[I layer    ] perf: thr xrl-named/1484 11% 0k/s;
+[I layer    ] perf: cpu 5% of a core (user 1%, kernel 4%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 373 lazy faults/s (1014 ms/s in the handler); committed 1007 MiB, swap 288 MiB in the file, out 19.7 MiB/s, in 20.1 MiB/s
+[I layer    ] perf: thr xrl-named/1484 5% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e07d4 (host)
+[I layer    ] perf: cpu 76% of a core (user 1%, kernel 75%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 366 lazy faults/s (975 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 6.9 MiB/s, in 16.1 MiB/s
+[I layer    ] perf: thr xrl-named/1484 76% 0k/s;
+[I guest.out]   ok   pages written after a read-back keep the new data through another eviction
+[I layer    ] perf: cpu 71% of a core (user 1%, kernel 70%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 442 lazy faults/s (556 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 7.8 MiB/s, in 22.1 MiB/s
+[I layer    ] perf: thr xrl-named/1484 71% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e07d4 (host)
+[I layer    ] perf: cpu 100% of a core (user 0%, kernel 100%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 0 lazy faults/s (0 ms/s in the handler); committed 1003 MiB, swap 292 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
+[I layer    ] perf: thr xrl-named/1484 100% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e07d4 (host)
+[I layer    ] perf: cpu 43% of a core (user 1%, kernel 42%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 418 lazy faults/s (691 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 18.5 MiB/s, in 19.0 MiB/s
+[I layer    ] perf: thr xrl-named/1484 43% 0k/s;
+[I layer    ] perf: cpu 11% of a core (user 2%, kernel 9%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 470 lazy faults/s (986 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 30.5 MiB/s, in 30.6 MiB/s
+[I layer    ] perf: thr xrl-named/1484 11% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e07d4 (host)
+[I layer    ] perf: cpu 74% of a core (user 1%, kernel 73%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 228 lazy faults/s (1000 ms/s in the handler); committed 1004 MiB, swap 291 MiB in the file, out 8.6 MiB/s, in 19.3 MiB/s
+[I layer    ] perf: thr xrl-named/1484 74% 0k/s;
+[I layer    ] perf: cpu 69% of a core (user 1%, kernel 68%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 162 lazy faults/s (489 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 11.0 MiB/s, in 21.1 MiB/s
+[I layer    ] perf: thr xrl-named/1484 69% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e07d4 (host)
+[I layer    ] perf: cpu 100% of a core (user 0%, kernel 100%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 0 lazy faults/s (0 ms/s in the handler); committed 1001 MiB, swap 294 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
+[I layer    ] perf: thr xrl-named/1484 100% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e0434 (host)
+[I layer    ] perf: cpu 69% of a core (user 0%, kernel 69%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 224 lazy faults/s (403 ms/s in the handler); committed 999 MiB, swap 295 MiB in the file, out 9.7 MiB/s, in 9.5 MiB/s
+[I layer    ] perf: thr xrl-named/1484 69% 0k/s;
+[I layer    ] perf: cpu 12% of a core (user 1%, kernel 12%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 701 lazy faults/s (976 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 29.4 MiB/s, in 29.8 MiB/s
+[I layer    ] perf: thr xrl-named/1484 12% 0k/s;
+[I layer    ] perf: cpu 9% of a core (user 1%, kernel 7%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 756 lazy faults/s (1012 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 31.0 MiB/s, in 31.4 MiB/s
+[I layer    ] perf: thr xrl-named/1484 9% 0k/s;
+[I layer    ] perf: cpu 15% of a core (user 2%, kernel 13%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 537 lazy faults/s (990 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 29.4 MiB/s, in 29.0 MiB/s
+[I layer    ] perf: thr xrl-named/1484 15% 0k/s;
+[I layer    ] perf: cpu 11% of a core (user 2%, kernel 9%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 524 lazy faults/s (1006 ms/s in the handler); committed 1007 MiB, swap 287 MiB in the file, out 30.2 MiB/s, in 30.6 MiB/s
+[I layer    ] perf: thr xrl-named/1484 11% 0k/s;
+[I layer    ] perf: spin xrl-named/1484 rip 7ffe079e0474 (host)
+[I layer    ] perf: cpu 48% of a core (user 1%, kernel 47%) over 10.0 s; 1 guest threads
+[I layer    ] perf: guest 0 syscalls/s, 0 COM calls/s, 578 lazy faults/s (987 ms/s in the handler); committed 1003 MiB, swap 291 MiB in the file, out 16.6 MiB/s, in 27.4 MiB/s
+[I layer    ] perf: thr xrl-named/1484 48% 0k/s;
+[I guest.out]   ok   mprotect read-only and back over swapped memory keeps the data
+[I guest.out]   ok   after munmap the address range is fresh zero memory
+[I guest.out] network (Winsock):
+[I guest.out]   ok   TCP: socket+bind(127.0.0.1:0)+listen+getsockname
+[I guest.out]   ok   non-blocking connect -> -EINPROGRESS (or 0)
+[I guest.out]   ok   poll(POLLOUT) reports the connect complete
+[I guest.out]   ok   getsockopt(SO_ERROR) == 0 after connect
+[I guest.out]   ok   accept returns the client's address
+[I guest.out]   ok   getsockname(client) == getpeername(server)
+[I guest.out]   ok   write() on a socket sends
+[I guest.out]   ok   read() on a socket (blocking) receives
+[I guest.out]   ok   sendto(NULL addr) on a connected socket
+[I guest.out]   ok   poll(POLLIN) wakes when data arrives
+[I guest.out]   ok   recvfrom on the non-blocking client
+[I guest.out]   ok   recv on an empty non-blocking socket -> -EAGAIN
+[I guest.out]   ok   fstat: S_ISSOCK
+[I guest.out]   ok   writev on a socket
+[I guest.out]   ok   readv on a socket
+[I guest.out]   ok   shutdown(SHUT_WR)
+[I guest.out]   ok   peer reads EOF (0) after shutdown(SHUT_WR)
+[I guest.out]   ok   poll(POLLIN) is true at EOF
+[I guest.out]   ok   the other direction still works
+[I guest.out]   ok   dup'ed socket survives closing the original
+[I guest.out]   ok   SO_REUSEADDR round trip
+[I guest.out]   ok   TCP_NODELAY round trip
+[I guest.out]   ok   SO_TYPE == SOCK_STREAM
+[I guest.out]   ok   SO_RCVBUF > 0
+[I guest.out]   ok   unknown option -> -ENOPROTOOPT
+[I guest.out]   ok   client thread started
+[I guest.out]   ok   blocking accept waits for the connection
+[I guest.out]   ok   blocking read gets the greeting
+[I guest.out]   ok   blocking read returns 0 when the peer closes
+[I guest.out]   ok   client thread connected and exited
+[I guest.out]   ok   poll(POLLIN, 80 ms) on an idle socket times out
+[I guest.out]   ok   epoll_ctl(ADD, listening socket)
+[I guest.out]   ok   epoll_wait: the listener is readable when a connection is pending
+[I guest.out]   ok   epoll_ctl(ADD, accepted socket)
+[I guest.out]   ok   epoll_wait: the accepted socket is readable after the peer sends
+[I guest.out]   ok   blocking connect
+[I guest.out]   ok   sender thread started
+[I guest.out] bulk bytes received=3145728
+[I guest.out]   ok   3 MiB arrived in order and ended with EOF through blocking send/recv
+[I guest.out]   ok   connect(0.0.0.0:port) reaches the loopback listener (Linux behaviour)
+[I guest.out] connection-refused latency ms=0
+[I guest.out]   ok   connect to a closed port -> ECONNREFUSED (poll error + SO_ERROR)
+[I guest.out]   ok   setsockopt(SO_RCVTIMEO)
+[I guest.out]   ok   blocking recv honours SO_RCVTIMEO (-EAGAIN after ~70 ms)
+[I guest.out]   ok   UDP: socket+bind
+[I guest.out]   ok   UDP: getsockname
+[I guest.out]   ok   UDP: sendto
+[I guest.out]   ok   UDP: poll(POLLIN) after a datagram
+[I guest.out]   ok   UDP: MSG_PEEK leaves the datagram queued
+[I guest.out]   ok   UDP: recvfrom returns the data and the sender's address
+[I guest.out]   ok   UDP: sendmsg gathers two iovecs into one datagram
+[I guest.out]   ok   UDP: recvmsg truncates with MSG_TRUNC and reports the sender
+[I guest.out]   ok   UDP: connect + write
+[I guest.out]   ok   UDP: the connected sender's datagram arrives
+[I guest.out]   ok   SO_TYPE == SOCK_DGRAM
+[I guest.out]   ok   IPv6: bind(::1) + listen + getsockname
+[I guest.out]   ok   IPv6: connect(::1)
+[I guest.out]   ok   IPv6: data both ways
+[I guest.out]   ok   bind on a pipe -> -ENOTSOCK
+[I guest.out]   ok   socket(AF_UNIX): bad type -> -ESOCKTNOSUPPORT, bad protocol -> -EPROTONOSUPPORT
+[I guest.out]   ok   socket(AF_INET, SOCK_RAW) -> -EPERM
+[I guest.out] abi v2 / wine contract:
+[I guest.out]   ok   pseudo-syscall GET_GFX_OPS == ctx gfx table
+[I guest.out]   ok   pseudo-syscalls GET_AUDIO/INPUT_OPS
+[I guest.out]   ok   pseudo-syscall GET_LOG_FN
+[I guest.out]   ok   pseudo-syscall GET_VCLOCK: monotonic clock without a syscall
+[I guest.out]   ok   GET_VCLOCK leaves CPU-time clocks to the syscall (-ENOSYS)
+[W layer    ] ENOSYS 65542 unknown (a1=0 a2=0 a3=0) hit #2
+[I guest.out]   ok   pseudo-syscall out of range -> -ENOSYS
+[I guest.out]   ok   TP slot active (arch_prctl XRL_GET_FS_MODE bit1)
+[I guest.out]   ok   arch_prctl(SET_FS) accepted
+[I guest.out]   ok   main thread reads its thread pointer back after SET_FS
+[I guest.out]   ok   clone with resume_pc starts the child (PARENT_SETTID)
+[I guest.out]   ok   child ran fn(arg) from resume_pc
+[I guest.out]   ok   exit(code, map_base, map_size) unmapped the child's stack
+[I guest.out]   ok   unrelated mapping (child TLS) left intact
+[I guest.out] shared TEB (guest/host views):
+[I guest.out]   ok   file syscalls run host Win32 code under a foreign guest TEB
+[I guest.out]   ok   mmap under a foreign guest TEB
+[I guest    ] downcall (host CRT + logging) under a foreign guest TEB
+[W layer    ] mem-fail[3] addr=2100000020 access=0 vma=NEAR [7ef4649c0000,7ef4649d0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail[4] addr=2400000000 access=0 vma=NEAR [7ef4649c0000,7ef4649d0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[I guest.out]   ok   downcall through the op-table stub under a foreign guest TEB
+[I guest.out]   ok   guest TEB values survive syscalls and downcalls
+[I guest.out] TOTAL FAILS=0
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 5 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail[0] addr=1327500000 access=0 vma=NEAR [7ff45c1be000,7ff45c1bf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[1] addr=1327500000 access=0 vma=NEAR [7ff45c1be000,7ff45c1bf000) prot=0 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[2] addr=1000 access=0 vma=NEAR [400000,401000) prot=1 lazy=0 committed=1 host(state=10000 prot=1)
+[W layer    ] mem-fail[3] addr=2100000020 access=0 vma=NEAR [7ef4649c0000,7ef4649d0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail[4] addr=2400000000 access=0 vma=NEAR [7ef4649c0000,7ef4649d0000) prot=3 lazy=1 committed=0 host(state=10000 prot=1)
+[W layer    ] mem-fail: full guest memory map (3340 bytes) follows:
+[W layer    ] MAP 00400000-00401000 r--p 00000000 00:00 3096224744837933                        /bin/guest.elf
+00401000-00419000 r-xp 00001000 00:00 3096224744837933                        /bin/guest.elf
+00419000-00426000 r--p 00019000 00:00 3096224744837933                        /bin/guest.elf
+00426000-005b4000 rw-p 00000000 00:00 0 
+140000000-140010000 rw-p 00000000 00:00 0 
+7ef4649c0000-7ef4649d0000 rw-p 00000000 00:00 0                        [heap]
+7ff45bafd000-7ff45bbfd000 rw-p 00000000 00:00 0 
+7ff45bbfd000-7ff45bc3d000 rw-p 00000000 00:00 0 
+7ff45bc3d000-7ff45bc7d000 rw-p 00000000 00:00 0 
+7ff45bc7d000-7ff45bcbd000 rw-p 00000000 00:00 0 
+7ff45bcbd000-7ff45bcfd000 rw-p 00000000 00:00 0 
+7ff45bcfd000-7ff45bd3d000 rw-p 00000000 00:00 0 
+7ff45bd3d000-7ff45bd7d000 rw-p 00000000 00:00 0 
+7ff45bd7d000-7ff45bdbd000 rw-p 00000000 00:00 0 
+7ff45bdbd000-7ff45bdfd000 rw-p 00000000 00:00 0 
+7ff45bdfd000-7ff45be3d000 rw-p 00000000 00:00 0 
+7ff45be3d000-7ff45be7d000 rw-p 00000000 00:00 0 
+7ff45be7d000-7ff45bebd000 rw-p 00000000 00:00 0 
+7ff45bebd000-7ff45befd000 rw-p 00000000 00:00 0 
+7ff45befd000-7ff4
+[W layer    ] MAP 000 00:00 0 
+7ff45c0f2000-7ff45c0f3000 rw-p 00000000 00:00 0 
+7ff45c0f3000-7ff45c0f4000 rw-p 00000000 00:00 0 
+7ff45c0f4000-7ff45c0f5000 rw-p 00000000 00:00 0 
+7ff45c0f5000-7ff45c0f6000 rw-p 00000000 00:00 0 
+7ff45c0f6000-7ff45c0f7000 rw-p 00000000 00:00 0 
+7ff45c0f7000-7ff45c0f8000 rw-p 00000000 00:00 0 
+7ff45c0f8000-7ff45c0f9000 rw-p 00000000 00:00 0 
+7ff45c0f9000-7ff45c0fa000 rw-p 00000000 00:00 0 
+7ff45c0fa000-7ff45c0fb000 rw-p 00000000 00:00 0 
+7ff45c0fb000-7ff45c13b000 rw-p 00000000 00:00 0 
+7ff45c13b000-7ff45c13c000 rw-p 00000000 00:00 0 
+7ff45c13c000-7ff45c17c000 rw-p 00000000 00:00 0 
+7ff45c17c000-7ff45c17d000 rw-p 00000000 00:00 0 
+7ff45c17d000-7ff45c1bd000 rw-p 00000000 00:00 0 
+7ff45c1bd000-7ff45c1be000 rw-p 00000000 00:00 0 
+7ff45c1be000-7ff45c1bf000 ---p 00000000 00:00 0                        [stack]
+7ff45c1bf000-7ff45c9bf000 rw-p 00000000 00:00 0                        [stack]
+7ff45c9bf000-7ff45c9c0000 r-xp 00000000 00:00 0                        [xrl-pool guest.elf]
+7ff4646c0000-7ff4647c0000 rw-s 00000000 00:00 0                        /memfd:xrl-grow (deleted)
+
+xrl_layer_boot returned 0
+exit 0
