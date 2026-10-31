@@ -100,7 +100,7 @@ jobs:
         if: always()
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BRANCH: ltp
+          BRANCH: ${{ github.ref_name == 'main' && 'ltp' || format('ltp-{0}', github.ref_name) }}   # main: ltp/, a branch: ltp-<branch>/
           RUN: ${{ github.run_number }}
           SHA: ${{ github.sha }}
         run: bash tools/ci/publish-results.sh ci-out
