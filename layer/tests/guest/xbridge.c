@@ -333,6 +333,16 @@ static u32 shm_major, dmg_major, shm_seg, dmg_id;
 static u8 *shm_buf;
 static int use_shm, use_damage;
 static u64 bytes_fetched;
+/* a compositing window manager (KWin): the picture is its overlay window's, not the root window's (GetImage on a
+ * composited root has the windows without decorations or shadows). src_id is what is read. */
+static u32 src_id, comp_major, cm_atom, overlay_id, dmg2_id;
+static int use_comp;
+/* the cursor (XFIXES GetCursorImage), which no GetImage includes: blended into what fb0 gets */
+static u32 xfixes_major;
+static int use_xfixes, cur_x, cur_y, cur_w, cur_h, ocur_x, ocur_y, ocur_w, ocur_h;
+static u32 cur_px[64 * 64];
+static u32 cursor_serial;
+static u8 *vis;   /* cur with the cursor in it: what fb0 shows */
 
 static void xscreen_setup(void)
 {
@@ -364,7 +374,28 @@ static void xscreen_setup(void)
             if (!xsend(c, 16)) { nreq++; use_damage = 1; }
         }
     }
+    src_id = root_id;
+    if (x_query_ext("Composite", &comp_major, 0)) {
+        u8 q[12]; memset(q, 0, sizeof q);
+        q[0] = (u8)comp_major; q[1] = 0; put16(q + 2, 3); put32(q + 4, 0); put32(q + 8, 4);   /* CompositeQueryVersion 0.4 */
+        u8 r[32];
+        if (!xsend(q, 12) && !x_reply(r, 0, 0, 0)) {
+            u8 a[24]; memset(a, 0, sizeof a);
+            const char *nm = "_NET_WM_CM_S0"; u32 n = (u32)slen(nm);
+            a[0] = 16; a[1] = 0; put16(a + 2, 2 + ((n + 3) >> 2)); put16(a + 4, n); memcpy(a + 8, nm, n);   /* InternAtom */
+            if (!xsend(a, (2 + ((n + 3) >> 2)) * 4) && !x_reply(r, 0, 0, 0)) { cm_atom = le32(r + 8); use_comp = 1; }
+        }
+    }
+    if (x_query_ext("XFIXES", &xfixes_major, 0)) {
+        u8 q[12]; memset(q, 0, sizeof q);
+        q[0] = (u8)xfixes_major; q[1] = 0; put16(q + 2, 3); put32(q + 4, 4); put32(q + 8, 0);   /* XFixesQueryVersion 4.0 */
+        u8 r[32];
+        if (!xsend(q, 12) && !x_reply(r, 0, 0, 0)) use_xfixes = 1;
+    }
+    vis = mmap_anon((u64)xw_line * xw_h);
+    if ((u64)vis < 0x10000) die("out of memory", 0);
     outn("screen over X: MIT-SHM", use_shm); outn("screen over X: DAMAGE", use_damage);
+    outn("screen over X: Composite", use_comp); outn("screen over X: cursor (XFIXES)", use_xfixes);
     dmg_x0 = 0; dmg_y0 = 0; dmg_x1 = (int)xw_w; dmg_y1 = (int)xw_h;   /* the first frame is all of it */
 }
 
@@ -375,7 +406,7 @@ static int xscreen_fetch(u32 y0, u32 y1)
     if (use_shm) {
         u8 q[32]; memset(q, 0, sizeof q);
         q[0] = (u8)shm_major; q[1] = 4; put16(q + 2, 8);   /* ShmGetImage(root, 0, y0, w, h, ~0, ZPixmap, seg, offset) */
-        put32(q + 4, root_id); put16(q + 8, 0); put16(q + 10, y0); put16(q + 12, xw_w); put16(q + 14, h);
+        put32(q + 4, src_id); put16(q + 8, 0); put16(q + 10, y0); put16(q + 12, xw_w); put16(q + 14, h);
         put32(q + 16, 0xffffffffu); q[20] = 2; put32(q + 24, shm_seg); put32(q + 28, y0 * xw_line);
         u8 r[32];
         if (xsend(q, 32) || x_reply(r, 0, 0, 0)) return -1;
@@ -386,7 +417,7 @@ static int xscreen_fetch(u32 y0, u32 y1)
             u32 n = y1 - y < 64 ? y1 - y : 64;
             u8 q[20]; memset(q, 0, sizeof q);
             q[0] = 73; q[1] = 2; put16(q + 2, 5);
-            put32(q + 4, root_id); put16(q + 8, 0); put16(q + 10, y); put16(q + 12, xw_w); put16(q + 14, n);
+            put32(q + 4, src_id); put16(q + 8, 0); put16(q + 10, y); put16(q + 12, xw_w); put16(q + 14, n);
             put32(q + 16, 0xffffffffu);
             u8 r[32]; u32 len = 0;
             if (xsend(q, 20) || x_reply(r, cur + (u64)y * xw_line, n * xw_line, &len)) return -1;
@@ -398,40 +429,124 @@ static int xscreen_fetch(u32 y0, u32 y1)
     return 0;
 }
 
+/* every ~2 s: is there a compositor now (or no longer)? Then read its overlay window (or the root again) */
+static void comp_check(void)
+{
+    static u64 next;
+    u64 now = mono_ns();
+    if (!use_comp || now < next) return;
+    next = now + 2000000000ull;
+    u8 q[8]; memset(q, 0, sizeof q);
+    q[0] = 23; put16(q + 2, 2); put32(q + 4, cm_atom);   /* GetSelectionOwner(_NET_WM_CM_S0) */
+    u8 r[32];
+    if (xsend(q, 8) || x_reply(r, 0, 0, 0)) return;
+    u32 owner = le32(r + 8);
+    if (owner && src_id == root_id) {
+        if (!overlay_id) {
+            u8 g[8]; memset(g, 0, sizeof g);
+            g[0] = (u8)comp_major; g[1] = 7; put16(g + 2, 2); put32(g + 4, root_id);   /* CompositeGetOverlayWindow */
+            if (xsend(g, 8) || x_reply(r, 0, 0, 0)) return;
+            overlay_id = le32(r + 8);
+            if (use_damage && overlay_id) {   /* its own damage too */
+                dmg2_id = id_base | 3;
+                u8 c[16]; memset(c, 0, sizeof c);
+                c[0] = (u8)dmg_major; c[1] = 1; put16(c + 2, 4); put32(c + 4, dmg2_id); put32(c + 8, overlay_id); c[12] = 2;
+                if (!xsend(c, 16)) nreq++;
+            }
+        }
+        if (overlay_id) { src_id = overlay_id; out("compositor: reading its overlay window\n"); }
+    } else if (!owner && src_id != root_id) { src_id = root_id; out("compositor gone: reading the root window\n"); }
+    else return;
+    dmg_x0 = 0; dmg_y0 = 0; dmg_x1 = (int)xw_w; dmg_y1 = (int)xw_h;   /* a full frame from the new source */
+}
+/* the cursor image and place (XFixesGetCursorImage); 1 if it moved or changed */
+static int cursor_fetch(void)
+{
+    if (!use_xfixes) return 0;
+    u8 q[4]; q[0] = (u8)xfixes_major; q[1] = 4; put16(q + 2, 1);
+    static u8 px[64 * 64 * 4];
+    u8 r[32]; u32 len = 0;
+    if (xsend(q, 4) || x_reply(r, px, sizeof px, &len)) { use_xfixes = 0; return 0; }
+    nreq++;
+    int w = (int)le16(r + 12), h = (int)le16(r + 14), xh = (int)le16(r + 16), yh = (int)le16(r + 18);
+    int x = (int)(short)le16(r + 8) - xh, y = (int)(short)le16(r + 10) - yh;
+    u32 serial = le32(r + 20);
+    if (w > 64 || h > 64 || (u32)(w * h * 4) > len) { w = h = 0; }
+    int changed = x != cur_x || y != cur_y || w != cur_w || h != cur_h || serial != cursor_serial;
+    if (!changed) return 0;
+    ocur_x = cur_x; ocur_y = cur_y; ocur_w = cur_w; ocur_h = cur_h;
+    cur_x = x; cur_y = y; cur_w = w; cur_h = h; cursor_serial = serial;
+    for (int i = 0; i < w * h; i++) cur_px[i] = le32(px + i * 4);
+    return 1;
+}
+/* row y of vis: cur's, with the cursor blended over it (premultiplied ARGB over BGRX) */
+static void vis_row(u32 y)
+{
+    u32 *d = (u32 *)(vis + (u64)y * xw_line);
+    memcpy(d, cur + (u64)y * xw_line, xw_line);
+    if (!cur_w || (int)y < cur_y || (int)y >= cur_y + cur_h) return;
+    const u32 *s = cur_px + (u64)((int)y - cur_y) * cur_w;
+    for (int i = 0; i < cur_w; i++) {
+        int x = cur_x + i;
+        if (x < 0 || x >= (int)xw_w) continue;
+        u32 c = s[i], a = c >> 24;
+        if (!a) continue;
+        u32 o = d[x], ia = 255 - a, v = 0;
+        for (int sh = 0; sh < 24; sh += 8) {
+            u32 ch = ((c >> sh) & 255) + (((o >> sh) & 255) * ia + 127) / 255;
+            v |= (ch > 255 ? 255 : ch) << sh;
+        }
+        d[x] = v;
+    }
+}
+
 /* one frame: fetch what DAMAGE says changed (everything every ~0.3 s without DAMAGE), write the changed rows */
 static void xscreen_poll(void)
 {
     static u32 tick;
-    u32 y0, y1;
+    comp_check();
+    int moved = cursor_fetch();
+    u32 y0 = xw_h, y1 = 0;
+    int fetch = 0;
     if (use_damage) {
-        if (dmg_y1 <= dmg_y0) return;
-        y0 = dmg_y0 < 0 ? 0 : (u32)dmg_y0; y1 = dmg_y1 > (int)xw_h ? xw_h : (u32)dmg_y1;
-        dmg_x0 = dmg_y0 = 1 << 30; dmg_x1 = dmg_y1 = -1;
-        u8 q[16]; memset(q, 0, sizeof q);
-        q[0] = (u8)dmg_major; q[1] = 3; put16(q + 2, 4); put32(q + 4, dmg_id);   /* DamageSubtract(damage, None, None) */
-        if (xsend(q, 16)) return;
-        nreq++;
-    } else {
-        if (tick++ % 10) return;
-        y0 = 0; y1 = xw_h;
+        if (dmg_y1 > dmg_y0) {
+            y0 = dmg_y0 < 0 ? 0 : (u32)dmg_y0; y1 = dmg_y1 > (int)xw_h ? xw_h : (u32)dmg_y1;
+            dmg_x0 = dmg_y0 = 1 << 30; dmg_x1 = dmg_y1 = -1;
+            u8 q[16]; memset(q, 0, sizeof q);
+            q[0] = (u8)dmg_major; q[1] = 3; put16(q + 2, 4); put32(q + 4, src_id == root_id || !dmg2_id ? dmg_id : dmg2_id);   /* DamageSubtract */
+            if (xsend(q, 16)) return;
+            nreq++;
+            fetch = 1;
+        }
+    } else if (tick++ % 10 == 0) { y0 = 0; y1 = xw_h; fetch = 1; }
+    if (fetch && (y1 <= y0 || xscreen_fetch(y0, y1))) fetch = 0;
+    if (!fetch) { y0 = xw_h; y1 = 0; }
+    if (moved) {   /* the rows under the old and the new cursor are redrawn too */
+        int a0 = ocur_h ? ocur_y : cur_y, a1 = ocur_h ? ocur_y + ocur_h : cur_y + cur_h;
+        if (cur_h && cur_y < a0) a0 = cur_y;
+        if (cur_h && cur_y + cur_h > a1) a1 = cur_y + cur_h;
+        if (a0 < 0) a0 = 0;
+        if (a1 > (int)xw_h) a1 = (int)xw_h;
+        if (a1 > a0) { if ((u32)a0 < y0) y0 = (u32)a0; if ((u32)a1 > y1) y1 = (u32)a1; }
     }
-    if (y1 <= y0 || xscreen_fetch(y0, y1)) return;
+    if (y1 <= y0) return;
+    for (u32 y = y0; y < y1; y++) vis_row(y);
     u32 w = xw_w < fb_w ? xw_w : fb_w, yl = y1 < fb_h ? y1 : fb_h;
     for (u32 y = y0; y < yl;) {   /* runs of rows that differ from what fb0 has */
-        const u64 *a = (const u64 *)(cur + (u64)y * xw_line), *b = (const u64 *)(prev + (u64)y * xw_line);
+        const u64 *a = (const u64 *)(vis + (u64)y * xw_line), *b = (const u64 *)(prev + (u64)y * xw_line);
         int diff = 0;
         for (u32 i = 0; i < w / 2; i++) if (a[i] != b[i]) { diff = 1; break; }
         if (!diff) { y++; continue; }
         u32 e = y + 1;
         for (; e < yl; e++) {
-            const u64 *c = (const u64 *)(cur + (u64)e * xw_line), *d = (const u64 *)(prev + (u64)e * xw_line);
+            const u64 *c = (const u64 *)(vis + (u64)e * xw_line), *d = (const u64 *)(prev + (u64)e * xw_line);
             int df = 0;
             for (u32 i = 0; i < w / 2; i++) if (c[i] != d[i]) { df = 1; break; }
             if (!df) break;
         }
-        if (xw_line == fb_line && w * 4 == fb_line) sc4(18, fb, cur + (u64)y * xw_line, (u64)(e - y) * xw_line, (u64)y * fb_line);
-        else for (u32 yy = y; yy < e; yy++) sc4(18, fb, cur + (u64)yy * xw_line, (u64)w * 4, (u64)yy * fb_line);
-        memcpy(prev + (u64)y * xw_line, cur + (u64)y * xw_line, (u64)(e - y) * xw_line);
+        if (xw_line == fb_line && w * 4 == fb_line) sc4(18, fb, vis + (u64)y * xw_line, (u64)(e - y) * xw_line, (u64)y * fb_line);
+        else for (u32 yy = y; yy < e; yy++) sc4(18, fb, vis + (u64)yy * xw_line, (u64)w * 4, (u64)yy * fb_line);
+        memcpy(prev + (u64)y * xw_line, vis + (u64)y * xw_line, (u64)(e - y) * xw_line);
         rows_sent += e - y;
         y = e;
     }
