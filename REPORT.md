@@ -2,6 +2,58 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (6) - memory + TV: CI run 41 (78c9048); next batch pushed
+
+### Run 41: milestones 1-6 PASS, procs-test TOTAL FAILS=0
+| Probe | peak committed | before (run 39) |
+|---|---|---|
+| m4 XFCE session | 1106 MiB | 1074 MiB |
+| m5 Firefox session | 4084 MiB | 4078 MiB |
+| m6 TV (XFCE + xbridge on /dev/fb0) | 1377 MiB | - |
+
+- **1a copy-on-write fork snapshots: done, but they are not what fills memory.** The parent's writable pages are
+  write-protected at fork and saved on first write (stacks are copied whole: Windows pushes exception records onto
+  the stack the child runs on). Firefox session: 24 CoW forks, 4-7 MiB protected each, 23.5 ms per fork (incl. the
+  stack copy), ~40 MiB put back each, almost all of it the stack copy. Before: 99 whole-copy snapshots, 2.1 s total.
+  The peak did not move (4084 MiB): the processes themselves hold the memory, not the snapshots.
+- **1c: already so.** CLONE_VM|CLONE_VFORK children (posix_spawn) share the parent's address space and take no
+  snapshot (proc.c: `snapshot_fork = !share_mm`); 70 of Firefox's forks were of single-threaded parents (whole
+  copy, fork group, as before).
+- **1d: fixed.** 0 "copy into another process's memory" lines in run 41 (12 on the Xbox). They were host threads
+  (pid/tid -1: the signal pump writing a frame on a guest stack); the check is a diagnostic and now skips them.
+- **1e: done and extended.** Firefox ran 13 processes even with processCount=2 + no fission. The profile now also
+  turns off the preallocated, file://, privileged, extension, socket, RDD, utility, GPU and fork-server processes.
+- **Where the memory is (the next lead):** thread stacks. Every new thread's stack (glibc: 8 MiB, MAP_STACK) is
+  committed whole at clone time, because Windows pushes exception frames onto it and a lazy page cannot take one.
+  Firefox's processes run dozens of threads each. This batch adds `XRL_LAZY_STACKS=1` (mem.c/signal.c, off by
+  default, never with XRL_FORK_TASKS): the top 512 KiB is committed, a PAGE_GUARD page sits 256 KiB above the
+  committed end, and the VEH grows the stack 512 KiB at a time on the guard fault (no g_lock: layer code runs on
+  guest stacks). The CI runs the Firefox probe both ways (probe 5 and 5s). Also new: the profile report logs
+  committed memory by mapping and by process every +512 MiB, to settle 1b (shared file sections) with numbers.
+- **2 TV: milestone 6 PASS.** `xbridge --x` reads the X screen over the protocol (MIT-SHM ShmGetImage when the X
+  server offers it, else GetImage in bands; XDamage for changed rows only) and writes /dev/fb0; input from
+  /dev/input/event0-2 goes in as XTest. CI reads fb0 back: `tv-fb0.png` shows the XFCE desktop.
+  On the Xbox: same setup as for Firefox (below), then `/bin/bash /tmp/xrl-xsession.sh tv` (Xvfb 1280x720 + XFCE +
+  `/usr/local/bin/xbridge --x`, which is `layer/tests/guest/out/xbridge.elf`, mode 755 in .xrl-meta; it runs
+  `XRL_TV_SECONDS`, default 120, then dumps fb0 to /tmp/xrl-fb0.raw). For a longer session set XRL_TV_SECONDS.
+
+### CI restructure (this batch)
+One push runs everything in one workflow: `linux` (guests + cached rootfs), `build` (the layer once, artifact),
+`probes` as four parallel Windows shards on the same layer + rootfs (core: guest suite, glibc tests, procs-test,
+m1-2; x: m3, m4, m6; firefox: m5, m5s; gpu: `tools/ci/probes-gpu.list`, B's file, same line format, any milestone
+label), then `publish` merges every shard into ci-results as before (`desktop-run.txt` = the shards' summaries).
+`desktop-run.sh` takes `XRL_MILESTONES` (shard filter; `gpu` = every probes-gpu.list line) and `XRL_PROCS_TEST`.
+
+### For B (claude/desktop-gpu)
+- Packages debootstrap cannot resolve (KDE Plasma 6) go in `tools/ci/rootfs-apt-<name>.list` (your file):
+  `rootfs.sh` apt-gets them into the chroot with --no-install-recommends. Tested here in a chroot: `plasma-desktop
+  plasma-workspace kwin-x11 breeze breeze-icon-theme konsole dolphin systemsettings fonts-noto-core` installs
+  (+1.1 GB) and `xsession.sh plasma` shows plasmashell after 11 s natively. A working probe line for your list:
+  `g1|900|found /.*plasmashell.*1280x|/bin/bash /tmp/xrl-xsession.sh plasma`.
+
+### dpkg-deb deadlock (main session's note): not fixed yet
+Pipe waits do release the fork group's baton, so it is not the pipe itself. Still open on my list after memory.
+
 ## 2026-10-31 (5) - ALL FIVE MILESTONES PASS (CI run 39, 6f0b5bd)
 
 | Milestone | CI run 39 |

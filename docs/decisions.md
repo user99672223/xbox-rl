@@ -144,6 +144,16 @@ The mock Device Portal hid three issues fixed in `tools/_common.ps1` + `deploy.p
 
 ## Project decisions (newest first)
 
+- 2026-10-31 (desktop) Thread stacks grow on demand behind `XRL_LAZY_STACKS=1` (off by default; never with
+  XRL_FORK_TASKS). Copy-on-write fork snapshots did not move Firefox's peak (4084 vs 4078 MiB); every thread's 8 MiB
+  stack committed at clone time is the next suspect. A guard page 256 KiB above the committed end makes the VEH
+  commit 512 KiB more before rsp can reach uncommitted memory (where Windows could not push the exception frame).
+  The growth takes no g_lock (layer code holding it runs on guest stacks) and adds no swap spans (never evicted).
+  Costs: a guest that drops rsp by more than 256 KiB without touching pages in between dies; gcc's stack-clash
+  probes (Debian's default) touch every page. mprotect and Win32 I/O over a guard page are handled (re-arm/grow).
+- 2026-10-31 (desktop) CI runs as one workflow: the layer built once, probes in parallel Windows shards over a
+  shared layer + rootfs artifact, one publish job. The GPU session adds probes through `tools/ci/probes-gpu.list`.
+
 - **2026-10-31 (later) — Debian desktop milestones 1-5 pass in CI (run 39).** Branch `claude/desktop-debian`.
   - **Firefox needed:** a guest GS base (TEB slot + `%gs` rewriting; wasm2c sandboxes), trampoline pools within rel32
     of their code (else every site is an int3 trap and the trap table overflows), fork-group yield before a first

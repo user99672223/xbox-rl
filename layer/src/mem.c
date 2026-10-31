@@ -403,10 +403,12 @@ out:
 /* Remove [s,e) from the list, decommitting and updating accounting. */
 static void swap_forget(u64 s, u64 e);
 
+static void stk_forget(u64 s, u64 e);
 static slong vma_unmap_range(u64 s, u64 e, int release_granules)
 {
     if (vma_split(s) || vma_split(e)) return -LX_ENOMEM;
     swap_forget(s, e);
+    stk_forget(s, e);
     size_t i = vma_lower(s);
     size_t j = i;
     while (j < g_n && g_v[j].start < e) {
@@ -617,6 +619,8 @@ static const char *const cs_names[CS_N] = { "write faults", "read faults", "exec
 static volatile LONG64 g_cs_bytes[CS_N];
 static __declspec(thread) int t_commit_src = CS_IO;   /* the default: vfs.c's populate calls */
 static slong populate_from(u64 addr, u64 len, int src);
+static void stk_clear_range(u64 s, u64 e);
+static void stk_rearm_range(u64 s, u64 e);
 
 /* ------------------------------------------------------------------ swap
  * Linux swap for lazy anonymous memory, so a guest can touch more than the
@@ -1757,7 +1761,14 @@ void xrl_mem_shared_free(u64 addr, u64 len)
     ReleaseSRWLockExclusive(&g_lock);
 }
 
+static slong mprotect_impl(u64 addr, u64 len, int prot);
 slong xrl_mem_mprotect(u64 addr, u64 len, int prot)
+{
+    slong r = mprotect_impl(addr, len, prot);
+    if (!r && len) stk_rearm_range(addr, addr + ALIGN_UP(len, LX_PAGE));   /* VirtualProtect cleared a stack's guard page */
+    return r;
+}
+static slong mprotect_impl(u64 addr, u64 len, int prot)
 {
     if ((addr & (LX_PAGE - 1)) || (prot & ~(7 | 0x01000000 | 0x02000000))) return -LX_EINVAL;
     prot &= 7;
@@ -1996,6 +2007,7 @@ slong xrl_mem_populate(u64 addr, u64 len)
     addr = ALIGN_DOWN(addr, LX_PAGE);
     /* a buffer Windows itself will write into (ReadFile...) fails rather than faults on a copy-on-write page */
     if (g_cow_live) for (u64 p = addr; p < end; p += LX_PAGE) cow_save_page(p);
+    stk_clear_range(addr, end);   /* nor a stack's guard page */
     slong r = 0;
     AcquireSRWLockExclusive(&g_lock);
     for (size_t i = vma_lower(addr); i < g_n && g_v[i].start < end && !r; i++) {
@@ -2070,7 +2082,7 @@ int xrl_mem_name_of(u64 a, char *name, size_t n, u64 *off)
 typedef struct mb_src { char name[160]; u64 bytes, vsize; int n; } mb_src;
 void xrl_mem_breakdown(void)
 {
-    static struct { u64 s, e; char name[160]; } *cp;
+    static struct { u64 s, e; int pid, priv; char name[160]; } *cp;
     static size_t cpcap;
     AcquireSRWLockShared(&g_lock);
     if (cpcap < g_n) {
@@ -2079,11 +2091,13 @@ void xrl_mem_breakdown(void)
         cp = nc; cpcap = g_n * 2;
     }
     size_t n = g_n;
-    for (size_t i = 0; i < n; i++) { cp[i].s = g_v[i].start; cp[i].e = g_v[i].end; memcpy(cp[i].name, g_v[i].name, sizeof cp[i].name); }
+    for (size_t i = 0; i < n; i++) { cp[i].s = g_v[i].start; cp[i].e = g_v[i].end;
+        cp[i].pid = g_v[i].cpid; cp[i].priv = g_v[i].name[0] == '/' && !g_v[i].shared; memcpy(cp[i].name, g_v[i].name, sizeof cp[i].name); }
     ReleaseSRWLockShared(&g_lock);
     static mb_src src[512];
-    int ns = 0;
-    u64 total = 0;
+    static struct { int pid; u64 bytes, file; } pp[256];   /* by the process that mapped it */
+    int ns = 0, np = 0;
+    u64 total = 0, ftotal = 0;
     for (size_t i = 0; i < n; i++) {
         u64 c = 0;
         for (u64 a = cp[i].s; a < cp[i].e; ) {
@@ -2095,6 +2109,11 @@ void xrl_mem_breakdown(void)
             a = re;
         }
         total += c;
+        if (cp[i].priv) ftotal += c;
+        int q = 0;
+        while (q < np && pp[q].pid != cp[i].pid) q++;
+        if (q == np) { if (np == 256) q = 255; else { pp[np].pid = cp[i].pid; pp[np].bytes = pp[np].file = 0; np++; } }
+        pp[q].bytes += c; if (cp[i].priv) pp[q].file += c;
         const char *nm = cp[i].name[0] ? cp[i].name : "[anon]";
         int k = 0;
         while (k < ns && strcmp(src[k].name, nm)) k++;
@@ -2117,6 +2136,19 @@ void xrl_mem_breakdown(void)
         if (!src[k].bytes) break;
         LOGI("mem: %7.1f MiB committed (%7.1f MiB mapped, %d mapping%s) %s", (double)src[k].bytes / 1048576.0,
              (double)src[k].vsize / 1048576.0, src[k].n, src[k].n == 1 ? "" : "s", src[k].name);
+    }
+    LOGI("mem: %llu MiB of it in private file mappings (libraries, data files: one copy per process)", ftotal >> 20);
+    for (int k = 0; k < np && k < 16; k++) {
+        int b = k;
+        for (int j = k + 1; j < np; j++) if (pp[j].bytes > pp[b].bytes) b = j;
+        int tp = pp[k].pid; u64 tb = pp[k].bytes, tf = pp[k].file;
+        pp[k] = pp[b]; pp[b].pid = tp; pp[b].bytes = tb; pp[b].file = tf;
+        if (!pp[k].bytes) break;
+        char comm[16] = "?";
+        xrl_proc *pr = xrl_proc_by_pid(pp[k].pid);
+        if (pr) { xrl_proc_comm(pr, comm); xrl_proc_put(pr); }
+        LOGI("mem: %7.1f MiB committed (%7.1f MiB file mappings) mapped by pid %d %s", (double)pp[k].bytes / 1048576.0,
+             (double)pp[k].file / 1048576.0, pp[k].pid, comm);
     }
 }
 
@@ -2165,6 +2197,121 @@ int xrl_mem_guest_ctx(u64 rip, u64 rsp)
  * frames onto it, which a no-access or evicted page turns into a fatal fault). */
 slong xrl_mem_pin_stack(u64 addr, u64 len) { return len ? populate_from(addr, len, CS_STACK) : 0; }
 
+/* XRL_LAZY_STACKS=1 (not with fork tasks): a new thread's stack (glibc: 8 MiB) is not committed whole. Its top
+ * STK_INIT bytes are; a PAGE_GUARD page sits STK_HEAD above the committed low end, and its first touch (VEH:
+ * xrl_mem_stack_guard) commits STK_GROW more below and moves the guard down. Windows pushes an exception frame
+ * at rsp, so a fault must never find rsp in uncommitted memory: the guard trips while STK_HEAD bytes below it are
+ * still committed (gcc's stack-clash probes touch every page of a big frame, so rsp cannot skip the guard). The
+ * growth takes no g_lock (the faulting code may hold it: layer code runs on guest stacks): raw commit + charge,
+ * no swap spans, so those pages are never evicted (like CS_STACK pins). */
+#define STK_INIT (512u << 10)
+#define STK_HEAD (256u << 10)
+#define STK_GROW (512u << 10)
+typedef struct stkent { u64 s, e, low, guard; } stkent;
+static stkent g_stk[8192];
+static volatile LONG g_nstk;
+static SRWLOCK g_stk_lock = SRWLOCK_INIT;
+static int lazy_stacks(void)
+{
+    static int v = -1;
+    if (v < 0) { char b[8]; v = GetEnvironmentVariableA("XRL_LAZY_STACKS", b, sizeof b) && b[0] == '1' && !xrl_fork_tasks_enabled(); }
+    return v;
+}
+static void stk_arm(stkent *k)   /* g_stk_lock held */
+{
+    k->guard = k->low + STK_HEAD < k->e - LX_PAGE ? k->low + STK_HEAD : 0;
+    DWORD op;
+    if (k->guard && !VirtualProtect((void *)k->guard, LX_PAGE, PAGE_READWRITE | PAGE_GUARD, &op)) k->guard = 0;
+}
+/* commit [ns, k->low) (the uncommitted parts) and charge them; then the guard goes lower */
+static void stk_grow(stkent *k)   /* g_stk_lock held */
+{
+    if (k->guard) { DWORD op; VirtualProtect((void *)k->guard, LX_PAGE, PAGE_READWRITE, &op); }
+    u64 ns = k->low > k->s + STK_GROW ? k->low - STK_GROW : k->s;
+    for (u64 a = ns; a < k->low; ) {
+        MEMORY_BASIC_INFORMATION mbi;
+        if (!VirtualQuery((void *)a, &mbi, sizeof mbi)) break;
+        u64 re = (u64)mbi.BaseAddress + mbi.RegionSize;
+        if (re > k->low) re = k->low;
+        if (mbi.State != MEM_COMMIT) {
+            if (!XRL_VIRTUAL_ALLOC((void *)a, (SIZE_T)(re - a), MEM_COMMIT, PAGE_READWRITE)) { ns = re; break; }
+            InterlockedAdd64(&g_committed, (LONG64)(re - a));
+            InterlockedAdd64(&g_cs_bytes[CS_STACK], (LONG64)(re - a));
+        }
+        a = re;
+    }
+    k->low = ns;
+    if (ns > k->s) stk_arm(k); else k->guard = 0;
+}
+/* VEH: a guard-page fault at addr; 1 = it was a stack guard (grown), retry */
+int xrl_mem_stack_guard(u64 addr)
+{
+    if (!g_nstk) return 0;
+    u64 pg = ALIGN_DOWN(addr, LX_PAGE);
+    int ok = 0;
+    AcquireSRWLockExclusive(&g_stk_lock);
+    for (LONG i = 0; i < g_nstk; i++)
+        if (g_stk[i].guard == pg) { stk_grow(&g_stk[i]); ok = 1; break; }
+    ReleaseSRWLockExclusive(&g_stk_lock);
+    return ok;
+}
+/* [s, e) is about to be written by Windows (I/O) or re-protected: no guard page may be in it */
+static void stk_clear_range(u64 s, u64 e)
+{
+    if (!g_nstk) return;
+    AcquireSRWLockExclusive(&g_stk_lock);
+    for (LONG i = 0; i < g_nstk; i++) {
+        stkent *k = &g_stk[i];
+        if (k->guard && k->guard < e && k->guard + LX_PAGE > s) stk_grow(k);
+    }
+    ReleaseSRWLockExclusive(&g_stk_lock);
+}
+/* after an mprotect of [s, e): put back the guard pages it cleared */
+static void stk_rearm_range(u64 s, u64 e)
+{
+    if (!g_nstk) return;
+    AcquireSRWLockExclusive(&g_stk_lock);
+    for (LONG i = 0; i < g_nstk; i++) {
+        stkent *k = &g_stk[i];
+        if (k->guard && k->guard < e && k->guard + LX_PAGE > s) stk_arm(k);
+    }
+    ReleaseSRWLockExclusive(&g_stk_lock);
+}
+/* [s, e) is unmapped (g_lock held): its stacks' entries go */
+static void stk_forget(u64 s, u64 e)
+{
+    if (!g_nstk) return;
+    AcquireSRWLockExclusive(&g_stk_lock);
+    for (LONG i = 0; i < g_nstk; i++)
+        if (g_stk[i].e && g_stk[i].s < e && g_stk[i].e > s) { g_stk[i].e = 0; g_stk[i].guard = 0; }
+    ReleaseSRWLockExclusive(&g_stk_lock);
+}
+static volatile LONG64 g_stk_saved;   /* bytes not committed at thread creation (the log at exit) */
+static int stack_lazy(u64 sp, u64 vs, u64 ve)
+{
+    u64 low = ALIGN_DOWN(sp, LX_PAGE);
+    low = low > vs + STK_INIT ? low - STK_INIT : vs;
+    if (low < vs + STK_GROW) return 0;   /* small: commit it whole */
+    if (populate_from(low, ve - low, CS_STACK)) return 0;
+    AcquireSRWLockExclusive(&g_stk_lock);
+    LONG slot = -1;
+    for (LONG i = 0; i < g_nstk; i++)   /* a stale entry for this range (an unmapped stack), or a free one */
+        if ((g_stk[i].s < ve && g_stk[i].e > vs) || !g_stk[i].e) { slot = i; break; }
+    if (slot < 0 && g_nstk < (LONG)ARRAY_LEN(g_stk)) slot = g_nstk++;
+    if (slot >= 0) {
+        stkent *k = &g_stk[slot];
+        k->s = vs; k->e = ve; k->low = low;
+        stk_arm(k);
+        if (!k->guard) k->e = 0;
+    }
+    ReleaseSRWLockExclusive(&g_stk_lock);
+    if (slot < 0 || !g_stk[slot].e) return 0;
+    LONG64 n = InterlockedAdd64(&g_stk_saved, (LONG64)(low - vs));
+    static volatile LONG once;
+    if (!InterlockedExchange(&once, 1)) LOGI("mem: thread stacks grow on demand (XRL_LAZY_STACKS): %llu KiB of the first not committed", (u64)n >> 10);
+    return 1;
+}
+
 /* Commit the whole lazy mapping containing `addr` (a new thread's stack). */
 slong xrl_mem_populate_containing(u64 addr)
 {
@@ -2173,6 +2320,7 @@ slong xrl_mem_populate_containing(u64 addr)
     size_t i = vma_lower(addr);
     if (i < g_n && g_v[i].start <= addr && g_v[i].lazy) { s = g_v[i].start; e = g_v[i].end; }
     ReleaseSRWLockShared(&g_lock);
+    if (e && lazy_stacks() && stack_lazy(addr, s, e)) return 0;
     return e ? populate_from(s, e - s, CS_STACK) : 0;
 }
 

@@ -812,6 +812,17 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
      * escaping a process crashes it, and on the console a crashing process makes the Xbox suspend the
      * whole app (procprobe 'dbg': an unhandled 0x40010006 in a child -> APP_WILLENTERBACKGROUND). */
     if (code == 0x40010006u || code == 0x4001000Au || code == 0x406D1388u) return EXCEPTION_CONTINUE_EXECUTION;
+    /* a thread stack's guard page (mem.c, XRL_LAZY_STACKS): commit more below, retry */
+    if (code == 0x80000001u && r->NumberParameters >= 2) {   /* STATUS_GUARD_PAGE_VIOLATION */
+        xrl_thread *gt = xrl_cur();
+        u64 stk[2];
+        int g = xrl_teb_enter_host(gt);
+        xrl_teb_stack_here(stk);
+        int ok = xrl_mem_stack_guard((u64)r->ExceptionInformation[1]);
+        xrl_teb_stack_back(stk);
+        xrl_teb_restore(gt, g);
+        if (ok) return EXCEPTION_CONTINUE_EXECUTION;
+    }
     /* Only hardware-ish codes concern us. */
     switch (code) {
     case EXCEPTION_ACCESS_VIOLATION: case EXCEPTION_ILLEGAL_INSTRUCTION: case EXCEPTION_PRIV_INSTRUCTION:

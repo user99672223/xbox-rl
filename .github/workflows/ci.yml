@@ -1,9 +1,15 @@
 # ci.yml - builds the layer and runs it on Windows, where it can run (the layer is a Windows program).
 #
 #   linux    builds the freestanding test guests and, if tools/ci/rootfs.sh exists on the branch, a Linux root file
-#            system (cached by the script's hash). Artifacts go to the windows job.
-#   windows  builds the desktop flavour of the layer + its test host, runs the guest suite (layer/tests/run.sh), and,
-#            when a rootfs was built, tools/ci/desktop-run.sh against it.
+#            system (cached by the script's and package lists' hash). Artifacts go to the Windows jobs.
+#   build    builds the desktop flavour of the layer + its test host once (artifact: layer).
+#   probes   Windows shards in parallel, each on the same layer + guests + rootfs:
+#              core     the guest suite, the glibc tests, the process tests, milestones 1-2
+#              x        milestones 3, 4, 6 (Xvfb + xterm, XFCE, the TV bridge)
+#              firefox  milestone 5, plain and with XRL_LAZY_STACKS=1 (5s)
+#              gpu      tools/ci/probes-gpu.list (the GPU/Plasma session's probes), when the branch has it
+#            (tools/ci/desktop-run.sh with XRL_MILESTONES); a workflow_dispatch command runs in the core shard only.
+#   publish  merges every shard's ci-out/ (desktop-run.txt = the shards' summaries in order) and commits it.
 #
 # Every run's logs are committed to the `ci-results` branch under <branch>/<run number>/ (and latest/ per branch),
 # so a session without GitHub API access reads them with a plain `git fetch origin ci-results`.
@@ -58,12 +64,9 @@ jobs:
         if: steps.rk.outputs.want == '1'
         with: { name: rootfs, path: rootfs.tar.gz, retention-days: 3, compression-level: 0 }
 
-  windows:
-    needs: linux
+  build:
     runs-on: windows-2022
-    timeout-minutes: 150
-    defaults:
-      run: { shell: bash }
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: build layer (desktop flavour + test host)
@@ -72,15 +75,58 @@ jobs:
           New-Item -ItemType Directory -Force ci-out | Out-Null
           pwsh -NoProfile -File layer/scripts/build.ps1 -Flavor desktop *>&1 | Tee-Object ci-out/build.txt | Select-Object -Last 30
           if (-not (Test-Path layer/build/desktop/xrl_test_host.exe)) { throw 'no test host built' }
-      - uses: actions/download-artifact@v4
-        with: { name: guests }
-      - name: guest suite
+          Compress-Archive -Path layer/build/desktop -DestinationPath layer.zip
+      - uses: actions/upload-artifact@v4
+        with: { name: layer, path: layer.zip, retention-days: 3, compression-level: 0 }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: out-build, path: ci-out, retention-days: 3 }
+
+  probes:
+    needs: [linux, build]
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { shard: core, milestones: '1 2', procs: '1' }
+          - { shard: x, milestones: '3 4 6', procs: '0' }
+          - { shard: firefox, milestones: '5 5s', procs: '0' }
+          - { shard: gpu, milestones: 'gpu', procs: '0' }
+    defaults:
+      run: { shell: bash }
+    steps:
+      - uses: actions/checkout@v4
+      - name: wanted
+        id: w
         run: |
-          tar -C layer/tests -xf guests.tar
+          w=1; [ "${{ matrix.shard }}" = gpu ] && [ ! -f tools/ci/probes-gpu.list ] && w=0
+          [ -n "${{ github.event.inputs.cmd }}" ] && [ "${{ matrix.shard }}" != core ] && w=0
+          echo "want=$w" >> "$GITHUB_OUTPUT"; mkdir -p ci-out
+      - uses: actions/download-artifact@v4
+        if: steps.w.outputs.want == '1'
+        with: { name: layer }
+      - uses: actions/download-artifact@v4
+        if: steps.w.outputs.want == '1'
+        with: { name: guests }
+      - name: unpack layer
+        if: steps.w.outputs.want == '1'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force layer/build | Out-Null
+          Expand-Archive -Path layer.zip -DestinationPath layer/build -Force
+      - name: unpack guests
+        if: steps.w.outputs.want == '1'
+        run: tar -C layer/tests -xf guests.tar
+      - name: guest suite
+        if: steps.w.outputs.want == '1' && matrix.shard == 'core'
+        run: |
           set +e
           timeout 600 sh layer/tests/run.sh > ci-out/guest-suite.txt 2>&1; echo "exit $?" >> ci-out/guest-suite.txt
           tail -40 ci-out/guest-suite.txt
       - name: glibc tests (static glibc programs, plain and translated)
+        if: steps.w.outputs.want == '1' && matrix.shard == 'core'
         run: |
           set +e
           for p in glibc_test cxx_test; do
@@ -93,23 +139,49 @@ jobs:
           grep -E "^== |failure\(s\)|^exit" ci-out/glibc-tests.txt
       - uses: actions/download-artifact@v4
         id: dl
+        if: steps.w.outputs.want == '1'
         continue-on-error: true
         with: { name: rootfs }
       - name: desktop run
-        if: steps.dl.outcome == 'success' && hashFiles('tools/ci/desktop-run.sh') != ''
+        if: steps.w.outputs.want == '1' && steps.dl.outcome == 'success' && hashFiles('tools/ci/desktop-run.sh') != ''
         env:
           CMD: ${{ github.event.inputs.cmd }}
+          XRL_MILESTONES: ${{ matrix.milestones }}
+          XRL_PROCS_TEST: ${{ matrix.procs }}
         run: |
           set +e
-          python -I tools/xrl-rootfs-unpack.py rootfs.tar.gz "$RUNNER_TEMP/rootfs" > ci-out/unpack.txt 2>&1
+          d=ci-out/desktop-run-${{ matrix.shard }}.txt
+          python -I tools/xrl-rootfs-unpack.py rootfs.tar.gz "$RUNNER_TEMP/rootfs" > ci-out/unpack-${{ matrix.shard }}.txt 2>&1
           u=$?
-          tail -5 ci-out/unpack.txt
-          if [ $u -ne 0 ]; then echo "UNPACK FAILED (exit $u): the probes below run on an incomplete tree" | tee -a ci-out/desktop-run.txt; fi
-          timeout 4200 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD >> ci-out/desktop-run.txt 2>&1
-          echo "exit $?" >> ci-out/desktop-run.txt
-          tail -60 ci-out/desktop-run.txt
-      - name: publish results to the ci-results branch
+          tail -5 ci-out/unpack-${{ matrix.shard }}.txt
+          if [ $u -ne 0 ]; then echo "UNPACK FAILED (exit $u): the probes below run on an incomplete tree" | tee -a $d; fi
+          timeout 6000 bash tools/ci/desktop-run.sh "$RUNNER_TEMP/rootfs" ci-out $CMD >> $d 2>&1
+          echo "exit $?" >> $d
+          mv ci-out/enosys.txt ci-out/enosys-${{ matrix.shard }}.txt 2> /dev/null
+          tail -60 $d
+      - uses: actions/upload-artifact@v4
         if: always()
+        with: { name: 'out-${{ matrix.shard }}', path: ci-out, retention-days: 3, if-no-files-found: ignore }
+
+  publish:
+    needs: [build, probes]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with: { pattern: 'out-*', path: shards }
+      - name: merge the shards
+        run: |
+          mkdir -p ci-out
+          for s in build core x firefox gpu; do [ -d shards/out-$s ] && cp -r shards/out-$s/. ci-out/; done
+          for s in core x firefox gpu; do
+            f=ci-out/desktop-run-$s.txt; [ -f $f ] && { echo "=== shard $s"; cat $f; } >> ci-out/desktop-run.txt
+          done
+          cat ci-out/enosys-*.txt 2> /dev/null | awk '{c[$2" "$3" "$4]+=$1} END {for (k in c) print c[k], k}' | sort -rn > ci-out/enosys.txt
+          grep -h "^milestone\|^procs-test\|^probe " ci-out/desktop-run.txt || true
+      - name: publish results to the ci-results branch
         env:
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BRANCH: ${{ github.ref_name }}

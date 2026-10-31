@@ -24,12 +24,12 @@ path-include /usr/share/doc/*/copyright
 path-exclude /usr/share/locale/*
 path-include /usr/share/locale/locale.alias
 EOF
-# Packages whose dependency set debootstrap's resolver cannot handle (KDE Plasma 6): apt installs them in the chroot,
-# only for the default list (tools/ci/rootfs-debian-apt.list).
-apt=$here/rootfs-debian-apt.list
-if [ -z "${ROOTFS_LIST:-}" ] && [ -f "$apt" ]; then
-    ap=$(grep -v '^#' "$apt" | tr -s ' \n' ' ')
-    mount -t proc proc "$r/proc"; trap 'umount "$r/proc" 2>/dev/null || true' EXIT
+# tools/ci/rootfs-apt-*.list (e.g. the GPU session's KDE Plasma list): packages whose dependency set debootstrap's
+# resolver cannot handle; apt-get installs them in the chroot (--no-install-recommends), for the default list only
+apts=$(ls "$here"/rootfs-apt-*.list 2> /dev/null || true)
+if [ -z "${ROOTFS_LIST:-}" ] && [ -n "$apts" ]; then
+    ap=$(cat $apts | grep -v '^#' | tr -s ' \n' ' ')
+    mount -t proc proc "$r/proc"; trap 'umount "$r/proc" 2> /dev/null || true' EXIT
     chroot "$r" apt-get update -qq
     DEBIAN_FRONTEND=noninteractive chroot "$r" apt-get install -y -qq --no-install-recommends $ap > /dev/null
     chroot "$r" apt-get clean

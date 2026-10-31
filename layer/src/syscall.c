@@ -1068,7 +1068,11 @@ static void prof_dump(void)
          (double)xrl_lazy_fault_ticks * 1000.0 / (double)f.QuadPart);
     { u64 sn, so, si; xrl_mem_swap_stats(&sn, &so, &si);
       LOGI("profile: committed %llu MiB; swap %llu MiB in the file, %llu MiB written, %llu MiB read back",
-           xrl_mem_committed() >> 20, sn >> 20, so >> 20, si >> 20); }
+           xrl_mem_committed() >> 20, sn >> 20, so >> 20, si >> 20);
+      /* the breakdown by mapping and by process, each time the guest grew by another 512 MiB */
+      static u64 last_mb;
+      if (!xrl_fork_tasks_enabled() && xrl_mem_committed() >= last_mb + (512ull << 20)) {
+          last_mb = xrl_mem_committed(); xrl_mem_breakdown(); } }
     for (int i = 0; i < n && i < 20; i++) {
         double ms = (double)g_prof_t[idx[i]] * 1000.0 / (double)f.QuadPart;
         LOGI("profile: %-18s %10lld %10.0f %8.1f", xrl_sysname(idx[i]), (long long)g_prof_n[idx[i]], ms,

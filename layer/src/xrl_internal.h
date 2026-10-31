@@ -232,6 +232,7 @@ slong xrl_mem_populate(u64 addr, u64 len);    /* commit lazy pages before Win32 
 slong xrl_mem_populate_containing(u64 addr);  /* commit the whole lazy mapping holding addr */
 slong xrl_mem_pin_stack(u64 addr, u64 len);    /* commit and never swap (a sigaltstack) */
 int xrl_mem_lazy_fault(u64 addr, int access); /* VEH: 1 = committed, retry */
+int xrl_mem_stack_guard(u64 addr);            /* VEH: a lazy thread stack's guard page (XRL_LAZY_STACKS): 1 = grown, retry */
 int  xrl_fd_list(int *out, int cap);
 slong xrl_fd_close_range(unsigned first, unsigned last, unsigned flags);
 slong xrl_memfd_create(const char *name, unsigned flags);
