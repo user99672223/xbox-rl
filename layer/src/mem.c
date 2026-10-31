@@ -1516,6 +1516,16 @@ static u32 cur_mm(void)
     return p && p->mm ? p->mm->id : 1;
 }
 u32 xrl_mm_new(void) { return (u32)InterlockedIncrement(&g_next_mm); }
+u32 xrl_mem_cur_mm(void) { return cur_mm(); }
+u32 xrl_mem_owner(u64 addr)
+{
+    u32 o = 0;
+    AcquireSRWLockShared(&g_lock);
+    size_t i = vma_lower(addr);
+    if (i < g_n && g_v[i].start <= addr) o = g_v[i].owner;
+    ReleaseSRWLockShared(&g_lock);
+    return o;
+}
 
 static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64 off, const char *name, int lazy_ok)
 {

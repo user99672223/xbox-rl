@@ -93,6 +93,7 @@ struct xrl_thread {
     /* --- C-only --- */
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
+    int  cur_nr;           /* the syscall it is in (or was in last)              */
     u64  nsys;             /* syscalls made (perf.c); written by this thread only */
     u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;
@@ -403,6 +404,8 @@ u64  xrl_mem_committed(void);
 u64  xrl_mem_arena_base(void);
 u64  xrl_mem_arena_size(void);
 int  xrl_mem_is_mapped(u64 addr);
+u32  xrl_mem_owner(u64 addr);     /* the mm (address space) that maps addr, 0: none */
+u32  xrl_mem_cur_mm(void);
 int  xrl_mem_page_writable(u64 addr);
 int  xrl_mem_writewatch_allow(u64 addr);   /* task.c: cap the fork stack snapshot at the writable stack end */
 void xrl_mem_interp_rw_reset(void);          /* RELRO-safe: keep the interpreter's RW PT_LOAD writable */

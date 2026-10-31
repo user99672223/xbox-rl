@@ -880,12 +880,27 @@ static LONG CALLBACK xrl_veh(PEXCEPTION_POINTERS ep)
              * Safe from any thread state -- it only flips one host page; the VMA stays read-only. Not gated on
              * teb_guest_live, because on the console the write-watch fires on a thread whose TEB view is not
              * yet the guest's, and gating it there left the write to ESCAPE and the injection to deadlock. */
-            if (!handled) handled = xrl_mem_writewatch_allow(wa);
+            /* Outside the EAC path, layer code writing into another process's read-only memory is a bug of the
+             * layer's own (a stale guest address): refuse it (xrl_ctu turns it into EFAULT) and name the writer. */
+            int foreign = 0;
+            if (!handled && !xrl_fork_tasks_enabled() && t->in_sys) {
+                u32 own = xrl_mem_owner(wa), me = xrl_mem_cur_mm();
+                if (own && own != me) {
+                    foreign = 1;
+                    static volatile LONG fcount;
+                    if (InterlockedIncrement(&fcount) <= 64)
+                        LOGE("write into another process's memory refused: addr=%llx (address space %u) by pid %d tid %d "
+                             "(address space %u) in %s, rip=%llx", wa, own, t->proc ? t->proc->pid : -1, t->tid, me,
+                             xrl_sysname(t->cur_nr), (u64)ep->ContextRecord->Rip);
+                }
+            }
+            if (!handled && !foreign) handled = xrl_mem_writewatch_allow(wa);
             static volatile LONG wwcount;
-            if (InterlockedIncrement(&wwcount) <= 16)
-                LOGW("writewatch: addr=%llx rip=%llx in_sys=%d guest_live=%d hdlr=%d -> %s",
+            if (!foreign && InterlockedIncrement(&wwcount) <= 16)
+                LOGW("writewatch: addr=%llx rip=%llx in_sys=%d guest_live=%d hdlr=%d pid=%d %s -> %s",
                      wa, (u64)ep->ContextRecord->Rip, t->in_sys, t->teb_guest_live,
-                     (int)(ACT_OF(t)[LX_SIGSEGV].handler > LX_SIG_IGN),
+                     (int)(ACT_OF(t)[LX_SIGSEGV].handler > LX_SIG_IGN), t->proc ? t->proc->pid : -1,
+                     t->in_sys ? xrl_sysname(t->cur_nr) : "guest code",
                      delivered ? "delivered" : handled ? "allowed" : "ESCAPED");
             xrl_teb_stack_back(wstk); xrl_teb_restore(t, tg);
             if (handled) return EXCEPTION_CONTINUE_EXECUTION;
