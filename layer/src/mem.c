@@ -1518,6 +1518,34 @@ static u32 cur_mm(void)
 u32 xrl_mm_new(void) { return (u32)InterlockedIncrement(&g_next_mm); }
 u32 xrl_mem_cur_mm(void) { return cur_mm(); }
 int xrl_mem_locked_here(void) { return t_mem_locked; }
+/* The free, 64 KiB aligned range of len bytes closest to `center` within +-maxdist inside the arena, above the mmap
+ * floor; 0: none (rewrite.c places trampoline pools next to their code with it) */
+u64 xrl_mem_find_near(u64 len, u64 center, u64 maxdist)
+{
+    len = ALIGN_UP(len, GRAN);
+    u64 lo = center > maxdist ? center - maxdist : 0, hi = center + maxdist;
+    if (lo < g_mmap_floor) lo = g_mmap_floor;
+    if (lo < g_arena_base) lo = g_arena_base;
+    if (hi > g_arena_end) hi = g_arena_end;
+    u64 best = 0, bestd = ~0ull;
+    AcquireSRWLockShared(&g_lock);
+    u64 gap = lo;   /* start of the current free stretch */
+    for (size_t i = vma_lower(lo); gap < hi; i++) {
+        u64 end = i < g_n && g_v[i].start < hi ? g_v[i].start : hi;   /* the stretch ends at the next mapping */
+        u64 a = ALIGN_UP(gap, GRAN), b = ALIGN_DOWN(end, GRAN);
+        if (b > a && b - a >= len) {
+            /* the candidate in [a, b-len] nearest the centre */
+            u64 c = center < a ? a : center > b - len ? b - len : ALIGN_DOWN(center, GRAN);
+            u64 d = c > center ? c - center : center - c;
+            if (d < bestd) { bestd = d; best = c; }
+        }
+        if (i >= g_n || g_v[i].start >= hi) break;
+        gap = g_v[i].end;
+    }
+    ReleaseSRWLockShared(&g_lock);
+    return best;
+}
+
 /* nothing is mapped in [a, a+len) and an mmap hint there would be taken (inside the arena, above the mmap floor) */
 int xrl_mem_range_free(u64 a, u64 len)
 {

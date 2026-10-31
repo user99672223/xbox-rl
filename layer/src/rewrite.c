@@ -223,14 +223,13 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
      * The default placement is the highest free gap, which in a long session (holes left by ended processes) can be
      * far above the image: try the space just below the image first, stepping down. */
     slong pm = -LX_ENOMEM;
-    for (u64 step = 0; step < 64 && pm < 0 && !xrl_fork_tasks_enabled(); step++) {   /* the EAC path keeps its placement */
-        u64 hint = ((rg[0].mem & ~0xffffull) - ((cap + 0xffff) & ~0xffffull)) - step * (16ull << 20);
-        if (hint < 0x10000 || hint > rg[0].mem) break;
-        if (!xrl_mem_range_free(hint, cap)) continue;
+    for (int tries = 0; tries < 4 && pm < 0 && !xrl_fork_tasks_enabled(); tries++) {   /* the EAC path keeps its placement */
+        u64 hint = xrl_mem_find_near(cap, rg[0].mem, 0x70000000ull - (u64)cap - (u64)rg[nrg - 1].size);
+        if (!hint) break;
         slong r = xrl_mem_mmap(hint, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
                                LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
         if (r == (slong)hint) pm = r;
-        else if (r >= 0) xrl_mem_munmap((u64)r, cap);   /* taken meanwhile */
+        else if (r >= 0) xrl_mem_munmap((u64)r, cap);   /* taken meanwhile: look again */
     }
     if (pm < 0) pm = xrl_mem_mmap(0, cap, LX_PROT_READ | LX_PROT_WRITE | LX_PROT_EXEC,
                                   LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
