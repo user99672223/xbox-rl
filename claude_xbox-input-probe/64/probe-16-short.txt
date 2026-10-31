@@ -1,0 +1,46 @@
+[W layer    ] ENOSYS 334 rseq (a1=7ff40e743680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff40dce96a0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff40dee2680 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff40dce9680 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff40def4ac0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I guest.out] [xsession +5s] display up after 1 tries
+[W layer    ] ENOSYS 334 rseq (a1=7ff40d0a2680 a2=20 a3=0) hit #16 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 434 pidfd_open (a1=122c a2=0 a3=0) hit #1
+[W layer    ] ENOSYS 125 capget (a1=7ff40d0a1818 a2=0 a3=0) hit #1
+[E layer    ] rewrite: /usr/bin/x86_64-linux-gnu-cpp-14: cannot make code writable
+[E layer    ] exec: /usr/libexec/gcc/x86_64-linux-gnu/14/cc1 is not position independent and needs [400000,266a000), which address-space 24 (another live process) uses: -ENOMEM (run it as the only process, or build it as PIE)
+[W layer    ] ENOSYS 334 rseq (a1=7ff40deeb680 a2=20 a3=0) hit #32 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 434 pidfd_open (a1=3f0 a2=0 a3=0) hit #2
+[W layer    ] ENOSYS 434 pidfd_open (a1=45c a2=0 a3=0) hit #3
+[W layer    ] ENOSYS 434 pidfd_open (a1=b24 a2=0 a3=0) hit #4
+[I guest.out] [xsession +16s] found /"xfce4-panel"/
+[W layer    ] ENOSYS 303 name_to_handle_at (a1=ffffff9c a2=7ff36759ad43 a3=7ff36c0475e0) hit #1
+[W layer    ] ENOSYS 434 pidfd_open (a1=1920 a2=0 a3=0) hit #8
+[I guest.out] [xsession +21s] found /"(Desktop|xfdesktop)"/
+[W layer    ] ENOSYS 187 readahead (a1=7 a2=0 a3=2e1b8) hit #1
+[W layer    ] ENOSYS 187 readahead (a1=7 a2=0 a3=6f83c0) hit #2
+[W layer    ] ENOSYS 187 readahead (a1=7 a2=0 a3=25608) hit #3
+[W layer    ] ENOSYS 187 readahead (a1=7 a2=0 a3=2b508) hit #4
+[W layer    ] ENOSYS 187 readahead (a1=7 a2=0 a3=5fae1) hit #8
+[W layer    ] ENOSYS 334 rseq (a1=7ff3d0041680 a2=20 a3=0) hit #64 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 251 ioprio_set (a1=1 a2=0 a3=6000) hit #1
+[W layer    ] ENOSYS 251 ioprio_set (a1=1 a2=0 a3=4007) hit #2
+[W layer    ] mem-fail[0] addr=7ff3ef3ad2a0 access=8 vma=COVERS [7ff3ef3ac000,7ff3ef3c9000) prot=3 lazy=1 committed=0 host(state=1000 prot=4)
+[E layer    ] === UNHANDLED GUEST FAULT tid 2284 code c0000005 rip 00007ff3ef3ad2a0 addr 00007ff3ef3ad2a0 (8) rsp 00007ff409b5f318 teb-stack [00007ff409b1e000,00007ff409b6f000) ===
+[E layer    ] ACCESS_VIOLATION (0xc0000005) at rip=00007ff3ef3ad2a0  fault_addr=00007ff3ef3ad2a0 (exec)
+[E layer    ] rax=00007ff40bede000 rbx=00007ff3eb4e1850 rcx=0000000000000000 rdx=0000000000000000
+[E layer    ] rsi=00007ff3ef3ad2a0 rdi=00007ff3eb4e1850 rbp=00007ff409b5f390 rsp=00007ff409b5f318
+[E layer    ] r8 =000000000000010c r9 =0000000000000113 r10=00007ff3f92b8fe0 r11=fff7ffffffffbff8
+[E layer    ] r12=00007ff3ef3ad2a0 r13=00007ff40d0c2dcd r14=0000000000000020 r15=000000000000000d
+[E layer    ] fs_base(guest tp)=00007ff40caf5640 fsbase_now=0000000000000000 eflags=00010246
+[E layer    ] code @rip: 00 00 00 00 00 00 00 00 00 00 00 00
+[E layer    ] [rsp+00] 00007ff3f915ffba
+[E layer    ] [rsp+08] 62696c2f7273752f
+[E layer    ] [rsp+10] 2d34365f3638782f
+[E layer    ] [rsp+18] 6e672d78756e696c
+[E layer    ] [rsp+20] 2f766e6f63672f75
+[E layer    ] [rsp+28] 2d393538384f5349
+[E layer    ] [rsp+30] 00007f006f732e31
+[E layer    ] [rsp+38] 00007ff3eb408fb0
+[E layer    ] veh-last: exception c0000005 escaped every handler in guest code: the process ends as killed by SIGSEGV
+exit 139

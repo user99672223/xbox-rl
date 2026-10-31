@@ -1,0 +1,603 @@
+$ /bin/bash /tmp/xrl-xsession.sh xterm
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/bash, 3 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef407730000,7ff407730000) 1048576 MiB VA, brk <= 7ef447730000, commit budget 4096 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 27537 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 2813 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (27541 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs + 0 %gs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff3ff5d0000
+[I layer    ] elf: loaded /bin/bash type=DYN bias=7ff3ff5e8000 span=[7ff3ff5e8000,7ff3ff730000) entry=7ff3ff619760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3ff580000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3ff598000 span=[7ff3ff598000,7ff3ff5d0000) entry=7ff3ff5b52c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=00000212CE0C2850)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff3ff57fd10
+[I layer    ] boot: guest main thread tid=6664 entry=7ff3ff5b52c0 sp=7ff3ff57fd10
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.056 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs + 0 %gs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff3fed30000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3feaf0000
+[W layer    ] ENOSYS 334 rseq (a1=7ff3ff593680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] fork: pid 5508 -> child 6524, snapshot of the parent's writable memory taken in 6.16 ms
+[I layer    ] fork: pid 5508 -> new process 6524 (flags 0x1200011)
+[I layer    ] exec: pid 6524 tid 6524 -> /usr/bin/mkdir (3 args, 14 env)
+[I layer    ] exec: pid 6524 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 12 MiB -> 12 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/mkdir: 0 syscall + 90 %fs + 0 %gs sites (0 in place, 90 jumps, 0 traps, 0 neighbours moved), pool 3616 bytes at 7ff3fea80000
+[I layer    ] elf: loaded /usr/bin/mkdir type=DYN bias=7ff3fed33000 span=[7ff3fed33000,7ff3fed49000) entry=7ff3fed36fb0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fea30000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fea48000 span=[7ff3fea48000,7ff3fea80000) entry=7ff3fea652c0
+[I layer    ] exec: /usr/bin/mkdir running, main thread tid 6544 entry 7ff3fea652c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs + 0 %gs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff3fe1e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fdfa0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff3fdee0000
+[W layer    ] ENOSYS 334 rseq (a1=7ff3feb396a0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I layer    ] proc 6524 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 6996, snapshot of the parent's writable memory taken in 2.39 ms
+[I layer    ] fork: pid 5508 -> new process 6996 (flags 0x1200011)
+[I layer    ] exec: pid 6996 tid 6996 -> /usr/bin/chmod (3 args, 14 env)
+[I layer    ] exec: pid 6996 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 12 MiB -> 12 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/chmod: 0 syscall + 74 %fs + 0 %gs sites (0 in place, 74 jumps, 0 traps, 0 neighbours moved), pool 2976 bytes at 7ff3fea80000
+[I layer    ] elf: loaded /usr/bin/chmod type=DYN bias=7ff3fed37000 span=[7ff3fed37000,7ff3fed49000) entry=7ff3fed39f40
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fea30000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fea48000 span=[7ff3fea48000,7ff3fea80000) entry=7ff3fea652c0
+[I layer    ] exec: /usr/bin/chmod running, main thread tid 5676 entry 7ff3fea652c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fdff0000
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fed32680 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[I layer    ] proc 6996 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 5240, snapshot of the parent's writable memory taken in 2.49 ms
+[I layer    ] fork: pid 5508 -> new process 5240 (flags 0x1200011)
+[I layer    ] exec: pid 5240 tid 5240 -> /usr/bin/rm (6 args, 14 env)
+[I layer    ] exec: pid 5240 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 12 MiB -> 12 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/rm: 0 syscall + 78 %fs + 0 %gs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff3fea80000
+[I layer    ] elf: loaded /usr/bin/rm type=DYN bias=7ff3fed35000 span=[7ff3fed35000,7ff3fed49000) entry=7ff3fed37ee0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fea30000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fea48000 span=[7ff3fea48000,7ff3fea80000) entry=7ff3fea652c0
+[I layer    ] exec: /usr/bin/rm running, main thread tid 5852 entry 7ff3fea652c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fdff0000
+[W layer    ] ENOSYS 334 rseq (a1=7ff3feb39680 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[I layer    ] proc 5240 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 7744, snapshot of the parent's writable memory taken in 2.37 ms
+[I layer    ] fork: pid 5508 -> new process 7744 (flags 0x1200011)
+[I layer    ] exec: pid 7744 tid 7744 -> /usr/bin/Xvfb (7 args, 14 env)
+[I layer    ] exec: pid 7744 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 12 MiB -> 12 MiB after releasing the old image
+[I layer    ] fork: pid 5508 -> child 1668, snapshot of the parent's writable memory taken in 3.12 ms
+[I layer    ] fork: pid 5508 -> new process 1668 (flags 0x1200011)
+[I layer    ] exec: pid 1668 tid 1668 -> /usr/bin/xdpyinfo (1 args, 14 env)
+[I layer    ] exec: pid 1668 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 14 MiB -> 14 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/Xvfb: 0 syscall + 2914 %fs + 0 %gs sites (0 in place, 2914 jumps, 0 traps, 0 neighbours moved), pool 117632 bytes at 7ff3fe830000
+[I layer    ] elf: loaded /usr/bin/Xvfb type=DYN bias=7ff3fe852000 span=[7ff3fe852000,7ff3fea96000) entry=7ff3fe891a00
+[I layer    ] rewrite: /usr/bin/xdpyinfo: 0 syscall + 31 %fs + 0 %gs sites (0 in place, 31 jumps, 0 traps, 0 neighbours moved), pool 1248 bytes at 7ff3ff730000
+[I layer    ] elf: loaded /usr/bin/xdpyinfo type=DYN bias=7ff3ff585000 span=[7ff3ff585000,7ff3ff590000) entry=7ff3ff589830
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fe7b0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fe7f8000 span=[7ff3fe7f8000,7ff3fe830000) entry=7ff3fe8152c0
+[I layer    ] exec: /usr/bin/Xvfb running, main thread tid 1780 entry 7ff3fe8152c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdf90000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fe7c0000 span=[7ff3fe7c0000,7ff3fe7f8000) entry=7ff3fe7dd2c0
+[I layer    ] exec: /usr/bin/xdpyinfo running, main thread tid 1420 entry 7ff3fe7dd2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs + 0 %gs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff3ff740000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXext.so.6.4.0: 0 syscall + 123 %fs + 0 %gs sites (0 in place, 123 jumps, 0 traps, 0 neighbours moved), pool 4976 bytes at 7ff3ff750000
+[W layer    ] rewrite: cannot decode at 7ff3f973e3d9 (06 05 04 03): rest of [7ff3f973cfc0,7ff3f973e965) left untouched
+[W layer    ] rewrite: cannot decode at 7ff3f973e3d9 (06 05 04 03): rest of [7ff3f973cfc0,7ff3f973e965) left untouched
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libnettle.so.8.10: 0 syscall + 216 %fs + 0 %gs sites (0 in place, 216 jumps, 0 traps, 0 neighbours moved), pool 8656 bytes at 7ff3f96f0000
+[W layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libnettle.so.8.10: 0 unsupported site(s), 1 undecodable region(s), 0 sysenter/int80 left alone
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXtst.so.6.1.0: 0 syscall + 21 %fs + 0 %gs sites (0 in place, 21 jumps, 0 traps, 0 neighbours moved), pool 864 bytes at 7ff3ff760000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libunwind.so.8.1.0: 1 syscall + 0 %fs + 0 %gs sites (0 in place, 1 jumps, 0 traps, 1 neighbours moved), pool 56 bytes at 7ff3f96c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3f94e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libGL.so.1.7.0: 0 syscall + 3334 %fs + 0 %gs sites (0 in place, 3334 jumps, 0 traps, 3334 neighbours moved), pool 213123 bytes at 7ff3f9470000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3f9460000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpixman-1.so.0.44.0: 0 syscall + 392 %fs + 0 %gs sites (0 in place, 392 jumps, 0 traps, 0 neighbours moved), pool 15712 bytes at 7ff3f93a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXxf86vm.so.1.0.0: 0 syscall + 30 %fs + 0 %gs sites (0 in place, 30 jumps, 0 traps, 0 neighbours moved), pool 1216 bytes at 7ff3ff770000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXfont2.so.2.0.0: 0 syscall + 117 %fs + 0 %gs sites (0 in place, 117 jumps, 0 traps, 0 neighbours moved), pool 4736 bytes at 7ff3f9360000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXxf86dga.so.1.0.0: 0 syscall + 30 %fs + 0 %gs sites (0 in place, 30 jumps, 0 traps, 0 neighbours moved), pool 1232 bytes at 7ff3ff780000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3ff790000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXi.so.6.1.0: 0 syscall + 88 %fs + 0 %gs sites (0 in place, 88 jumps, 0 traps, 0 neighbours moved), pool 3552 bytes at 7ff3f9330000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs + 0 %gs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff3f9200000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXrender.so.1.3.0: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2288 bytes at 7ff3f91f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3f91e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXcomposite.so.1.0.0: 0 syscall + 4 %fs + 0 %gs sites (0 in place, 4 jumps, 0 traps, 0 neighbours moved), pool 176 bytes at 7ff3f91d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0: 0 syscall + 98 %fs + 0 %gs sites (0 in place, 98 jumps, 0 traps, 0 neighbours moved), pool 3952 bytes at 7ff3f9180000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXinerama.so.1.0.0: 0 syscall + 12 %fs + 0 %gs sites (0 in place, 12 jumps, 0 traps, 0 neighbours moved), pool 496 bytes at 7ff3f9170000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs + 0 %gs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff3f8e70000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3f8c30000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3f8bf0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3f8be0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff3f8b20000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3f8b10000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/liblzma.so.5.8.1: 0 syscall + 129 %fs + 0 %gs sites (0 in place, 129 jumps, 0 traps, 0 neighbours moved), pool 5184 bytes at 7ff3f8ac0000
+[W layer    ] socket(domain=16 type=524291): only AF_UNIX and AF_INET/AF_INET6 TCP/UDP exist (-EAFNOSUPPORT)
+[I layer    ] net: Winsock 2.2 up (TCP/UDP over IPv4/IPv6)
+[I layer    ] proc 1668 ended (wait status 0x100)
+[I layer    ] fork: pid 5508 -> child 7332, snapshot of the parent's writable memory taken in 2.46 ms
+[I layer    ] fork: pid 5508 -> new process 7332 (flags 0x1200011)
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libGLdispatch.so.0.0.0: 0 syscall + 7452 %fs + 0 %gs sites (0 in place, 7452 jumps, 0 traps, 7450 neighbours moved), pool 476595 bytes at 7ff3f8980000
+[I layer    ] exec: pid 7332 tid 7332 -> /usr/bin/sleep (2 args, 14 env)
+[I layer    ] exec: pid 7332 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 32 MiB -> 32 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libGLX.so.0.0.0: 0 syscall + 39 %fs + 0 %gs sites (0 in place, 39 jumps, 0 traps, 0 neighbours moved), pool 1584 bytes at 7ff3fdf90000
+[I layer    ] rewrite: /usr/bin/sleep: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2208 bytes at 7ff3fdf40000
+[I layer    ] elf: loaded /usr/bin/sleep type=DYN bias=7ff3feb30000 span=[7ff3feb30000,7ff3feb3c000) entry=7ff3feb32aa0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs + 0 %gs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff3fded0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdec0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fdee8000 span=[7ff3fdee8000,7ff3fdf20000) entry=7ff3fdf052c0
+[I layer    ] exec: /usr/bin/sleep running, main thread tid 6968 entry 7ff3fdf052c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs + 0 %gs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff3fd6a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fd460000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libfontenc.so.1.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3ff730000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.2: 0 syscall + 814 %fs + 0 %gs sites (0 in place, 814 jumps, 0 traps, 0 neighbours moved), pool 32672 bytes at 7ff3fd380000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs + 0 %gs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff3fd370000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap-ng.so.0.0.0: 0 syscall + 14 %fs + 0 %gs sites (0 in place, 14 jumps, 0 traps, 0 neighbours moved), pool 576 bytes at 7ff3ff750000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3fd210000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpng16.so.16.48.0: 0 syscall + 256 %fs + 0 %gs sites (0 in place, 256 jumps, 0 traps, 0 neighbours moved), pool 10512 bytes at 7ff3fd160000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbrotlidec.so.1.1.0: 0 syscall + 25 %fs + 0 %gs sites (0 in place, 25 jumps, 0 traps, 0 neighbours moved), pool 1056 bytes at 7ff3fd150000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fd110000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/dri/libdril_dri.so: 0 syscall + 5 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 0 neighbours moved), pool 224 bytes at 7ff3fcc80000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libgbm.so.1.0.0: 0 syscall + 6 %fs + 0 %gs sites (0 in place, 6 jumps, 0 traps, 0 neighbours moved), pool 256 bytes at 7ff3ff760000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libdrm.so.2.124.0: 0 syscall + 299 %fs + 0 %gs sites (0 in place, 299 jumps, 0 traps, 0 neighbours moved), pool 11984 bytes at 7ff3fcc70000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libexpat.so.1.12.3: 0 syscall + 86 %fs + 0 %gs sites (0 in place, 86 jumps, 0 traps, 0 neighbours moved), pool 3536 bytes at 7ff3fcc30000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libEGL.so.1.1.0: 0 syscall + 45 %fs + 0 %gs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1888 bytes at 7ff3fcc00000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0.0.0: 0 syscall + 291 %fs + 0 %gs sites (0 in place, 283 jumps, 0 traps, 13 neighbours moved), pool 12192 bytes at 7ff3fcb90000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libgallium-25.0.7-2+deb13u1.so: 0 syscall + 26610 %fs + 0 %gs sites (4 in place, 26606 jumps, 0 traps, 6472 neighbours moved), pool 1219360 bytes at 7ff3fa000000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-randr.so.0.1.0: 0 syscall + 180 %fs + 0 %gs sites (0 in place, 180 jumps, 0 traps, 0 neighbours moved), pool 7216 bytes at 7ff3ff770000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0.0.0: 0 syscall + 140 %fs + 0 %gs sites (0 in place, 140 jumps, 0 traps, 0 neighbours moved), pool 5616 bytes at 7ff3ff780000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-shm.so.0.0.0: 0 syscall + 32 %fs + 0 %gs sites (0 in place, 32 jumps, 0 traps, 0 neighbours moved), pool 1296 bytes at 7ff3ff7a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libwayland-client.so.0.23.1: 0 syscall + 54 %fs + 0 %gs sites (0 in place, 54 jumps, 0 traps, 0 neighbours moved), pool 2175 bytes at 7ff3ff7b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libwayland-server.so.0.23.1: 0 syscall + 83 %fs + 0 %gs sites (0 in place, 83 jumps, 0 traps, 0 neighbours moved), pool 3343 bytes at 7ff3f9fd0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-dri3.so.0.1.0: 0 syscall + 48 %fs + 0 %gs sites (0 in place, 48 jumps, 0 traps, 0 neighbours moved), pool 1936 bytes at 7ff3ff7c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-present.so.0.0.0: 0 syscall + 24 %fs + 0 %gs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff3ff7d0000
+[I layer    ] proc 7332 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 3268, snapshot of the parent's writable memory taken in 2.98 ms
+[I layer    ] fork: pid 5508 -> new process 3268 (flags 0x1200011)
+[I layer    ] exec: pid 3268 tid 3268 -> /usr/bin/xdpyinfo (1 args, 14 env)
+[I layer    ] exec: pid 3268 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 204 MiB -> 204 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libLLVM.so.19.1: 0 syscall + 94234 %fs + 0 %gs sites (0 in place, 94234 jumps, 0 traps, 0 neighbours moved), pool 3015503 bytes at 7ff3eca40000
+[I layer    ] rewrite: /usr/bin/xdpyinfo: 0 syscall + 31 %fs + 0 %gs sites (0 in place, 31 jumps, 0 traps, 0 neighbours moved), pool 1248 bytes at 7ff3fdf10000
+[I layer    ] elf: loaded /usr/bin/xdpyinfo type=DYN bias=7ff3feb31000 span=[7ff3feb31000,7ff3feb3c000) entry=7ff3feb35830
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libzstd.so.1.5.7: 0 syscall + 508 %fs + 0 %gs sites (0 in place, 508 jumps, 0 traps, 0 neighbours moved), pool 20400 bytes at 7ff3fddb0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdda0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fddc2000 span=[7ff3fddc2000,7ff3fddfa000) entry=7ff3fdddf2c0
+[I layer    ] exec: /usr/bin/xdpyinfo running, main thread tid 7780 entry 7ff3fdddf2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsensors.so.5.0.0: 0 syscall + 45 %fs + 0 %gs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1824 bytes at 7ff3fdd90000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-sync.so.1.0.0: 0 syscall + 94 %fs + 0 %gs sites (0 in place, 94 jumps, 0 traps, 0 neighbours moved), pool 3776 bytes at 7ff3ff7e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXext.so.6.4.0: 0 syscall + 123 %fs + 0 %gs sites (0 in place, 123 jumps, 0 traps, 0 neighbours moved), pool 4976 bytes at 7ff3fdd80000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxshmfence.so.1.0.0: 0 syscall + 2 %fs + 0 %gs sites (0 in place, 2 jumps, 0 traps, 0 neighbours moved), pool 96 bytes at 7ff3ff7f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXtst.so.6.1.0: 0 syscall + 21 %fs + 0 %gs sites (0 in place, 21 jumps, 0 traps, 0 neighbours moved), pool 864 bytes at 7ff3fdd50000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libelf-0.192.so: 0 syscall + 62 %fs + 0 %gs sites (0 in place, 62 jumps, 0 traps, 0 neighbours moved), pool 2496 bytes at 7ff3fdd40000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libdrm_amdgpu.so.1.124.0: 0 syscall + 91 %fs + 0 %gs sites (0 in place, 91 jumps, 0 traps, 0 neighbours moved), pool 3680 bytes at 7ff3fdbe0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3fdba0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libdrm_intel.so.1.124.0: 0 syscall + 118 %fs + 0 %gs sites (0 in place, 118 jumps, 0 traps, 0 neighbours moved), pool 4800 bytes at 7ff3fdb90000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fdb50000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXxf86vm.so.1.0.0: 0 syscall + 30 %fs + 0 %gs sites (0 in place, 30 jumps, 0 traps, 0 neighbours moved), pool 1216 bytes at 7ff3fd8d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libffi.so.8.1.4: 0 syscall + 29 %fs + 0 %gs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1184 bytes at 7ff3fd8c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXxf86dga.so.1.0.0: 0 syscall + 30 %fs + 0 %gs sites (0 in place, 30 jumps, 0 traps, 0 neighbours moved), pool 1232 bytes at 7ff3fd8b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXi.so.6.1.0: 0 syscall + 88 %fs + 0 %gs sites (0 in place, 88 jumps, 0 traps, 0 neighbours moved), pool 3552 bytes at 7ff3fd8a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXrender.so.1.3.0: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2288 bytes at 7ff3fd890000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXcomposite.so.1.0.0: 0 syscall + 4 %fs + 0 %gs sites (0 in place, 4 jumps, 0 traps, 0 neighbours moved), pool 176 bytes at 7ff3fd880000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXinerama.so.1.0.0: 0 syscall + 12 %fs + 0 %gs sites (0 in place, 12 jumps, 0 traps, 0 neighbours moved), pool 496 bytes at 7ff3fd870000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fd6c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libedit.so.2.0.75: 0 syscall + 206 %fs + 0 %gs sites (0 in place, 206 jumps, 0 traps, 0 neighbours moved), pool 8336 bytes at 7ff3fd820000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3fd810000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz3.so.4: 0 syscall + 59400 %fs + 0 %gs sites (0 in place, 59400 jumps, 0 traps, 0 neighbours moved), pool 2630416 bytes at 7ff3ead30000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3fd800000
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fe7b2ac0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxml2.so.2.9.14: 0 syscall + 810 %fs + 0 %gs sites (0 in place, 810 jumps, 0 traps, 0 neighbours moved), pool 33424 bytes at 7ff3f8eb0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpciaccess.so.0.11.1: 0 syscall + 82 %fs + 0 %gs sites (0 in place, 82 jumps, 0 traps, 0 neighbours moved), pool 3296 bytes at 7ff3fd7f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs + 0 %gs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff3fd7a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbsd.so.0.12.2: 0 syscall + 96 %fs + 0 %gs sites (0 in place, 96 jumps, 0 traps, 0 neighbours moved), pool 3856 bytes at 7ff3fd790000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libmd.so.0.1.0: 0 syscall + 78 %fs + 0 %gs sites (0 in place, 78 jumps, 0 traps, 0 neighbours moved), pool 3136 bytes at 7ff3fd780000
+[I layer    ] mem: committed 256 MiB (high-water)
+[I layer    ] fork: pid 7744 -> child 5236, snapshot of the parent's writable memory taken in 9.37 ms
+[I layer    ] fork: pid 7744 -> new process 5236 (flags 0x1200011)
+[I layer    ] exec: pid 5236 tid 5236 -> /usr/bin/dash (3 args, 14 env)
+[I layer    ] exec: pid 5236 leaves address space 5 (2 user(s))
+[I layer    ] exec: guest memory committed 217 MiB -> 217 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dash: 0 syscall + 130 %fs + 0 %gs sites (0 in place, 130 jumps, 0 traps, 0 neighbours moved), pool 5200 bytes at 7ff3fdd70000
+[I layer    ] elf: loaded /usr/bin/dash type=DYN bias=7ff3fdbbd000 span=[7ff3fdbbd000,7ff3fdbe0000) entry=7ff3fdbc1760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd730000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd748000 span=[7ff3fd748000,7ff3fd780000) entry=7ff3fd7652c0
+[I layer    ] exec: /usr/bin/dash running, main thread tid 3424 entry 7ff3fd7652c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fc150000
+[I layer    ] vfork: pid 5236 -> new process 600 (flags 0x4111, shared mm)
+[I layer    ] exec: pid 600 tid 600 -> /usr/bin/xkbcomp (13 args, 14 env)
+[I layer    ] exec: pid 600 leaves address space 9 (2 user(s))
+[I layer    ] exec: guest memory committed 228 MiB -> 228 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/xkbcomp: 0 syscall + 211 %fs + 0 %gs sites (0 in place, 211 jumps, 0 traps, 0 neighbours moved), pool 8688 bytes at 7ff3fd490000
+[I layer    ] elf: loaded /usr/bin/xkbcomp type=DYN bias=7ff3fd6f9000 span=[7ff3fd6f9000,7ff3fd730000) entry=7ff3fd6ff1f0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd1c0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd1d8000 span=[7ff3fd1d8000,7ff3fd210000) entry=7ff3fd1f52c0
+[I layer    ] exec: /usr/bin/xkbcomp running, main thread tid 2704 entry 7ff3fd1f52c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3fb7f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxkbfile.so.1.0.2: 0 syscall + 110 %fs + 0 %gs sites (0 in place, 110 jumps, 0 traps, 0 neighbours moved), pool 4416 bytes at 7ff3fcc20000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb5b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fcbc0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3ff800000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3fcc10000
+[I layer    ] proc 600 ended (wait status 0x0)
+[I layer    ] proc 5236 ended (wait status 0x0)
+[I layer    ] proc 3268 ended (wait status 0x0)
+[I guest.out] [xsession +5s] display up after 1 tries
+[I layer    ] fork: pid 5508 -> child 5560, snapshot of the parent's writable memory taken in 2.42 ms
+[I layer    ] fork: pid 5508 -> new process 5560 (flags 0x1200011)
+[I layer    ] exec: pid 5560 tid 5560 -> /usr/bin/xterm (7 args, 14 env)
+[I layer    ] exec: pid 5560 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 205 MiB -> 205 MiB after releasing the old image
+[I layer    ] fork: pid 5508 -> child 6580, snapshot of the parent's writable memory taken in 3.35 ms
+[I layer    ] fork: pid 5508 -> new process 6580 (flags 0x1200011)
+[I layer    ] exec: pid 6580 tid 6580 -> /usr/bin/xwininfo (3 args, 14 env)
+[I layer    ] exec: pid 6580 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 206 MiB -> 206 MiB after releasing the old image
+[I layer    ] fork: pid 5508 -> child 3132, snapshot of the parent's writable memory taken in 2.78 ms
+[I layer    ] fork: pid 5508 -> new process 3132 (flags 0x1200011)
+[I layer    ] rewrite: /usr/bin/xterm: 0 syscall + 475 %fs + 0 %gs sites (0 in place, 475 jumps, 0 traps, 0 neighbours moved), pool 19536 bytes at 7ff3fdc40000
+[I layer    ] elf: loaded /usr/bin/xterm type=DYN bias=7ff3fdc56000 span=[7ff3fdc56000,7ff3fdd40000) entry=7ff3fdc7b1e0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/dri/libdril_dri.so: 0 syscall + 5 %fs + 0 %gs sites (0 in place, 5 jumps, 0 traps, 0 neighbours moved), pool 224 bytes at 7ff3fdef0000
+[I layer    ] rewrite: /usr/bin/xwininfo: 0 syscall + 16 %fs + 0 %gs sites (0 in place, 16 jumps, 0 traps, 0 neighbours moved), pool 640 bytes at 7ff3fdee0000
+[I layer    ] elf: loaded /usr/bin/xwininfo type=DYN bias=7ff3feb29000 span=[7ff3feb29000,7ff3feb3c000) entry=7ff3feb2e3e0
+[I layer    ] exec: pid 3132 tid 3132 -> /usr/bin/grep (3 args, 14 env)
+[I layer    ] exec: pid 3132 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 206 MiB -> 207 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdda0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fddc2000 span=[7ff3fddc2000,7ff3fddfa000) entry=7ff3fdddf2c0
+[I layer    ] exec: /usr/bin/xterm running, main thread tid 884 entry 7ff3fdddf2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libgbm.so.1.0.0: 0 syscall + 6 %fs + 0 %gs sites (0 in place, 6 jumps, 0 traps, 0 neighbours moved), pool 256 bytes at 7ff3ff800000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdbb0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fdd4b000 span=[7ff3fdd4b000,7ff3fdd83000) entry=7ff3fdd682c0
+[I layer    ] exec: /usr/bin/xwininfo running, main thread tid 784 entry 7ff3fdd682c0
+[I layer    ] rewrite: /usr/bin/grep: 0 syscall + 177 %fs + 0 %gs sites (0 in place, 177 jumps, 0 traps, 0 neighbours moved), pool 7120 bytes at 7ff3fdba0000
+[I layer    ] elf: loaded /usr/bin/grep type=DYN bias=7ff3fdbfd000 span=[7ff3fdbfd000,7ff3fdc40000) entry=7ff3fdc03280
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libdrm.so.2.124.0: 0 syscall + 299 %fs + 0 %gs sites (0 in place, 299 jumps, 0 traps, 0 neighbours moved), pool 11984 bytes at 7ff3fd8b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXft.so.2.3.6: 0 syscall + 121 %fs + 0 %gs sites (0 in place, 121 jumps, 0 traps, 0 neighbours moved), pool 4880 bytes at 7ff3fd810000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fd800000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd6f0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd878000 span=[7ff3fd878000,7ff3fd8b0000) entry=7ff3fd8952c0
+[I layer    ] exec: /usr/bin/grep running, main thread tid 7872 entry 7ff3fd8952c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libexpat.so.1.12.3: 0 syscall + 86 %fs + 0 %gs sites (0 in place, 86 jumps, 0 traps, 0 neighbours moved), pool 3536 bytes at 7ff3fd6e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libfontconfig.so.1.12.1: 0 syscall + 283 %fs + 0 %gs sites (0 in place, 283 jumps, 0 traps, 0 neighbours moved), pool 11456 bytes at 7ff3fd6d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-shape.so.0.0.0: 0 syscall + 36 %fs + 0 %gs sites (0 in place, 36 jumps, 0 traps, 0 neighbours moved), pool 1456 bytes at 7ff3ff810000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff3fd6b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libEGL.so.1.1.0: 0 syscall + 45 %fs + 0 %gs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1888 bytes at 7ff3fd6c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3faf60000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libfreetype.so.6.20.2: 0 syscall + 814 %fs + 0 %gs sites (0 in place, 814 jumps, 0 traps, 0 neighbours moved), pool 32672 bytes at 7ff3fd4b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3faf20000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libEGL_mesa.so.0.0.0: 0 syscall + 291 %fs + 0 %gs sites (0 in place, 283 jumps, 0 traps, 13 neighbours moved), pool 12192 bytes at 7ff3fd480000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3fd470000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXext.so.6.4.0: 0 syscall + 123 %fs + 0 %gs sites (0 in place, 123 jumps, 0 traps, 0 neighbours moved), pool 4976 bytes at 7ff3fd460000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3fd200000
+[W layer    ] proc maps: 4789 bytes, first 400: 7ff3e2d30000-7ff3e2d51000 rw-p 00000000 00:00 0                        [heap]
+7ff3e2d51000-7ff3e6d30000 ---p 00000000 00:00 0 
+7ff3faf20000-7ff3faf58000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ff3fafa5000-7ff3fafcd000 r--p 00000000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff3fafcd000-7ff3fb130000 r-xp 00028000 00:00 28147497671370
+[W layer    ] proc maps tail: ...84e000 r--p 00000000 00:00 281474976718404                        /usr/lib/locale/C.utf8/LC_TELEPHONE
+7ff3fed3d000-7ff3fed3f000 rw-p 00000000 00:00 0 
+7ff3ff582000-7ff3ff583000 r--p 00000000 00:00 281474976718402                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff3ff585000-7ff3ff586000 r--p 00000000 00:00 281474976718403                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+
+[W layer    ] proc maps check: libc=1 ld=1 stack=1 vdso=0
+[I layer    ] perf: cpu 103% of a core (user 98%, kernel 5%) over 10.0 s; 5 guest threads
+[I layer    ] perf: guest 241 syscalls/s, 0 COM calls/s, 7 lazy faults/s (0 ms/s in the handler); committed 283 MiB, swap 0 MiB in the file, out 0.0 MiB/s, in 0.0 MiB/s
+[I layer    ] perf: thr Xvfb/1780 calls read 49/s mmap 30/s openat 11/s clock_gettime 10/s close 9/s
+[I layer    ] perf: thr xrl-guest/6664 calls rt_sigprocmask 10/s openat 4/s newfstatat 3/s close 3/s rt_sigaction 3/s
+[I layer    ] perf: thr grep/7872 calls openat 3/s mmap 3/s close 2/s fstat 2/s read 0/s
+[I layer    ] perf: thr Xvfb/1780 48% 0k/s; xrl-guest/6664 2% 0k/s; grep/7872 2% 0k/s; xwininfo/784 2% 0k/s;
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libgallium-25.0.7-2+deb13u1.so: 0 syscall + 26610 %fs + 0 %gs sites (4 in place, 26606 jumps, 0 traps, 6472 neighbours moved), pool 1219360 bytes at 7ff3e01a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXaw7.so.7.0.0: 0 syscall + 539 %fs + 0 %gs sites (0 in place, 539 jumps, 0 traps, 0 neighbours moved), pool 21936 bytes at 7ff3fae90000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXmu.so.6.2.0: 0 syscall + 108 %fs + 0 %gs sites (0 in place, 108 jumps, 0 traps, 0 neighbours moved), pool 4384 bytes at 7ff3fd1d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-randr.so.0.1.0: 0 syscall + 180 %fs + 0 %gs sites (0 in place, 180 jumps, 0 traps, 0 neighbours moved), pool 7216 bytes at 7ff3fd1c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXinerama.so.1.0.0: 0 syscall + 12 %fs + 0 %gs sites (0 in place, 12 jumps, 0 traps, 0 neighbours moved), pool 496 bytes at 7ff3fd090000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0.0.0: 0 syscall + 140 %fs + 0 %gs sites (0 in place, 140 jumps, 0 traps, 0 neighbours moved), pool 5616 bytes at 7ff3fd080000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXpm.so.4.11.0: 0 syscall + 88 %fs + 0 %gs sites (0 in place, 88 jumps, 0 traps, 0 neighbours moved), pool 3536 bytes at 7ff3fd070000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-shm.so.0.0.0: 0 syscall + 32 %fs + 0 %gs sites (0 in place, 32 jumps, 0 traps, 0 neighbours moved), pool 1296 bytes at 7ff3fcc60000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXt.so.6.0.0: 0 syscall + 489 %fs + 0 %gs sites (0 in place, 489 jumps, 0 traps, 0 neighbours moved), pool 19904 bytes at 7ff3fae10000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libwayland-client.so.0.23.1: 0 syscall + 54 %fs + 0 %gs sites (0 in place, 54 jumps, 0 traps, 0 neighbours moved), pool 2175 bytes at 7ff3fcc50000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3facb0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libwayland-server.so.0.23.1: 0 syscall + 83 %fs + 0 %gs sites (0 in place, 83 jumps, 0 traps, 0 neighbours moved), pool 3343 bytes at 7ff3fcc40000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libICE.so.6.3.0: 0 syscall + 98 %fs + 0 %gs sites (0 in place, 98 jumps, 0 traps, 0 neighbours moved), pool 3968 bytes at 7ff3faca0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-dri3.so.0.1.0: 0 syscall + 48 %fs + 0 %gs sites (0 in place, 48 jumps, 0 traps, 0 neighbours moved), pool 1936 bytes at 7ff3ff820000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libutempter.so.1.2.1: 0 syscall + 6 %fs + 0 %gs sites (0 in place, 6 jumps, 0 traps, 0 neighbours moved), pool 256 bytes at 7ff3ff830000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-present.so.0.0.0: 0 syscall + 24 %fs + 0 %gs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff3ff840000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs + 0 %gs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff3fac50000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsensors.so.5.0.0: 0 syscall + 45 %fs + 0 %gs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1824 bytes at 7ff3ff850000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3faa10000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-sync.so.1.0.0: 0 syscall + 94 %fs + 0 %gs sites (0 in place, 94 jumps, 0 traps, 0 neighbours moved), pool 3776 bytes at 7ff3ff860000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXrender.so.1.3.0: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2288 bytes at 7ff3ff870000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxshmfence.so.1.0.0: 0 syscall + 2 %fs + 0 %gs sites (0 in place, 2 jumps, 0 traps, 0 neighbours moved), pool 96 bytes at 7ff3ff880000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libexpat.so.1.12.3: 0 syscall + 86 %fs + 0 %gs sites (0 in place, 86 jumps, 0 traps, 0 neighbours moved), pool 3536 bytes at 7ff3fa9b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libelf-0.192.so: 0 syscall + 62 %fs + 0 %gs sites (0 in place, 62 jumps, 0 traps, 0 neighbours moved), pool 2496 bytes at 7ff3fa9a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libz.so.1.3.1: 0 syscall + 24 %fs + 0 %gs sites (0 in place, 24 jumps, 0 traps, 0 neighbours moved), pool 976 bytes at 7ff3fa970000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libdrm_amdgpu.so.1.124.0: 0 syscall + 91 %fs + 0 %gs sites (0 in place, 91 jumps, 0 traps, 0 neighbours moved), pool 3680 bytes at 7ff3ff890000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbz2.so.1.0.4: 0 syscall + 29 %fs + 0 %gs sites (0 in place, 29 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff3fa930000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libdrm_intel.so.1.124.0: 0 syscall + 118 %fs + 0 %gs sites (0 in place, 118 jumps, 0 traps, 0 neighbours moved), pool 4800 bytes at 7ff3fa8e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpng16.so.16.48.0: 0 syscall + 256 %fs + 0 %gs sites (0 in place, 256 jumps, 0 traps, 0 neighbours moved), pool 10512 bytes at 7ff3fa8d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpciaccess.so.0.11.1: 0 syscall + 82 %fs + 0 %gs sites (0 in place, 82 jumps, 0 traps, 0 neighbours moved), pool 3296 bytes at 7ff3ff8a0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libbrotlidec.so.1.1.0: 0 syscall + 25 %fs + 0 %gs sites (0 in place, 25 jumps, 0 traps, 0 neighbours moved), pool 1056 bytes at 7ff3ff8b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libSM.so.6.0.1: 0 syscall + 64 %fs + 0 %gs sites (0 in place, 64 jumps, 0 traps, 0 neighbours moved), pool 2944 bytes at 7ff3fd510000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fd4d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs + 0 %gs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff3fa7d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libuuid.so.1.3.0: 0 syscall + 47 %fs + 0 %gs sites (0 in place, 47 jumps, 0 traps, 0 neighbours moved), pool 1904 bytes at 7ff3fd4c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3ff8c0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3ff8d0000
+[I layer    ] fork: pid 7744 -> child 6620, snapshot of the parent's writable memory taken in 6.01 ms
+[I layer    ] fork: pid 7744 -> new process 6620 (flags 0x1200011)
+[I layer    ] exec: pid 6620 tid 6620 -> /usr/bin/dash (3 args, 14 env)
+[I layer    ] exec: pid 6620 leaves address space 5 (2 user(s))
+[I layer    ] exec: guest memory committed 248 MiB -> 248 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/dash: 0 syscall + 130 %fs + 0 %gs sites (0 in place, 130 jumps, 0 traps, 0 neighbours moved), pool 5200 bytes at 7ff3fa7c0000
+[I layer    ] elf: loaded /usr/bin/dash type=DYN bias=7ff3fa94d000 span=[7ff3fa94d000,7ff3fa970000) entry=7ff3fa951760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fa770000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fa788000 span=[7ff3fa788000,7ff3fa7c0000) entry=7ff3fa7a52c0
+[I layer    ] exec: /usr/bin/dash running, main thread tid 7268 entry 7ff3fa7a52c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fa530000
+[I layer    ] vfork: pid 6620 -> new process 6556 (flags 0x4111, shared mm)
+[I layer    ] exec: pid 6556 tid 6556 -> /usr/bin/xkbcomp (13 args, 14 env)
+[I layer    ] exec: pid 6556 leaves address space 14 (2 user(s))
+[I layer    ] exec: guest memory committed 259 MiB -> 259 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/xkbcomp: 0 syscall + 211 %fs + 0 %gs sites (0 in place, 211 jumps, 0 traps, 0 neighbours moved), pool 8688 bytes at 7ff3fa4e0000
+[I layer    ] elf: loaded /usr/bin/xkbcomp type=DYN bias=7ff3fa4f9000 span=[7ff3fa4f9000,7ff3fa530000) entry=7ff3fa4ff1f0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fa490000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fa4a8000 span=[7ff3fa4a8000,7ff3fa4e0000) entry=7ff3fa4c52c0
+[I layer    ] exec: /usr/bin/xkbcomp running, main thread tid 6564 entry 7ff3fa4c52c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3fa330000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxkbfile.so.1.0.2: 0 syscall + 110 %fs + 0 %gs sites (0 in place, 110 jumps, 0 traps, 0 neighbours moved), pool 4416 bytes at 7ff3fa2f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3e22f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fa2b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3ff8e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3ff8f0000
+[I layer    ] proc 6556 ended (wait status 0x0)
+[I layer    ] proc 6620 ended (wait status 0x0)
+[I layer    ] proc 6580 ended (wait status 0x0)
+[I layer    ] proc 3132 ended (wait status 0x100)
+[I layer    ] fork: pid 5508 -> child 6676, snapshot of the parent's writable memory taken in 3.56 ms
+[I layer    ] fork: pid 5508 -> new process 6676 (flags 0x1200011)
+[I layer    ] exec: pid 6676 tid 6676 -> /usr/bin/sleep (2 args, 14 env)
+[I layer    ] exec: pid 6676 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 225 MiB -> 225 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/sleep: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2208 bytes at 7ff3fdee0000
+[I layer    ] elf: loaded /usr/bin/sleep type=DYN bias=7ff3feb30000 span=[7ff3feb30000,7ff3feb3c000) entry=7ff3feb32aa0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdc30000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fdd4b000 span=[7ff3fdd4b000,7ff3fdd83000) entry=7ff3fdd682c0
+[I layer    ] exec: /usr/bin/sleep running, main thread tid 6672 entry 7ff3fdd682c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb950000
+[W layer    ] ENOSYS 334 rseq (a1=7ff3fe7b9680 a2=20 a3=0) hit #16 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXcursor.so.1.0.2: 0 syscall + 44 %fs + 0 %gs sites (0 in place, 44 jumps, 0 traps, 0 neighbours moved), pool 1776 bytes at 7ff3fdc20000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXfixes.so.3.1.0: 0 syscall + 17 %fs + 0 %gs sites (0 in place, 17 jumps, 0 traps, 0 neighbours moved), pool 704 bytes at 7ff3fdc10000
+[I layer    ] fork: pid 5560 -> child 3228, snapshot of the parent's writable memory taken in 6.88 ms
+[I layer    ] fork: pid 5560 -> new process 3228 (flags 0x1200011)
+[I layer    ] exec: pid 3228 tid 3228 -> /usr/bin/bash (3 args, 19 env)
+[I layer    ] exec: pid 3228 leaves address space 11 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs + 0 %gs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff3fb690000
+[I layer    ] elf: loaded /usr/bin/bash type=DYN bias=7ff3fb6a3000 span=[7ff3fb6a3000,7ff3fb7eb000) entry=7ff3fb6d4760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd800000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd878000 span=[7ff3fd878000,7ff3fd8b0000) entry=7ff3fd8952c0
+[I layer    ] exec: /usr/bin/bash running, main thread tid 1440 entry 7ff3fd8952c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs + 0 %gs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff3fd600000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb450000
+[I layer    ] fork: pid 3228 -> child 7044, snapshot of the parent's writable memory taken in 6.76 ms
+[I layer    ] fork: pid 3228 -> new process 7044 (flags 0x1200011)
+[I layer    ] exec: pid 7044 tid 7044 -> /usr/bin/id (1 args, 20 env)
+[I layer    ] exec: pid 7044 leaves address space 17 (2 user(s))
+[I layer    ] exec: guest memory committed 257 MiB -> 257 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/id: 0 syscall + 58 %fs + 0 %gs sites (0 in place, 58 jumps, 0 traps, 0 neighbours moved), pool 2352 bytes at 7ff3fdc00000
+[I layer    ] elf: loaded /usr/bin/id type=DYN bias=7ff3fdc48000 span=[7ff3fdc48000,7ff3fdc56000) entry=7ff3fdc4aec0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fb3a0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fb3be000 span=[7ff3fb3be000,7ff3fb3f6000) entry=7ff3fb3db2c0
+[I layer    ] exec: /usr/bin/id running, main thread tid 3196 entry 7ff3fb3db2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs + 0 %gs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff3fb350000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb110000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff3fb050000
+[I layer    ] proc 7044 ended (wait status 0x0)
+[I layer    ] exec: pid 3228 tid 1440 -> /usr/bin/sleep (2 args, 20 env)
+[I layer    ] exec: pid 3228 leaves address space 17 (1 user(s)), released in place
+[I layer    ] exec: guest memory committed 257 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/sleep: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2208 bytes at 7ff3fdc00000
+[I layer    ] elf: loaded /usr/bin/sleep type=DYN bias=7ff3fdee3000 span=[7ff3fdee3000,7ff3fdeef000) entry=7ff3fdee5aa0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd800000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd878000 span=[7ff3fd878000,7ff3fd8b0000) entry=7ff3fd8952c0
+[I layer    ] exec: /usr/bin/sleep running, main thread tid 6500 entry 7ff3fd8952c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fa590000
+[I layer    ] proc 6676 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 7088, snapshot of the parent's writable memory taken in 2.96 ms
+[I layer    ] fork: pid 5508 -> new process 7088 (flags 0x1200011)
+[I layer    ] exec: pid 7088 tid 7088 -> /usr/bin/xwininfo (3 args, 14 env)
+[I layer    ] exec: pid 7088 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/xwininfo: 0 syscall + 16 %fs + 0 %gs sites (0 in place, 16 jumps, 0 traps, 0 neighbours moved), pool 640 bytes at 7ff3fdd60000
+[I layer    ] elf: loaded /usr/bin/xwininfo type=DYN bias=7ff3fdd70000 span=[7ff3fdd70000,7ff3fdd83000) entry=7ff3fdd753e0
+[I layer    ] fork: pid 5508 -> child 7092, snapshot of the parent's writable memory taken in 2.95 ms
+[I layer    ] fork: pid 5508 -> new process 7092 (flags 0x1200011)
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd6b0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd60e000 span=[7ff3fd60e000,7ff3fd646000) entry=7ff3fd62b2c0
+[I layer    ] exec: /usr/bin/xwininfo running, main thread tid 6560 entry 7ff3fd62b2c0
+[I layer    ] exec: pid 7092 tid 7092 -> /usr/bin/grep (3 args, 14 env)
+[I layer    ] exec: pid 7092 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 253 MiB -> 253 MiB after releasing the old image
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fdbb0000
+[I layer    ] rewrite: /usr/bin/grep: 0 syscall + 177 %fs + 0 %gs sites (0 in place, 177 jumps, 0 traps, 0 neighbours moved), pool 7120 bytes at 7ff3fd200000
+[I layer    ] elf: loaded /usr/bin/grep type=DYN bias=7ff3fcc99000 span=[7ff3fcc99000,7ff3fccdc000) entry=7ff3fcc9f280
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-shape.so.0.0.0: 0 syscall + 36 %fs + 0 %gs sites (0 in place, 36 jumps, 0 traps, 0 neighbours moved), pool 1456 bytes at 7ff3ff810000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fb950000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fbb56000 span=[7ff3fbb56000,7ff3fbb8e000) entry=7ff3fbb732c0
+[I layer    ] exec: /usr/bin/grep running, main thread tid 6528 entry 7ff3fbb732c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3faf50000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff3fa4d0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3ff8e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fa290000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3fdc30000
+[I layer    ] proc 7088 ended (wait status 0x0)
+[W layer    ] proc maps: 4789 bytes, first 400: 7ff3dc1a0000-7ff3dc1c1000 rw-p 00000000 00:00 0                        [heap]
+7ff3dc1c1000-7ff3e01a0000 ---p 00000000 00:00 0 
+7ff3f97a2000-7ff3f97a3000 ---p 00000000 00:00 0                        [stack]
+7ff3f97a3000-7ff3f9fa3000 rw-p 00000000 00:00 0                        [stack]
+7ff3fa1dc000-7ff3fa236000 r--p 00000000 00:00 281474976718399                        /usr/lib/locale/C.utf8/LC_CTYP
+[W layer    ] proc maps tail: ...                 /usr/lib/locale/C.utf8/LC_TELEPHONE
+7ff3fdf93000-7ff3fdf94000 r--p 00000000 00:00 281474976718402                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff3fe7b9000-7ff3fe7bc000 rw-p 00000000 00:00 0 
+7ff3feb28000-7ff3feb29000 r--p 00000000 00:00 281474976718403                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff3feb35000-7ff3feb37000 rw-p 00000000 00:00 0 
+
+[W layer    ] proc maps check: libc=1 ld=1 stack=1 vdso=0
+[I layer    ] proc 7092 ended (wait status 0x0)
+[I guest.out] [xsession +8s] found /\("xterm" "XTerm"\)/
+[I layer    ] fork: pid 5508 -> child 800, snapshot of the parent's writable memory taken in 2.91 ms
+[I layer    ] fork: pid 5508 -> new process 800 (flags 0x1200011)
+[I layer    ] exec: pid 800 tid 800 -> /usr/bin/sleep (2 args, 14 env)
+[I layer    ] exec: pid 800 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/sleep: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2208 bytes at 7ff3ff810000
+[I layer    ] elf: loaded /usr/bin/sleep type=DYN bias=7ff3feb30000 span=[7ff3feb30000,7ff3feb3c000) entry=7ff3feb32aa0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdc30000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fdd4b000 span=[7ff3fdd4b000,7ff3fdd83000) entry=7ff3fdd682c0
+[I layer    ] exec: /usr/bin/sleep running, main thread tid 7000 entry 7ff3fdd682c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb950000
+[I layer    ] proc 800 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 7812, snapshot of the parent's writable memory taken in 2.30 ms
+[I layer    ] fork: pid 5508 -> new process 7812 (flags 0x1200011)
+[I layer    ] exec: pid 7812 tid 7812 -> /usr/bin/xwininfo (3 args, 14 env)
+[I layer    ] exec: pid 7812 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/xwininfo: 0 syscall + 16 %fs + 0 %gs sites (0 in place, 16 jumps, 0 traps, 0 neighbours moved), pool 640 bytes at 7ff3fdd60000
+[I layer    ] elf: loaded /usr/bin/xwininfo type=DYN bias=7ff3fdd70000 span=[7ff3fdd70000,7ff3fdd83000) entry=7ff3fdd753e0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd6b0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd60e000 span=[7ff3fd60e000,7ff3fd646000) entry=7ff3fd62b2c0
+[I layer    ] exec: /usr/bin/xwininfo running, main thread tid 3896 entry 7ff3fd62b2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fdbb0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb-shape.so.0.0.0: 0 syscall + 36 %fs + 0 %gs sites (0 in place, 36 jumps, 0 traps, 0 neighbours moved), pool 1456 bytes at 7ff3ff810000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb950000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3ff8e0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3fdc30000
+[I guest.out] xwininfo: Window id: 0x21f (the root window) (has no name)
+[I guest.out]   Root window id: 0x21f (the root window) (has no name)
+[I guest.out]   Parent window id: 0x0 (none)
+[I guest.out]      1 child:
+[I guest.out]      0x40000c "bash": ("xterm" "XTerm")  484x264+40+40  +40+40
+[I guest.out]         1 child:
+[I guest.out]         0x400018 (has no name): ()  484x264+0+0  +41+41
+[I layer    ] proc 7812 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 3300, snapshot of the parent's writable memory taken in 2.69 ms
+[I layer    ] fork: pid 5508 -> new process 3300 (flags 0x1200011)
+[I layer    ] exec: pid 3300 tid 3300 -> /usr/bin/xwd (5 args, 14 env)
+[I layer    ] exec: pid 3300 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/xwd: 0 syscall + 30 %fs + 0 %gs sites (0 in place, 30 jumps, 0 traps, 0 neighbours moved), pool 1200 bytes at 7ff3ff810000
+[I layer    ] elf: loaded /usr/bin/xwd type=DYN bias=7ff3feb32000 span=[7ff3feb32000,7ff3feb3c000) entry=7ff3feb349c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fdc30000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fdd4b000 span=[7ff3fdd4b000,7ff3fdd83000) entry=7ff3fdd682c0
+[I layer    ] exec: /usr/bin/xwd running, main thread tid 7796 entry 7ff3fdd682c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libX11.so.6.4.0: 0 syscall + 996 %fs + 0 %gs sites (0 in place, 996 jumps, 0 traps, 0 neighbours moved), pool 39952 bytes at 7ff3fba30000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxkbfile.so.1.0.2: 0 syscall + 110 %fs + 0 %gs sites (0 in place, 110 jumps, 0 traps, 0 neighbours moved), pool 4416 bytes at 7ff3fdbb0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fa350000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libxcb.so.1.1.0: 0 syscall + 579 %fs + 0 %gs sites (0 in place, 579 jumps, 0 traps, 0 neighbours moved), pool 23200 bytes at 7ff3fd600000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXau.so.6.0.0: 0 syscall + 13 %fs + 0 %gs sites (0 in place, 13 jumps, 0 traps, 0 neighbours moved), pool 544 bytes at 7ff3fd6f0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libXdmcp.so.6.0.0: 0 syscall + 8 %fs + 0 %gs sites (0 in place, 8 jumps, 0 traps, 0 neighbours moved), pool 336 bytes at 7ff3fd6b0000
+[I layer    ] proc 3300 ended (wait status 0x0)
+[I layer    ] fork: pid 5508 -> child 4372, snapshot of the parent's writable memory taken in 2.91 ms
+[I layer    ] fork: pid 5508 -> new process 4372 (flags 0x1200011)
+[I layer    ] exec: pid 4372 tid 4372 -> /usr/bin/stat (4 args, 14 env)
+[I layer    ] exec: pid 4372 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/stat: 0 syscall + 81 %fs + 0 %gs sites (0 in place, 81 jumps, 0 traps, 0 neighbours moved), pool 3264 bytes at 7ff3fdd50000
+[I layer    ] elf: loaded /usr/bin/stat type=DYN bias=7ff3fdd69000 span=[7ff3fdd69000,7ff3fdd83000) entry=7ff3fdd6d0a0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd6b0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd60e000 span=[7ff3fd60e000,7ff3fd646000) entry=7ff3fd62b2c0
+[I layer    ] exec: /usr/bin/stat running, main thread tid 7368 entry 7ff3fd62b2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libselinux.so.1: 0 syscall + 285 %fs + 0 %gs sites (0 in place, 285 jumps, 0 traps, 0 neighbours moved), pool 11424 bytes at 7ff3fcc90000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb950000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.14.0: 0 syscall + 137 %fs + 0 %gs sites (0 in place, 137 jumps, 0 traps, 0 neighbours moved), pool 5536 bytes at 7ff3fa4d0000
+[I layer    ] proc 4372 ended (wait status 0x0)
+[I guest.out] [xsession +14s] screenshot /tmp/xrl-xterm.xwd (3689579 bytes)
+[I guest.out] --- /tmp/xrl-xterm.log
+[I layer    ] fork: pid 5508 -> child 6808, snapshot of the parent's writable memory taken in 3.00 ms
+[I layer    ] fork: pid 5508 -> new process 6808 (flags 0x1200011)
+[I layer    ] exec: pid 6808 tid 6808 -> /usr/bin/tail (4 args, 14 env)
+[I layer    ] exec: pid 6808 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/tail: 0 syscall + 87 %fs + 0 %gs sites (0 in place, 87 jumps, 0 traps, 0 neighbours moved), pool 3488 bytes at 7ff3fdd50000
+[I layer    ] elf: loaded /usr/bin/tail type=DYN bias=7ff3fdd6e000 span=[7ff3fdd6e000,7ff3fdd83000) entry=7ff3fdd73580
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd6b0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd60e000 span=[7ff3fd60e000,7ff3fd646000) entry=7ff3fd62b2c0
+[I layer    ] exec: /usr/bin/tail running, main thread tid 4028 entry 7ff3fd62b2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb950000
+[I layer    ] proc 6808 ended (wait status 0x0)
+[I guest.out] --- /tmp/xrl-xvfb.log
+[I layer    ] fork: pid 5508 -> child 3596, snapshot of the parent's writable memory taken in 2.97 ms
+[I layer    ] fork: pid 5508 -> new process 3596 (flags 0x1200011)
+[I layer    ] exec: pid 3596 tid 3596 -> /usr/bin/tail (4 args, 14 env)
+[I layer    ] exec: pid 3596 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 245 MiB -> 245 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/tail: 0 syscall + 87 %fs + 0 %gs sites (0 in place, 87 jumps, 0 traps, 0 neighbours moved), pool 3488 bytes at 7ff3fdd50000
+[I layer    ] elf: loaded /usr/bin/tail type=DYN bias=7ff3fdd6e000 span=[7ff3fdd6e000,7ff3fdd83000) entry=7ff3fdd73580
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fd6b0000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fd60e000 span=[7ff3fd60e000,7ff3fd646000) entry=7ff3fd62b2c0
+[I layer    ] exec: /usr/bin/tail running, main thread tid 2308 entry 7ff3fd62b2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fb950000
+[I layer    ] proc 3596 ended (wait status 0x0)
+[I layer    ] proc 5560 ended (wait status 0xf00)
+[I layer    ] fork: pid 5508 -> child 7636, snapshot of the parent's writable memory taken in 2.75 ms
+[I layer    ] fork: pid 5508 -> new process 7636 (flags 0x1200011)
+[I layer    ] proc 7744 ended (wait status 0x0)
+[I layer    ] exec: pid 7636 tid 7636 -> /usr/bin/sleep (2 args, 14 env)
+[I layer    ] exec: pid 7636 leaves address space 1 (2 user(s))
+[I layer    ] exec: guest memory committed 23 MiB -> 23 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/sleep: 0 syscall + 55 %fs + 0 %gs sites (0 in place, 55 jumps, 0 traps, 0 neighbours moved), pool 2208 bytes at 7ff3ff730000
+[I layer    ] elf: loaded /usr/bin/sleep type=DYN bias=7ff3ff584000 span=[7ff3ff584000,7ff3ff590000) entry=7ff3ff586aa0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff3fea40000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff3fea5e000 span=[7ff3fea5e000,7ff3fea96000) entry=7ff3fea7b2c0
+[I layer    ] exec: /usr/bin/sleep running, main thread tid 6908 entry 7ff3fea7b2c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff3fe000000
+[I layer    ] proc 7636 ended (wait status 0x0)
+[I layer    ] signal 9 to tid 6500 with the default action: terminating process 3228
+[I layer    ] proc 3228 ended (wait status 0x9)
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (5040 bytes) follows:
+[W layer    ] MAP 7ef407730000-7ef407751000 rw-p 00000000 00:00 0                        [heap]
+7ef407751000-7ef407771000 rw-p 00000000 00:00 0                        [heap]
+7ff3fea96000-7ff3feaf0000 r--p 00000000 00:00 281474976718399                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff3feaf0000-7ff3feb28000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ff3feb3c000-7ff3feb64000 r--p 00000000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff3feb64000-7ff3fecc7000 r-xp 00028000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff3fecc7000-7ff3fed1d000 r--p 0018b000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff3fed1d000-7ff3fed21000 r--p 001e0000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff3fed21000-7ff3fed23000 rw-p 001e4000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff3fed23000-7ff3fed30000 rw-p 00000000 00:00 0 
+7ff3fed30000-7ff3fed31000 r-xp 00000000 00:00 0                        [xrl-
+[W layer    ] MAP                        [stack]
+7ff3fed80000-7ff3ff580000 rw-p 00000000 00:00 0                        [stack]
+7ff3ff580000-7ff3ff582000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
+7ff3ff590000-7ff3ff591000 r--p 00000000 00:00 281474976718401                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff3ff591000-7ff3ff592000 r--p 00000000 00:00 281474976718405                        /usr/lib/locale/C.utf8/LC_TIME
+7ff3ff592000-7ff3ff593000 r--p 00000000 00:00 281474976718398                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff3ff593000-7ff3ff596000 rw-p 00000000 00:00 0 
+7ff3ff596000-7ff3ff598000 rw-p 00000000 00:00 0 
+7ff3ff598000-7ff3ff599000 r--p 00000000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff3ff599000-7ff3ff5c1000 r-xp 00001000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff3ff5c1000-7ff3ff5cc000 r--p 00029000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff3ff5cc000-7ff3ff5cf000 rw-p 000
+[W layer    ] MAP le/C.utf8/LC_NAME
+7ff3ff5dd000-7ff3ff5de000 r--p 00000000 00:00 281474976718406                        /usr/lib/locale/C.utf8/LC_ADDRESS
+7ff3ff5de000-7ff3ff5df000 r--p 00000000 00:00 281474976718404                        /usr/lib/locale/C.utf8/LC_TELEPHONE
+7ff3ff5df000-7ff3ff5e0000 r--p 00000000 00:00 281474976718402                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff3ff5e0000-7ff3ff5e7000 r--s 00000000 00:00 281474976714593                        /usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache
+7ff3ff5e7000-7ff3ff5e8000 r--p 00000000 00:00 281474976718403                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff3ff5e8000-7ff3ff617000 r--p 00000000 00:00 281474976712121                        /usr/bin/bash
+7ff3ff617000-7ff3ff6e0000 r-xp 0002f000 00:00 281474976712121                        /usr/bin/bash
+7ff3ff6e0000-7ff3ff718000 r--p 000f8000 00:00 281474976712121                        /usr/bin/bash
+7ff3ff718000-7ff3ff71c000 r--p 00130000 00:00 281474976712121                        /usr/bin/bash
+7ff3ff71c000-7ff3ff725000 rw-p 00134000 00:00 281474976
+xrl_layer_boot returned 0
+exit 0
+xwd: 1280x720 depth 24 bpp 32 bpl 5120 byte_order 0 masks ff0000 ff00 ff
+wrote ci-out/xterm.png 5057

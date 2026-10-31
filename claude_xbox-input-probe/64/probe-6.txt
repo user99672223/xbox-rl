@@ -1,0 +1,97 @@
+$ /usr/bin/ps aux
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/usr/bin/ps, 2 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4952b0000,7ff4952b0000) 1048576 MiB VA, brk <= 7ef4d52b0000, commit budget 4096 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 27537 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 2813 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (27541 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/ps: 0 syscall + 103 %fs + 0 %gs sites (0 in place, 103 jumps, 0 traps, 0 neighbours moved), pool 4416 bytes at 7ff48d250000
+[I layer    ] elf: loaded /usr/bin/ps type=DYN bias=7ff48d26a000 span=[7ff48d26a000,7ff48d2b0000) entry=7ff48d274d80
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff48d200000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff48d218000 span=[7ff48d218000,7ff48d250000) entry=7ff48d2352c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000023C2D394BC0)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff48d1ffd30
+[I layer    ] boot: guest main thread tid=7996 entry=7ff48d2352c0 sp=7ff48d1ffd30
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.052 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2: 0 syscall + 93 %fs + 0 %gs sites (0 in place, 93 jumps, 0 traps, 0 neighbours moved), pool 3744 bytes at 7ff48c9b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff48c770000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0: 0 syscall + 1382 %fs + 0 %gs sites (0 in place, 1382 jumps, 0 traps, 0 neighbours moved), pool 55728 bytes at 7ff48c640000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libcap.so.2.75: 0 syscall + 27 %fs + 0 %gs sites (0 in place, 27 jumps, 0 traps, 0 neighbours moved), pool 1104 bytes at 7ff48d2b0000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libm.so.6: 0 syscall + 803 %fs + 0 %gs sites (0 in place, 803 jumps, 0 traps, 4 neighbours moved), pool 35600 bytes at 7ff48c540000
+[W layer    ] ENOSYS 334 rseq (a1=7ff48d255680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libnuma.so.1.0.0: 0 syscall + 56 %fs + 0 %gs sites (0 in place, 56 jumps, 0 traps, 0 neighbours moved), pool 2256 bytes at 7ff48c4d0000
+[I guest.out] USER         PID %CPU %MEM    VSZ   RSS TTY      STAT START   TIME COMMAND
+[I guest.out] root           1  0.0  0.0   4096  4096 ?        Ss   09:36   0:00 /init
+[I guest.out] root        2580  0.0  0.3  15224 15224 ?        Rs+  09:44   0:00 /usr/bin/ps aux
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (8260 bytes) follows:
+[W layer    ] MAP 7ef4952b0000-7ef4952d1000 rw-p 00000000 00:00 0                        [heap]
+7ef4952d1000-7ef4952f1000 rw-p 00000000 00:00 0                        [heap]
+7ff48c46c000-7ff48c48d000 rw-p 00000000 00:00 0 
+7ff48c48d000-7ff48c48e000 ---p 00000000 00:00 0 
+7ff48c48e000-7ff48c4af000 rw-p 00000000 00:00 0 
+7ff48c4af000-7ff48c4d0000 rw-p 00000000 00:00 0 
+7ff48c4d0000-7ff48c4d1000 r-xp 00000000 00:00 0                        [xrl-pool libnuma.so.1.0.0]
+7ff48c4e6000-7ff48c540000 r--p 00000000 00:00 281474976718407                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff48c540000-7ff48c549000 r-xp 00000000 00:00 0                        [xrl-pool libm.so.6]
+7ff48c550000-7ff48c561000 r--p 00000000 00:00 281474976718310                        /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff48c561000-7ff48c5de000 r-xp 00011000 00:00 281474976718310                        /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff48c5de000-7ff48c63e000 r--p 0008e000 00:00 281474976718310                        /usr/lib/x86_64-linux-gnu/libm.so.6
+7ff48c63e000-7ff48c63f000 r--p 000ed000 00:00 281474976718310           
+[W layer    ] MAP 000 00:00 281474976713266                        /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0
+7ff48c76e000-7ff48c76f000 rw-p 00113000 00:00 281474976713266                        /usr/lib/x86_64-linux-gnu/libsystemd.so.0.40.0
+7ff48c76f000-7ff48c770000 rw-p 00000000 00:00 0 
+7ff48c770000-7ff48c7a8000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ff48c7ad000-7ff48c7b1000 r--p 00000000 00:00 281474976718342                        /usr/lib/x86_64-linux-gnu/libnuma.so.1.0.0
+7ff48c7b1000-7ff48c7b7000 r-xp 00004000 00:00 281474976718342                        /usr/lib/x86_64-linux-gnu/libnuma.so.1.0.0
+7ff48c7b7000-7ff48c7ba000 r--p 0000a000 00:00 281474976718342                        /usr/lib/x86_64-linux-gnu/libnuma.so.1.0.0
+7ff48c7ba000-7ff48c7bb000 r--p 0000c000 00:00 281474976718342                        /usr/lib/x86_64-linux-gnu/libnuma.so.1.0.0
+7ff48c7bb000-7ff48c7bc000 rw-p 0000d000 00:00 281474976718342                        /usr/lib/x86_64-linux-gnu/libnuma.so.1.0.0
+7ff48c7bc000-7ff48c7e4000 r--p 00000000 00:00 281474976713708                        /
+[W layer    ] MAP 00 00:00 281474976713664                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff48c9d9000-7ff48c9ee000 r-xp 0000d000 00:00 281474976713664                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff48c9ee000-7ff48c9f8000 r--p 00022000 00:00 281474976713664                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff48c9f8000-7ff48c9fe000 r--p 0002c000 00:00 281474976713664                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff48c9fe000-7ff48c9ff000 rw-p 00032000 00:00 281474976713664                        /usr/lib/x86_64-linux-gnu/libproc2.so.0.0.2
+7ff48c9ff000-7ff48ca00000 ---p 00000000 00:00 0                        [stack]
+7ff48ca00000-7ff48d200000 rw-p 00000000 00:00 0                        [stack]
+7ff48d200000-7ff48d202000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
+7ff48d20b000-7ff48d20c000 r--p 00000000 00:00 281474976718409                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff48d20c000-7ff48d20f000 r--p 00000000 00:00 281474976718293                        /usr/lib/x86_64-linux-
+[W layer    ] MAP 74976713263                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff48d241000-7ff48d24c000 r--p 00029000 00:00 281474976713263                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff48d24c000-7ff48d24f000 rw-p 00034000 00:00 281474976713263                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff48d24f000-7ff48d250000 rw-p 00000000 00:00 0 
+7ff48d250000-7ff48d252000 r-xp 00000000 00:00 0                        [xrl-pool ps]
+7ff48d252000-7ff48d253000 r--p 00000000 00:00 281474976718413                        /usr/lib/locale/C.utf8/LC_TIME
+7ff48d253000-7ff48d254000 r--p 00000000 00:00 281474976718406                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff48d254000-7ff48d255000 r--p 00000000 00:00 281474976718417                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff48d255000-7ff48d258000 rw-p 00000000 00:00 0 
+7ff48d258000-7ff48d25a000 rw-p 00000000 00:00 0 
+7ff48d25a000-7ff48d25c000 rw-p 00000000 00:00 0 
+7ff48d25c000-7ff48d25d000 r--p 00000000 00:00 281474976718416                        /usr/lib/locale/C.utf8/LC_ME
+[W layer    ] MAP usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache
+7ff48d269000-7ff48d26a000 r--p 00000000 00:00 281474976718411                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff48d26a000-7ff48d273000 r--p 00000000 00:00 281474976712541                        /usr/bin/ps
+7ff48d273000-7ff48d284000 r-xp 00009000 00:00 281474976712541                        /usr/bin/ps
+7ff48d284000-7ff48d28b000 r--p 0001a000 00:00 281474976712541                        /usr/bin/ps
+7ff48d28b000-7ff48d28f000 r--p 00021000 00:00 281474976712541                        /usr/bin/ps
+7ff48d28f000-7ff48d290000 rw-p 00025000 00:00 281474976712541                        /usr/bin/ps
+7ff48d290000-7ff48d2b0000 rw-p 00000000 00:00 0 
+7ff48d2b0000-7ff48d2b1000 r-xp 00000000 00:00 0                        [xrl-pool libcap.so.2.75]
+7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
+7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
+
+xrl_layer_boot returned 0
+exit 0

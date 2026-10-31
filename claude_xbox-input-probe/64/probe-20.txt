@@ -1,0 +1,66 @@
+$ XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/bash, 3 args, 8 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4e0730000,7ff4e0730000) 1048576 MiB VA, brk <= 7ef520730000, commit budget 4096 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 27537 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 2827 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (27541 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs + 0 %gs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff4d85d0000
+[I layer    ] elf: loaded /bin/bash type=DYN bias=7ff4d85e8000 span=[7ff4d85e8000,7ff4d8730000) entry=7ff4d8619760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4d8580000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4d8598000 span=[7ff4d8598000,7ff4d85d0000) entry=7ff4d85b52c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000016B66CD0DC0)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff4d857fcf0
+[I layer    ] boot: guest main thread tid=6752 entry=7ff4d85b52c0 sp=7ff4d857fcf0
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.085 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs + 0 %gs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff4d7d30000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff4d7af0000
+[W layer    ] ENOSYS 334 rseq (a1=7ff4d8593680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W guest.err] /bin/bash: /usr/local/bin/xrl-plasma-session: No such file or directory
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 127; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (4962 bytes) follows:
+[W layer    ] MAP 7ef4e0730000-7ef4e0751000 rw-p 00000000 00:00 0                        [heap]
+7ff4d7a96000-7ff4d7af0000 r--p 00000000 00:00 281474976718399                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff4d7af0000-7ff4d7b28000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ff4d7b3c000-7ff4d7b64000 r--p 00000000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d7b64000-7ff4d7cc7000 r-xp 00028000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d7cc7000-7ff4d7d1d000 r--p 0018b000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d7d1d000-7ff4d7d21000 r--p 001e0000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d7d21000-7ff4d7d23000 rw-p 001e4000 00:00 281474976713700                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff4d7d23000-7ff4d7d30000 rw-p 00000000 00:00 0 
+7ff4d7d30000-7ff4d7d31000 r-xp 00000000 00:00 0                        [xrl-pool libtinfo.so.6.5]
+7ff4d7d49000-7ff4d7d58000 r--p 00000000 00:00 2814749767
+[W layer    ] MAP                         [stack]
+7ff4d8580000-7ff4d8582000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
+7ff4d8590000-7ff4d8591000 r--p 00000000 00:00 281474976718401                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff4d8591000-7ff4d8592000 r--p 00000000 00:00 281474976718405                        /usr/lib/locale/C.utf8/LC_TIME
+7ff4d8592000-7ff4d8593000 r--p 00000000 00:00 281474976718398                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff4d8593000-7ff4d8596000 rw-p 00000000 00:00 0 
+7ff4d8596000-7ff4d8598000 rw-p 00000000 00:00 0 
+7ff4d8598000-7ff4d8599000 r--p 00000000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d8599000-7ff4d85c1000 r-xp 00001000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d85c1000-7ff4d85cc000 r--p 00029000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff4d85cc000-7ff4d85cf000 rw-p 00034000 00:00 281474976713255                        /usr/lib/x86_64-linux-gnu/l
+[W layer    ] MAP 6                        /usr/lib/locale/C.utf8/LC_ADDRESS
+7ff4d85de000-7ff4d85df000 r--p 00000000 00:00 281474976718404                        /usr/lib/locale/C.utf8/LC_TELEPHONE
+7ff4d85df000-7ff4d85e0000 r--p 00000000 00:00 281474976718402                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff4d85e0000-7ff4d85e7000 r--s 00000000 00:00 281474976714593                        /usr/lib/x86_64-linux-gnu/gconv/gconv-modules.cache
+7ff4d85e7000-7ff4d85e8000 r--p 00000000 00:00 281474976718403                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff4d85e8000-7ff4d8617000 r--p 00000000 00:00 281474976712121                        /usr/bin/bash
+7ff4d8617000-7ff4d86e0000 r-xp 0002f000 00:00 281474976712121                        /usr/bin/bash
+7ff4d86e0000-7ff4d8718000 r--p 000f8000 00:00 281474976712121                        /usr/bin/bash
+7ff4d8718000-7ff4d871c000 r--p 00130000 00:00 281474976712121                        /usr/bin/bash
+7ff4d871c000-7ff4d8725000 rw-p 00134000 00:00 281474976712121                        /usr/bin/bash
+7ff4d8725000-7ff4d8730000 rw-p 000
+xrl_layer_boot returned 127
+exit 127

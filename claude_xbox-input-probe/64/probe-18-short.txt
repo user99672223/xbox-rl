@@ -1,0 +1,38 @@
+[W layer    ] ENOSYS 334 rseq (a1=7ff419633680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff418bd96a0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff418dd2680 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff418bd9680 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff41885bac0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I guest.out] [xsession +5s] display up after 1 tries
+[W layer    ] ENOSYS 334 rseq (a1=7ff417d476a0 a2=20 a3=0) hit #16 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 434 pidfd_open (a1=a1c a2=0 a3=0) hit #1
+[W layer    ] ENOSYS 125 capget (a1=7ff417fd7818 a2=0 a3=0) hit #1
+[E layer    ] exec: /usr/bin/x86_64-linux-gnu-cpp-14 is not position independent and needs [400000,521000), which address-space 12 (another live process) uses: -ENOMEM (run it as the only process, or build it as PIE)
+[W layer    ] ENOSYS 334 rseq (a1=7ff417eb0140 a2=20 a3=0) hit #32 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 434 pidfd_open (a1=748 a2=0 a3=0) hit #2
+[W layer    ] ENOSYS 434 pidfd_open (a1=1a88 a2=0 a3=0) hit #3
+[W layer    ] ENOSYS 434 pidfd_open (a1=1a18 a2=0 a3=0) hit #4
+[I guest.out] [xsession +18s] found /"xfce4-panel"/
+[W layer    ] ENOSYS 303 name_to_handle_at (a1=ffffff9c a2=7ff40177ad43 a3=7ff3700475e0) hit #1
+[W layer    ] ENOSYS 434 pidfd_open (a1=9ac a2=0 a3=0) hit #8
+[W layer    ] ENOSYS 251 ioprio_set (a1=1 a2=0 a3=6000) hit #1
+[W layer    ] ENOSYS 251 ioprio_set (a1=1 a2=0 a3=4007) hit #2
+[I guest.out] [xsession +26s] found /"(Desktop|xfdesktop)"/
+[W layer    ] mem-fail[0] addr=0 access=0 vma=NEAR [400000,401000) prot=1 lazy=0 committed=1 host(state=10000 prot=1)
+[E layer    ] === UNHANDLED GUEST FAULT tid 6516 code c0000005 rip 00007ff3af82e75a addr 0000000000000000 (0) rsp 00007ff34f7fdd78 teb-stack [00007ff34f7bc000,00007ff34f80d000) ===
+[E layer    ] ACCESS_VIOLATION (0xc0000005) at rip=00007ff3af82e75a  fault_addr=0000000000000000 (read)
+[E layer    ] rax=0000000000000000 rbx=00007ff33400fc40 rcx=0000000000000000 rdx=0000000000000000
+[E layer    ] rsi=0000000000000000 rdi=00007ff33400fc40 rbp=0000000000000000 rsp=00007ff34f7fdd78
+[E layer    ] r8 =0000000000000000 r9 =0000000000000000 r10=00007ff3af82f130 r11=0000000000000003
+[E layer    ] r12=0000000000000000 r13=0000000000000000 r14=00007ff3af840000 r15=00007ff4016f2a90
+[E layer    ] fs_base(guest tp)=00007ff400065b00 fsbase_now=0000000000000000 eflags=00010283
+[E layer    ] code @rip: 66 0f 12 16 66 0f 16 4f 08 66 0f 16
+[E layer    ] [rsp+00] 00007ff3af8134bb
+[E layer    ] [rsp+08] 0000000000000001
+[E layer    ] [rsp+10] 0000000290000002
+[E layer    ] [rsp+18] 00007ff401ce5ff0
+[E layer    ] [rsp+20] 00007ff300000000
+[E layer    ] [rsp+28] 00007ff34f7fddf0
+[E layer    ] [rsp+30] 00007ff401833e40
+[E layer    ] [rsp+38] 0000000000000000
+exit 139
