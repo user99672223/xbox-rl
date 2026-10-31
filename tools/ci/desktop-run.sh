@@ -35,7 +35,7 @@ list=(
     "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
     "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"
     "5s|900|\"xbox-rl page .*Mozilla Firefox\"|XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox"
-    "6|400|dumped the framebuffer|/bin/bash /tmp/xrl-xsession.sh tv"
+    "6|400|bridge done: .*pad events=[1-9].*dumped the framebuffer|XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv"
 )
 # tools/ci/probes-gpu.list (the GPU/Plasma session's file, docs: REPORT.md): more probes in the same format, one per line
 # ('#' comments); their milestone field is free text (g1, g2...): it names the group in the verdict lines
@@ -44,7 +44,7 @@ if [ -f tools/ci/probes-gpu.list ]; then
     while IFS= read -r l; do [[ -z $l || $l == \#* ]] || list+=("$l"); done < tools/ci/probes-gpu.list
 fi
 # XRL_MILESTONES="1 2 g1" (or "gpu": all of probes-gpu.list): run only these milestones' probes (a CI shard); probe numbers stay those of the full list,
-# so the shards' logs never collide; a probe with VAR=value words names its screenshot and logs <mode>-<probe number>. XRL_PROCS_TEST=0: skip the process tests (another shard runs them)
+# so the shards' logs never collide; a second probe of the same X session mode names its screenshot and logs <mode>-<probe number>. XRL_PROCS_TEST=0: skip the process tests (another shard runs them)
 # X sessions (milestones 3-5): tools/ci/xsession.sh in the guest; each saves /tmp/xrl-<mode>.xwd, which becomes
 # <out>/<mode>.png; a session probe passes only with its screenshot
 cp tools/ci/xsession.sh "$rootu/tmp/xrl-xsession.sh"
@@ -63,7 +63,7 @@ if [ -f layer/tests/guest/out/procs_test.elf ] && [ "${XRL_PROCS_TEST:-1}" != 0 
     echo "procs-test: exit $? ($(grep -ao 'TOTAL FAILS=[0-9]*' "$out/procs-test.txt" | tail -1))"
 fi
 n=0
-declare -A fails seen
+declare -A fails seen shots
 for e in "${list[@]}"; do
     n=$((n + 1))
     m=${e%%|*}; e=${e#*|}; t=${e%%|*}; e=${e#*|}
@@ -77,7 +77,7 @@ for e in "${list[@]}"; do
     shot=; [[ $p == *xrl-xsession.sh* ]] && { shot=${p##* }; rm -f "$rootu/tmp/xrl-$shot.xwd"; }
     s0=$SECONDS
     envs=; while [[ $p =~ ^([A-Z_]+=[^ ]*)\ (.*)$ ]]; do envs="$envs ${BASH_REMATCH[1]}"; p=${BASH_REMATCH[2]}; done   # VAR=v ...: for the host
-    tag=$shot; [ -n "$envs" ] && [ -n "$shot" ] && tag=$shot-$n
+    tag=$shot; [ -n "$shot" ] && [ -n "${shots[$shot]:-}" ] && tag=$shot-$n; [ -n "$shot" ] && shots[$shot]=1
     eval "$envs timeout $t $host \"$root\" $p" >> "$log" 2>&1
     rc=$?
     echo "exit $rc" >> "$log"

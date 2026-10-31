@@ -5,6 +5,10 @@
  *   event1  mouse          EV_KEY (BTN_LEFT..BTN_EXTRA), EV_REL (X, Y, HWHEEL, WHEEL)
  *   event2  absolute       EV_KEY (BTN_LEFT..), EV_REL (HWHEEL, WHEEL), EV_ABS (X, Y: 0..32767) - what a
  *                          VM's USB tablet looks like to Xorg/libinput, so the cursor follows the host's
+ *   event3  gamepad 0      what the kernel's xpad driver makes of an Xbox One pad: BTN_SOUTH/EAST/NORTH/WEST,
+ *                          TL/TR, SELECT/START/MODE, THUMBL/R; ABS_X/Y/RX/RY (-32768..32767), ABS_Z/RZ triggers
+ *                          (0..1023), ABS_HAT0X/Y (-1..1). Polled from xrl_input_ops get_pad_state(0) at 60 Hz
+ *                          while it is open (the TV bridge turns it into a mouse + keyboard)
  *
  * Source: xrl_input_ops (ABI v3) read_events/wait_events. One pump thread (started by the first open)
  * drains the host queue, routes each event to the devices' clients, and wakes pollers with
@@ -64,7 +68,9 @@ struct evclient {
     int dropped;                      /* SYN_DROPPED owed to the reader */
 };
 
-enum { DEV_KBD, DEV_MOUSE, DEV_ABS, NDEV };
+enum { DEV_KBD, DEV_MOUSE, DEV_ABS, DEV_PAD, NDEV };
+#define PAD_HAT0X 0x10
+#define PAD_HAT0Y 0x11
 static evdev_dev g_dev[NDEV];
 static SRWLOCK g_lock = SRWLOCK_INIT;
 static int g_inited;
@@ -91,6 +97,24 @@ static void dev_init_all(void)
     setbit(a->relbits, LXD_REL_HWHEEL); setbit(a->relbits, LXD_REL_WHEEL);
     setbit(a->absbits, 0); setbit(a->absbits, 1);
     a->absmax = XRL_ABS_MAX;
+    evdev_dev *p = &g_dev[DEV_PAD];
+    p->name = "Microsoft X-Box One pad"; p->product = 4;
+    setbit(p->evbits, EV_SYN); setbit(p->evbits, EV_KEY); setbit(p->evbits, EV_ABS);
+    static const u16 keys[] = { 0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e };
+    for (size_t i = 0; i < ARRAY_LEN(keys); i++) setbit(p->keybits, keys[i]);
+    static const u8 axes[] = { 0, 1, 2, 3, 4, 5, PAD_HAT0X, PAD_HAT0Y };
+    for (size_t i = 0; i < ARRAY_LEN(axes); i++) setbit(p->absbits, axes[i]);
+}
+
+/* the pad's axis ranges (EVIOCGABS), as xpad reports them */
+static int pad_absinfo(unsigned axis, s32 *mn, s32 *mx, s32 *fuzz, s32 *flat)
+{
+    switch (axis) {
+    case 0: case 1: case 3: case 4: *mn = -32768; *mx = 32767; *fuzz = 16; *flat = 128; return 1;
+    case 2: case 5: *mn = 0; *mx = 1023; *fuzz = 0; *flat = 0; return 1;
+    case PAD_HAT0X: case PAD_HAT0Y: *mn = -1; *mx = 1; *fuzz = 0; *flat = 0; return 1;
+    }
+    return 0;
 }
 
 /* ---- host side ---------------------------------------------------------------------------- */
@@ -153,13 +177,44 @@ static void route(const xrl_input_event *ev, unsigned n)
     xrl_io_notify();
 }
 
+/* gamepad 0 -> event3: the state's changes as events (one SYN_REPORT per poll) */
+static xrl_pad_state g_pad_last;
+static s32 g_pad_abs[0x12];
+static void pad_poll(void)
+{
+    xrl_pad_state st;
+    if (G.ctx.input->get_pad_state(0, &st) != XRL_OK || !st.connected) memset(&st, 0, sizeof st);
+    static const struct { u32 mask; u16 code; } bt[] = {
+        { 0x1000, 0x130 }, { 0x2000, 0x131 }, { 0x8000, 0x133 }, { 0x4000, 0x134 }, { 0x0100, 0x136 }, { 0x0200, 0x137 },
+        { 0x0020, 0x13a }, { 0x0010, 0x13b }, { 0x0400, 0x13c }, { 0x0040, 0x13d }, { 0x0080, 0x13e } };
+    s32 ax[0x12] = { 0 };
+    ax[0] = st.thumb_lx; ax[1] = -(s32)st.thumb_ly - (st.thumb_ly == -32768 ? 1 : 0);   /* evdev: down is + */
+    ax[3] = st.thumb_rx; ax[4] = -(s32)st.thumb_ry - (st.thumb_ry == -32768 ? 1 : 0);
+    ax[2] = st.left_trigger * 1023 / 255; ax[5] = st.right_trigger * 1023 / 255;
+    ax[PAD_HAT0X] = (st.buttons & 0x8 ? 1 : 0) - (st.buttons & 0x4 ? 1 : 0);
+    ax[PAD_HAT0Y] = (st.buttons & 0x2 ? 1 : 0) - (st.buttons & 0x1 ? 1 : 0);
+    u64 ns = xrl_real_ns();
+    int any = 0;
+    AcquireSRWLockExclusive(&g_lock);
+    for (size_t i = 0; i < ARRAY_LEN(bt); i++)
+        if ((st.buttons ^ g_pad_last.buttons) & bt[i].mask) { deliver(DEV_PAD, EV_KEY, bt[i].code, (st.buttons & bt[i].mask) ? 1 : 0, 0, ns); any = 1; }
+    for (unsigned a = 0; a < 0x12; a++)
+        if (getbit(g_dev[DEV_PAD].absbits, a) && ax[a] != g_pad_abs[a]) { deliver(DEV_PAD, EV_ABS, (u16)a, ax[a], 0, ns); g_pad_abs[a] = ax[a]; any = 1; }
+    if (any) for (int i = 0; i < g_dev[DEV_PAD].nclients; i++) push(g_dev[DEV_PAD].client[i], EV_SYN, SYN_REPORT, 0, ns);
+    ReleaseSRWLockExclusive(&g_lock);
+    g_pad_last = st;
+    if (any) xrl_io_notify();
+}
+
 static DWORD WINAPI pump_main(void *arg)
 {
     (void)arg;
     xrl_input_event buf[64];
     for (;;) {
         if (G.exiting) return 0;
-        if (G.ctx.input->wait_events(250) != XRL_OK) continue;
+        int pad = g_dev[DEV_PAD].nclients > 0 && HOST_HAS(get_pad_state);
+        if (pad) pad_poll();
+        if (G.ctx.input->wait_events(pad ? 16 : 250) != XRL_OK) continue;
         unsigned n;
         while ((n = G.ctx.input->read_events(buf, 64)) != 0) route(buf, n);
     }
@@ -173,7 +228,7 @@ static int pump_start(void)
     HANDLE h = CreateThread(NULL, 0, pump_main, NULL, 0, NULL);
     if (!h) { g_pump_started = 0; return -LX_ENOMEM; }
     CloseHandle(h);
-    LOGI("evdev: input pump started (host queue -> /dev/input/event0..2)");
+    LOGI("evdev: input pump started (host queue -> /dev/input/event0..2, gamepad 0 -> event3)");
     return 0;
 }
 
@@ -291,13 +346,20 @@ static slong ev_ioctl(xfile *f, u64 req, u64 arg)
     }
     if (nr >= 0x40 && nr < 0x40 + ABS_CNT && !in) {   /* EVIOCGABS(abs) */
         unsigned axis = nr - 0x40;
-        if (!d->absmax || axis > 1) return -LX_EINVAL;
         lx_input_absinfo ai = { 0, 0, d->absmax, 0, 0, 0 };
+        if (d == &g_dev[DEV_PAD]) {
+            if (!pad_absinfo(axis, &ai.minimum, &ai.maximum, &ai.fuzz, &ai.flat)) return -LX_EINVAL;
+            AcquireSRWLockShared(&g_lock); ai.value = axis < 0x12 ? g_pad_abs[axis] : 0; ReleaseSRWLockShared(&g_lock);
+        } else if (!d->absmax || axis > 1) return -LX_EINVAL;
         return xrl_ctu(arg, &ai, len < sizeof ai ? len : sizeof ai) ? -LX_EFAULT : 0;
     }
     switch (nr) {
     case 0x01: { int v = 0x010001; return xrl_ctu(arg, &v, 4) ? -LX_EFAULT : 0; }                 /* EVIOCGVERSION */
-    case 0x02: { u16 id[4] = { 0x06 /* BUS_VIRTUAL */, 0x1d6b, d->product, 1 }; return xrl_ctu(arg, id, 8) ? -LX_EFAULT : 0; }   /* EVIOCGID */
+    case 0x02: {                                                                                   /* EVIOCGID */
+        u16 id[4] = { 0x06 /* BUS_VIRTUAL */, 0x1d6b, d->product, 1 };
+        if (d == &g_dev[DEV_PAD]) { id[0] = 0x03 /* BUS_USB */; id[1] = 0x045e; id[2] = 0x02ea; id[3] = 0x0301; }   /* Xbox One S pad (SDL's mapping) */
+        return xrl_ctu(arg, id, 8) ? -LX_EFAULT : 0;
+    }
     case 0x03: {                                                                                   /* EVIOCGREP / EVIOCSREP */
         if (in) return 0;
         int rep[2] = { 250, 33 };
@@ -338,6 +400,7 @@ static int dev_index(const char *gabs)
 {
     if (strncmp(gabs, "/dev/input/event", 16) || !gabs[16] || gabs[17]) return -1;
     int n = gabs[16] - '0';
+    if (n == DEV_PAD && xrl_fork_tasks_enabled()) return -1;   /* Rocket League/EAC: Wine has its own gamepad path */
     return n >= 0 && n < NDEV ? n : -1;
 }
 

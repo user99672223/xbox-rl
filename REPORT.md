@@ -2,6 +2,17 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (11) - TV: the controller as mouse + keyboard (this batch)
+
+- `/dev/input/event3` (evdev.c, new; not with XRL_FORK_TASKS, where Wine has its own gamepad path): gamepad 0 as
+  the kernel's xpad driver shows an Xbox One pad (BTN_SOUTH.., ABS_X/Y/RX/RY, triggers, hat), polled from the
+  host's `get_pad_state` at 60 Hz while it is open. Linux games and SDL can use it as a real pad.
+- `xbridge` opens it when present and drives X through XTest: left stick = pointer (dead zone, quadratic speed),
+  right stick = scroll wheel, A/X/B = mouse buttons 1/2/3, D-pad = arrow keys, Start = Enter, Back = Escape,
+  Y = Space, LB = Backspace, RB = Tab, Guide = Super.
+- CI: the m6 probe now scripts presses on the test host's pad (A, B, D-pad down, Start, Y) once the input pump
+  starts, and passes only if the bridge counted them and fb0 was dumped.
+
 ## 2026-10-31 (10) - MEMORY GOAL MET IN CI: Firefox session 1989 MiB, clean teardown (run 45, 1990f68)
 
 | peak committed | run 41 (before) | run 45 |

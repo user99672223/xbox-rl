@@ -99,7 +99,7 @@ EOF
     ;;
 esac
 [ "$mode" = xterm ] && sleep 5 || sleep 20   # xfdesktop fills its icons in asynchronously
-if [ "$mode" = tv ]; then wait "$bridge"; say "bridge done: $(tail -n 3 /tmp/xrl-bridge.log | tr '\n' ' ')"; fi
+if [ "$mode" = tv ]; then wait "$bridge"; say "bridge done: $(grep -E '^gamepad|dumped|pad events|screen frames|rows written' /tmp/xrl-bridge.log | tr '\n' ' ')"; fi
 /usr/bin/xwininfo -root -tree
 /usr/bin/xwd -root -silent -out "/tmp/xrl-$mode.xwd" && say "screenshot /tmp/xrl-$mode.xwd ($(stat -c %s "/tmp/xrl-$mode.xwd") bytes)"
 for f in /tmp/xrl-*.log; do echo "--- $f"; tail -n 40 "$f"; done

@@ -12,7 +12,8 @@
  *   input   : /dev/input/event0 (keyboard), event1 (mouse), event2 (absolute pointer) become XTest FakeInput requests
  *             on the X connection: key codes are evdev's + 8, BTN_LEFT/MIDDLE/RIGHT -> buttons 1/2/3, wheels -> 4..7,
  *             ABS_X/ABS_Y -> a warp to the point, REL_X/REL_Y -> relative motion. (Opening event2 keeps the host cursor
- *             free; the bridge always opens event2 and event0, and event1 only when --rel is given, since opening event1
+ *             free; the bridge always opens event2 and event0 (and event3, the gamepad, when it exists: see
+ *             on_pad_event), and event1 only when --rel is given, since opening event1
  *             alone would capture the host mouse.)
  *   --dump <file>: at the end write /dev/fb0's pixels (raw BGRX) to <file>
  *   --verify: at the end ask the server where the pointer is (QueryPointer) and print it: proves the injection landed.
@@ -470,6 +471,65 @@ static void on_event(const struct input_event *e)
     }
 }
 
+/* the gamepad (/dev/input/event3, evdev.c) as a mouse + keyboard: left stick moves the pointer (dead zone, then
+ * faster the further it is pushed), right stick scrolls, A/X/B = buttons 1/2/3, D-pad = arrow keys, Start = Enter,
+ * Back = Escape, Y = Space, LB = Backspace, RB = Tab, Guide = Super. */
+static int pad_lx, pad_ly, pad_ry, pad_scroll_acc;
+static long pad_events;
+static void key_tap_state(u32 key, int down) { x_fake(down ? X_KEYPRESS : X_KEYRELEASE, key + 8u, 0, 0); injected++; }
+static void on_pad_event(const struct input_event *e)
+{
+    if (e->type == EV_KEY) {
+        if (e->value == 2) return;
+        pad_events++;
+        int down = e->value != 0;
+        switch (e->code) {
+        case 0x130: x_fake(down ? X_BUTTONPRESS : X_BUTTONRELEASE, 1, 0, 0); injected++; break;   /* A */
+        case 0x134: x_fake(down ? X_BUTTONPRESS : X_BUTTONRELEASE, 2, 0, 0); injected++; break;   /* X */
+        case 0x131: x_fake(down ? X_BUTTONPRESS : X_BUTTONRELEASE, 3, 0, 0); injected++; break;   /* B */
+        case 0x13b: key_tap_state(28, down); break;    /* Start: KEY_ENTER */
+        case 0x13a: key_tap_state(1, down); break;     /* Back: KEY_ESC */
+        case 0x133: key_tap_state(57, down); break;    /* Y: KEY_SPACE */
+        case 0x136: key_tap_state(14, down); break;    /* LB: KEY_BACKSPACE */
+        case 0x137: key_tap_state(15, down); break;    /* RB: KEY_TAB */
+        case 0x13c: key_tap_state(125, down); break;   /* Guide: KEY_LEFTMETA */
+        }
+    } else if (e->type == EV_ABS) {
+        static int hx, hy;
+        if (e->code == 0) pad_lx = e->value;
+        else if (e->code == 1) pad_ly = e->value;
+        else if (e->code == 4) pad_ry = e->value;
+        else if (e->code == 0x10 || e->code == 0x11) {   /* D-pad: arrows, press on change from 0, release back to 0 */
+            int *h = e->code == 0x10 ? &hx : &hy;
+            u32 neg = e->code == 0x10 ? 105u : 103u, pos = e->code == 0x10 ? 106u : 108u;   /* LEFT/RIGHT, UP/DOWN */
+            if (*h < 0) key_tap_state(neg, 0); else if (*h > 0) key_tap_state(pos, 0);
+            *h = e->value;
+            if (*h < 0) key_tap_state(neg, 1); else if (*h > 0) key_tap_state(pos, 1);
+            pad_events++;
+        }
+    }
+}
+static int stick_speed(int v)   /* pixels per 16 ms frame */
+{
+    int a = v < 0 ? -v : v;
+    const int dz = 7000;
+    if (a <= dz) return 0;
+    long f = (long)(a - dz) * 1000 / (32767 - dz);   /* 0..1000 */
+    long px = 1 + f * f * 24 / 1000000;              /* 1..25, quadratic */
+    return (int)(v < 0 ? -px : px);
+}
+static void pad_frame(void)   /* each loop pass (~16 ms): the sticks' motion and scrolling */
+{
+    int dx = stick_speed(pad_lx), dy = stick_speed(pad_ly);
+    if (dx || dy) { x_fake(X_MOTION, 1, dx, dy); injected++; }
+    pad_scroll_acc += stick_speed(pad_ry);
+    while (pad_scroll_acc >= 40 || pad_scroll_acc <= -40) {   /* one wheel click per 40 "pixels" */
+        u32 b = pad_scroll_acc > 0 ? 5u : 4u;
+        x_fake(X_BUTTONPRESS, b, 0, 0); x_fake(X_BUTTONRELEASE, b, 0, 0); injected += 2;
+        pad_scroll_acc += pad_scroll_acc > 0 ? -40 : 40;
+    }
+}
+
 void cstart(u64 *sp)
 {
     long argc = (long)sp[0];
@@ -499,7 +559,7 @@ void cstart(u64 *sp)
     if (xscreen && !tcp && !unixp) die("--x needs --unix or --tcp", 0);
     out("xbridge start\n");
 
-    int kfd = -1, mfd = -1, afd = -1;
+    int kfd = -1, mfd = -1, afd = -1, pfd = -1;
     if (tcp || unixp) {
         int ct = 0;   /* the server may still be starting */
         for (;;) {
@@ -527,16 +587,19 @@ void cstart(u64 *sp)
         afd = (int)sc3(2, "/dev/input/event2", 0x800, 0);
         if (rel) mfd = (int)sc3(2, "/dev/input/event1", 0x800, 0);
         if (kfd < 0 || afd < 0) die("cannot open the evdev devices", kfd < 0 ? kfd : afd);
+        pfd = (int)sc3(2, "/dev/input/event3", 0x800, 0);   /* the gamepad: optional */
+        out(pfd >= 0 ? "gamepad: event3 as mouse + keyboard\n" : "gamepad: none\n");
         sc3(72, xfd, 4, 0x800);   /* fcntl(F_SETFL, O_NONBLOCK) */
     } else if (!tcp && !unixp) out("no X server given: screen only\n");
     out("input-ready\n");   /* the test harness starts its clock here */
 
     u64 t0 = mono_ns(), next_screen = 0;
     while (mono_ns() - t0 < (u64)seconds * 1000000000ull) {
-        struct pollfd pf[4]; int n = 0;
+        struct pollfd pf[5]; int n = 0;
         if (kfd >= 0) { pf[n].fd = kfd; pf[n].events = 1; pf[n].revents = 0; n++; }
         if (afd >= 0) { pf[n].fd = afd; pf[n].events = 1; pf[n].revents = 0; n++; }
         if (mfd >= 0) { pf[n].fd = mfd; pf[n].events = 1; pf[n].revents = 0; n++; }
+        if (pfd >= 0) { pf[n].fd = pfd; pf[n].events = 1; pf[n].revents = 0; n++; }
         if (n) sc3(7, pf, n, 16); else { long ts[2] = { 0, 16000000 }; sc2(35, ts, 0); }
         for (int d = 0; d < n; d++) {
             if (!(pf[d].revents & 1)) continue;
@@ -544,13 +607,15 @@ void cstart(u64 *sp)
             for (;;) {
                 long r = sc3(0, pf[d].fd, ev, sizeof ev);
                 if (r <= 0) break;
-                for (long i = 0; i < r / (long)sizeof ev[0]; i++) on_event(&ev[i]);
+                for (long i = 0; i < r / (long)sizeof ev[0]; i++) { if (pf[d].fd == pfd) on_pad_event(&ev[i]); else on_event(&ev[i]); }
             }
         }
+        if (pfd >= 0 && xfd >= 0) pad_frame();
         if (xfd >= 0) x_drain();
         u64 now = mono_ns();
         if (now >= next_screen) { if (xscreen) xscreen_poll(); else screen_poll(); next_screen = now + 33000000ull; }
     }
+    outn("pad events", pad_events);
     outn("screen frames", (long)frames); outn("rows written", (long)rows_sent); outn("X requests", nreq);
     if (xscreen) outn("KiB fetched from the X server", (long)(bytes_fetched >> 10));
     if (verify && xfd >= 0) {
