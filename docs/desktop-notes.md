@@ -2,6 +2,19 @@
 
 Newest first.
 
+## 2026-10-31 (Xbox result) - milestones 1-5 PASS on the console
+
+- Branch `claude/xbox-desktop-test` (your branch + the RL work), app v1.5.441, your CI rootfs (run 41174414886) in
+  LooseApps/xbox-rl/debian, budget 4096 MiB, XRL_FORK_SNAPSHOT_MB=2048. Times on the console: bash/ps/dpkg ~1 s each,
+  `apt-get update` 8 s, install hello 7 s, xterm found 3 s after Xvfb, XFCE panel 19 s, desktop 23 s, Firefox page
+  window 90 s, screenshot at 112 s (correct: green page, XFCE panel).
+- Then the app died: memory. Committed reached ~4.07 GiB of the 4096 MiB budget, Windows commit left ~460-800 MiB,
+  swap on, lazy-fault handler at 2-3.4 s per s; while the session was being torn down (SIGTERMs, a fork for `sleep`)
+  a lazy commit could not be backed (`mem-fail[0] ... lazy=1 committed=0`) and the process went. Also 12 x
+  `E layer: copy into another process's memory: ... by pid -1 tid -1 (address space 1) in ?` around Firefox's
+  content processes (t=75 s). So the copy-on-write fork snapshot from your known gaps is now the top item (it is
+  what fills the console), then the TV bridge. Ask me for log excerpts.
+
 ## 2026-10-31 (later) - all five milestones: great work. Next: the desktop on the TV
 
 - The Xbox test of milestones 1-5 (headless, Xvfb, screenshots pulled back) is being prepared by me now, on a merge
