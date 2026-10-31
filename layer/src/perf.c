@@ -61,16 +61,30 @@ static int spin_sample(xrl_thread *t, pf_spin *s)
     s->name[sizeof s->name - 1] = 0;
     return 1;
 }
-static void spin_report(const pf_spin *s);
-/* A guest backtrace in the log: the code at rip and the return addresses into guest code on the stack at rsp (a
- * process that aborts itself: "stack smashing detected", signal.c) */
-void xrl_perf_backtrace(const char *why, int tid, u64 rip, u64 rsp)
+/* A guest backtrace in the log: the return addresses into guest code among the 16 KiB of stack at rsp, up to 24, a
+ * few per line (a process that aborts itself: "stack smashing detected", signal.c) */
+void xrl_perf_backtrace(const char *why, int pid, int tid, u64 rsp)
 {
-    pf_spin s;
-    memset(&s, 0, sizeof s);
-    s.tid = tid; s.rip = rip; s.rsp = rsp;
-    strncpy_s(s.name, sizeof s.name, why, _TRUNCATE);
-    spin_report(&s);
+    static u64 stk[2048];   /* callers are serialised by signal.c's counter; a rare path */
+    size_t got = 0;
+    MEMORY_BASIC_INFORMATION mbi;
+    if (VirtualQuery((void *)rsp, &mbi, sizeof mbi) && mbi.State == MEM_COMMIT && !(mbi.Protect & (PAGE_GUARD | PAGE_NOACCESS))) {
+        u64 end = (u64)mbi.BaseAddress + mbi.RegionSize;
+        got = end - rsp < sizeof stk ? (size_t)(end - rsp) : sizeof stk;
+        if (xrl_cfu(stk, rsp, got)) got = 0;
+    }
+    char line[600], nm[96];
+    int len = snprintf(line, sizeof line, "backtrace %s pid %d tid %d:", why, pid, tid), shown = 0, inl = 0;
+    for (size_t i = 0; i < got / 8 && shown < 24; i++) {
+        u64 off = 0;
+        if (stk[i] < 0x10000 || xrl_mem_is_exec(stk[i]) != 1) continue;
+        if (xrl_mem_name_of(stk[i], nm, sizeof nm, &off) != 1) continue;
+        const char *b = strrchr(nm, '/');
+        len += snprintf(line + len, sizeof line - len, " [sp+%zx] %s+0x%llx", i * 8, nm[0] ? (b ? b + 1 : nm) : "anon", off);
+        shown++;
+        if (++inl == 6) { LOGI("%s", line); len = snprintf(line, sizeof line, "backtrace %s pid %d (cont):", why, pid); inl = 0; }
+    }
+    if (inl || !shown) LOGI("%s", line);
 }
 
 static void spin_report(const pf_spin *s)

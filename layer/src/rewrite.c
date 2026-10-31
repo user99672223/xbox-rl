@@ -235,6 +235,11 @@ void xrl_rewrite_mapped(xfile *f, u64 addr, u64 len, s64 off, int prot)
                                   LX_MAP_PRIVATE | LX_MAP_ANONYMOUS | LX_MAP_POPULATE, -1, 0);
     if (pm < 0) { LOGE("rewrite: %s: cannot allocate %zu bytes for the trampoline pool (%lld); image left as is", name, cap, pm); goto out; }
     u8 *pool = (u8 *)pm;
+    if (!xrl_fork_tasks_enabled()) {   /* named after its image in /proc/self/maps and backtraces (EAC's maps stay as they were) */
+        char pn[96]; const char *b = strrchr(name, '/');
+        snprintf(pn, sizeof pn, "[xrl-pool %s]", b ? b + 1 : name);
+        xrl_mem_rename_range((u64)pool, (u64)pool + cap, pn);
+    }
     memset(pool, 0xcc, cap);
     u64 dlo = (u64)pool > rg[0].mem ? (u64)pool - rg[0].mem : rg[0].mem - (u64)pool;
     if (dlo > 0x70000000ull) LOGW("rewrite: %s: trampoline pool %llx is far from the code (%llx): every site becomes a trap", name, (u64)pool, rg[0].mem);

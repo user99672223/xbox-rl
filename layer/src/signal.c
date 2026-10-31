@@ -570,7 +570,7 @@ slong xrl_sys_tgkill(int tgid, int tid, int sig)
     xrl_thread *self = xrl_cur();
     if (sig == LX_SIGABRT && t == self && t->frame) {   /* abort(): where from (glibc's __stack_chk_fail, an assert...) */
         static volatile LONG n;
-        if (InterlockedIncrement(&n) <= 16) xrl_perf_backtrace("abort", t->tid, 0, t->frame + 56);
+        if (InterlockedIncrement(&n) <= 16) xrl_perf_backtrace(t->name[0] ? t->name : "abort", t->proc ? t->proc->pid : -1, t->tid, t->frame + 56);
     }
     return send_signal(t, sig, 0);
 }
