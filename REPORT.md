@@ -2,6 +2,45 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (2) - milestones 3 and 4 PASS, 5 in progress, 2 regressed (intermittent)
+
+### Milestone status (CI runs 9-11)
+1. PASS.
+2. **Intermittent FAIL since run 10** (passed runs 7 and 9): `apt-get update`'s second `store` method process dies
+   with its memory overwritten by another process's data: run 10 "stack smashing detected", run 11 a jump into its
+   ld.so trampoline pool that held apt index text. Up to the crash the logs of passing and failing runs are
+   identical (apt starts each method twice and SIGINTs the first; the second loads at the same addresses). Being
+   chased, see "Shared-code changes" below. The 1024 -> 4096 MiB budget change coincides but no swap or commit
+   activity shows in those runs.
+3. **PASS** (run 9 onwards): `xterm.png` in ci-results matches the real-Linux screenshot pixel for pixel in content
+   ("hello from xterm", uid=0(root)).
+4. **PASS** (panel, dock, desktop window; `xfce.png`). Difference from real Linux: no desktop icons (Home, File
+   System): `xfdesktop` spins at 70-100k syscalls/s (clock_gettime, read, write, readlink, getuid, getgid) instead
+   of ~600/s. Next run traces it.
+5. FAIL so far. Run 9: the test host's 1024 MiB commit budget ran out (whole session + Firefox) and the host
+   crashed -> CI now uses the Xbox app's 4096 MiB (`XRL_TEST_BUDGET_MB=4096`; peak seen since: ~1.6 GB). Runs 10-11:
+   Firefox's main process starts (and its crashhelper) but never maps a window in 300 s and prints nothing; next run
+   traces it.
+
+### Shared-code changes since the last report (all outside the XRL_FORK_TASKS path unless said)
+- `src/syscall.c` statx: `stx_dev_major/minor` split like glibc's `major()/minor()` (makedev of them == stat's
+  st_dev; it was `dev >> 8, dev & 0xff`), and `stx_rdev` filled. Shared, but only makes statx agree with stat.
+  Guest suite: `statx dev/ino == stat's`, `statx rdev == stat's (/dev/null 1:3)`.
+- `src/mem.c` `xrl_mem_snap_restore` (proc.c fork path only): bytes are restored only into ranges still owned by
+  the parent's mm, and skipped bytes are logged (a fork child can unmap parent memory before its exec, and the
+  exec'd program may map there).
+- `src/rewrite.c` (not with XRL_FORK_TASKS): a trampoline pool becomes read+exec after it is written, so a stray
+  write faults at the writer instead of corrupting code.
+- `src/systrace.c` (diagnostic only): `XRL_TRACE_COMM=<thread-name prefix>`, `XRL_TRACE_MAX=<lines>`.
+- `tools/xrl-rootfs-unpack.py`: case collisions: symlinks never collide (they are in .xrl-symlinks), directories
+  merge, files: second skipped.
+
+### For the main session
+- Your note said the Xbox RL + EAC run waits for the console; nothing new needed from you for milestones 3-4 in CI.
+  When convenient on the Xbox (desktop app config, uid 0, the rootfs from `tools/ci/rootfs.sh` with this list):
+  `/bin/bash /tmp/xrl-xsession.sh xterm` with `tools/ci/xsession.sh` copied to `/tmp/xrl-xsession.sh` (it needs no
+  screen: Xvfb), then `xfce` - and Xorg/fb0 instead of Xvfb is the step after that (not started).
+
 ## 2026-10-31 (1) - milestones 3-5 started
 
 Merged main (glibc tests in CI, keep-going rule). Read the 2026-10-31 note: thanks for the review.
