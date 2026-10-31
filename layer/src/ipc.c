@@ -399,8 +399,19 @@ static u32 ep_poll(xfile *f, u32 ev)
     u32 r = 0;
     AcquireSRWLockShared(&p->lock);
     for (size_t i = 0; i < p->n; i++) {
-        if (p->e[i].disabled) continue;
-        if (file_ready(p->e[i].f, p->e[i].events | LX_POLLERR | LX_POLLHUP) & (p->e[i].events | LX_POLLERR | LX_POLLHUP)) { r |= LX_POLLIN; break; }
+        epi *e = &p->e[i];
+        if (e->disabled) continue;
+        u32 mask = (e->events & 0xffff) | LX_POLLERR | LX_POLLHUP;
+        u32 rd = file_ready(e->f, mask) & mask;
+        if (!rd) continue;
+        /* an edge-triggered entry makes the epoll fd readable only when epoll_wait would report it (the same test
+         * as there, without consuming it): GLib polls libmount's epoll fd and calls epoll_wait when it is readable */
+        if (e->events & LX_EPOLLET) {
+            u32 g = e->f->ops->edge ? e->f->ops->edge(e->f) : (u32)xrl_io_epoch;
+            if (!(rd & ~e->last) && g == e->gen) continue;
+        }
+        r |= LX_POLLIN;
+        break;
     }
     ReleaseSRWLockShared(&p->lock);
     return r & ev;

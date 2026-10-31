@@ -2350,6 +2350,8 @@ static void test_epoll_et(void)
     CHECK(sc4(232, ep, &evo, 1, 0) == 1, "ET /proc file: reported once");
     sc3(1, pf[1], "z", 1); sc3(0, pf[0], b, 16);   /* layer I/O elsewhere */
     CHECK(sc4(232, ep, &evo, 1, 0) == 0, "ET /proc file: not again after unrelated I/O");
+    struct { int fd; short ev, rev; } pfd = { (int)ep, 1, 0 };
+    CHECK(sc3(7, &pfd, 1, 0) == 0, "...and the epoll fd itself does not poll readable for it");
     sc1(3, ep); sc1(3, mi); sc1(3, pf[0]); sc1(3, pf[1]);
 }
 

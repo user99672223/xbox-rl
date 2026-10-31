@@ -27,8 +27,8 @@ list=(
     "2|600|guest.out\] Setting up hello|XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello"
     "2|60|guest.out\] Hello, world!|/usr/bin/hello"
     "3|240|\\(\"xterm\" \"XTerm\"\\)|/bin/bash /tmp/xrl-xsession.sh xterm"
-    "4|600|found /\"\\(Desktop|XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=xfdesktop XRL_TRACE_MAX=6000 /bin/bash /tmp/xrl-xsession.sh xfce"
-    "5|900|\"xbox-rl page .*Mozilla Firefox\"|XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=firefox-esr XRL_TRACE_MAX=8000 /bin/bash /tmp/xrl-xsession.sh firefox"
+    "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
+    "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"
 )
 # X sessions (milestones 3-5): tools/ci/xsession.sh in the guest; each saves /tmp/xrl-<mode>.xwd, which becomes
 # <out>/<mode>.png; a session probe passes only with its screenshot
