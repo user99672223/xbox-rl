@@ -1,0 +1,172 @@
+diff -ruN a/src/gallium/auxiliary/target-helpers/sw_helper.h b/src/gallium/auxiliary/target-helpers/sw_helper.h
+--- a/src/gallium/auxiliary/target-helpers/sw_helper.h	2026-10-31 07:14:29.364355151 +0000
++++ b/src/gallium/auxiliary/target-helpers/sw_helper.h	2026-10-31 07:48:45.285803350 +0000
+@@ -91,7 +91,13 @@
+       if (screen)
+          return screen;
+       /* If the env var is set, don't keep trying things */
++#ifdef XRL_WIN64_ABI
++      /* xbox-rl: GALLIUM_DRIVER=d3d12 (the default of /opt/xrl-gpu/bin/xrl-gpu) falls back to the software drivers
++       * when there is no host GPU (off the layer, or no D3D12 device from the host op table) */
++      else if (i == 0 && drivers[i][0] != '\0' && strcmp(drivers[i], "d3d12") != 0)
++#else
+       else if (i == 0 && drivers[i][0] != '\0')
++#endif
+          return NULL;
+    }
+    return NULL;
+diff -ruN a/src/gallium/drivers/d3d12/d3d12_common.h b/src/gallium/drivers/d3d12/d3d12_common.h
+--- a/src/gallium/drivers/d3d12/d3d12_common.h	2026-10-31 07:14:29.436643237 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_common.h	2026-10-31 07:14:55.144718865 +0000
+@@ -52,7 +52,7 @@
+ #endif /* D3D12_TEXTURE_DATA_PITCH_ALIGNMENT */
+ 
+ #if defined(__cplusplus)
+-#if !defined(_WIN32) || defined(_MSC_VER)
++#if (!defined(_WIN32) || defined(_MSC_VER)) && !defined(XRL_WIN64_ABI)
+ inline D3D12_CPU_DESCRIPTOR_HANDLE
+ GetCPUDescriptorHandleForHeapStart(ID3D12DescriptorHeap *heap)
+ {
+diff -ruN a/src/gallium/drivers/d3d12/d3d12_compiler.cpp b/src/gallium/drivers/d3d12/d3d12_compiler.cpp
+--- a/src/gallium/drivers/d3d12/d3d12_compiler.cpp	2026-10-31 07:14:29.436827250 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_compiler.cpp	2026-10-31 07:36:30.016875501 +0000
+@@ -48,6 +48,9 @@
+ #ifdef _WIN32
+ #include "dxil_validator.h"
+ #endif
++#ifdef XRL_WIN64_ABI
++#include "xrl_dxil_hash.h"
++#endif
+ 
+ const void *
+ d3d12_get_compiler_options(struct pipe_screen *screen,
+@@ -208,6 +211,11 @@
+    }
+ #endif
+ 
++#ifdef XRL_WIN64_ABI
++   /* xbox-rl: sign the container (the digest dxil.dll would write), so a stock runtime accepts it without
++    * experimental shader models */
++   xrl_dxil_container_sign(tmp.data, (uint32_t)tmp.size);
++#endif
+    blob_finish_get_buffer(&tmp, &shader->bytecode, &shader->bytecode_length);
+ 
+    if (d3d12_debug & D3D12_DEBUG_DXIL) {
+diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.cpp b/src/gallium/drivers/d3d12/d3d12_fence.cpp
+--- a/src/gallium/drivers/d3d12/d3d12_fence.cpp	2026-10-31 07:14:29.440846946 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_fence.cpp	2026-10-31 07:14:55.146655980 +0000
+@@ -27,9 +27,30 @@
+ #include "d3d12_screen.h"
+ 
+ #include "util/u_memory.h"
++#include "util/os_time.h"
+ 
+ #include <dxguids/dxguids.h>
+ 
++#ifdef XRL_WIN64_ABI
++bool
++xrl_fence_wait(ID3D12Fence *fence, uint64_t value, uint64_t timeout_ns)
++{
++   if (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > MaxTimeoutInNs)
++      return SUCCEEDED(fence->SetEventOnCompletion(value, NULL)) && fence->GetCompletedValue() >= value;
++   /* finite: poll, sleeping 20 us doubling up to 1 ms (a frame's wait costs a few dozen host calls) */
++   int64_t end = os_time_get_nano() + (int64_t)timeout_ns;
++   int64_t us = 20;
++   while (fence->GetCompletedValue() < value) {
++      if (os_time_get_nano() >= end)
++         return false;
++      os_time_sleep(us);
++      if (us < 1000)
++         us *= 2;
++   }
++   return true;
++}
++#endif
++
+ static void
+ destroy_fence(struct d3d12_fence *fence)
+ {
+@@ -51,7 +72,8 @@
+    ret->event = d3d12_fence_create_event(&ret->event_fd);
+    if (FAILED(screen->cmdqueue->Signal(screen->fence, ret->value)))
+       goto fail;
+-   if (FAILED(screen->fence->SetEventOnCompletion(ret->value, ret->event)))
++   /* a NULL event would make SetEventOnCompletion block here (xbox-rl has none: d3d12_fence.h) */
++   if (ret->event && FAILED(screen->fence->SetEventOnCompletion(ret->value, ret->event)))
+       goto fail;
+ 
+    pipe_reference_init(&ret->reference, 1);
+@@ -114,8 +136,13 @@
+       return true;
+    
+    bool complete = fence->cmdqueue_fence->GetCompletedValue() >= fence->value;
++#ifdef XRL_WIN64_ABI
++   if (!complete && timeout_ns)
++      complete = xrl_fence_wait(fence->cmdqueue_fence, fence->value, timeout_ns);
++#else
+    if (!complete && timeout_ns)
+       complete = d3d12_fence_wait_event(fence->event, fence->event_fd, timeout_ns);
++#endif
+ 
+    fence->signaled = complete;
+    return complete;
+diff -ruN a/src/gallium/drivers/d3d12/d3d12_fence.h b/src/gallium/drivers/d3d12/d3d12_fence.h
+--- a/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 07:14:29.441049629 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_fence.h	2026-10-31 07:14:55.145018823 +0000
+@@ -53,6 +53,30 @@
+    DWORD timeout_ms = (timeout_ns == OS_TIMEOUT_INFINITE || timeout_ns > MaxTimeoutInNs) ? INFINITE : (DWORD)(timeout_ns / NsPerMs);
+    return WaitForSingleObject(event, timeout_ms) == WAIT_OBJECT_0;
+ }
++#elif defined(XRL_WIN64_ABI)
++/* xbox-rl: the runtime is the console's Windows D3D12, whose SetEventOnCompletion takes a Win32 event handle (an
++ * eventfd means nothing to it). No event at all: d3d12_fence_finish polls a finite wait and blocks in
++ * SetEventOnCompletion(value, NULL) for an infinite one (xrl_fence_wait in d3d12_fence.cpp). */
++inline void
++d3d12_fence_close_event(HANDLE event, int fd)
++{
++}
++
++inline HANDLE
++d3d12_fence_create_event(int *fd)
++{
++   *fd = -1;
++   return NULL;
++}
++
++bool
++xrl_fence_wait(ID3D12Fence *fence, uint64_t value, uint64_t timeout_ns);
++
++inline bool
++d3d12_fence_wait_event(HANDLE event, int event_fd, uint64_t timeout_ns)
++{
++   return false;   /* the video paths' waits; d3d12_fence_finish uses xrl_fence_wait */
++}
+ #else
+ #include <sys/eventfd.h>
+ #include <poll.h>
+diff -ruN a/src/gallium/drivers/d3d12/d3d12_video_types.h b/src/gallium/drivers/d3d12/d3d12_video_types.h
+--- a/src/gallium/drivers/d3d12/d3d12_video_types.h	2026-10-31 07:14:29.476865330 +0000
++++ b/src/gallium/drivers/d3d12/d3d12_video_types.h	2026-10-31 07:14:55.144892255 +0000
+@@ -42,7 +42,7 @@
+ 
+ #define D3D12_VIDEO_ANY_DECODER_ENABLED (VIDEO_CODEC_H264DEC || VIDEO_CODEC_H265DEC || VIDEO_CODEC_AV1DEC || VIDEO_CODEC_VP9DEC)
+ 
+-#if !defined(_WIN32) || defined(_MSC_VER)
++#if (!defined(_WIN32) || defined(_MSC_VER)) && !defined(XRL_WIN64_ABI)
+ inline D3D12_VIDEO_DECODER_HEAP_DESC
+ GetDesc(ID3D12VideoDecoderHeap *heap)
+ {
+diff -ruN a/src/gallium/drivers/d3d12/meson.build b/src/gallium/drivers/d3d12/meson.build
+--- a/src/gallium/drivers/d3d12/meson.build	2026-10-31 07:14:29.477231418 +0000
++++ b/src/gallium/drivers/d3d12/meson.build	2026-10-31 07:15:09.774599039 +0000
+@@ -135,6 +135,10 @@
+ if is_xbox == false
+   files_libd3d12 += files('d3d12_dxcore_screen.cpp')
+ endif
++if get_option('cpp_args').contains('-DXRL_WIN64_ABI')
++  # xbox-rl: DXIL and root signatures are signed in-process (desktop/gpu/xrl-d3d12/dxil_hash.c)
++  files_libd3d12 += files('xrl_dxil_hash.c')
++endif
+ 
+ libd3d12 = static_library(
+   'd3d12',

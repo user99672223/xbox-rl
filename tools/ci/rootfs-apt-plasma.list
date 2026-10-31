@@ -1,0 +1,13 @@
+# KDE Plasma 6 (X11 session) for the CI rootfs, installed by tools/ci/rootfs.sh with apt-get --no-install-recommends
+# in the chroot (debootstrap's resolver cannot handle Plasma's alternatives). Owned by the GPU/Plasma work (branch
+# claude/desktop-gpu, REPORT.md there); XFCE in rootfs-debian.list stays the light fallback.
+# No Papirus (130k icon files: slow to unpack on NTFS); the theme, wallpaper and session script come from
+# desktop/build-overlay.sh, OpenGL on D3D12 from desktop/gpu/build-mesa.sh (/opt/xrl-gpu).
+# The session: plasma-workspace (startplasma-x11, plasmashell, ksmserver), the desktop shell and its KCMs, KWin on X11.
+plasma-workspace plasma-desktop kwin-x11 plasma-integration kde-cli-tools
+# Look: Breeze (Qt style, window decoration, cursors, GTK theme), the icon theme, Inter + JetBrains Mono fonts.
+breeze breeze-cursor-theme breeze-gtk-theme kf6-breeze-icon-theme kde-config-gtk-style fonts-inter fonts-jetbrains-mono fonts-noto-color-emoji
+# Apps: terminal, file manager, settings, the launcher's search.
+konsole dolphin systemsettings milou
+# OpenGL checks (glxinfo, glxgears, eglinfo), window tools for the session script, libxcb-composite for xrl-cow-id.
+mesa-utils xdotool libxcb-composite0

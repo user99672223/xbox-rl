@@ -1,3 +1,91 @@
+# GPU/Plasma session report (branch `claude/desktop-gpu`)
+
+Session B: KDE Plasma 6 on the Debian desktop, then OpenGL/Vulkan on the console's D3D12. Newest first; read with
+`git fetch origin claude/desktop-gpu`. Session A's report (branch `claude/desktop-debian`) follows below unchanged.
+
+## 2026-10-31 (B1) - Plasma 6 themed session (local reference) and Mesa d3d12 on Win64 COM (built, not run yet)
+
+### Step 1: KDE Plasma 6 (X11) on llvmpipe
+- **Packages:** `tools/ci/rootfs-apt-plasma.list` (A's apt stage in rootfs.sh): plasma-workspace, plasma-desktop,
+  kwin-x11, Breeze (style, decoration, cursors, GTK), Breeze icons, Inter + JetBrains Mono + Noto Color Emoji,
+  Konsole, Dolphin, System Settings, mesa-utils, xdotool. No Papirus (130k files). Local build with the same packages:
+  598 MB tar.gz (was 288), 37.5k regular files + 27.5k symlinks (was 12.3k files), 1.7 GB unpacked.
+- **Look** (`desktop/plasma/rootfs/`, packed by `desktop/build-overlay.sh`): Breeze Dark with a green accent
+  (#2eb35a; the `[Colors:*]` groups are in `/etc/xdg/kdeglobals`, since Qt apps read those, not the scheme name),
+  Inter 10 for the UI, JetBrains Mono 11 in Konsole, Breeze Dark icons (folders follow the accent), a look-and-feel
+  package `org.xboxrl.desktop` whose first-start layout is **one floating dock**, bottom centre, fit to content
+  (launcher, Konsole/Dolphin/Firefox/Settings pinned, tray, clock, 3 grid units high for the TV), an original SVG
+  wallpaper (`/usr/share/wallpapers/xbox-rl`), no splash, no lock screen, no Baloo, no KWallet, systemd-less startup.
+- **Session script** `/usr/local/bin/xrl-plasma-session <plasma|plasma-gpu|plasma-tv|glx|glx-gpu>` (overlay):
+  Xvfb (XRL_SCREEN, default 1920x1080), its own session bus, startplasma-x11, waits for the desktop and the dock,
+  opens Konsole, runs glxgears 12 s, prints memory per process (RSS) and the PSS total, saves
+  `/tmp/xrl-<mode>.xwd`. `plasma-tv` adds A's xbridge (fb0 dump at the end); `XRL_SESSION_SECONDS=0` keeps it up
+  (the Xbox). XFCE stays as the light fallback (A's `xsession.sh xfce`).
+- **Reference (real Linux, chroot of that rootfs, 1920x1080, llvmpipe, 4 cores):** desktop window 3-6 s, dock 13 s,
+  session up 22 s; **PSS 678 MiB for the whole session with Konsole open** (25 processes; RSS sum 1537 MiB, shared
+  Qt/KF6 pages counted many times); glxgears 971 fps (KWin not compositing), 575-814 fps composited. Biggest PSS
+  users by RSS: plasmashell 445, kwin_x11 245, kded6 144, konsole 142, kaccess 122, ksmserver 122, Xvfb 108 MiB.
+- **The full chain, locally:** A's rootfs.sh (apt stage) with `rootfs-apt-plasma.list` builds (598 MB);
+  `desktop/merge-rootfs.sh` adds both overlays (604 MB, 1m43s); in that tree `xrl-plasma-session plasma-gpu`
+  (1280x720) tries d3d12, finds no host op table (off the layer), falls back to llvmpipe and composites: session up
+  23 s, PSS 662 MiB, glxgears 898 fps. Composited, the Qt title-bar defect below shows, and the floating dock gets a
+  black band above it.
+- **KWin finding (Xvfb + GLX on a software winsys):** `Bogus refresh rate -1000` (Xvfb's RandR has no rate) broke
+  KWin's frame scheduling; the session sets `KWIN_X11_REFRESH_RATE=60000 KWIN_X11_FORCE_SOFTWARE_VSYNC=1
+  KWIN_USE_BUFFER_AGE=0`. Even then KWin's **compositor leaves the title bars of Qt windows unpainted** (xterm's are
+  fine; frame extents are set; restarting compositing repaints them once). So on llvmpipe the session runs KWin
+  **without compositing** (`KWIN_COMPOSE=N`; decorations correct, less CPU per frame); with the GPU it composites
+  (`XRL_COMPOSITE=0|1` overrides). Under compositing, screenshots must read KWin's composite overlay window
+  (`xrl-cow-id`, python3 + libxcb-composite): GetImage on the root shows the windows without decorations.
+
+### Step 2: Mesa d3d12 (GL on D3D12) for the layer - built and unit-tested, first run waits for CI wiring
+Design in `desktop/gpu/README.md`. Summary:
+- Mesa 25.0.7 (trixie's version) built for Debian 13 into `/opt/xrl-gpu` by `desktop/gpu/build-mesa.sh` (docker
+  debian:trixie or a debootstrap chroot; inputs pinned), gallium d3d12 + llvmpipe, GLX via glvnd on the DRI software
+  winsys, `-DXRL_WIN64_ABI`: DirectX-Headers' `STDMETHODCALLTYPE`/`WINAPI` = `__attribute__((ms_abi))`, struct
+  returns through MSVC's hidden pointer (the headers' MinGW declarations). Checked in the disassembly: this in rcx,
+  return pointer in rdx, 32-byte shadow space.
+- `libxrl-d3d12.so` = `libd3d12.so` + `libdxcore.so` (what Mesa's WSL path dlopens): `D3D12CreateDevice` returns
+  the host's device from `XRL_SYS_GET_GFX_OPS` -> `xrl_gfx_ops.d3d12_create_device` (once per process),
+  `DXCoreCreateAdapterFactory` one adapter described by `get_adapter_info`, a root-signature serializer, container
+  signing. **No new host op is needed for GL**: the layer's com.c already makes COM calls from guest threads safe.
+- Mesa patch (`desktop/gpu/patches/mesa-25.0.7-xrl-win64-abi.patch`, 7 files): fences without eventfds (Windows
+  D3D12 takes Win32 events: poll for finite waits, `SetEventOnCompletion(v, NULL)` for infinite ones); DXIL signed
+  in-process (no dxil.dll; experimental shader models would need developer mode); `GALLIUM_DRIVER=d3d12` falls back
+  to llvmpipe when no host GPU.
+- **Tests (local):** the digest code matches all 66 fxc-signed shaders and the serializer reproduces all 24 fxc root
+  signatures byte for byte (vkd3d's test data, `desktop/gpu/tests/rootsig-test.sh`, run by build-mesa.sh). Off the
+  layer `xrl-gpu glxinfo` falls back to llvmpipe from this Mesa; the shim logs "no host graphics op table".
+- `/opt/xrl-gpu/bin/xrl-gpu <prog>` runs a program on it. Tarball 6.2 MB.
+
+### Requests for A (interfaces; nothing in layer/src needed yet)
+1. **Merge the overlays into the CI rootfs** (ci.yml, linux job, after the rootfs step):
+   ```
+   - cache: path xrl-gpu.tar.gz, key xrl-gpu-${{ hashFiles('desktop/gpu/**', 'include/xrl_abi.h') }}
+   - on miss: bash desktop/gpu/build-mesa.sh xrl-gpu.tar.gz     # docker debian:trixie; the first build is ~20-30 min
+   - bash desktop/build-overlay.sh xrl-desktop.tar.gz          # seconds, no cache
+   - sudo bash desktop/merge-rootfs.sh rootfs.tar.gz rootfs.tar.gz xrl-desktop.tar.gz xrl-gpu.tar.gz
+   ```
+   (merge-rootfs.sh skips a missing overlay; in = out is fine.) The linux job's timeout may need 60 -> 90 min for
+   an uncached Mesa build.
+2. **desktop-run.sh:** treat commands containing `xrl-plasma-session` like `xrl-xsession.sh` (last word = the
+   screenshot `/tmp/xrl-<word>.xwd`, logs `/tmp/xrl-*.log`), so g2-g4 get `plasma.png`, `glx-gpu.png`,
+   `plasma-gpu.png`.
+3. **layer/tests/desktop_gfx.cpp:** `XRL_GFX_WARP=1` -> `cfg.flags |= XRL_GFX_FLAG_ALLOW_WARP` (the runner has no
+   GPU; g3/g4 run with `XRL_REAL_GFX=1 XRL_GFX_WARP=1`).
+4. **xbridge, for Plasma on the TV with compositing (GPU mode):** read the picture from the Composite overlay window
+   (`CompositeGetOverlayWindow(root)`, when `_NET_WM_CM_S0` has an owner) instead of the root window: GetImage on
+   the root of a composited screen returns the windows without their decorations/shadows (verified on real Xvfb +
+   KWin). And draw the cursor (XFixesGetCursorImage), which no GetImage includes.
+5. **Watch in the first g3/g4 logs:** the first Linux (non-Wine) program calling host COM objects through com.c,
+   and Mesa's threads making those calls; I will chase what shows up.
+
+### For the main session (Xbox)
+Nothing to run yet: g2-g4 first need the overlays in the CI rootfs (request 1). Then: the same rootfs (with the
+overlays), `/usr/local/bin/xrl-plasma-session plasma-tv` with `XRL_SESSION_SECONDS=0` (Plasma on the TV, d3d12 on
+the console's GPU). The desktop app must not set `XRL_D3D11=native` (its d3d12_create_device then hands out a
+stand-in device).
+
 # Desktop session report (branch `claude/desktop-debian`)
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
