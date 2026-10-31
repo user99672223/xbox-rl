@@ -11,48 +11,48 @@ $ XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
 [I layer    ] placeholder probe: unmap back to a placeholder: ok
 [I layer    ] placeholder probe: private 4 KiB allocation in a 4 KiB piece: ok (0)
 [I layer    ] placeholder probe: commit charge: read-only 64 MiB view +132 KiB (ok), copy-on-write view +0 KiB (refused), 16 MiB written into it +0 KiB
-[I layer    ] mem: arena [7ef4c5780000,7ff4c5780000) 1048576 MiB VA, brk <= 7ef505780000, commit budget 4096 MiB, granularity 65536
-[I layer    ] img: shared library pages on (XRL_SHARED_TEXT): image region [7ee485780000,7ef485780000)
+[I layer    ] mem: arena [7ef4a1ff0000,7ff4a1ff0000) 1048576 MiB VA, brk <= 7ef4e1ff0000, commit budget 4096 MiB, granularity 65536
+[I layer    ] img: shared library pages on (XRL_SHARED_TEXT): image region [7ee461ff0000,7ef461ff0000)
 [I layer    ] signal: VEH installed
 [I layer    ] perf: numbers every 10 s (XRL_PERF)
 [I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
 [I layer    ] vfs: modes and owners on: 1448 entries from .xrl-meta (default owner 0:0)
 [I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
 [I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
-[I layer    ] rewrite: /usr/bin/true: 0 syscall + 43 %fs + 0 %gs sites (0 in place, 43 jumps, 0 traps, 0 neighbours moved), pool 1728 bytes at 7ff4bd780000 in 0.5 ms
-[I layer    ] elf: loaded /usr/bin/true type=DYN bias=7ff4bd775000 span=[7ff4bd775000,7ff4bd780000) entry=7ff4bd7777e0
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff4bd720000 in 4.1 ms
-[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff4bd73d000 span=[7ff4bd73d000,7ff4bd775000) entry=7ff4bd75a2c0
+[I layer    ] rewrite: /usr/bin/true: 0 syscall + 43 %fs + 0 %gs sites (0 in place, 43 jumps, 0 traps, 0 neighbours moved), pool 1728 bytes at 7ff499ff0000 in 0.7 ms
+[I layer    ] elf: loaded /usr/bin/true type=DYN bias=7ff499fe5000 span=[7ff499fe5000,7ff499ff0000) entry=7ff499fe77e0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff499f90000 in 5.5 ms
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff499fad000 span=[7ff499fad000,7ff499fe5000) entry=7ff499fca2c0
 [I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
-[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000001E9DCD7ACB0)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=000001EAAFB85480)
 [I layer    ] boot: building initial stack
-[I layer    ] boot: stack sp=7ff4bd71fd30
-[I layer    ] boot: guest main thread tid=1472 entry=7ff4bd75a2c0 sp=7ff4bd71fd30
+[I layer    ] boot: stack sp=7ff499f8fd30
+[I layer    ] boot: guest main thread tid=1224 entry=7ff499fca2c0 sp=7ff499f8fd30
 [I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.052 us
-[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ef485540000 in 37.6 ms
-[W layer    ] ENOSYS 334 rseq (a1=7ff4bd734680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ef461db0000 in 49.2 ms
+[W layer    ] ENOSYS 334 rseq (a1=7ff499fa4680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
 [I layer    ] boot: FS-base re-arm faults handled: 0
 [I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
 [W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
 [W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
 [W layer    ] mem-fail: full guest memory map (2516 bytes) follows:
-[W layer    ] MAP 7ef485540000-7ef485578000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
-7ef485580000-7ef4855a8000 r--p 00000000 00:00 281474976712772                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ef4855a8000-7ef48570b000 r-xp 00028000 00:00 281474976712772                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ef48570b000-7ef485761000 r--p 0018b000 00:00 281474976712772                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ef485761000-7ef485765000 r--p 001e0000 00:00 281474976712772                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ef485765000-7ef485767000 rw-p 001e4000 00:00 281474976712772                        /usr/lib/x86_64-linux-gnu/libc.so.6
-7ef485767000-7ef485774000 rw-p 00000000 00:00 0 
-7ff4bcf1f000-7ff4bcf20000 ---p 00000000 00:00 0                        [stack]
-7ff4bcf20000-7ff4bd720000 rw-p 00000000 00:00 0                        [stack]
-7ff4bd720000-7ff4bd722000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
-7ff4bd734000-7ff4bd737000 rw-p 00000000 00:00 0 
-7ff4bd737000-7ff4bd739000 rw-p 00000000
-[W layer    ] MAP 77c000 r-xp 00002000 00:00 281474976712400                        /usr/bin/true
-7ff4bd77c000-7ff4bd77e000 r--p 00007000 00:00 281474976712400                        /usr/bin/true
-7ff4bd77e000-7ff4bd77f000 r--p 00009000 00:00 281474976712400                        /usr/bin/true
-7ff4bd77f000-7ff4bd780000 rw-p 0000a000 00:00 281474976712400                        /usr/bin/true
-7ff4bd780000-7ff4bd781000 r-xp 00000000 00:00 0                        [xrl-pool true]
+[W layer    ] MAP 7ef461db0000-7ef461de8000 r-xp 00000000 00:00 0                        [xrl-pool libc.so.6]
+7ef461df0000-7ef461e18000 r--p 00000000 00:00 281474976712771                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef461e18000-7ef461f7b000 r-xp 00028000 00:00 281474976712771                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef461f7b000-7ef461fd1000 r--p 0018b000 00:00 281474976712771                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef461fd1000-7ef461fd5000 r--p 001e0000 00:00 281474976712771                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef461fd5000-7ef461fd7000 rw-p 001e4000 00:00 281474976712771                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ef461fd7000-7ef461fe4000 rw-p 00000000 00:00 0 
+7ff49978f000-7ff499790000 ---p 00000000 00:00 0                        [stack]
+7ff499790000-7ff499f90000 rw-p 00000000 00:00 0                        [stack]
+7ff499f90000-7ff499f92000 r-xp 00000000 00:00 0                        [xrl-pool ld-linux-x86-64.so.2]
+7ff499fa4000-7ff499fa7000 rw-p 00000000 00:00 0 
+7ff499fa7000-7ff499fa9000 rw-p 00000000
+[W layer    ] MAP fec000 r-xp 00002000 00:00 281474976712400                        /usr/bin/true
+7ff499fec000-7ff499fee000 r--p 00007000 00:00 281474976712400                        /usr/bin/true
+7ff499fee000-7ff499fef000 r--p 00009000 00:00 281474976712400                        /usr/bin/true
+7ff499fef000-7ff499ff0000 rw-p 0000a000 00:00 281474976712400                        /usr/bin/true
+7ff499ff0000-7ff499ff1000 r-xp 00000000 00:00 0                        [xrl-pool true]
 7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
 7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
 ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
