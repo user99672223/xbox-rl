@@ -55,6 +55,7 @@ typedef struct vma {
     u64 mid;                /* the mmap that made it: separate mappings never merge, so
                              * "the mapping containing X" (a new thread's stack) stays its own */
     u32 owner;              /* the mm (guest process address space) that mapped it (proc.c) */
+    int cpid;               /* the process that mapped it (a fork child shares its parent's mm until it execs) */
     char name[160];         /* guest path of a file map, or "[stack]" */
 } vma;
 
@@ -1595,6 +1596,7 @@ static slong map_range(u64 addr, u64 len, int prot, int shared, xfile *file, s64
         v.start = addr; v.end = end; v.prot = prot; v.committed = committed; v.lazy = lazy; v.shared = shared;
         v.mid = ++g_next_mid;
         v.owner = cur_mm();
+        { xrl_proc *cp = xrl_curproc(); v.cpid = cp ? cp->pid : 0; }
         vma_name(&v, name);
         if (file) {
             lx_stat fst;
@@ -2542,10 +2544,14 @@ void xrl_mem_snap_restore(xrl_msnap *sn)
     u32 mm = sn->mm;
     u64 *rg = NULL;
     size_t n = 0, cap = 0;
-    /* 1. what the child mapped (everything newer than the snapshot) goes */
+    /* 1. what the child mapped (everything newer than the snapshot) goes - not what this process mapped itself
+     * meanwhile: another of its threads may have been in mmap during the fork (Firefox), and freeing that range let
+     * the exec'd child map there while the thread wrote to it ("stack smashing detected" in the child) */
+    xrl_proc *rp = xrl_curproc();
+    int me = rp ? rp->pid : 0;
     AcquireSRWLockShared(&g_lock);
     for (size_t i = 0; i < g_n; i++) {
-        if (g_v[i].owner != mm || g_v[i].mid <= sn->mid_mark) continue;
+        if (g_v[i].owner != mm || g_v[i].mid <= sn->mid_mark || (me && g_v[i].cpid == me)) continue;
         if (n + 2 > cap) {
             u64 *nr = (u64 *)realloc(rg, (cap ? cap * 2 : 64) * sizeof(u64));
             if (!nr) break;
