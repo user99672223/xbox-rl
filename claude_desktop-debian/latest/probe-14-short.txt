@@ -1,0 +1,36 @@
+[W layer    ] ENOSYS 334 rseq (a1=7ff45dd88680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff45d1b16a0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff45d29d680 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff45d29b680 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff45ca24680 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I guest.out] [xsession +2s] display up after 1 tries
+[W layer    ] ENOSYS 334 rseq (a1=7ff45d187680 a2=20 a3=0) hit #16 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 434 pidfd_open (a1=10fc a2=0 a3=0) hit #1
+[W layer    ] ENOSYS 125 capget (a1=7ff45d055818 a2=0 a3=0) hit #1
+[E layer    ] rewrite: /usr/bin/x86_64-linux-gnu-cpp-14: cannot make code writable
+[E layer    ] exec: /usr/libexec/gcc/x86_64-linux-gnu/14/cc1 is not position independent and needs [400000,266a000), which address-space 23 (another live process) uses: -ENOMEM (run it as the only process, or build it as PIE)
+[W layer    ] ENOSYS 334 rseq (a1=7ff45985e680 a2=20 a3=0) hit #32 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 434 pidfd_open (a1=75c a2=0 a3=0) hit #2
+[W layer    ] ENOSYS 434 pidfd_open (a1=16ec a2=0 a3=0) hit #3
+[W layer    ] ENOSYS 434 pidfd_open (a1=1a38 a2=0 a3=0) hit #4
+[I guest.out] [xsession +15s] found /"xfce4-panel"/
+[W layer    ] ENOSYS 434 pidfd_open (a1=75c a2=0 a3=0) hit #8
+[W layer    ] ENOSYS 303 name_to_handle_at (a1=ffffff9c a2=7ff39b0c1d43 a3=7ff3a0047470) hit #1
+[W layer    ] mem-fail[0] addr=ffffffffffffffff access=0 vma=NONE [0,0) prot=0 lazy=0 committed=0 host(state=0 prot=0)
+[E layer    ] === UNHANDLED GUEST FAULT tid 7988 code c0000005 rip 00007ff3916f6eb4 addr ffffffffffffffff (0) rsp 00007ff38a46a5a8 teb-stack [00007ff38a429000,00007ff38a47a000) ===
+[E layer    ] ACCESS_VIOLATION (0xc0000005) at rip=00007ff3916f6eb4  fault_addr=ffffffffffffffff (read)
+[E layer    ] rax=0000000000000003 rbx=00007ff3947ed3b0 rcx=000000000000000d rdx=000000000000ffff
+[E layer    ] rsi=00007ff3886fcd70 rdi=fffeb7e9fa1e0ff0 rbp=00007ff3886fcd7d rsp=00007ff38a46a5a8
+[E layer    ] r8 =000000000000ffff r9 =ffffffffffffaa58 r10=00007ff3916f6eb0 r11=fffffffffdeba5a9
+[E layer    ] r12=0000000000000000 r13=0000000000000000 r14=00007ff391708000 r15=00007ff38c53d000
+[E layer    ] fs_base(guest tp)=0000000000000000 fsbase_now=0000000000000000 eflags=00010216
+[E layer    ] code @rip: 66 0f 6f 17 66 0f 6f 0e 66 0f 74 c1
+[E layer    ] [rsp+00] 00007ff3916ddf94
+[E layer    ] [rsp+08] 00007ff391708000
+[E layer    ] [rsp+10] 00007ff3886fcd7d
+[E layer    ] [rsp+18] 00007ff36857d008
+[E layer    ] [rsp+20] 00007ff3916db474
+[E layer    ] [rsp+28] 0000000000000001
+[E layer    ] [rsp+30] 0000000100000000
+[E layer    ] [rsp+38] 00007ff3893a4a90
+exit 139

@@ -1,0 +1,72 @@
+$ /bin/bash -c 'echo hello from bash; uname -a'
+[I layer    ] layer 0.1.0 booting (ABI v3), argv[0]=/bin/bash, 3 args, 7 env, budget=4096 MiB
+[I layer    ] threads: FSGSBASE NOT usable (cpuid=0); TP slot gs:[0x1678] claimed -> guest thread pointer via TP slot (guests must be patched)
+[I layer    ] teb: guest/host TEB views enabled (100 qwords per transition)
+[I layer    ] rng: seeded from system RNG
+[I layer    ] mem: arena [7ef4532c0000,7ff4532c0000) 1048576 MiB VA, brk <= 7ef4932c0000, commit budget 4096 MiB, granularity 65536
+[I layer    ] signal: VEH installed
+[I layer    ] perf: numbers every 10 s (XRL_PERF)
+[I layer    ] vfs: loaded 518 symlinks from .xrl-symlinks
+[I layer    ] vfs: modes and owners on: 1447 entries from .xrl-meta (default owner 0:0)
+[I layer    ] vfs: root=D:\a\_temp\rootfs (522 symlinks)
+[I layer    ] threads: guest GS base in TlsSlots[4] (gs:[0x14a0])
+[I layer    ] rewrite: /usr/bin/bash: 0 syscall + 869 %fs + 0 %gs sites (0 in place, 869 jumps, 0 traps, 0 neighbours moved), pool 35232 bytes at 7ff44b16f000
+[I layer    ] elf: loaded /bin/bash type=DYN bias=7ff44b178000 span=[7ff44b178000,7ff44b2c0000) entry=7ff44b1a9760
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff44b135000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff44b137000 span=[7ff44b137000,7ff44b16f000) entry=7ff44b1542c0
+[I layer    ] boot: interpreter /lib64/ld-linux-x86-64.so.2 is not musl: no EAC libc fixup (glibc's own layout applies)
+[I layer    ] guestctx: 10 SysV stubs generated for host op tables (ctx=0000017FBA349970)
+[I layer    ] boot: building initial stack
+[I layer    ] boot: stack sp=7ff44b134d00
+[I layer    ] boot: guest main thread tid=2288 entry=7ff44b1542c0 sp=7ff44b134d00
+[I layer    ] teb: a view swap pair (guest->host->guest, 100 qwords each way) takes 0.088 us
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libtinfo.so.6.5: 0 syscall + 77 %fs + 0 %gs sites (0 in place, 77 jumps, 0 traps, 0 neighbours moved), pool 3088 bytes at 7ff44a8f7000
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff44a6cb000
+[W layer    ] ENOSYS 334 rseq (a1=7ff44a6c8680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[I guest.out] hello from bash
+[I layer    ] exec: pid 3464 tid 2288 -> /usr/bin/uname (2 args, 10 env)
+[I layer    ] exec: pid 3464 leaves address space 1 (1 user(s)), released in place
+[I layer    ] exec: guest memory committed 12 MiB -> 0 MiB after releasing the old image
+[I layer    ] rewrite: /usr/bin/uname: 0 syscall + 45 %fs + 0 %gs sites (0 in place, 45 jumps, 0 traps, 0 neighbours moved), pool 1808 bytes at 7ff44b2b3000
+[I layer    ] elf: loaded /usr/bin/uname type=DYN bias=7ff44b2b4000 span=[7ff44b2b4000,7ff44b2c0000) entry=7ff44b2b6b20
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2: 53 syscall + 61 %fs + 0 %gs sites (1 in place, 113 jumps, 0 traps, 63 neighbours moved), pool 5127 bytes at 7ff44b279000
+[I layer    ] elf: loaded /lib64/ld-linux-x86-64.so.2 (interpreter) type=DYN bias=7ff44b27b000 span=[7ff44b27b000,7ff44b2b3000) entry=7ff44b2982c0
+[I layer    ] exec: /usr/bin/uname running, main thread tid 7044 entry 7ff44b2982c0
+[I layer    ] rewrite: /usr/lib/x86_64-linux-gnu/libc.so.6: 423 syscall + 4565 %fs + 0 %gs sites (23 in place, 4941 jumps, 17 traps, 1851 neighbours moved), pool 229185 bytes at 7ff44a846000
+[W layer    ] ENOSYS 334 rseq (a1=7ff44a843680 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[I guest.out] Linux runnervmnjgfq 6.1.0-21-amd64 #1 SMP PREEMPT_DYNAMIC Debian 6.1.90-1 (2024-05-03) x86_64 GNU/Linux
+[I layer    ] boot: FS-base re-arm faults handled: 0
+[I layer    ] boot: guest exiting with code 0; draining 0 thread(s)
+[W layer    ] dbt-fault: 0 real fault(s), 0 benign exception(s) skipped; last fault is the crash:
+[W layer    ] mem-fail: 0 lazy-commit fault(s) the handler could NOT back (these escape -> crash); last is the fatal one:
+[W layer    ] mem-fail: full guest memory map (4050 bytes) follows:
+[W layer    ] MAP 7ef4532c0000-7ef4532e1000 rw-p 00000000 00:00 0                        [heap]
+7ff44a7db000-7ff44a835000 r--p 00000000 00:00 281474976714196                        /usr/lib/locale/C.utf8/LC_CTYPE
+7ff44a835000-7ff44a836000 r--p 00000000 00:00 281474976714198                        /usr/lib/locale/C.utf8/LC_NUMERIC
+7ff44a836000-7ff44a837000 r--p 00000000 00:00 281474976714202                        /usr/lib/locale/C.utf8/LC_TIME
+7ff44a837000-7ff44a838000 r--p 00000000 00:00 281474976714195                        /usr/lib/locale/C.utf8/LC_COLLATE
+7ff44a838000-7ff44a839000 r--p 00000000 00:00 281474976714206                        /usr/lib/locale/C.utf8/LC_MONETARY
+7ff44a839000-7ff44a83a000 r--p 00000000 00:00 281474976714205                        /usr/lib/locale/C.utf8/LC_MESSAGES/SYS_LC_MESSAGES
+7ff44a83a000-7ff44a83b000 r--p 00000000 00:00 281474976714194                        /usr/lib/locale/C.utf8/LC_PAPER
+7ff44a83b000-7ff44a83c000 r--p 00000000 00:00 281474976714197                        /usr/lib/locale/C.utf8/LC_NAME
+7ff44a83c000-7ff44a843000 r--s 00000000 00:00 28147497671
+[W layer    ] MAP 00 281474976712479                        /usr/lib/x86_64-linux-gnu/libc.so.6
+7ff44aa65000-7ff44aa72000 rw-p 00000000 00:00 0 
+7ff44aa72000-7ff44aa74000 rw-p 00000000 00:00 0 
+7ff44aa74000-7ff44aa75000 r--p 00000000 00:00 281474976714203                        /usr/lib/locale/C.utf8/LC_ADDRESS
+7ff44aa75000-7ff44aa76000 r--p 00000000 00:00 281474976714201                        /usr/lib/locale/C.utf8/LC_TELEPHONE
+7ff44aa76000-7ff44aa77000 r--p 00000000 00:00 281474976714199                        /usr/lib/locale/C.utf8/LC_MEASUREMENT
+7ff44aa77000-7ff44aa78000 r--p 00000000 00:00 281474976714200                        /usr/lib/locale/C.utf8/LC_IDENTIFICATION
+7ff44aa78000-7ff44aa79000 ---p 00000000 00:00 0                        [stack]
+7ff44aa79000-7ff44b279000 rw-p 00000000 00:00 0                        [stack]
+7ff44b279000-7ff44b27b000 r-xp 00000000 00:00 0 
+7ff44b27b000-7ff44b27c000 r--p 00000000 00:00 281474976712308                        /usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2
+7ff44b27c000-7ff44b2a4000 r-xp 00001000 00:00 281474976712308                        /usr/l
+[W layer    ] MAP f44b2be000-7ff44b2bf000 r--p 00009000 00:00 281474976711824                        /usr/bin/uname
+7ff44b2bf000-7ff44b2c0000 rw-p 0000a000 00:00 281474976711824                        /usr/bin/uname
+7ffff7fc3000-7ffff7fc5000 r--p 00000000 00:00 0                          [vvar]
+7ffff7fc5000-7ffff7fc7000 r-xp 00000000 00:00 0                          [vdso]
+ffffffffff600000-ffffffffff601000 --xp 00000000 00:00 0                          [vsyscall]
+
+xrl_layer_boot returned 0
+exit 0
