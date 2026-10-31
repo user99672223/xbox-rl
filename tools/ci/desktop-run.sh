@@ -10,7 +10,8 @@ host=layer/build/desktop/xrl_test_host.exe
 # XRL_TEST_BUDGET_MB: the guest's commit budget, as the Xbox app gives it (host/src/xrl_host.h guest_mem_budget)
 # XRL_PROFILE=1: the perf lines name each busy thread's most frequent syscalls (busy loops, stalls)
 export XRL_UID=0 XRL_GID=0 XRL_NO_AUDIO=1 XRL_NO_FSGSBASE=1 MSYS_NO_PATHCONV=1 XRL_TEST_BUDGET_MB=4096 XRL_PROFILE=1
-# One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line. A milestone
+# One probe per line: milestone|timeout (s)|the pattern its output must match (no '|' in it)|the command line, which
+# may start with VAR=value words for the test host (layer switches such as XRL_TRACE). A milestone
 # passes when all its probes do; earlier milestones stay in the list as regression checks.
 names=([1]="bash, coreutils, ps, dpkg -l" [2]="apt-get update + install" [3]="Xvfb + xterm" [4]="XFCE session" [5]="Firefox opens a local page")
 list=(
@@ -26,8 +27,8 @@ list=(
     "2|600|guest.out\] Setting up hello|/usr/bin/apt-get install -y --no-install-recommends hello"
     "2|60|guest.out\] Hello, world!|/usr/bin/hello"
     "3|240|\\(\"xterm\" \"XTerm\"\\)|/bin/bash /tmp/xrl-xsession.sh xterm"
-    "4|600|found /\"\\(Desktop|/bin/bash /tmp/xrl-xsession.sh xfce"
-    "5|900|\"xbox-rl page .*Mozilla Firefox\"|/bin/bash /tmp/xrl-xsession.sh firefox"
+    "4|600|found /\"\\(Desktop|XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=xfdesktop XRL_TRACE_MAX=6000 /bin/bash /tmp/xrl-xsession.sh xfce"
+    "5|900|\"xbox-rl page .*Mozilla Firefox\"|XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=firefox-esr XRL_TRACE_MAX=8000 /bin/bash /tmp/xrl-xsession.sh firefox"
 )
 # X sessions (milestones 3-5): tools/ci/xsession.sh in the guest; each saves /tmp/xrl-<mode>.xwd, which becomes
 # <out>/<mode>.png; a session probe passes only with its screenshot
@@ -47,7 +48,8 @@ for e in "${list[@]}"; do
     echo "\$ $p" > "$log"
     shot=; [[ $p == *xrl-xsession.sh* ]] && { shot=${p##* }; rm -f "$rootu/tmp/xrl-$shot.xwd"; }
     s0=$SECONDS
-    eval "timeout $t $host \"$root\" $p" >> "$log" 2>&1
+    envs=; while [[ $p =~ ^([A-Z_]+=[^ ]*)\ (.*)$ ]]; do envs="$envs ${BASH_REMATCH[1]}"; p=${BASH_REMATCH[2]}; done   # VAR=v ...: for the host
+    eval "$envs timeout $t $host \"$root\" $p" >> "$log" 2>&1
     rc=$?
     echo "exit $rc" >> "$log"
     v=PASS

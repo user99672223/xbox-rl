@@ -121,6 +121,19 @@ void xrl_systrace(slong nr, const slong *a, slong r, int tid)
         if (g_from_nr != -1 && nr != g_from_nr) { /* keep fd names current before the start */ goto bookkeeping; }
         InterlockedExchange(&g_armed, 1);
     }
+    /* XRL_TRACE_COMM=<prefix>: only threads whose name (comm) starts with it; XRL_TRACE_MAX=<n>: n lines at most
+     * (one busy program in a whole desktop session) */
+    {
+        static char comm[16]; static int rd; static volatile LONG left = -1;
+        if (!rd) {
+            char v[24];
+            if (GetEnvironmentVariableA("XRL_TRACE_COMM", v, sizeof v)) strncpy_s(comm, sizeof comm, v, _TRUNCATE);
+            if (GetEnvironmentVariableA("XRL_TRACE_MAX", v, sizeof v)) InterlockedExchange(&left, (LONG)strtol(v, NULL, 10));
+            rd = 1;
+        }
+        if (comm[0]) { xrl_thread *t = xrl_cur(); if (!t || strncmp(t->name, comm, strlen(comm))) goto bookkeeping; }
+        if (left >= 0 && InterlockedDecrement(&left) < 0) goto bookkeeping;
+    }
 
     int n = 0;
     /* timing and locking noise (Wine's idle loops) is left out; XRL_TRACE_NOISE=1 keeps it */
