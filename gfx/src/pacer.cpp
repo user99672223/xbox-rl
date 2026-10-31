@@ -183,7 +183,9 @@ void Pacer120::Present() {
 
 ID3D11Texture2D* Pacer120::Acquire() {
     // at most two frames on the GPU: wait for the one before the last
+    const int64_t w0 = Now();
     if (prev_[1] >= 0) WaitForSingleObject(slot_ev_[prev_[1]], 100);
+    { LARGE_INTEGER f; QueryPerformanceFrequency(&f); last_wait_ms_ = (double)(Now() - w0) * 1000.0 / (double)f.QuadPart; }
     // a slot that is neither being copied by the presenter nor the newest finished one it may still take
     uint64_t newest = 0;
     int newest_i = -1;

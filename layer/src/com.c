@@ -343,6 +343,59 @@ static int g_com_prof = -1;
 #define SCAN_RECHECK 4096
 static int g_scan_all = -1;
 
+/* ---- the frame's COM calls (gfx calls xrl_com_frame_end from the game's Present) ----
+ * Per thread, each method called since the last frame end: how often, and the time up to its return since the
+ * thread's previous COM call returned (the game's own work before it plus the call). For a stuttering frame (and for
+ * one normal frame every 10 s, to compare) one log line of the methods, the slowest first. */
+#define FR_N 96
+typedef struct fr_ent { u64 fn; u32 n; LONG64 t; } fr_ent;
+static __declspec(thread) fr_ent *t_fr;
+static __declspec(thread) int t_nfr, t_frover;
+static __declspec(thread) LONG64 t_fr_last;
+static LONG64 g_qf;
+
+static void frame_note(u64 fn)
+{
+    LARGE_INTEGER q; QueryPerformanceCounter(&q);
+    if (!g_qf) { LARGE_INTEGER f; QueryPerformanceFrequency(&f); g_qf = f.QuadPart; }
+    LONG64 dt = t_fr_last ? q.QuadPart - t_fr_last : 0;
+    t_fr_last = q.QuadPart;
+    if (!t_fr && !(t_fr = (fr_ent *)calloc(FR_N, sizeof *t_fr))) return;
+    for (int i = 0; i < t_nfr; i++) if (t_fr[i].fn == fn) { t_fr[i].n++; t_fr[i].t += dt; return; }
+    if (t_nfr < FR_N) t_fr[t_nfr++] = (fr_ent){fn, 1, dt};
+    else t_frover++;
+}
+
+void xrl_com_frame_end(double gap_ms, double wait_ms)
+{
+    static volatile LONG nlog;
+    static LONG64 last_base;
+    if (!t_fr) return;
+    LARGE_INTEGER q; QueryPerformanceCounter(&q);
+    double tail = t_fr_last ? (q.QuadPart - t_fr_last) * 1000.0 / g_qf : 0;   /* after the last call: the game, then Present */
+    t_fr_last = q.QuadPart;
+    int base = !last_base || q.QuadPart - last_base > 10 * g_qf;
+    if ((gap_ms > 50 || base) && InterlockedIncrement(&nlog) <= 1500) {
+        if (base) last_base = q.QuadPart;
+        char line[1400];
+        int o = _snprintf_s(line, sizeof line, _TRUNCATE, "frame: %s %.1f ms; %.1f ms after the last call until Present ended, %.1f of it waiting for the GPU; %d methods%s:",
+                            gap_ms > 50 ? "STUTTER" : "normal", gap_ms, tail, wait_ms, t_nfr, t_frover ? " (+more)" : "");
+        for (int k = 0; k < 14 && k < t_nfr && o > 0 && o < (int)sizeof line - 90; k++) {
+            int b = k;
+            for (int j = k + 1; j < t_nfr; j++) if (t_fr[j].t > t_fr[b].t) b = j;
+            fr_ent e = t_fr[k]; t_fr[k] = t_fr[b]; t_fr[b] = e;
+            u64 vt = 0;
+            int s = slot_of(t_fr[k].fn, &vt);
+            const img *m = NULL;
+            addr_kind(vt, &m);
+            o += _snprintf_s(line + o, sizeof line - o, _TRUNCATE, " %s+%llx#%d x%u %.1fms;", m ? m->name : "heap", m ? vt - m->base : 0ull, s,
+                             t_fr[k].n, t_fr[k].t * 1000.0 / g_qf);
+        }
+        LOGI("%s", line);
+    }
+    t_nfr = 0; t_frover = 0;
+}
+
 void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
 {
     LARGE_INTEGER q0 = {0}, q1;
@@ -352,6 +405,7 @@ void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
     InterlockedIncrement64(&xrl_com_calls);
     LONG64 n = 0;
     int i = hot_count(fn, ret, &n);
+    frame_note(fn);
     {   /* a host COM call that failed in a way a game may not check (a NULL resource later): log it, with its slot */
         u32 hr = (u32)ret;
         static volatile LONG nfail;

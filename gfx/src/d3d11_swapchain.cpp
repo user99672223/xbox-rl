@@ -35,6 +35,11 @@
 
 #include <atomic>
 
+// layer com.c: the frame's COM calls; a build without the layer (the link check) gets the empty default
+extern "C" void xrl_com_frame_end(double gap_ms, double wait_ms);
+extern "C" void xrl_com_frame_end_none(double, double) {}
+#pragma comment(linker, "/alternatename:xrl_com_frame_end=xrl_com_frame_end_none")
+
 namespace xrl {
 namespace {
 
@@ -387,6 +392,7 @@ private:
             static int hitches;
             if (gap * 20 > qf_ && hitches < 3000) { hitches++; Log(LOG_INFO, "hitch: %.1f ms between presents", gap * 1000.0 / qf_); }
         }
+        xrl_com_frame_end(last_present_ ? (q0.QuadPart - last_present_) * 1000.0 / qf_ : 0, pacer_.Running() ? pacer_.last_wait_ms() : 0);
         last_present_ = q0.QuadPart;
         win_frames_++;
         win_present_ += q1.QuadPart - q0.QuadPart;

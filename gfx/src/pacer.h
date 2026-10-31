@@ -29,6 +29,7 @@ public:
     DXGI_FORMAT HostFormat() const { return host_format_; }
     // game thread: the texture to put this frame into (waits while two frames are still on the GPU)
     ID3D11Texture2D* Acquire();
+    double last_wait_ms() const { return last_wait_ms_; }   // how long the latest Acquire waited for the GPU
     // game thread: the frame is in the texture Acquire gave; hand it to the presenter
     void Submit(ID3D11DeviceContext* game_ctx);
 
@@ -55,6 +56,7 @@ private:
     std::atomic<uint64_t> slot_seq_[kSlots] = {};     // frame number in the slot
     std::atomic<int> reading_{-1};                    // the slot the presenter copies from
     int writing_ = -1;
+    double last_wait_ms_ = 0;
     uint64_t seq_ = 0;
     std::atomic<bool> running_{false};
     bool normal_prio_ = false;
