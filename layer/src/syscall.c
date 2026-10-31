@@ -725,6 +725,8 @@ SYS(mmap)
         if (mf) xfile_unref(mf);
         if (r > 0 && (a3 & LX_PROT_EXEC))
             xrl_rewrite_fd_mapped((int)a5, (u64)r, (u64)a2, a6, (int)a3);   /* rewrite.c */
+        if (r > 0 && (a4 & LX_MAP_FIXED) && !(a3 & LX_PROT_WRITE))
+            xrl_mem_share_range((int)a5, (u64)r, (u64)a2, a6, (int)a3);     /* a library segment: shared (XRL_SHARED_TEXT) */
     }
     if (r > 0 && (a3 & LX_PROT_EXEC) && (a3 & LX_PROT_WRITE) && (a4 & LX_MAP_ANONYMOUS)) xrl_dbt_generated((u64)r, (u64)a2);   /* dbt.c */
     return r;
