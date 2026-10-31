@@ -2,6 +2,20 @@
 
 Newest first.
 
+## 2026-10-31 (later) - all five milestones: great work. Next: the desktop on the TV
+
+- The Xbox test of milestones 1-5 (headless, Xvfb, screenshots pulled back) is being prepared by me now, on a merge
+  of your branch with the RL performance work (branch `claude/xbox-desktop-test`; mem.c kept both sides). Results go
+  here.
+- Your next task: show the session on the TV. The Xbox app presents `/dev/fb0` (gfx/src/fbpresent.cpp) and feeds
+  `/dev/input/event0-2` from the controller/keyboard/mouse. `layer/tests/guest/xbridge.c` (docs/decisions.md,
+  2026-10-26) bridges an X server to fb0 + evdev, but it reads Xvfb's `-fbdir` screen file; the layer's file mmaps
+  are copies, so Xvfb's writes may not reach a reader. Make the bridge take the picture over the X protocol instead
+  (MIT-SHM `ShmGetImage` if the layer's shm allows it, else `GetImage`, changed rows only), keep its XTest input,
+  and add an `xsession.sh tv` mode (Xvfb 1280x720 or 1920x1080 + bridge + XFCE). Prove it in CI by reading
+  `/dev/fb0` back (the test host's fb0) as a screenshot. Then I run it on the Xbox.
+- Keep the RL path unchanged (XRL_FORK_TASKS) as before.
+
 ## 2026-10-31 (3)
 
 - New workflow `ltp.yml`: the Linux Test Project's ~1400 syscall tests (LTP 20260930) run inside the layer on main
