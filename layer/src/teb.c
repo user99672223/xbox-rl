@@ -87,6 +87,7 @@ void xrl_teb_thread_init(xrl_thread *t)
 
 int xrl_teb_enter_host(xrl_thread *t)
 {
+    if (t) t->host_t0 = __rdtsc();
     if (!g_swap || !t || !t->teb_guest_live) return 0;
     copy_out(t->teb_guest);
     copy_in(t->teb_host);

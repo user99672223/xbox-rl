@@ -96,7 +96,9 @@ struct xrl_thread {
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
     volatile int cur_nr;   /* the outermost syscall being run (sample.c's stall snapshot), -1: none */
-    u32 *srvreq;   /* XRL_SRVREQ_MAX entries */           /* XRL_SRVREQ: Wine server requests written, by request code (ipc.c, perf.c) */
+    u32 *srvreq;   /* XRL_SRVREQ_MAX entries */
+    u64 host_t0;            /* TSC when the thread last entered the host (teb.c), for com.c's call time */
+    u64 com_tsc, sys_tsc;   /* TSC ticks spent in host COM calls / in syscalls (outermost), com.c's frame split */           /* XRL_SRVREQ: Wine server requests written, by request code (ipc.c, perf.c) */
     u64  nsys;             /* syscalls made (perf.c); written by this thread only */
     u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;

@@ -366,11 +366,37 @@ static void frame_note(u64 fn)
     else t_frover++;
 }
 
+/* Every 10 s, per frame on the presenting thread: wall time, and of it the time in host COM calls (D3D11 work plus
+ * our crossing), in syscalls (Wine server requests, waits, ...), and the rest (the game's own code, our thunks);
+ * plus the thread's CPU time (the remainder of the wall time it was asleep outside any syscall: preempted). */
+static void frame_split(void)
+{
+    static __declspec(thread) u64 w_tsc0, w_com0, w_sys0, w_cyc0, w_frames;
+    static __declspec(thread) LONG64 w_qpc0;
+    xrl_thread *t = xrl_cur();
+    if (!t) return;
+    LARGE_INTEGER q; QueryPerformanceCounter(&q);
+    u64 tsc = __rdtsc(), cyc = 0;
+    QueryThreadCycleTime(GetCurrentThread(), &cyc);
+    if (!w_qpc0) { w_qpc0 = q.QuadPart; w_tsc0 = tsc; w_com0 = t->com_tsc; w_sys0 = t->sys_tsc; w_cyc0 = cyc; w_frames = 0; return; }
+    w_frames++;
+    if (q.QuadPart - w_qpc0 < 10 * g_qf) return;
+    double ms = (double)(q.QuadPart - w_qpc0) * 1000.0 / (double)g_qf;
+    double per = (double)(tsc - w_tsc0) / ms;   /* TSC ticks per ms */
+    double f = (double)w_frames;
+    double com = (double)(t->com_tsc - w_com0) / per / f, sys = (double)(t->sys_tsc - w_sys0) / per / f;
+    double cpu = (double)(cyc - w_cyc0) / per / f, wall = ms / f;
+    LOGI("frame split: %.0f frames, %.2f ms each: graphics calls %.2f ms, syscalls %.2f ms, the rest (game code) %.2f ms; "
+         "thread CPU %.2f ms", f, wall, com, sys, wall - com - sys, cpu);
+    w_qpc0 = q.QuadPart; w_tsc0 = tsc; w_com0 = t->com_tsc; w_sys0 = t->sys_tsc; w_cyc0 = cyc; w_frames = 0;
+}
+
 void xrl_com_frame_end(double gap_ms, double wait_ms)
 {
     static volatile LONG nlog;
     static LONG64 last_base;
     if (!t_fr) return;
+    frame_split();
     LARGE_INTEGER q; QueryPerformanceCounter(&q);
     double tail = t_fr_last ? (q.QuadPart - t_fr_last) * 1000.0 / g_qf : 0;   /* after the last call: the game, then Present */
     t_fr_last = q.QuadPart;
@@ -406,6 +432,10 @@ void xrl_com_after(const u64 *regs, const u64 *stack_args, u64 ret, u64 fn)
     LONG64 n = 0;
     int i = hot_count(fn, ret, &n);
     frame_note(fn);
+    {   /* the call's time, from the thunk entering the host (teb.c) */
+        xrl_thread *ct = xrl_cur();
+        if (ct && ct->host_t0) ct->com_tsc += __rdtsc() - ct->host_t0;
+    }
     {   /* a host COM call that failed in a way a game may not check (a NULL resource later): log it, with its slot */
         u32 hr = (u32)ret;
         static volatile LONG nfail;
