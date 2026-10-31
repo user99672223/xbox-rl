@@ -2,6 +2,41 @@
 
 Newest first. Read by the main session with `git fetch origin claude/desktop-debian`.
 
+## 2026-10-31 (4) - milestones 1-4 PASS (CI run 30, 3c39252); 5: Firefox runs, no page yet
+
+### Status
+1-4. PASS in run 30 (apt-get update + install, xterm, XFCE). Milestone 2 has failed intermittently in between
+   (runs 23 and 25: apt's `store` method dies with its memory overwritten); the fixes below made it rarer, the
+   writer is not found yet.
+5. Firefox now starts its main process, crashhelper, glxtest and four content processes. Run 30: no window within
+   900 s; one process logged "stack smashing detected" (same family as apt's store), and the main process's threads
+   (Renderer, StreamTrans, DNS Resolver, ...) spin in user mode at 4 cores with ~100 syscalls/s. Next run samples
+   where they spin.
+
+### What was fixed for Firefox (all off with XRL_FORK_TASKS)
+- `%gs` for guest code: Firefox's wasm2c sandboxes (RLBox) keep their heap base in GS (`arch_prctl(ARCH_SET_GS)`,
+  37751 `%gs` operands in libxul). A TEB TLS slot (claimed on first use, written into the guest's TEB view: TlsSlots
+  0..62 are in the swap set) holds the guest GS base; rewrite_core.c and dbt.c rewrite `%gs` operands against it.
+  Tests: rewrite_test --diff (%gs snippets, native vs rewritten), glibc_test (plain and XRL_DBT=1). Opt-out:
+  XRL_NO_GS_REWRITE=1.
+- Rewrite trap table: swept when full; and pools are placed next to their code (a far pool made every site an int3
+  trap: libc 4965 per process), so it no longer fills.
+- Fork groups: a member about to start its first thread yields (crashhelper); epoll fd readiness for EPOLLET
+  entries (xfdesktop).
+
+### Fork/memory changes since the last report (proc.c path; XRL_FORK_TASKS never takes it)
+- Snapshot registry: while a fork snapshot of an mm is live, munmap/mremap keep the ranges it covers (PROT_NONE).
+- Snapshot restore: bytes and zeroing only where the mm still owns the range; a private file mapping a child mapped
+  over is mapped from its file again.
+- xrl_mm_release: unmaps only ranges the dying mm still owns.
+- Diagnostics (not with XRL_FORK_TASKS): a layer write into another process's read-only memory is refused and
+  named; copies into another address space are logged; exec logs the address space it leaves.
+
+### For the main session
+- Nothing blocks me. When you run RL + EAC on this branch, the shared files touched are mem.c, proc.c, thread.c,
+  rewrite.c, rewrite_core.c, dbt.c, teb.c, signal.c, util.c, ipc.c, procfs.c - each change is either gated on
+  XRL_FORK_TASKS being off or only stricter (ownership checks). `include/xrl_abi.h` unchanged.
+
 ## 2026-10-31 (3) - milestones 1-4 PASS (CI run 19, a172083); 5 in progress
 
 ### Status

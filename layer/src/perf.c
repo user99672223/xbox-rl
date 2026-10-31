@@ -122,7 +122,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
         last_user = user; last_kern = kern;
 
         int n = 0, nn = 0, nthr = 0, nspin = 0;
-        pf_spin spins[2];
+        pf_spin spins[4];
         u64 sys_all = 0;
         AcquireSRWLockShared(&G.thread_lock);
         for (xrl_thread *t = G.threads; t && n < PF_MAX; t = t->next) {
@@ -139,7 +139,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
             take_top(t, r);
             memcpy(r->name, t->name, sizeof r->name);
             r->name[sizeof r->name - 1] = 0;
-            if (r->nsys == 0 && (double)r->cpu >= 0.9e7 * secs && nspin < 2 && spin_sample(t, &spins[nspin])) nspin++;
+            if (r->nsys == 0 && (double)r->cpu >= 0.2e7 * secs && nspin < 4 && spin_sample(t, &spins[nspin])) nspin++;   /* many spinners share the cores */
             if (nn < PF_MAX) { next[nn].tid = t->tid; next[nn].cpu = cpu; next[nn].nsys = t->nsys; nn++; }
         }
         ReleaseSRWLockShared(&G.thread_lock);
