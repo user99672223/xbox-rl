@@ -1,15 +1,15 @@
 procs-test: exit 0 (TOTAL FAILS=0)
 probe 1 (m1): PASS exit   0    4s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
 probe 2 (m1): PASS exit   0    3s     - MiB  /usr/bin/ls -la /
-probe 3 (m1): PASS exit   0    4s     - MiB  /usr/bin/id
+probe 3 (m1): PASS exit   0    3s     - MiB  /usr/bin/id
 probe 4 (m1): PASS exit   0    4s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
-probe 5 (m1): PASS exit   0    3s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
-probe 6 (m1): PASS exit   0    4s     - MiB  /usr/bin/ps aux
-probe 7 (m1): PASS exit   0    3s    13 MiB  /usr/bin/dpkg -l
+probe 5 (m1): PASS exit   0    4s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
+probe 6 (m1): PASS exit   0    3s     - MiB  /usr/bin/ps aux
+probe 7 (m1): PASS exit   0    4s    13 MiB  /usr/bin/dpkg -l
 probe 8 (m1): PASS exit   0    4s     - MiB  /usr/bin/apt-get --version
 probe 9 (m1): PASS exit   0    3s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
 probe 10 (m2): PASS exit   0    9s    83 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
-probe 11 (m2): PASS exit   0   14s   200 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
+probe 11 (m2): PASS exit   0   14s   201 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
 probe 12 (m2): PASS exit   0    3s     - MiB  /usr/bin/hello
 --- syscalls answered ENOSYS (count, nr, name):
      58 ENOSYS 334 rseq

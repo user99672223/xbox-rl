@@ -1,0 +1,69 @@
+=== shard core
+procs-test: exit 0 (TOTAL FAILS=0)
+probe 1 (m1): PASS exit   0    4s    12 MiB  /bin/bash -c 'echo hello from bash; uname -a'
+probe 2 (m1): PASS exit   0    3s     - MiB  /usr/bin/ls -la /
+probe 3 (m1): PASS exit   0    3s     - MiB  /usr/bin/id
+probe 4 (m1): PASS exit   0    4s    12 MiB  /bin/bash -c 'echo $(( 6 * 7 )) | cat; ls /usr/bin | wc -l'
+probe 5 (m1): PASS exit   0    4s    12 MiB  /bin/bash -c 'x=$(echo sub); (exit 3); echo $x $?; for i in 1 2 3; do /usr/bin/true; done; echo loop ok'
+probe 6 (m1): PASS exit   0    3s     - MiB  /usr/bin/ps aux
+probe 7 (m1): PASS exit   0    4s    13 MiB  /usr/bin/dpkg -l
+probe 8 (m1): PASS exit   0    4s     - MiB  /usr/bin/apt-get --version
+probe 9 (m1): PASS exit   0    3s     - MiB  XRL_PROBE_PLACEHOLDERS=1 /usr/bin/true
+probe 10 (m2): PASS exit   0    9s    83 MiB  XRL_TEST_BUDGET_MB=1024 XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=store /usr/bin/apt-get update
+probe 11 (m2): PASS exit   0   14s   201 MiB  XRL_TEST_BUDGET_MB=1024 /usr/bin/apt-get install -y --no-install-recommends hello
+probe 12 (m2): PASS exit   0    3s     - MiB  /usr/bin/hello
+--- syscalls answered ENOSYS (count, nr, name):
+     58 ENOSYS 334 rseq
+      8 ENOSYS 277 sync_file_range
+milestone 1 (bash, coreutils, ps, dpkg -l): PASS
+milestone 2 (apt-get update + install): PASS
+exit 0
+=== shard x
+probe 13 (m3): PASS exit   0   16s   259 MiB  /bin/bash /tmp/xrl-xsession.sh xterm
+probe 14 (m4): PASS exit   0   52s   784 MiB  /bin/bash /tmp/xrl-xsession.sh xfce
+probe 18 (m6): PASS exit   0  131s   798 MiB  XRL_PAD_AFTER=event3 XRL_PAD_SCRIPT=3:A:0.3,4:B:0.3,5:DOWN:0.3,6:START:0.3,7:Y:0.3 /bin/bash /tmp/xrl-xsession.sh tv
+--- syscalls answered ENOSYS (count, nr, name):
+     44 ENOSYS 334 rseq
+     20 ENOSYS 434 pidfd_open
+      8 ENOSYS 251 ioprio_set
+      4 ENOSYS 303 name_to_handle_at
+      4 ENOSYS 125 capget
+milestone 3 (Xvfb + xterm): PASS
+milestone 4 (XFCE session): PASS
+milestone 6 (TV: the session on /dev/fb0): PASS
+exit 0
+=== shard firefox
+probe 15 (m5): PASS exit   0   99s  2091 MiB  /bin/bash /tmp/xrl-xsession.sh firefox
+probe 16 (m5s): FAIL exit 139   23s  1039 MiB  XRL_LAZY_STACKS=0 /bin/bash /tmp/xrl-xsession.sh firefox
+probe 17 (m5t): PASS exit   0   84s  1417 MiB  XRL_SHARED_TEXT=1 /bin/bash /tmp/xrl-xsession.sh firefox
+--- syscalls answered ENOSYS (count, nr, name):
+     46 ENOSYS 334 rseq
+     30 ENOSYS 434 pidfd_open
+     20 ENOSYS 187 readahead
+      8 ENOSYS 251 ioprio_set
+      6 ENOSYS 303 name_to_handle_at
+      6 ENOSYS 125 capget
+milestone 5 (Firefox opens a local page): PASS
+milestone 5s (Firefox, thread stacks committed whole (XRL_LAZY_STACKS=0)): FAIL (1 probe(s))
+milestone 5t (Firefox, shared library pages (XRL_SHARED_TEXT=1)): PASS
+exit 0
+=== shard gpu
+probe 19 (mg1): FAIL exit   0  486s   902 MiB  XRL_TRACE=2 XRL_TRACE_FROM=all XRL_TRACE_COMM=startplasma XRL_TRACE_MAX=20000 /bin/bash /tmp/xrl-xsession.sh plasma
+probe 20 (mg1w): FAIL exit   0  483s   892 MiB  XRL_FORK_COW=0 XRL_HANG_DUMP=150 /bin/bash /tmp/xrl-xsession.sh plasma
+probe 21 (mg2): FAIL exit 127    3s     - MiB  XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma
+probe 22 (mg3): FAIL exit 127    3s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 XRL_ENV_XRL_D3D12_DEBUG=1 /bin/bash /usr/local/bin/xrl-plasma-session glx-gpu
+probe 23 (mg4): FAIL exit 127    4s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 /bin/bash /usr/local/bin/xrl-plasma-session plasma-gpu
+probe 24 (mg5): FAIL exit 127    3s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 XRL_ENV_XRL_D3D12_DEBUG=1 /bin/bash /usr/local/bin/xrl-plasma-session vk-gpu
+probe 25 (mg6): FAIL exit 127    4s     - MiB  XRL_REAL_GFX=1 XRL_GFX_WARP=1 XRL_ENV_XRL_SCREEN=1280x720 XRL_ENV_XRL_D3D12_DEBUG=1 /bin/bash /usr/local/bin/xrl-plasma-session va-gpu
+--- syscalls answered ENOSYS (count, nr, name):
+     44 ENOSYS 334 rseq
+      4 ENOSYS 434 pidfd_open
+      4 ENOSYS 125 capget
+milestone g1 (probes-gpu.list): FAIL (1 probe(s))
+milestone g1w (probes-gpu.list): FAIL (1 probe(s))
+milestone g2 (probes-gpu.list): FAIL (1 probe(s))
+milestone g3 (probes-gpu.list): FAIL (1 probe(s))
+milestone g4 (probes-gpu.list): FAIL (1 probe(s))
+milestone g5 (probes-gpu.list): FAIL (1 probe(s))
+milestone g6 (probes-gpu.list): FAIL (1 probe(s))
+exit 0
