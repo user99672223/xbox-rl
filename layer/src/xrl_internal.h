@@ -75,6 +75,8 @@ typedef struct xrl_sigregs {
 } xrl_sigregs;
 
 struct xrl_task;
+#define XRL_SRVREQ_MAX 400
+
 typedef struct xrl_thread xrl_thread;
 typedef struct xrl_proc xrl_proc;
 struct xrl_thread {
@@ -94,6 +96,7 @@ struct xrl_thread {
     int  tid;
     int  in_sys;           /* >0 while executing layer code on behalf of guest   */
     volatile int cur_nr;   /* the outermost syscall being run (sample.c's stall snapshot), -1: none */
+    u32 *srvreq;   /* XRL_SRVREQ_MAX entries */           /* XRL_SRVREQ: Wine server requests written, by request code (ipc.c, perf.c) */
     u64  nsys;             /* syscalls made (perf.c); written by this thread only */
     u32 *sysn;             /* XRL_PROFILE: syscalls by number since perf.c last read them */
     HANDLE handle;
@@ -525,8 +528,11 @@ slong xrl_epoll_ctl(int epfd, int op, int fd, u64 ev);
 slong xrl_epoll_wait(int epfd, u64 events, int maxevents, int timeout_ms, int *intr);
 slong xrl_poll(u64 fds, u64 nfds, s64 timeout_ns, u64 sigmask);
 extern volatile LONG xrl_io_epoch;
-void xrl_io_notify(void);
-int  xrl_io_wait(LONG seen, s64 timeout_ns);   /* 1 woken, 0 timeout, -1 interrupted */
+void xrl_io_notify(void);                      /* something changed: wake every sleeper */
+void xrl_io_notify_key(const void *key);       /* the object `key` changed: wake its sleepers and the unkeyed ones */
+int  xrl_io_wait(LONG seen, s64 timeout_ns);   /* 1 woken, 0 timeout, -1 interrupted; woken by any change */
+int  xrl_io_wait_keys(LONG seen, const void *const *keys, int n, s64 timeout_ns);   /* only by changes to keys (n < 0: any) */
+const void *xrl_net_key(xfile *f);             /* net.c: the key a socket's changes are notified with, NULL: not a socket */
 
 /* net.c: AF_INET/AF_INET6 TCP+UDP over Winsock. Each returns XRL_NOT_NET when `fd` (or the
  * domain) is not one of ours, so the caller can fall back to the AF_UNIX socketpair code. */

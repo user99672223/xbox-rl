@@ -144,7 +144,7 @@ static DWORD WINAPI net_thread(LPVOID unused)
     for (;;) {
         WaitForSingleObject(g_net_ev, INFINITE);
         WSAResetEvent(g_net_ev);
-        xrl_io_notify();
+        xrl_io_notify_key(&g_net_ev);   /* one key for all sockets: the one shared event does not tell them apart */
     }
 }
 
@@ -171,6 +171,7 @@ static int net_up(void)
 static const xfile_ops g_net_ops;
 
 static netsock *ns_of(xfile *f) { return f && f->ops == &g_net_ops ? (netsock *)f->priv : NULL; }
+const void *xrl_net_key(xfile *f) { return ns_of(f) ? (const void *)&g_net_ev : NULL; }
 
 /* The sentinel the syscall layer uses to try the pipe-based socketpair code next. */
 #define NOT_NET XRL_NOT_NET
@@ -302,7 +303,8 @@ static slong wt_wait(waiter *w, LONG seen)
         left = (s64)(w->deadline - now);
     }
     if (left < 0 || left > 250000000ll) left = 250000000ll;
-    if (xrl_io_wait(seen, left) < 0) return -NE(EINTR);
+    const void *k = &g_net_ev;
+    if (xrl_io_wait_keys(seen, &k, 1, left) < 0) return -NE(EINTR);
     return 0;
 }
 

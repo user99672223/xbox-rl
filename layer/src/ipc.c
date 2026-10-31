@@ -18,24 +18,81 @@
 #include "xrl_internal.h"
 
 volatile LONG xrl_io_epoch;
+volatile LONG xrl_io_sleepers;                 /* threads asleep on the epoch now */
+volatile LONG64 xrl_io_notifies, xrl_io_woken;   /* perf.c: notifies, and sleepers woken by them */
 
-void xrl_io_notify(void)
+/* Keyed wake-ups. Waking every sleeper on every change cost ~100k wake-ups a second in RL's menu (each Wine server
+ * request is a few pipe writes and reads, each woke all threads asleep in poll/read): much of the console's CPU went
+ * to threads waking, finding nothing, and sleeping again. Now a sleeper says which objects it waits for (a pipe's
+ * buffer, an eventfd, the network, an epoll set) and a change to one object wakes only its sleepers; a sleeper on
+ * anything else (n < 0) and a change of unknown scope (xrl_io_notify) still go to all. The epoch stays: a sleeper
+ * registers, then re-checks it, so a change between its readiness check and its sleep is never lost.
+ * XRL_IO_KEYED=0: the old wake-all. */
+typedef struct io_sleeper { volatile LONG word; const void *const *keys; int n; struct io_sleeper *next; } io_sleeper;
+static SRWLOCK g_sl_lock = SRWLOCK_INIT;
+static io_sleeper *g_sl;
+static int g_keyed = -1;
+
+static int keyed(void)
 {
-    InterlockedIncrement(&xrl_io_epoch);
-    WakeByAddressAll((PVOID)&xrl_io_epoch);
+    if (g_keyed < 0) { char v[4]; g_keyed = !(GetEnvironmentVariableA("XRL_IO_KEYED", v, sizeof v) && v[0] == '0'); }
+    return g_keyed;
 }
 
+void xrl_io_notify_key(const void *key)
+{
+    InterlockedIncrement(&xrl_io_epoch);
+    InterlockedIncrement64(&xrl_io_notifies);
+    if (!keyed()) {
+        LONG s = xrl_io_sleepers;
+        if (s > 0) InterlockedAdd64(&xrl_io_woken, s);
+        WakeByAddressAll((PVOID)&xrl_io_epoch);
+        return;
+    }
+    if (!xrl_io_sleepers) return;   /* one registering now re-checks the epoch after it counted itself */
+    LONG64 woken = 0;
+    AcquireSRWLockShared(&g_sl_lock);
+    for (io_sleeper *s = g_sl; s; s = s->next) {
+        int hit = !key || s->n < 0;
+        for (int i = 0; !hit && i < s->n; i++) hit = s->keys[i] == key;
+        if (hit && !InterlockedExchange(&s->word, 1)) { WakeByAddressSingle((PVOID)&s->word); woken++; }
+    }
+    ReleaseSRWLockShared(&g_sl_lock);
+    if (woken) InterlockedAdd64(&xrl_io_woken, woken);
+}
+
+void xrl_io_notify(void) { xrl_io_notify_key(NULL); }
+
 /* returns 1 woken, 0 timeout, -1 interrupted by a signal */
-int xrl_io_wait(LONG seen, s64 timeout_ns)
+int xrl_io_wait_keys(LONG seen, const void *const *keys, int n, s64 timeout_ns)
 {
     xrl_thread *t = xrl_cur();
     if (t && xrl_sig_pending_for(t)) return -1;
     if (xrl_io_epoch != seen) return 1;
     u64 ns = timeout_ns < 0 ? ~0ull : (u64)timeout_ns;
-    int r = xrl_wait_addr((volatile void *)&xrl_io_epoch, &seen, sizeof seen, ns);
+    int r;
+    if (!keyed()) {
+        InterlockedIncrement(&xrl_io_sleepers);
+        r = xrl_wait_addr((volatile void *)&xrl_io_epoch, &seen, sizeof seen, ns);
+        InterlockedDecrement(&xrl_io_sleepers);
+    } else {
+        io_sleeper s = { 0, keys, keys ? n : -1, NULL };
+        AcquireSRWLockExclusive(&g_sl_lock);
+        s.next = g_sl; g_sl = &s;
+        ReleaseSRWLockExclusive(&g_sl_lock);
+        InterlockedIncrement(&xrl_io_sleepers);
+        r = 1;
+        if (xrl_io_epoch == seen) { LONG z = 0; r = xrl_wait_addr(&s.word, &z, sizeof z, ns); }
+        InterlockedDecrement(&xrl_io_sleepers);
+        AcquireSRWLockExclusive(&g_sl_lock);
+        for (io_sleeper **pp = &g_sl; *pp; pp = &(*pp)->next) if (*pp == &s) { *pp = s.next; break; }
+        ReleaseSRWLockExclusive(&g_sl_lock);
+    }
     if (t && xrl_sig_pending_for(t)) return -1;
     return r;
 }
+
+int xrl_io_wait(LONG seen, s64 timeout_ns) { return xrl_io_wait_keys(seen, NULL, -1, timeout_ns); }
 
 /* ============================================================== byte pipe */
 #define PIPE_CAP 65536u
@@ -96,14 +153,15 @@ static slong pb_read(xfile *f, pipebuf *p, void *ubuf, u64 n, int *got_msgs, fdm
             }
             p->head = (p->head + c) % PIPE_CAP; p->len -= c; p->rpos += c;
             ReleaseSRWLockExclusive(&p->lock);
-            xrl_io_notify();
+            xrl_io_notify_key(p);
             return (slong)c;
         }
         int eof = p->writers == 0;
         ReleaseSRWLockExclusive(&p->lock);
         if (eof) return 0;
         if (nonblock(f)) return -LX_EAGAIN;
-        int w = xrl_io_wait(seen, -1);
+        const void *k = p;
+        int w = xrl_io_wait_keys(seen, &k, 1, -1);
         if (w < 0) return -LX_EINTR;
     }
 }
@@ -129,7 +187,7 @@ static slong pb_write(xfile *f, pipebuf *p, const void *ubuf, u64 n, fdmsg *atta
             if (attach) { attach->pos = p->wpos; attach->next = NULL; if (p->msgs_tail) p->msgs_tail->next = attach; else p->msgs = attach; p->msgs_tail = attach; attach = NULL; }
             p->len += c; p->wpos += c; done += c;
             ReleaseSRWLockExclusive(&p->lock);
-            xrl_io_notify();
+            xrl_io_notify_key(p);
             if (done >= n) break;
             continue;
         }
@@ -137,12 +195,13 @@ static slong pb_write(xfile *f, pipebuf *p, const void *ubuf, u64 n, fdmsg *atta
             attach->pos = p->wpos; attach->next = NULL;
             if (p->msgs_tail) p->msgs_tail->next = attach; else p->msgs = attach; p->msgs_tail = attach; attach = NULL;
             ReleaseSRWLockExclusive(&p->lock);
-            xrl_io_notify();
+            xrl_io_notify_key(p);
             break;
         }
         ReleaseSRWLockExclusive(&p->lock);
         if (nonblock(f)) return done ? (slong)done : -LX_EAGAIN;
-        if (xrl_io_wait(seen, -1) < 0) return done ? (slong)done : -LX_EINTR;
+        const void *k = p;
+        if (xrl_io_wait_keys(seen, &k, 1, -1) < 0) return done ? (slong)done : -LX_EINTR;
     }
     return (slong)done;
 }
@@ -161,6 +220,16 @@ static slong pipe_write(xfile *f, const void *b, u64 n, s64 o)
     pipeend *e = (pipeend *)f->priv;
     if (!e->tx) return -LX_EBADF;
     if (!n) return 0;
+    {   /* XRL_SRVREQ=1: count what looks like a Wine server request header (req, request_size, reply_size), by code */
+        static int on = -1;
+        if (on < 0) { char v[4]; on = GetEnvironmentVariableA("XRL_SRVREQ", v, sizeof v) && v[0] == '1'; }
+        const u32 *h = (const u32 *)b;
+        xrl_thread *t;
+        if (on && n >= 64 && h[0] < XRL_SRVREQ_MAX && h[1] < (1u << 20) && h[2] < (1u << 20) && (t = xrl_cur())) {
+            if (!t->srvreq) t->srvreq = (u32 *)calloc(XRL_SRVREQ_MAX, sizeof(u32));
+            if (t->srvreq) t->srvreq[h[0]]++;
+        }
+    }
     slong r = pb_write(f, e->tx, b, n, NULL);
     if (r == -LX_EPIPE && !e->is_socket) {   /* a pipe with no reader: SIGPIPE too, like Linux (sockets: net.c / MSG_NOSIGNAL) */
         xrl_thread *t = xrl_cur();
@@ -206,7 +275,8 @@ static void pipe_close(xfile *f)
     pipeend *e = (pipeend *)f->priv;
     if (e->rx) { AcquireSRWLockExclusive(&e->rx->lock); e->rx->readers--; ReleaseSRWLockExclusive(&e->rx->lock); }
     if (e->tx) { AcquireSRWLockExclusive(&e->tx->lock); e->tx->writers--; ReleaseSRWLockExclusive(&e->tx->lock); }
-    xrl_io_notify();
+    if (e->rx) xrl_io_notify_key(e->rx);
+    if (e->tx) xrl_io_notify_key(e->tx);
     if (e->rx) pb_unref(e->rx);
     if (e->tx) pb_unref(e->tx);
     free(e);
@@ -258,12 +328,13 @@ static slong ev_read(xfile *f, void *b, u64 n, s64 o)
             u64 v = e->sem ? 1 : e->count;
             e->count -= v;
             ReleaseSRWLockExclusive(&e->lock);
-            xrl_io_notify();
+            xrl_io_notify_key(e);
             return xrl_ctu((u64)b, &v, 8) ? -LX_EFAULT : 8;
         }
         ReleaseSRWLockExclusive(&e->lock);
         if (nonblock(f)) return -LX_EAGAIN;
-        if (xrl_io_wait(seen, -1) < 0) return -LX_EINTR;
+        const void *k = e;
+        if (xrl_io_wait_keys(seen, &k, 1, -1) < 0) return -LX_EINTR;
     }
 }
 static slong ev_write(xfile *f, const void *b, u64 n, s64 o)
@@ -280,12 +351,13 @@ static slong ev_write(xfile *f, const void *b, u64 n, s64 o)
         if (e->count + v < e->count || e->count + v == ~0ull) {
             ReleaseSRWLockExclusive(&e->lock);
             if (nonblock(f)) return -LX_EAGAIN;
-            if (xrl_io_wait(seen, -1) < 0) return -LX_EINTR;
+            const void *k = e;
+            if (xrl_io_wait_keys(seen, &k, 1, -1) < 0) return -LX_EINTR;
             continue;
         }
         e->count += v; e->gen++;
         ReleaseSRWLockExclusive(&e->lock);
-        xrl_io_notify();
+        xrl_io_notify_key(e);
         return 8;
     }
 }
@@ -324,6 +396,21 @@ slong xrl_eventfd_create(u32 initval, int flags)
 }
 
 /* ================================================================== poll */
+/* The keys a file's changes are notified with (up to 2 into out), or -1: unknown, wake on any change */
+static int file_keys(xfile *f, const void **out)
+{
+    if (f->ops == &g_pipe_ops) {
+        pipeend *e = (pipeend *)f->priv;
+        int n = 0;
+        if (e->rx) out[n++] = e->rx;
+        if (e->tx) out[n++] = e->tx;
+        return n;
+    }
+    if (f->ops == &g_ev_ops) { out[0] = f->priv; return 1; }
+    if ((out[0] = xrl_net_key(f)) != NULL) return 1;
+    return -1;
+}
+
 static u32 file_ready(xfile *f, u32 want)
 {
     if (!f->ops->poll) return want & (LX_POLLIN | LX_POLLOUT);
@@ -338,16 +425,18 @@ slong xrl_poll(u64 ufds, u64 nfds, s64 timeout_ns, u64 sigmask)
     if (!p) return -LX_ENOMEM;
     if (xrl_cfu(p, ufds, (size_t)(nfds * sizeof(lx_pollfd)))) { free(p); return -LX_EFAULT; }
     u64 deadline = timeout_ns < 0 ? ~0ull : xrl_mono_ns() + (u64)timeout_ns;
+    const void **keys = (const void **)malloc((size_t)(nfds ? nfds : 1) * 2 * sizeof *keys);
     slong ret;
     for (;;) {
         LONG seen = xrl_io_epoch;
-        int ready = 0;
+        int ready = 0, nk = keys ? 0 : -1;
         for (u64 i = 0; i < nfds; i++) {
             p[i].revents = 0;
             if (p[i].fd < 0) continue;
             xfile *f = xrl_fd_get(p[i].fd);
             if (!f) { p[i].revents = LX_POLLNVAL; ready++; continue; }
             u32 r = file_ready(f, (u32)p[i].events | LX_POLLERR | LX_POLLHUP);
+            if (nk >= 0) { int k = file_keys(f, keys + nk); nk = k < 0 ? -1 : nk + k; }
             xfile_unref(f);
             p[i].revents = (s16)(r & ((u32)p[i].events | LX_POLLERR | LX_POLLHUP | LX_POLLNVAL));
             if (p[i].revents) ready++;
@@ -370,12 +459,13 @@ slong xrl_poll(u64 ufds, u64 nfds, s64 timeout_ns, u64 sigmask)
             if (now >= deadline) { ret = 0; break; }
             left = (s64)(deadline - now);
         }
-        int w = xrl_io_wait(seen, left);
+        int w = xrl_io_wait_keys(seen, keys, nk, left);
         if (w < 0) { ret = -LX_EINTR; break; }
         /* non-fd waiters (files) are always ready, so only pipes/sockets/eventfds sleep here;
            wake-ups come from xrl_io_notify. A timeout wakes us to re-check the deadline. */
     }
     if (ret >= 0) { if (xrl_ctu(ufds, p, (size_t)(nfds * sizeof(lx_pollfd)))) ret = -LX_EFAULT; }
+    free(keys);
     free(p);
     return ret;
 }
@@ -445,7 +535,7 @@ slong xrl_epoll_ctl(int epfd, int op, int fd, u64 uev)
         if (i >= p->n) r = -LX_ENOENT; else { xfile_unref(p->e[i].f); p->e[i] = p->e[--p->n]; }
     } else r = -LX_EINVAL;
     ReleaseSRWLockExclusive(&p->lock);
-    xrl_io_notify();
+    xrl_io_notify_key(p);
 out:
     xfile_unref(tf); xfile_unref(ef);
     return r;
@@ -461,14 +551,20 @@ slong xrl_epoll_wait(int epfd, u64 uevents, int maxevents, int timeout_ms, int *
     epoll *p = (epoll *)ef->priv;
     lx_epoll_event *out = (lx_epoll_event *)malloc((size_t)maxevents * sizeof *out);
     u64 deadline = timeout_ms < 0 ? ~0ull : xrl_mono_ns() + (u64)timeout_ms * 1000000ull;
+    const void **keys = NULL;
+    size_t kcap = 0;
     slong ret;
     for (;;) {
         LONG seen = xrl_io_epoch;
-        int n = 0;
+        int n = 0, nk = 0;
         AcquireSRWLockExclusive(&p->lock);
-        for (size_t i = 0; i < p->n && n < maxevents; i++) {
+        if (kcap < p->n * 2 + 1) { kcap = p->n * 2 + 1; free(keys); keys = (const void **)malloc(kcap * sizeof *keys); }
+        if (!keys) { nk = -1; kcap = 0; }
+        else keys[nk++] = p;   /* epoll_ctl on this set */
+        for (size_t i = 0; i < p->n; i++) {   /* every entry's keys, also past maxevents */
             epi *e = &p->e[i];
-            if (e->disabled) continue;
+            if (nk >= 0) { int k = file_keys(e->f, keys + nk); nk = k < 0 ? -1 : nk + k; }
+            if (e->disabled || n >= maxevents) continue;
             u32 mask = (e->events & 0xffff) | LX_POLLERR | LX_POLLHUP;
             u32 r = file_ready(e->f, mask) & mask;
             u32 report = r;
@@ -494,9 +590,10 @@ slong xrl_epoll_wait(int epfd, u64 uevents, int maxevents, int timeout_ms, int *
             if (now >= deadline) { ret = 0; break; }
             left = (s64)(deadline - now);
         }
-        if (xrl_io_wait(seen, left) < 0) { ret = -LX_EINTR; break; }
+        if (xrl_io_wait_keys(seen, keys, nk, left) < 0) { ret = -LX_EINTR; break; }
     }
     if (ret > 0 && xrl_ctu(uevents, out, (size_t)ret * sizeof *out)) ret = -LX_EFAULT;
+    free(keys);
     free(out);
     xfile_unref(ef);
     return ret;

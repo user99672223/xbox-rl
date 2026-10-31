@@ -19,7 +19,26 @@ typedef struct pf_prev { int tid; u64 cpu, nsys; } pf_prev;
 static pf_prev g_prev[PF_MAX];
 static int g_nprev;
 
-typedef struct pf_row { int tid; u64 cpu, nsys; char name[16]; u32 topn[5]; u16 topnr[5]; } pf_row;
+typedef struct pf_row { int tid; u64 cpu, nsys; char name[16]; u32 topn[5]; u16 topnr[5]; u32 srvn[6]; u16 srvr[6]; } pf_row;
+
+/* XRL_SRVREQ: the thread's six most frequent Wine server requests since the last read (counts reset) */
+static void take_srv(xrl_thread *t, pf_row *r)
+{
+    memset(r->srvn, 0, sizeof r->srvn);
+    if (!t->srvreq) return;
+    for (int q = 0; q < XRL_SRVREQ_MAX; q++) {
+        u32 c = t->srvreq[q];
+        if (!c) continue;
+        t->srvreq[q] = 0;
+        for (int k = 0; k < 6; k++)
+            if (c > r->srvn[k]) {
+                memmove(&r->srvn[k + 1], &r->srvn[k], (5 - k) * sizeof *r->srvn);
+                memmove(&r->srvr[k + 1], &r->srvr[k], (5 - k) * sizeof *r->srvr);
+                r->srvn[k] = c; r->srvr[k] = (u16)q;
+                break;
+            }
+    }
+}
 
 /* XRL_PROFILE: the thread's five most frequent syscalls since the last read (counts reset) */
 static void take_top(xrl_thread *t, pf_row *r)
@@ -137,6 +156,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
             r->cpu = cpu - (pp && pp->cpu <= cpu ? pp->cpu : 0);
             r->nsys = t->nsys - (pp && pp->nsys <= t->nsys ? pp->nsys : 0);
             take_top(t, r);
+            take_srv(t, r);
             memcpy(r->name, t->name, sizeof r->name);
             r->name[sizeof r->name - 1] = 0;
             if (r->nsys == 0 && (double)r->cpu >= 0.9e7 * secs && nspin < 2 && spin_sample(t, &spins[nspin])) nspin++;
@@ -170,6 +190,15 @@ static DWORD WINAPI perf_thread(LPVOID p)
                          com > last_com ? (double)(at - last_after) * 1e6 / (double)qf.QuadPart / (double)(com - last_com) : 0.0);
             last_after = at;
         }
+        {   /* every I/O state change wakes every thread asleep in poll/read/...: how many per second */
+            extern volatile LONG64 xrl_io_notifies, xrl_io_woken;
+            extern volatile LONG xrl_io_sleepers;
+            static u64 ln, lw;
+            u64 nn = (u64)xrl_io_notifies, nw = (u64)xrl_io_woken;
+            LOGI("perf: io wake-ups: %.0f notifies/s, %.0f sleepers woken/s (%ld asleep now)", (double)(nn - ln) / secs,
+                 (double)(nw - lw) / secs, (long)xrl_io_sleepers);
+            ln = nn; lw = nw;
+        }
         last_com = com; last_flt = flt; last_flt_ticks = fltt; last_out = so; last_in = si;
 
         /* the busiest threads, by CPU */
@@ -188,6 +217,12 @@ static DWORD WINAPI perf_thread(LPVOID p)
                 for (int k = 0; k < 5 && rows[b].topn[k]; k++)
                     sl += snprintf(sub + sl, sizeof sub - sl, " %s %.0f/s", xrl_sysname(rows[b].topnr[k]), (double)rows[b].topn[k] / secs);
                 LOGI("perf: thr %s/%d calls%s", rows[b].name, rows[b].tid, sub);
+            }
+            if (shown < 3 && rows[b].srvn[0]) {   /* XRL_SRVREQ: its Wine server requests, by code (names: wineserver's req_names) */
+                char sub[300]; int sl = 0;
+                for (int k = 0; k < 6 && rows[b].srvn[k]; k++)
+                    sl += snprintf(sub + sl, sizeof sub - sl, " req%u %.0f/s", rows[b].srvr[k], (double)rows[b].srvn[k] / secs);
+                LOGI("perf: thr %s/%d server requests%s", rows[b].name, rows[b].tid, sub);
             }
             rows[b].tid = 0;
         }
