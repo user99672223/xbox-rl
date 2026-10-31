@@ -206,6 +206,14 @@ static DWORD WINAPI perf_thread(LPVOID p)
                          com > last_com ? (double)(at - last_after) * 1e6 / (double)qf.QuadPart / (double)(com - last_com) : 0.0);
             last_after = at;
         }
+        {   /* the swap: eviction work, write/read cost (the boot's long load is mostly this) */
+            extern volatile LONG64 xrl_lazy_faults;
+            static u64 last_so;
+            u64 sn2, so2, si2;
+            xrl_mem_swap_stats(&sn2, &so2, &si2);
+            if (so2 != last_so) { char cb[600]; xrl_mem_clock_stats(cb, sizeof cb); LOGI("perf: swap %s", cb); }
+            last_so = so2;
+        }
         {   /* com.c's argument scan: pointers checked, and how many needed a VirtualQuery */
             extern volatile LONG64 xrl_com_probes, xrl_com_probe_misses, xrl_com_scans;
             static u64 lp, lm, ls;
