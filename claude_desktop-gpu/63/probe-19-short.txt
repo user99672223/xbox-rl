@@ -1,0 +1,29 @@
+[W layer    ] ENOSYS 334 rseq (a1=7ff49cda3680 a2=20 a3=0) hit #1 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff49c3496a0 a2=20 a3=0) hit #2 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff49c542680 a2=20 a3=0) hit #3 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff49c349680 a2=20 a3=0) hit #4 - probe by newer libcs; harmless
+[W layer    ] ENOSYS 334 rseq (a1=7ff49c554ac0 a2=20 a3=0) hit #8 - probe by newer libcs; harmless
+[I guest.out] [xsession +5s] display up after 1 tries
+[W layer    ] ENOSYS 434 pidfd_open (a1=1e80 a2=0 a3=0) hit #1
+[W layer    ] ENOSYS 125 capget (a1=7ff49ac45818 a2=0 a3=0) hit #1
+[W layer    ] ENOSYS 334 rseq (a1=7ff49ac95680 a2=20 a3=0) hit #16 - probe by newer libcs; harmless
+[T layer    ] [1244] rseq(7ff49a42cfe0, 20, 0) = -38 ENOSYS
+[W layer    ] mem-fail[0] addr=7ff48466b7b8 access=1 vma=NEAR [7ff484720000,7ff488560000) prot=0 lazy=0 committed=0 host(state=2000 prot=0)
+[E layer    ] === UNHANDLED GUEST FAULT tid 6964 code c0000005 rip 00007ff47de6de34 addr 00007ff48466b7b8 (1) rsp 00007ff499868ff0 teb-stack [00007ff499827000,00007ff499878000) ===
+[E layer    ] ACCESS_VIOLATION (0xc0000005) at rip=00007ff47de6de34  fault_addr=00007ff48466b7b8 (write)
+[E layer    ] rax=0000000000010851 rbx=0000000000020010 rcx=00007ff48466b7b0 rdx=0000000000020011
+[E layer    ] rsi=00007ff48464b7a0 rdi=0000000000000004 rbp=ffffffffffffff10 rsp=00007ff499868ff0
+[E layer    ] r8 =00007ff47dfb1ac0 r9 =0000000000000001 r10=00007ff484616db0 r11=0000000000001fff
+[E layer    ] r12=0000000000020000 r13=0000000000000000 r14=0000000000001fff r15=00007ff47dfb1b20
+[E layer    ] fs_base(guest tp)=00007ff49a344580 fsbase_now=0000000000000000 eflags=00010206
+[E layer    ] code @rip: 48 89 41 08 48 8d 4e 10 eb ae 48 8d
+[E layer    ] [rsp+00] 00007ff48464b4a2
+[E layer    ] [rsp+08] 0000000000000000
+[E layer    ] [rsp+10] 0000000000000000
+[E layer    ] [rsp+18] 00007ff46cab6ee5
+[E layer    ] [rsp+20] 00007ff47dfb1ac0
+[E layer    ] [rsp+28] 0000000000020000
+[E layer    ] [rsp+30] 00007ff47dfb1ac0
+[E layer    ] [rsp+38] ffffffffffffff10
+[E layer    ] rip vma: 7ff47ddf4000-7ff47df57000 r-xp 00028000 00:00 281474976713710                        /usr/lib/x86_64-linux-gnu/libc.so.6
+exit 139
