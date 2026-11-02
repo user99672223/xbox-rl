@@ -68,6 +68,10 @@ static SRWLOCK g_lock = SRWLOCK_INIT;
 /* perf.c: waits that ran to their timeout (asked for under 50 ms: a frame limiter's sleep) and how late they ended */
 volatile LONG64 xrl_ns_timeouts, xrl_ns_late_ns, xrl_ns_late_max;
 static __declspec(thread) HANDLE t_ev;
+/* A timed wait's timeout: a high-resolution timer. WaitForSingleObject's ms timeout ended
+ * short waits 6.8 ms late on average (25 ms worst: the default timer tick). XRL_NTSYNC_LOWRES=1: as before. */
+static __declspec(thread) HANDLE t_tm;
+static int g_lowres = -1;
 
 static const xfile_ops g_obj_ops;
 
@@ -308,7 +312,19 @@ static slong do_wait(u64 arg, int all)
                 ms = left >= INFINITE ? INFINITE - 1 : (DWORD)left;
             }
             ReleaseSRWLockExclusive(&g_lock);
-            WaitForSingleObject(w.ev, ms);
+            int timed = 0;
+            if (ms != INFINITE) {
+                if (g_lowres < 0) { char v[4]; g_lowres = GetEnvironmentVariableA("XRL_NTSYNC_LOWRES", v, sizeof v) && v[0] == '1'; }
+                if (!g_lowres && !t_tm) t_tm = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+                LARGE_INTEGER due;
+                due.QuadPart = -(LONGLONG)((a.timeout - now + 99) / 100);
+                if (!g_lowres && t_tm && SetWaitableTimer(t_tm, &due, 0, NULL, NULL, FALSE)) {
+                    HANDLE hs[2] = { w.ev, t_tm };   /* w.ev first: a wake-up is consumed exactly as before */
+                    WaitForMultipleObjects(2, hs, FALSE, INFINITE);
+                    timed = 1;
+                }
+            }
+            if (!timed) WaitForSingleObject(w.ev, ms);
             AcquireSRWLockExclusive(&g_lock);
             if (w.done) break;
         }
