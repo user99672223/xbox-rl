@@ -22,6 +22,10 @@ static void input_script_event(const char *msg);
 static void log_cb(int level, const char *tag, const char *msg)
 {
     static const char *lv[] = { "T", "I", "W", "E" };
+    /* XRL_LOG_TIME=1: seconds since the first line in front of each line (boot timings) */
+    static int tm = -1; static LARGE_INTEGER t0, qf;
+    if (tm < 0) { tm = getenv("XRL_LOG_TIME") && atoi(getenv("XRL_LOG_TIME")); QueryPerformanceFrequency(&qf); QueryPerformanceCounter(&t0); }
+    if (tm) { LARGE_INTEGER q; QueryPerformanceCounter(&q); printf("%8.3f ", (double)(q.QuadPart - t0.QuadPart) / (double)qf.QuadPart); }
     printf("[%s %-9s] %s\n", lv[level & 3], tag, msg);
     fflush(stdout);
     pad_script_event(msg);
