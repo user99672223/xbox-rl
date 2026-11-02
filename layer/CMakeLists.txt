@@ -17,6 +17,7 @@ set(XRL_SRC
     src/boot.c src/com.c src/dbt.c src/elf.c src/evdev.c src/exec.c src/fbdev.c src/fd.c src/futex.c src/guestctx.c src/ipc.c src/mem.c src/misc.c src/ntsync.c
     src/cpuinfo.c src/hangdump.c src/net.c src/perf.c src/proc.c src/procfs.c src/pty.c src/rewrite.c src/rewrite_core.c src/sample.c src/signal.c src/syscall.c src/sysnames.c src/systrace.c src/task.c src/tracee.c src/teb.c src/shm.c src/thread.c src/timers.c src/unix.c
     src/util.c src/vfs.c src/x86dec.c
+    third_party/lz4/lz4.c
     )
 
 # MASM thunks: assembled by hand (CMake's ASM_MASM + Ninja mangles rule names here)
@@ -34,7 +35,7 @@ add_custom_command(OUTPUT ${DBT_OBJ}
     DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/asm/dbt.asm VERBATIM)
 add_library(xrl_layer STATIC ${XRL_SRC} ${THUNK_OBJ} ${RAWSYS_OBJ} ${DBT_OBJ})
 set_source_files_properties(${THUNK_OBJ} ${RAWSYS_OBJ} ${DBT_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-target_include_directories(xrl_layer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include PRIVATE src)
+target_include_directories(xrl_layer PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include PRIVATE src third_party/lz4)
 target_compile_definitions(xrl_layer PRIVATE _CRT_SECURE_NO_WARNINGS WIN32_LEAN_AND_MEAN UNICODE _UNICODE)
 target_compile_options(xrl_layer PRIVATE /W3 /we4013 /utf-8 /Zi /Gy $<$<COMPILE_LANGUAGE:C>:/std:c11>)
 if(XRL_UWP)

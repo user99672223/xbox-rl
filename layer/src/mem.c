@@ -35,6 +35,7 @@
  *     sections; true coherent shared file mappings are NOT implemented.
  */
 #include "xrl_internal.h"
+#include "lz4.h"
 #include <compressapi.h>
 #include <winioctl.h>
 #pragma comment(lib, "cabinet.lib")   /* Compression API (swap) */
@@ -627,6 +628,7 @@ static u64 g_freeblk;
 static int g_swap = 1;
 static int g_swap_nobatch, g_swap_nora;   /* XRL_SWAP_NOBATCH / XRL_SWAP_NORA: debugging */
 static int g_swap_nostage, g_swap_nopf;   /* XRL_SWAP_NOSTAGE / XRL_SWAP_NOPREFETCH: one write per record / no prefetch */
+static int g_swap_xpress, g_swap_verify;  /* XRL_SWAP_XPRESS: XPRESS instead of LZ4; XRL_SWAP_VERIFY: decode each record back and compare */
 static int g_clk_clean_only;   /* swap_room: the file is full, the clock evicts only clean spans */
 static u64 g_swap_excl_s, g_swap_excl_e;     /* never probe/evict here (mremap's source while copying) */
 static volatile LONG64 g_swap_out, g_swap_in, g_swap_now;   /* bytes written, read back, in the file now */
@@ -783,6 +785,16 @@ static u32 g_stg_slot, g_stg_len;
  * WindowsApp.lib; without it the gather faults them in as before). */
 typedef BOOL (WINAPI *prefetch_fn)(HANDLE, ULONG_PTR, void *, ULONG);
 static prefetch_fn p_prefetch;
+static void *g_lz4;   /* LZ4's compression state (the codec unless XRL_SWAP_XPRESS=1); NULL: XPRESS */
+static u8 *g_vbuf;    /* XRL_SWAP_VERIFY: a record decoded back */
+
+/* A record of csz bytes back into a 64 KiB span image: 1 when it decodes to exactly SPAN bytes. */
+static int span_decode(const u8 *rec, u32 csz, u8 *out)
+{
+    if (g_lz4) return LZ4_decompress_safe((const char *)rec, (char *)out, (int)csz, (int)SPAN) == (int)SPAN;
+    SIZE_T got = 0;
+    return g_dcmp && Decompress(g_dcmp, rec, csz, out, SPAN, &got) && got == SPAN;
+}
 
 static int swap_open(void)
 {
@@ -797,8 +809,6 @@ static int swap_open(void)
     g_cbuf = g_img + SPAN;
     g_rbuf = g_img + 2 * SPAN;
     if (!g_swap_nostage) g_stg = (u8 *)w_alloc(NULL, STG_MAX, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);   /* NULL: one write per record */
-    HMODULE kb = GetModuleHandleA("kernelbase.dll");
-    if (kb && !g_swap_nopf) p_prefetch = (prefetch_fn)(void *)GetProcAddress(kb, "PrefetchVirtualMemory");
     CREATEFILE2_EXTENDED_PARAMETERS p;
     memset(&p, 0, sizeof p);
     p.dwSize = sizeof p;
@@ -812,11 +822,14 @@ static int swap_open(void)
         g_swap = 0;
         return -1;
     }
-    if (!CreateCompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_cmp) ||
-        !CreateDecompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_dcmp)) {
+    if (!g_swap_xpress) g_lz4 = w_alloc(NULL, (u64)LZ4_sizeofState(), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!g_lz4 && (!CreateCompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_cmp) ||
+                   !CreateDecompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_dcmp))) {
         g_cmp = NULL; g_dcmp = NULL;
     }
-    LOGI("mem: swap file %ls (%s; %s writes, %s)", path, g_cmp ? "XPRESS-compressed" : "uncompressed",
+    if (g_swap_verify) g_vbuf = (u8 *)w_alloc(NULL, SPAN, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    LOGI("mem: swap file %ls (%s%s; %s writes, %s)", path, g_lz4 ? "LZ4-compressed" : g_cmp ? "XPRESS-compressed" : "uncompressed",
+         g_vbuf ? ", each record verified" : "",
          g_stg ? "batched" : "per-record", p_prefetch ? "prefetch before eviction" : "no prefetch");
     return 0;
 }
@@ -945,8 +958,17 @@ static DWORD store_span(u64 base, u32 *slot, u32 *nblk, u32 *mask, u16 *csz, int
     u32 len = (u32)SPAN;
     SIZE_T n = 0;
     t1 = qpc();
-    BOOL cok = g_cmp && Compress(g_cmp, g_img, SPAN, g_cbuf, SPAN, &n);
+    BOOL cok;
+    if (g_lz4) {
+        int r = LZ4_compress_fast_extState(g_lz4, (const char *)g_img, (char *)g_cbuf, (int)SPAN, (int)SPAN, 1);
+        cok = r > 0; n = r > 0 ? (SIZE_T)r : 0;
+    } else cok = g_cmp && Compress(g_cmp, g_img, SPAN, g_cbuf, SPAN, &n);
     g_t_cmp += qpc() - t1;
+    if (cok && n && g_vbuf && ALIGN_UP(n, BLK) < SPAN && (!span_decode(g_cbuf, (u32)n, g_vbuf) || memcmp(g_vbuf, g_img, SPAN))) {
+        static volatile LONG bad;   /* never store what would not come back: raw instead */
+        if (InterlockedIncrement(&bad) <= 8) LOGE("mem: swap verify: the record of %llx does not decode to the span: stored raw", base);
+        cok = FALSE;
+    }
     if (cok && n && ALIGN_UP(n, BLK) < SPAN) {
         memset(g_cbuf + n, 0, (size_t)(ALIGN_UP(n, BLK) - n));
         buf = g_cbuf;
@@ -1093,11 +1115,10 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
     }
     const u8 *img = rec;
     if (p->csz) {
-        SIZE_T out = 0;
         u64 t1 = qpc();
-        BOOL dok = Decompress(g_dcmp, rec, p->csz, g_img, SPAN, &out);
+        int dok = span_decode(rec, p->csz, g_img);
         g_t_dcmp += qpc() - t1;
-        if (!dok || out != SPAN) {
+        if (!dok) {
             LOGE("mem: swap record of %llx does not decompress (%lu)", base, GetLastError());
             decommit_mask(base, m);
             InterlockedAdd64(&g_committed, -(LONG64)bytes);
@@ -1384,6 +1405,12 @@ static void swap_knobs(void)
     g_swap_nora = GetEnvironmentVariableA("XRL_SWAP_NORA", v, sizeof v) && v[0] == '1';
     g_swap_nostage = GetEnvironmentVariableA("XRL_SWAP_NOSTAGE", v, sizeof v) && v[0] == '1';
     g_swap_nopf = GetEnvironmentVariableA("XRL_SWAP_NOPREFETCH", v, sizeof v) && v[0] == '1';
+    g_swap_xpress = GetEnvironmentVariableA("XRL_SWAP_XPRESS", v, sizeof v) && v[0] == '1';
+    g_swap_verify = GetEnvironmentVariableA("XRL_SWAP_VERIFY", v, sizeof v) && v[0] == '1';
+    /* here, at boot: swap_open runs under g_lock, where a loader call could wait on a thread that
+     * holds the loader lock and faults on a lazy page */
+    HMODULE kb = GetModuleHandleA("kernelbase.dll");
+    if (kb && !g_swap_nopf) p_prefetch = (prefetch_fn)(void *)GetProcAddress(kb, "PrefetchVirtualMemory");
 }
 void xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in) { *now = (u64)g_swap_now; *out = (u64)g_swap_out; *in = (u64)g_swap_in; }
 u64 xrl_mem_swap_clean(void) { return (u64)g_swap_clean; }
