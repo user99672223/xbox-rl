@@ -626,6 +626,7 @@ static u32 g_nblocks;                          /* the file's length in blocks */
 static u64 g_freeblk;
 static int g_swap = 1;
 static int g_swap_nobatch, g_swap_nora;   /* XRL_SWAP_NOBATCH / XRL_SWAP_NORA: debugging */
+static int g_swap_nostage, g_swap_nopf;   /* XRL_SWAP_NOSTAGE / XRL_SWAP_NOPREFETCH: one write per record / no prefetch */
 static int g_clk_clean_only;   /* swap_room: the file is full, the clock evicts only clean spans */
 static u64 g_swap_excl_s, g_swap_excl_e;     /* never probe/evict here (mremap's source while copying) */
 static volatile LONG64 g_swap_out, g_swap_in, g_swap_now;   /* bytes written, read back, in the file now */
@@ -777,6 +778,11 @@ static volatile LONG64 g_swap_disk;           /* bytes written to the file (comp
 #define STG_MAX (32 * SPAN)
 static u8 *g_stg;
 static u32 g_stg_slot, g_stg_len;
+/* A probed (PAGE_NOACCESS) page leaves the working set: the gather would take a soft fault per
+ * page. PrefetchVirtualMemory brings a run back in one call (resolved at run time: not in
+ * WindowsApp.lib; without it the gather faults them in as before). */
+typedef BOOL (WINAPI *prefetch_fn)(HANDLE, ULONG_PTR, void *, ULONG);
+static prefetch_fn p_prefetch;
 
 static int swap_open(void)
 {
@@ -790,7 +796,9 @@ static int swap_open(void)
     if (!g_img) { LOGE("mem: no buffers for swap: swap off"); g_swap = 0; return -1; }
     g_cbuf = g_img + SPAN;
     g_rbuf = g_img + 2 * SPAN;
-    g_stg = (u8 *)w_alloc(NULL, STG_MAX, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);   /* NULL: one write per record */
+    if (!g_swap_nostage) g_stg = (u8 *)w_alloc(NULL, STG_MAX, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);   /* NULL: one write per record */
+    HMODULE kb = GetModuleHandleA("kernelbase.dll");
+    if (kb && !g_swap_nopf) p_prefetch = (prefetch_fn)(void *)GetProcAddress(kb, "PrefetchVirtualMemory");
     CREATEFILE2_EXTENDED_PARAMETERS p;
     memset(&p, 0, sizeof p);
     p.dwSize = sizeof p;
@@ -808,7 +816,8 @@ static int swap_open(void)
         !CreateDecompressor(COMPRESS_ALGORITHM_XPRESS | COMPRESS_RAW, NULL, &g_dcmp)) {
         g_cmp = NULL; g_dcmp = NULL;
     }
-    LOGI("mem: swap file %ls (%s)", path, g_cmp ? "XPRESS-compressed" : "uncompressed");
+    LOGI("mem: swap file %ls (%s; %s writes, %s)", path, g_cmp ? "XPRESS-compressed" : "uncompressed",
+         g_stg ? "batched" : "per-record", p_prefetch ? "prefetch before eviction" : "no prefetch");
     return 0;
 }
 
@@ -1272,6 +1281,7 @@ static u64 evict_batch(u32 *v, int n)
         u64 a = g_sp[v[i]].base, b = a + (u64)k * SPAN;
         u64 t1 = qpc();
         range_parts(a, b, part_readonly, NULL);
+        if (p_prefetch) { struct { PVOID va; SIZE_T n; } re = { (PVOID)a, (SIZE_T)(b - a) }; p_prefetch(GetCurrentProcess(), 1, &re, 0); }
         g_t_ro += qpc() - t1;
         u32 slots[64], nblks[64], masks[64];
         u16 cszs[64];
@@ -1372,6 +1382,8 @@ static void swap_knobs(void)
     char v[4];
     g_swap_nobatch = GetEnvironmentVariableA("XRL_SWAP_NOBATCH", v, sizeof v) && v[0] == '1';
     g_swap_nora = GetEnvironmentVariableA("XRL_SWAP_NORA", v, sizeof v) && v[0] == '1';
+    g_swap_nostage = GetEnvironmentVariableA("XRL_SWAP_NOSTAGE", v, sizeof v) && v[0] == '1';
+    g_swap_nopf = GetEnvironmentVariableA("XRL_SWAP_NOPREFETCH", v, sizeof v) && v[0] == '1';
 }
 void xrl_mem_swap_stats(u64 *now, u64 *out, u64 *in) { *now = (u64)g_swap_now; *out = (u64)g_swap_out; *in = (u64)g_swap_in; }
 u64 xrl_mem_swap_clean(void) { return (u64)g_swap_clean; }
