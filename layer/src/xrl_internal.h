@@ -36,6 +36,16 @@
 typedef LONG (NTAPI *XRL_VEH_FN)(PEXCEPTION_POINTERS);
 PVOID WINAPI AddVectoredExceptionHandler(ULONG First, XRL_VEH_FN Handler);
 BOOL WINAPI TerminateThread(HANDLE hThread, DWORD dwExitCode);
+/* Hidden there too; the host links kernel32.lib for the ones WindowsApp.lib lacks (CopyContext).
+ * Undeclared, C assumes they return int, which truncates a returned HANDLE. */
+HANDLE WINAPI CreateFileA(LPCSTR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD, DWORD, HANDLE);
+HANDLE WINAPI CreateJobObjectW(LPSECURITY_ATTRIBUTES, LPCWSTR);
+BOOL WINAPI SetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, LPVOID, DWORD);
+BOOL WINAPI AssignProcessToJobObject(HANDLE, HANDLE);
+BOOL WINAPI QueryThreadCycleTime(HANDLE, PULONG64);
+BOOL WINAPI ReadProcessMemory(HANDLE, LPCVOID, LPVOID, SIZE_T, SIZE_T *);
+BOOL WINAPI CopyContext(PCONTEXT, DWORD, PCONTEXT);
+BOOL WINAPI HeapValidate(HANDLE, DWORD, LPCVOID);
 #endif
 #include "lx.h"
 
