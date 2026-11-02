@@ -773,6 +773,10 @@ static DECOMPRESSOR_HANDLE g_dcmp;
 static u8 *g_img, *g_cbuf, *g_rbuf;          /* span image, one record, read-ahead extent (8 slots) */
 static volatile LONG64 g_swap_disk;           /* bytes written to the file (compressed) */
 #define RA_MAX 8
+/* evict_batch stages a run's records here; those in consecutive blocks go out in one write */
+#define STG_MAX (32 * SPAN)
+static u8 *g_stg;
+static u32 g_stg_slot, g_stg_len;
 
 static int swap_open(void)
 {
@@ -786,6 +790,7 @@ static int swap_open(void)
     if (!g_img) { LOGE("mem: no buffers for swap: swap off"); g_swap = 0; return -1; }
     g_cbuf = g_img + SPAN;
     g_rbuf = g_img + 2 * SPAN;
+    g_stg = (u8 *)w_alloc(NULL, STG_MAX, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);   /* NULL: one write per record */
     CREATEFILE2_EXTENDED_PARAMETERS p;
     memset(&p, 0, sizeof p);
     p.dwSize = sizeof p;
@@ -892,11 +897,31 @@ static int op_img(u64 s, u64 e, DWORD state, void *ctx)
 }
 static int part_img(u64 s, u64 e, vma *v, void *ctx) { (void)v; return each_region(s, e, op_img, ctx); }
 
+/* Write the staged records (g_stg) at their blocks. 0 or a Win32 error; empty after either. */
+static DWORD stage_flush(void)
+{
+    u32 len = g_stg_len;
+    if (!len) return 0;
+    g_stg_len = 0;
+    u64 off = (u64)g_stg_slot * BLK;
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.Offset = (DWORD)off; ov.OffsetHigh = (DWORD)(off >> 32);
+    DWORD w = 0;
+    u64 t0 = qpc();
+    BOOL ok = WriteFile(g_swapf, g_stg, len, &w, &ov);
+    g_io_wt += qpc() - t0; g_io_w++;
+    if (!ok || w != len) return GetLastError() ? GetLastError() : 1;
+    InterlockedAdd64(&g_swap_disk, (LONG64)len);
+    return 0;
+}
+
 /* Write the span at `base` (its lazy parts readable) as a new record:
  * *slot/*nblk where it went, *mask the pages saved, *csz the compressed size
  * (0: stored raw). 0 ok (nothing written when *mask is 0), ERROR_DISK_FULL
- * when the swap file may not grow, else a Win32 error. */
-static DWORD store_span(u64 base, u32 *slot, u32 *nblk, u32 *mask, u16 *csz)
+ * when the swap file may not grow, else a Win32 error. With `stage` the record
+ * may only be staged: it is on disk after stage_flush. */
+static DWORD store_span(u64 base, u32 *slot, u32 *nblk, u32 *mask, u16 *csz, int stage)
 {
     memset(g_img, 0, SPAN);
     img_ctx c = { base, 0, 0 };
@@ -921,6 +946,18 @@ static DWORD store_span(u64 base, u32 *slot, u32 *nblk, u32 *mask, u16 *csz)
     }
     u32 b = blk_alloc(len / BLK);
     if (b == SLOT_NONE) return ERROR_DISK_FULL;
+    if (stage && g_stg) {
+        if (g_stg_len && (b != g_stg_slot + g_stg_len / BLK || g_stg_len + len > STG_MAX)) {
+            DWORD e = stage_flush();
+            if (e) { blk_free(b, len / BLK); return e; }
+        }
+        if (!g_stg_len) g_stg_slot = b;
+        memcpy(g_stg + g_stg_len, buf, len);
+        g_stg_len += len;
+        *slot = b;
+        *nblk = len / BLK;
+        return 0;
+    }
     u64 off = (u64)b * BLK;
     OVERLAPPED ov;
     memset(&ov, 0, sizeof ov);
@@ -957,7 +994,7 @@ static u64 evict(u32 idx)
     span_parts(p->base, part_readonly, NULL);
     u32 slot, nblk, mask;
     u16 csz;
-    DWORD err = store_span(p->base, &slot, &nblk, &mask, &csz);
+    DWORD err = store_span(p->base, &slot, &nblk, &mask, &csz, 0);
     if (err) {   /* swap full, or a write error: the span stays */
         static volatile LONG once;
         if (err != ERROR_DISK_FULL && !InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): span kept in memory", err);
@@ -1242,12 +1279,14 @@ static u64 evict_batch(u32 *v, int n)
         for (int q = 0; q < k && !bad; q++) {
             u32 slot = 0, nblk = 0, mask = 0;
             u16 csz = 0;
-            DWORD err = store_span(g_sp[v[i + q]].base, &slot, &nblk, &mask, &csz);
+            DWORD err = store_span(g_sp[v[i + q]].base, &slot, &nblk, &mask, &csz, 1);
             slots[q] = slot; nblks[q] = nblk; masks[q] = mask; cszs[q] = csz;
-            if (err) {
+            if (!err && q == k - 1) err = stage_flush();   /* all of the run on disk before it is decommitted */
+            if (err) {   /* (a failed store_span leaves *nblk 0) */
                 static volatile LONG once;
                 if (err != ERROR_DISK_FULL && !InterlockedExchange(&once, 1)) LOGE("mem: swap write failed (%lu): spans kept in memory", err);
-                for (int z = 0; z < q; z++) if (nblks[z]) blk_free(slots[z], nblks[z]);
+                g_stg_len = 0;
+                for (int z = 0; z <= q; z++) if (nblks[z]) blk_free(slots[z], nblks[z]);
                 range_parts(a, b, part_unprobe, NULL);
                 for (int z = 0; z < k; z++) g_sp[v[i + z]].state = SP_HOT;
                 bad = 1;
