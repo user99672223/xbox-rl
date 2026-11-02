@@ -65,6 +65,8 @@ struct waiter {
 };
 
 static SRWLOCK g_lock = SRWLOCK_INIT;
+/* perf.c: waits that ran to their timeout (asked for under 50 ms: a frame limiter's sleep) and how late they ended */
+volatile LONG64 xrl_ns_timeouts, xrl_ns_late_ns, xrl_ns_late_max;
 static __declspec(thread) HANDLE t_ev;
 
 static const xfile_ops g_obj_ops;
@@ -287,9 +289,18 @@ static slong do_wait(u64 arg, int all)
         for (u32 i = 0; i < w.count; i++) register_on(&w, w.objs[i]);
         if (w.alert) register_on(&w, w.alert);
         ResetEvent(w.ev);
+        u64 start = 0;
         for (;;) {
             u64 now = (a.flags & NTSYNC_WAIT_REALTIME) ? xrl_real_ns() : xrl_mono_ns();
-            if (a.timeout != ~0ull && now >= a.timeout) break;
+            if (!start) start = now;
+            if (a.timeout != ~0ull && now >= a.timeout) {
+                if (a.timeout > start && a.timeout - start < 50000000ull) {
+                    u64 late = now - a.timeout;
+                    InterlockedIncrement64(&xrl_ns_timeouts); InterlockedAdd64(&xrl_ns_late_ns, (LONG64)late);
+                    if ((LONG64)late > xrl_ns_late_max) xrl_ns_late_max = (LONG64)late;   /* (a statistic: racy max is fine) */
+                }
+                break;
+            }
             if (self && xrl_sig_pending_for(self)) { intr = 1; break; }
             DWORD ms = INFINITE;
             if (a.timeout != ~0ull) {

@@ -231,6 +231,14 @@ static DWORD WINAPI perf_thread(LPVOID p)
                  (double)(nw - lw) / secs, (long)xrl_io_sleepers);
             ln = nn; lw = nw;
         }
+        {   /* ntsync waits that ran to a short timeout (< 50 ms): how late they ended */
+            extern volatile LONG64 xrl_ns_timeouts, xrl_ns_late_ns, xrl_ns_late_max;
+            static u64 lt, ll;
+            u64 nt = (u64)xrl_ns_timeouts, nl = (u64)xrl_ns_late_ns;
+            if (nt != lt) LOGI("perf: ntsync timed waits: %.0f/s ended by their timeout, %.0f us late on average (worst so far %.0f us)",
+                               (double)(nt - lt) / secs, (double)(nl - ll) / 1000.0 / (double)(nt - lt), (double)xrl_ns_late_max / 1000.0);
+            lt = nt; ll = nl;
+        }
         last_com = com; last_flt = flt; last_flt_ticks = fltt; last_out = so; last_in = si;
 
         /* the busiest threads, by CPU */
