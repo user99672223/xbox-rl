@@ -42,6 +42,9 @@ Menu frame split (steady menu, about 54 fps): about 19 ms per frame, of which ab
 | 002428d | PrefetchVirtualMemory per eviction run | handler 39.6 / 42.0 → 27.9 / 28.7 s; swapchain 65.6 / 67.4 → 57.6 / 55.3 s; menu 160.4 / 162.6 → 131.2 / 129.2 s; gather 8.2 → 2.0 s (+2 s prefetch) | **proven** (2+2 runs, both consistent) |
 | b6350a5 | LZ4 instead of XPRESS (vendored v1.10.0) | compress 10.6 / 12.0 → 3.7–6.2 s; handler 27.9 / 28.7 → 13.4–22.3 s (mean 18.1); swapchain 57.6 / 55.3 → 31–48 s (mean 41.6); menu 131.2 / 129.2 → 98–129 s (mean 118); swap file ~1200 → ~1110 MiB | **proven** (2 vs 4 runs) |
 
+| a94db36 | perf line: how late short ntsync timed waits end | menu: 38–48/s, 6.8 ms late on average, 25.5 ms worst | tool |
+| 03abca7 | ntsync timed waits end on a high-resolution timer (`XRL_NTSYNC_LOWRES=1`: as before) | 6.8 ms late → 0.33 ms (1 vs 3 runs); menu fps unchanged (54.1 → 54.9 / 54.8 / 54.3) | **proven** (precision); no fps effect |
+
 **Overall, laptop:** menu reached 158–172 s (baseline) → 98–129 s (mean 118); first swapchain 63–75 s → 31–48 s;
 fault-handler time 42–55 s → 13–22 s. Steady menu fps unchanged at 54–55 (see below for why).
 
@@ -67,21 +70,28 @@ soft fault on every page (~7 µs each, 16 per span). This is NT behaviour, not m
 | `/Ob2 /GL /LTCG` | swapchain 73.2 / 79.1 s, menu 169.5 / 163.6 s vs 74.5 / 62.9 and 171.6 / 158.1: no gain; reverted |
 | ntdll `RtlCompressBuffer` XPRESS instead of the Compression API | compress 13.3 s vs 12.6 s, same ratio: no gain |
 | skip all-zero pages | only 2.2 % of evicted pages are zero (736 all-zero spans): not worth it |
+| `stat` by name (`GetFileInformationByName`: one call, no handle) | per call 16.4 µs → 16.6 / 15.9 µs: no gain; reverted. It first looked like it removed the loading freeze, but a same-binary A/B with it off had no freeze either (see below) |
 | env reads on hot paths | all cached after the first call; GET_VCLOCK reads it once per process: nothing to fix |
 
 ## Suspected / open
 
-- **Loading freeze (~20 s before the menu):** the main thread spins at 97 % CPU (84 % kernel), 66k syscalls/s,
-  no faults and no swap. This is the known "GetOverlappedResult on an async read that never completes" loop
-  (c52a4a5). It's a correctness problem in async I/O completion and is being worked on elsewhere; not touched here
-  (wake-ups and sockets are off limits).
-- **Menu fps (54–55, not 60):** measured with XRL_PROFILE and XRL_SAMPLE in the menu. The game uses
+- **Loading freeze (~16–20 s before the menu):** the main thread spins at 97 % CPU (84 % kernel), 66k syscalls/s,
+  no faults and no swap (the known GetOverlappedResult loop, c52a4a5). New evidence: it ends exactly when a
+  burst of RL `WebRequest ... HTTPError` lines appears (e.g. hr4: freeze ends 134.71 s, five errors at 134.90–134.92 s),
+  and late in this session the freeze stopped happening in every run, including runs on the old code paths. In those runs RL
+  made no web requests at all. So it is RL's online code waiting on HTTP requests that fail in this offline,
+  reused-login setup, and it depends on the network environment, not on the layer changes here. Boot times from
+  runs with and without the freeze are not comparable: after it disappeared, the steady menu came at ~96 s
+  (3 runs, same binary).
+- **Menu fps (54–55, not 60):** not the ntsync timeouts (fixed: no fps change), not vsync or our pacer
+  (SyncInterval 0, pacer inactive), not layer CPU (0.32 of a core in total). What's left: RL's own frame cap or the laptop GPU.
+  Details: measured with XRL_PROFILE and XRL_SAMPLE in the menu. The game uses
   0.32 of a core in total. The render thread presents with SyncInterval 0 (no vsync, no pacer). The main thread
   waits for it through ntsync (`ioctl`, ~60 per frame) and spins between waits (`getrusage` 88k/s, i.e.
   GetThreadTimes, plus `sched_yield` 44k/s): RL's frame limiter. Suspected: our ntsync timed wait
   (ntsync.c, `WaitForSingleObject` with the timeout rounded up to whole ms, no high-resolution timer) wakes late,
   so a 60 fps limiter lands at ~55. To be measured (overshoot counter) before any change.
-- **File lookups:** over a boot, `stat` 484k calls / 7.9 s, `lstat` 213k / 7.2 s, `openat` 213k / 5.6 s,
+- **File lookups:** the handle open is not the cost (stat by name was no faster). Over a boot, `stat` 484k calls / 7.9 s, `lstat` 213k / 7.2 s, `openat` 213k / 5.6 s,
   `read` 1.04M / 11.8 s (summed over threads). Path translation and case folding in vfs.c are a cache
   candidate (with invalidation on create/rename/delete).
 - **Syscall crossing** is cheap: a TEB view swap pair costs 0.036 µs. Not worth chasing.
