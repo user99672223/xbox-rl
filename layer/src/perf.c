@@ -211,7 +211,7 @@ static DWORD WINAPI perf_thread(LPVOID p)
             static u64 last_so;
             u64 sn2, so2, si2;
             xrl_mem_swap_stats(&sn2, &so2, &si2);
-            if (so2 != last_so) { char cb[600]; xrl_mem_clock_stats(cb, sizeof cb); LOGI("perf: swap %s", cb); }
+            if (so2 != last_so) { char cb[900]; xrl_mem_clock_stats(cb, sizeof cb); LOGI("perf: swap %s", cb); }
             last_so = so2;
         }
         {   /* com.c's argument scan: pointers checked, and how many needed a VirtualQuery */

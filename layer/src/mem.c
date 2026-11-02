@@ -61,10 +61,16 @@ typedef struct vma {
 static SRWLOCK g_lock = SRWLOCK_INIT;
 static volatile LONG g_lock_tid;    /* who holds g_lock exclusively (sample.c's stall snapshot), 0: nobody */
 static volatile LONG64 g_lock_t0;   /* QPC when it was taken */
+static volatile LONG64 g_lk_wait_t, g_lk_waits;   /* contended acquires of g_lock and the QPC ticks spent waiting */
 static void mem_lock(void)
 {
-    AcquireSRWLockExclusive(&g_lock);
-    LARGE_INTEGER q; QueryPerformanceCounter(&q);
+    LARGE_INTEGER q;
+    if (!TryAcquireSRWLockExclusive(&g_lock)) {
+        LARGE_INTEGER w; QueryPerformanceCounter(&w);
+        AcquireSRWLockExclusive(&g_lock);
+        QueryPerformanceCounter(&q);
+        InterlockedAdd64(&g_lk_wait_t, q.QuadPart - w.QuadPart); InterlockedIncrement64(&g_lk_waits);
+    } else QueryPerformanceCounter(&q);
     g_lock_t0 = q.QuadPart;
     g_lock_tid = (LONG)GetCurrentThreadId();
 }
@@ -627,6 +633,7 @@ static volatile LONG64 g_swap_clean;                         /* evicted again wi
 static volatile LONG64 g_clk_steps, g_clk_probes, g_clk_evicts, g_clk_empty, g_clk_runs;   /* clock work */
 static volatile LONG64 g_io_w, g_io_wt, g_io_r, g_io_rt, g_ev_t, g_in_t;   /* I/O calls and QPC ticks; whole evict/swapin */
 static volatile LONG64 g_ra_spans;                                        /* spans read ahead */
+static u64 g_t_img, g_t_cmp, g_t_dcmp, g_t_ro, g_t_dc, g_t_probe, g_t_ldc, g_t_clk;   /* QPC ticks (g_lock held): gather, (de)compress, read-only pass, decommit, probe, load commits */
 static u64 qpc(void) { LARGE_INTEGER q; QueryPerformanceCounter(&q); return (u64)q.QuadPart; }
 
 static u32 sph_home(u64 base) { return (u32)(((base >> 16) * 0x9E3779B97F4A7C15ull) >> 40) & (g_sph_cap - 1); }
@@ -893,7 +900,9 @@ static DWORD store_span(u64 base, u32 *slot, u32 *nblk, u32 *mask, u16 *csz)
 {
     memset(g_img, 0, SPAN);
     img_ctx c = { base, 0, 0 };
+    u64 t1 = qpc();
     span_parts(base, part_img, &c);
+    g_t_img += qpc() - t1;
     *mask = c.mask;
     *csz = 0;
     *nblk = 0;
@@ -901,7 +910,10 @@ static DWORD store_span(u64 base, u32 *slot, u32 *nblk, u32 *mask, u16 *csz)
     const u8 *buf = g_img;
     u32 len = (u32)SPAN;
     SIZE_T n = 0;
-    if (g_cmp && Compress(g_cmp, g_img, SPAN, g_cbuf, SPAN, &n) && n && ALIGN_UP(n, BLK) < SPAN) {
+    t1 = qpc();
+    BOOL cok = g_cmp && Compress(g_cmp, g_img, SPAN, g_cbuf, SPAN, &n);
+    g_t_cmp += qpc() - t1;
+    if (cok && n && ALIGN_UP(n, BLK) < SPAN) {
         memset(g_cbuf + n, 0, (size_t)(ALIGN_UP(n, BLK) - n));
         buf = g_cbuf;
         len = (u32)ALIGN_UP(n, BLK);
@@ -999,6 +1011,7 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
     if (r) return r;
     /* commit (no access yet) before the record is read and decompressed: making room at
      * Windows' commit limit evicts others through g_img/g_cbuf too */
+    u64 tl = qpc();
     for (u32 a = 0; a < 16;) {
         if (!((m >> a) & 1)) { a++; continue; }
         u32 b = a;
@@ -1012,6 +1025,7 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
         }
         a = b;
     }
+    g_t_ldc += qpc() - tl;
     p = &g_sp[idx];
     if (!rec) {
         u32 len = (u32)p->nblk * BLK;
@@ -1034,7 +1048,10 @@ static slong load_span(u32 idx, const u8 *rec, int keep_clean, u64 xs, u64 xe)
     const u8 *img = rec;
     if (p->csz) {
         SIZE_T out = 0;
-        if (!Decompress(g_dcmp, rec, p->csz, g_img, SPAN, &out) || out != SPAN) {
+        u64 t1 = qpc();
+        BOOL dok = Decompress(g_dcmp, rec, p->csz, g_img, SPAN, &out);
+        g_t_dcmp += qpc() - t1;
+        if (!dok || out != SPAN) {
             LOGE("mem: swap record of %llx does not decompress (%lu)", base, GetLastError());
             decommit_mask(base, m);
             InterlockedAdd64(&g_committed, -(LONG64)bytes);
@@ -1195,12 +1212,14 @@ static int span_run(const u32 *v, int i, int n)
 static void probe_batch(u32 *v, int n)
 {
     if (!n) return;
+    u64 t0 = qpc();
     qsort(v, (size_t)n, sizeof *v, cmp_span_base);
     for (int i = 0; i < n;) {
         int k = span_run(v, i, n);
         range_parts(g_sp[v[i]].base, g_sp[v[i]].base + (u64)k * SPAN, part_probe, NULL);
         i += k;
     }
+    g_t_probe += qpc() - t0;
 }
 
 /* Write out the probed, dirty spans v[0..n): per run, one read-only pass,
@@ -1214,7 +1233,9 @@ static u64 evict_batch(u32 *v, int n)
     for (int i = 0; i < n;) {
         int k = span_run(v, i, n);
         u64 a = g_sp[v[i]].base, b = a + (u64)k * SPAN;
+        u64 t1 = qpc();
         range_parts(a, b, part_readonly, NULL);
+        g_t_ro += qpc() - t1;
         u32 slots[64], nblks[64], masks[64];
         u16 cszs[64];
         int bad = 0;
@@ -1234,7 +1255,9 @@ static u64 evict_batch(u32 *v, int n)
         }
         if (!bad) {
             dc_ctx d = { 0 };
+            u64 t2 = qpc();
             range_parts(a, b, part_decommit, &d);
+            g_t_dc += qpc() - t2;
             InterlockedAdd64(&g_committed, -(LONG64)d.bytes);
             InterlockedAdd64(&g_swap_out, (LONG64)d.bytes);
             InterlockedAdd64(&g_swap_now, (LONG64)d.bytes);
@@ -1255,7 +1278,7 @@ static u64 evict_batch(u32 *v, int n)
 
 static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
 {
-    u64 freed = 0, pending = 0;
+    u64 freed = 0, pending = 0, tc = qpc();
     u32 pv[CLK_BATCH], ev[CLK_BATCH];
     int np = 0, ne = 0;
     for (u64 n = 0; n < steps && g_nsp && (!evict_ok || freed + pending < want); n++) {
@@ -1297,6 +1320,7 @@ static u64 clock_run(u64 want, u64 steps, int evict_ok, u64 xs, u64 xe)
     }
     probe_batch(pv, np);
     freed += evict_batch(ev, ne);
+    g_t_clk += qpc() - tc;
     return freed;
 }
 
@@ -1318,12 +1342,15 @@ void xrl_mem_clock_stats(char *b, size_t n)
     double us = 1e6 / (double)f.QuadPart;
     snprintf(b, n, "clock: %lld eviction runs, %lld steps, %lld probes, %lld evictions (%.0f us each), %lld empty; "
              "writes %lld (%.0f us avg), reads %lld (%.0f us avg), %lld spans read ahead; %u spans; "
-             "file %u MiB (%llu MiB free in it); %llu MiB stored as %llu MiB written",
+             "file %u MiB (%llu MiB free in it); %llu MiB stored as %llu MiB written; "
+             "ms: clock %.0f (gather %.0f compress %.0f write %.0f read-only %.0f decommit %.0f probe %.0f) | read %.0f decompress %.0f commit %.0f | g_lock waits %lld (%.0f ms)",
              (long long)g_clk_runs, (long long)g_clk_steps, (long long)g_clk_probes, (long long)g_clk_evicts,
              g_clk_evicts ? (double)g_ev_t * us / (double)g_clk_evicts : 0.0, (long long)g_clk_empty,
              (long long)g_io_w, g_io_w ? (double)g_io_wt * us / (double)g_io_w : 0.0,
              (long long)g_io_r, g_io_r ? (double)g_io_rt * us / (double)g_io_r : 0.0, (long long)g_ra_spans,
-             g_nsp - g_nspfree, g_nblocks >> 8, g_freeblk >> 8, (u64)g_swap_out >> 20, (u64)g_swap_disk >> 20);
+             g_nsp - g_nspfree, g_nblocks >> 8, g_freeblk >> 8, (u64)g_swap_out >> 20, (u64)g_swap_disk >> 20,
+             g_t_clk * us / 1e3, g_t_img * us / 1e3, g_t_cmp * us / 1e3, g_io_wt * us / 1e3, g_t_ro * us / 1e3, g_t_dc * us / 1e3, g_t_probe * us / 1e3,
+             g_io_rt * us / 1e3, g_t_dcmp * us / 1e3, g_t_ldc * us / 1e3, (long long)g_lk_waits, g_lk_wait_t * us / 1e3);
 }
 
 /* The budget swap works to: g_budget, or less while Windows has under XRL_COMMIT_RESERVE_MB
